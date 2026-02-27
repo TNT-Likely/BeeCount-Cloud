@@ -1,0 +1,10 @@
+{
+  "name": "beecount-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r --filter ./apps/* build",
+    "test": "pnpm -r --filter ./apps/* test",
+    "dev": "pnpm -C apps/web dev"
+  }
+}

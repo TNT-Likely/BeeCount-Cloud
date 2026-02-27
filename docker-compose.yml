@@ -1,0 +1,25 @@
+services:
+  beecount-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: sqlite:////data/beecount.db
+      JWT_SECRET: change-me-in-production-at-least-32-bytes
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      WEB_STATIC_DIR: /app/static
+      BACKUP_STORAGE_DIR: /data/backups
+      ALLOW_APP_RW_SCOPES: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - beecount_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  beecount_data:

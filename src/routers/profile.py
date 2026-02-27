@@ -1,0 +1,221 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..database import get_db
+from ..deps import get_current_user, require_any_scopes
+from ..models import User, UserProfile
+from ..schemas import (
+    UserProfileAvatarUploadOut,
+    UserProfileOut,
+    UserProfilePatchRequest,
+)
+from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
+
+router = APIRouter()
+settings = get_settings()
+_READ_SCOPE_DEP = require_any_scopes(
+    SCOPE_APP_WRITE,
+    SCOPE_WEB_READ,
+    SCOPE_WEB_WRITE,
+    SCOPE_OPS_WRITE,
+)
+_AVATAR_SCOPE_DEP = require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_WRITE, SCOPE_OPS_WRITE)
+_PATCH_SCOPE_DEP = require_any_scopes(SCOPE_WEB_WRITE, SCOPE_OPS_WRITE)
+
+_AVATAR_MAX_UPLOAD_BYTES = 1 * 1024 * 1024
+_ALLOWED_IMAGE_MIME_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+
+
+def _avatar_root() -> Path:
+    root = Path(settings.attachment_storage_dir).expanduser() / "profile-avatars"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _avatar_url(*, user_id: str, avatar_version: int | None = None) -> str:
+    base = f"{settings.api_prefix}/profile/avatar/{user_id}"
+    if avatar_version is None:
+        return base
+    return f"{base}?v={avatar_version}"
+
+
+def _guess_mime_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _resolve_avatar_extension(file: UploadFile) -> str:
+    content_type = (file.content_type or "").strip().lower()
+    if content_type in _ALLOWED_IMAGE_MIME_TYPES:
+        return _ALLOWED_IMAGE_MIME_TYPES[content_type]
+
+    file_name = (file.filename or "").strip().lower()
+    if file_name.endswith(".jpg") or file_name.endswith(".jpeg"):
+        return "jpg"
+    if file_name.endswith(".png"):
+        return "png"
+    if file_name.endswith(".webp"):
+        return "webp"
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Profile avatar format invalid",
+    )
+
+
+@router.get("/me", response_model=UserProfileOut)
+def get_my_profile(
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserProfileOut:
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    display_name = profile.display_name if profile is not None else None
+    avatar_file_id = profile.avatar_file_id if profile is not None else None
+    avatar_version = profile.avatar_version if profile is not None else 0
+    return UserProfileOut(
+        user_id=current_user.id,
+        email=current_user.email,
+        display_name=display_name,
+        avatar_url=_avatar_url(user_id=current_user.id, avatar_version=avatar_version)
+        if avatar_file_id
+        else None,
+        avatar_version=avatar_version,
+    )
+
+
+@router.patch("/me", response_model=UserProfileOut)
+def patch_my_profile(
+    req: UserProfilePatchRequest,
+    _scopes: set[str] = Depends(_PATCH_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserProfileOut:
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    if profile is None:
+        profile = UserProfile(
+            user_id=current_user.id,
+            display_name=req.display_name,
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(profile)
+    else:
+        profile.display_name = req.display_name
+        profile.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(profile)
+    return UserProfileOut(
+        user_id=current_user.id,
+        email=current_user.email,
+        display_name=profile.display_name,
+        avatar_url=_avatar_url(
+            user_id=current_user.id,
+            avatar_version=profile.avatar_version,
+        )
+        if profile.avatar_file_id
+        else None,
+        avatar_version=profile.avatar_version,
+    )
+
+
+@router.post("/avatar", response_model=UserProfileAvatarUploadOut)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    _scopes: set[str] = Depends(_AVATAR_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserProfileAvatarUploadOut:
+    ext = _resolve_avatar_extension(file)
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Profile avatar file is empty",
+        )
+    if len(payload) > _AVATAR_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Profile avatar upload too large",
+        )
+
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    if profile is None:
+        profile = UserProfile(
+            user_id=current_user.id,
+            avatar_version=0,
+        )
+        db.add(profile)
+        db.flush()
+
+    now = datetime.now(timezone.utc)
+    avatar_file_id = f"avatar_{uuid4().hex}.{ext}"
+    storage_dir = _avatar_root() / current_user.id
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage_path = storage_dir / avatar_file_id
+    storage_path.write_bytes(payload)
+
+    # Best-effort cleanup of the previous avatar file.
+    previous_avatar = (profile.avatar_file_id or "").strip()
+    if previous_avatar:
+        old_path = storage_dir / previous_avatar
+        if old_path.exists() and old_path.is_file():
+            old_path.unlink(missing_ok=True)
+
+    profile.avatar_file_id = avatar_file_id
+    profile.avatar_version = int(profile.avatar_version or 0) + 1
+    profile.updated_at = now
+    db.commit()
+    db.refresh(profile)
+    return UserProfileAvatarUploadOut(
+        avatar_url=_avatar_url(
+            user_id=current_user.id,
+            avatar_version=profile.avatar_version,
+        ),
+        avatar_version=profile.avatar_version,
+    )
+
+
+@router.get("/avatar/{user_id}")
+def download_avatar(
+    user_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if profile is None or not (profile.avatar_file_id or "").strip():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile avatar not found")
+
+    path = _avatar_root() / user_id / profile.avatar_file_id
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile avatar not found")
+
+    cache_control = (
+        "public, max-age=31536000, immutable"
+        if (request.query_params.get("v") or "").strip()
+        else "no-cache"
+    )
+    return FileResponse(
+        path=path,
+        media_type=_guess_mime_type(path),
+        filename=path.name,
+        headers={"Cache-Control": cache_control},
+    )

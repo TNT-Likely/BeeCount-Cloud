@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: beecount
+      POSTGRES_USER: beecount
+      POSTGRES_PASSWORD: beecount
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beecount -d beecount"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  beecount-platform:
+    environment:
+      DATABASE_URL: postgresql+psycopg://beecount:beecount@db:5432/beecount
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

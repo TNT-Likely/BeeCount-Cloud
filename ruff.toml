@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501", "UP017"]
+
+[lint.per-file-ignores]
+"alembic/env.py" = ["I001"]
+"alembic/versions/*.py" = ["E501", "I001"]

@@ -1,0 +1,126 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  backend-check-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Ruff
+        run: ruff check src tests alembic
+      - name: Mypy
+        run: mypy src
+      - name: Pytest
+        run: pytest -q
+
+  backend-check-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: beecount
+          POSTGRES_USER: beecount
+          POSTGRES_PASSWORD: beecount
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U beecount -d beecount"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://beecount:beecount@localhost:5432/beecount
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Migrate
+        run: alembic upgrade head
+      - name: Ruff
+        run: ruff check src tests alembic
+      - name: Mypy
+        run: mypy src
+      - name: Pytest
+        run: pytest -q
+
+  frontend-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+        working-directory: frontend
+      - name: Build
+        run: pnpm -C apps/web build
+        working-directory: frontend
+      - name: Unit Test
+        run: pnpm -C apps/web test:unit
+        working-directory: frontend
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [backend-check-sqlite, backend-check-postgres, frontend-check]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: beecount-platform:ci
+
+  docker-release:
+    runs-on: ubuntu-latest
+    needs: [backend-check-sqlite, backend-check-postgres, frontend-check]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/beecount-platform:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/beecount-platform:latest
