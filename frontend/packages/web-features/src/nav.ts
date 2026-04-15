@@ -4,7 +4,6 @@ export type AppSection =
   | 'accounts'
   | 'categories'
   | 'tags'
-  | 'share-members'
   | 'settings-health'
   | 'settings-devices'
   | 'admin-users'
@@ -31,11 +30,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'tags', labelKey: 'nav.tags' },
       { key: 'overview', labelKey: 'nav.overview' }
     ]
-  },
-  {
-    key: 'collaboration',
-    titleKey: 'nav.group.collaboration',
-    items: [{ key: 'share-members', labelKey: 'nav.shareMembers' }]
   },
   {
     key: 'settings',

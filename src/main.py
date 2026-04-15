@@ -10,7 +10,7 @@ from .database import SessionLocal
 from .error_handling import register_exception_handlers
 from .metrics import metrics
 from .observability import install_request_middleware
-from .routers import admin, attachments, auth, devices, profile, read, share, sync, write, ws
+from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
 from .websocket_manager import WSConnectionManager
 
 settings = get_settings()
@@ -65,7 +65,6 @@ app.include_router(sync.router, prefix=f"{settings.api_prefix}/sync", tags=["syn
 app.include_router(admin.router, prefix=f"{settings.api_prefix}/admin", tags=["admin"])
 app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["read"])
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
-app.include_router(share.router, prefix=f"{settings.api_prefix}/share", tags=["share"])
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
 app.include_router(ws.router, tags=["ws"])

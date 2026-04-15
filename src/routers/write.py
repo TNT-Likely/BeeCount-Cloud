@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -31,9 +32,7 @@ from ..models import (
     UserAccount,
     UserCategory,
     UserTag,
-    WebTransactionProjection,
 )
-from ..projection_service import rebuild_projection_from_snapshot_change
 from ..schemas import (
     ReadAccountOut,
     ReadCategoryOut,
@@ -75,6 +74,8 @@ from ..snapshot_mutator import (
 )
 from ..user_dictionary_service import deduplicate_user_dictionaries
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 settings = get_settings()
 _WRITE_SCOPE_DEP = (
@@ -114,6 +115,80 @@ _WRITE_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _diff_entity_list(
+    db: Session,
+    ledger: Ledger,
+    current_user: User,
+    device_id: str,
+    now: datetime,
+    prev_list: list[dict[str, Any]],
+    next_list: list[dict[str, Any]],
+    entity_type: str,
+) -> int:
+    """Create individual SyncChange rows for entities that changed between two snapshots."""
+    prev_map = {e["syncId"]: e for e in prev_list if "syncId" in e}
+    next_map = {e["syncId"]: e for e in next_list if "syncId" in e}
+    count = 0
+
+    # Upserted entities (new or changed)
+    for sync_id, entity in next_map.items():
+        if sync_id not in prev_map or entity != prev_map[sync_id]:
+            db.add(SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type=entity_type,
+                entity_sync_id=sync_id,
+                action="upsert",
+                payload_json=entity,
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            ))
+            count += 1
+
+    # Deleted entities
+    for sync_id in prev_map:
+        if sync_id not in next_map:
+            db.add(SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type=entity_type,
+                entity_sync_id=sync_id,
+                action="delete",
+                payload_json={},
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            ))
+            count += 1
+
+    return count
+
+
+def _emit_entity_diffs(
+    db: Session,
+    *,
+    ledger: Ledger,
+    current_user: User,
+    device_id: str,
+    prev: dict[str, Any] | None,
+    next_snapshot: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Diff prev/next snapshots and emit individual SyncChange rows for each changed entity."""
+    prev = prev or {}
+    count = 0
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("items") or [], next_snapshot.get("items") or [], "transaction")
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("accounts") or [], next_snapshot.get("accounts") or [], "account")
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("categories") or [], next_snapshot.get("categories") or [], "category")
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("tags") or [], next_snapshot.get("tags") or [], "tag")
+    logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", count, ledger.external_id)
 
 
 def _load_ledger_for_write(
@@ -241,6 +316,9 @@ async def _commit_write(
         )
 
     snapshot = _parse_snapshot(latest)
+    # Keep an independent copy of prev snapshot for diffing —
+    # mutate() may modify snapshot in-place via ensure_snapshot_v2 internals.
+    prev_snapshot = json.loads(json.dumps(snapshot))
     try:
         next_snapshot, entity_id = mutate(snapshot)
     except KeyError:
@@ -268,7 +346,17 @@ async def _commit_write(
     db.add(row_change)
     db.flush()
 
-    rebuild_projection_from_snapshot_change(db, ledger_id=ledger.id, change=row_change)
+    # Emit individual entity SyncChanges so Mobile can see Web changes
+    _emit_entity_diffs(
+        db,
+        ledger=ledger,
+        current_user=current_user,
+        device_id=device_id,
+        prev=prev_snapshot,
+        next_snapshot=next_snapshot,
+        now=now,
+    )
+
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -393,22 +481,14 @@ def _payload_with_actor(payload: dict, current_user: User) -> dict:
     return merged
 
 
-def _assert_editor_can_modify_transaction(
+def _assert_can_modify_entity(
     *,
     db: Session,
     ledger: Ledger,
     current_user: User,
-    tx_sync_id: str,
-) -> WebTransactionProjection:
-    tx = db.scalar(
-        select(WebTransactionProjection).where(
-            WebTransactionProjection.ledger_id == ledger.id,
-            WebTransactionProjection.sync_id == tx_sync_id,
-        )
-    )
-    if tx is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
-
+    entity_sync_id: str,
+) -> None:
+    """Assert the current user owns the ledger and thus can modify any entity in it."""
     member = db.scalar(
         select(LedgerMember).where(
             LedgerMember.ledger_id == ledger.id,
@@ -418,18 +498,6 @@ def _assert_editor_can_modify_transaction(
     )
     if member is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
-    if member.role == ROLE_OWNER:
-        return tx
-    if member.role != ROLE_EDITOR:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
-
-    created_by_user_id = (tx.created_by_user_id or "").strip()
-    if created_by_user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Write role forbidden: editor can only modify own transactions",
-        )
-    return tx
 
 
 def _normalize_dict_name(raw: object) -> str:
@@ -546,11 +614,18 @@ def _resolve_tx_dictionary_payload(
                     UserAccount.deleted_at.is_(None),
                 )
             )
-            if row is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
-            _ensure_target_user_writable(current_user=current_user, target_user_id=row.user_id)
-            if row.user_id != target_user_id:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+            if row is not None:
+                _ensure_target_user_writable(current_user=current_user, target_user_id=row.user_id)
+                if row.user_id != target_user_id:
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+            elif raw_name:
+                # ID not found in UserAccount table (e.g. mobile-synced snapshot ID),
+                # fall back to name-based resolution
+                row = _get_or_create_user_account(db, target_user_id=target_user_id, name=raw_name)
+            else:
+                # ID provided but not found, and no name fallback — keep the raw ID
+                # so it passes through to the snapshot as-is
+                return
         elif raw_name:
             row = _get_or_create_user_account(db, target_user_id=target_user_id, name=raw_name)
         if row is None:
@@ -576,11 +651,19 @@ def _resolve_tx_dictionary_payload(
                 UserCategory.deleted_at.is_(None),
             )
         )
-        if category_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
-        _ensure_target_user_writable(current_user=current_user, target_user_id=category_row.user_id)
-        if category_row.user_id != target_user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+        if category_row is not None:
+            _ensure_target_user_writable(current_user=current_user, target_user_id=category_row.user_id)
+            if category_row.user_id != target_user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+        elif raw_category_name and raw_category_kind:
+            # ID not found in UserCategory table (e.g. mobile-synced snapshot ID),
+            # fall back to name-based resolution
+            category_row = _get_or_create_user_category(
+                db,
+                target_user_id=target_user_id,
+                kind=raw_category_kind,
+                name=raw_category_name,
+            )
     elif raw_category_name and raw_category_kind:
         category_row = _get_or_create_user_category(
             db,
@@ -608,7 +691,8 @@ def _resolve_tx_dictionary_payload(
                 )
             )
             if row is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+                # Tag ID not found (e.g. mobile-synced snapshot ID) — skip it
+                continue
             _ensure_target_user_writable(current_user=current_user, target_user_id=row.user_id)
             if row.user_id != target_user_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
@@ -699,7 +783,6 @@ async def create_ledger(
     )
     db.add(row_change)
     db.flush()
-    rebuild_projection_from_snapshot_change(db, ledger_id=ledger.id, change=row_change)
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -872,15 +955,13 @@ async def update_tx(
     )
     if replay:
         return replay
-    existing_tx = _assert_editor_can_modify_transaction(
+    _assert_can_modify_entity(
         db=db,
         ledger=ledger,
         current_user=current_user,
-        tx_sync_id=tx_id,
+        entity_sync_id=tx_id,
     )
     target_user_id = current_user.id
-    if existing_tx.created_by_user_id:
-        target_user_id = existing_tx.created_by_user_id
     resolved_payload = _resolve_tx_dictionary_payload(
         db,
         current_user=current_user,
@@ -933,11 +1014,11 @@ async def delete_tx(
     )
     if replay:
         return replay
-    _assert_editor_can_modify_transaction(
+    _assert_can_modify_entity(
         db=db,
         ledger=ledger,
         current_user=current_user,
-        tx_sync_id=tx_id,
+        entity_sync_id=tx_id,
     )
     return await _commit_write(
         request=request,

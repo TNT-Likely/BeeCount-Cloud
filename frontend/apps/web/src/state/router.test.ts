@@ -14,12 +14,7 @@ describe('router path mapping', () => {
       ledgerId: 'ledger-1',
       section: 'transactions'
     })
-    expect(parseRoute('/app/ledger-1/share/members')).toEqual({
-      kind: 'app',
-      ledgerId: 'ledger-1',
-      section: 'share-members'
-    })
-    expect(parseRoute('/app/workspace/transactions')).toEqual({
+expect(parseRoute('/app/workspace/transactions')).toEqual({
       kind: 'app',
       ledgerId: '',
       section: 'transactions'

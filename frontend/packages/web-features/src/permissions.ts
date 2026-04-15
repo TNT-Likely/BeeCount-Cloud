@@ -1,7 +1,9 @@
-export function canWriteTransactions(role?: string): boolean {
-  return role === 'owner' || role === 'editor'
+/// 单用户模式下，当前用户即为 owner，始终有写权限
+export function canWriteTransactions(_role?: string): boolean {
+  return true
 }
 
-export function canManageLedger(role?: string): boolean {
-  return role === 'owner'
+/// 单用户模式下，当前用户即为 owner，始终可管理账本
+export function canManageLedger(_role?: string): boolean {
+  return true
 }

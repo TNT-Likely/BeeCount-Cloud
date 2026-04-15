@@ -4,10 +4,10 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import UserAccount, UserCategory, UserTag, WebTransactionProjection
+from .models import UserAccount, UserCategory, UserTag
 
 
 def _utcnow() -> datetime:
@@ -95,21 +95,6 @@ def _dedupe_accounts(db: Session, *, user_id: str | None) -> bool:
                 group_changed = True
                 changed = True
 
-            db.execute(
-                update(WebTransactionProjection)
-                .where(WebTransactionProjection.account_id == duplicate.id)
-                .values(account_id=canonical.id)
-            )
-            db.execute(
-                update(WebTransactionProjection)
-                .where(WebTransactionProjection.from_account_id == duplicate.id)
-                .values(from_account_id=canonical.id)
-            )
-            db.execute(
-                update(WebTransactionProjection)
-                .where(WebTransactionProjection.to_account_id == duplicate.id)
-                .values(to_account_id=canonical.id)
-            )
             duplicate.deleted_at = now
             duplicate.updated_at = now
             db.add(duplicate)
@@ -174,11 +159,6 @@ def _dedupe_categories(db: Session, *, user_id: str | None) -> bool:
                 group_changed = True
                 changed = True
 
-            db.execute(
-                update(WebTransactionProjection)
-                .where(WebTransactionProjection.category_id == duplicate.id)
-                .values(category_id=canonical.id)
-            )
             duplicate.deleted_at = now
             duplicate.updated_at = now
             db.add(duplicate)
@@ -195,7 +175,6 @@ def _dedupe_tags(db: Session, *, user_id: str | None) -> bool:
     now = _utcnow()
     changed = False
     groups: dict[tuple[str, str], list[UserTag]] = defaultdict(list)
-    duplicate_to_canonical: dict[str, str] = {}
 
     for row in _scoped_active_tags(db, user_id=user_id):
         groups[(row.user_id, _norm_text(row.name))].append(row)
@@ -217,7 +196,6 @@ def _dedupe_tags(db: Session, *, user_id: str | None) -> bool:
                 canonical.color = duplicate.color
                 group_changed = True
                 changed = True
-            duplicate_to_canonical[duplicate.id] = canonical.id
             duplicate.deleted_at = now
             duplicate.updated_at = now
             db.add(duplicate)
@@ -227,35 +205,11 @@ def _dedupe_tags(db: Session, *, user_id: str | None) -> bool:
             canonical.updated_at = now
             db.add(canonical)
 
-    if duplicate_to_canonical:
-        conditions: list[Any] = [WebTransactionProjection.tag_ids_json.is_not(None)]
-        if user_id:
-            conditions.append(WebTransactionProjection.created_by_user_id == user_id)
-        tx_rows = db.scalars(
-            select(WebTransactionProjection).where(*conditions)
-        ).all()
-        for tx in tx_rows:
-            raw_ids = tx.tag_ids_json or []
-            next_ids: list[str] = []
-            row_changed = False
-            for raw in raw_ids:
-                replaced = duplicate_to_canonical.get(raw, raw)
-                if replaced != raw:
-                    row_changed = True
-                if replaced not in next_ids:
-                    next_ids.append(replaced)
-                else:
-                    row_changed = True
-            if row_changed:
-                tx.tag_ids_json = next_ids or None
-                db.add(tx)
-                changed = True
-
     return changed
 
 
 def deduplicate_user_dictionaries(db: Session, *, user_id: str | None) -> bool:
-    """Merge duplicate user dictionaries and remap tx references.
+    """Merge duplicate user dictionaries (soft-delete duplicates, keep canonical).
 
     Canonical row selection is by earliest created_at/id ordering.
     """

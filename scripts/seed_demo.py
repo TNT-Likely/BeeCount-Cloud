@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from secrets import token_urlsafe
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from src.database import SessionLocal
-from src.models import Device, Ledger, LedgerInvite, LedgerMember, SyncChange, User
-from src.projection_service import rebuild_projection_from_snapshot_change
-from src.security import hash_invite_code, hash_password
+from src.models import Device, Ledger, SyncChange, User
+from src.security import hash_password
 
 
 def main() -> None:
@@ -43,14 +41,6 @@ def main() -> None:
             ledger = Ledger(user_id=user.id, external_id="demo-ledger", name="家庭账本")
             db.add(ledger)
             db.flush()
-            db.add(
-                LedgerMember(
-                    ledger_id=ledger.id,
-                    user_id=user.id,
-                    role="owner",
-                    status="active",
-                )
-            )
 
         payload = {
             "content": json.dumps(
@@ -94,27 +84,11 @@ def main() -> None:
             updated_by_user_id=user.id,
         )
         db.add(change)
-        db.flush()
-        rebuild_projection_from_snapshot_change(db, ledger_id=ledger.id, change=change)
-
-        invite_code = token_urlsafe(12)
-        db.add(
-            LedgerInvite(
-                code_hash=hash_invite_code(invite_code),
-                ledger_id=ledger.id,
-                role="viewer",
-                max_uses=5,
-                used_count=0,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-                created_by_user_id=user.id,
-            )
-        )
         db.commit()
         print("seed completed")
         print("owner email: owner@example.com")
         print("owner password: 123456")
         print(f"ledger id: {ledger.external_id}")
-        print(f"viewer invite code: {invite_code}")
     finally:
         db.close()
 

@@ -48,7 +48,6 @@ import {
   type ReadLedger,
   type ReadTag,
   type ReadTransaction,
-  type ShareMember,
   type ProfileMe,
   type AdminDevice,
   type AdminHealth,
@@ -75,11 +74,8 @@ import {
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
-  addShareMember,
-  listShareMembers,
   patchProfileMe,
   patchAdminUser,
-  removeShareMember,
   updateWorkspaceAccount,
   updateWorkspaceCategory,
   updateLedgerMeta,
@@ -95,7 +91,6 @@ import {
   LedgerOverviewPanel,
   NAV_GROUPS,
   OpsDevicesPanel,
-  ShareMembersPanel,
   StatusBadge,
   TagsPanel,
   TransactionsPanel,
@@ -180,7 +175,7 @@ function parseStoredTxFilter(raw: string | null): TxFilter | null {
 }
 
 function sectionNeedsLedger(section: AppSection): boolean {
-  return ['overview', 'share-members'].includes(section)
+  return ['overview'].includes(section)
 }
 
 function isListSection(section: AppSection): boolean {
@@ -266,7 +261,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [accounts, setAccounts] = useState<ReadAccount[]>([])
   const [categories, setCategories] = useState<ReadCategory[]>([])
   const [tags, setTags] = useState<ReadTag[]>([])
-  const [members, setMembers] = useState<ShareMember[]>([])
   const [profileMe, setProfileMe] = useState<ProfileMe | null>(null)
   const [profileDisplayName, setProfileDisplayName] = useState('')
   const [adminUsers, setAdminUsers] = useState<UserAdmin[]>([])
@@ -299,7 +293,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [tagForm, setTagForm] = useState<TagForm>(tagDefaults)
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
 
-  const [memberEmail, setMemberEmail] = useState('')
   const [adminCreateEmail, setAdminCreateEmail] = useState('')
   const [adminCreatePassword, setAdminCreatePassword] = useState('')
   const [adminCreateIsAdmin, setAdminCreateIsAdmin] = useState(false)
@@ -329,28 +322,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const profileDisplayLabel = useMemo(
     () => profileMe?.display_name?.trim() || profileMe?.email || sessionUserId || '-',
     [profileMe, sessionUserId]
-  )
-  const membersForDisplay = useMemo<ShareMember[]>(
-    () =>
-      members.map((member) => {
-        const avatar = member.user_avatar_url?.trim() || ''
-        if (avatar.length > 0) {
-          return member
-        }
-        if (
-          sessionUserId &&
-          member.user_id === sessionUserId &&
-          (profileMe?.avatar_url?.trim() || '').length > 0
-        ) {
-          return {
-            ...member,
-            user_avatar_url: profileMe?.avatar_url || null,
-            user_avatar_version: profileMe?.avatar_version ?? member.user_avatar_version
-          }
-        }
-        return member
-      }),
-    [members, profileMe?.avatar_url, profileMe?.avatar_version, sessionUserId]
   )
   const profileInitial = useMemo(
     () => profileDisplayLabel.trim().charAt(0).toUpperCase() || '?',
@@ -565,11 +536,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           limit: 500
         })
       )
-      return
-    }
-
-    if (section === 'share-members') {
-      setMembers(await listShareMembers(token, ledgerId))
       return
     }
 
@@ -1344,32 +1310,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     setSuccessNotice(t('notice.tagDeleted'))
   }
 
-  const onUpsertMember = async (): Promise<boolean> => {
-    if (!activeLedgerId || !memberEmail.trim()) return false
-    try {
-      await addShareMember(token, activeLedgerId, memberEmail.trim(), 'editor')
-      await refreshSectionData(activeLedgerId, 'share-members')
-      setSuccessNotice(t('notice.memberUpserted'))
-      return true
-    } catch (err) {
-      setErrorNotice(renderError(err))
-      return false
-    }
-  }
-
-  const onRemoveMember = async (): Promise<boolean> => {
-    if (!activeLedgerId || !memberEmail.trim()) return false
-    try {
-      await removeShareMember(token, activeLedgerId, memberEmail.trim())
-      await refreshSectionData(activeLedgerId, 'share-members')
-      setSuccessNotice(t('notice.memberRemoved'))
-      return true
-    } catch (err) {
-      setErrorNotice(renderError(err))
-      return false
-    }
-  }
-
   const onPatchAdminUser = async (
     userId: string,
     payload: { is_admin?: boolean; is_enabled?: boolean }
@@ -2054,17 +1994,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 }
               />
             </div>
-          ) : null}
-
-          {route.section === 'share-members' ? (
-            <ShareMembersPanel
-              members={membersForDisplay}
-              canManage={Boolean(canManageSelectedLedger || isAdminUser)}
-              memberEmail={memberEmail}
-              onMemberEmailChange={setMemberEmail}
-              onUpsertMember={onUpsertMember}
-              onRemoveMember={onRemoveMember}
-            />
           ) : null}
 
           {route.section === 'settings-devices' ? (

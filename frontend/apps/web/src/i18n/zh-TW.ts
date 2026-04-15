@@ -1,9 +1,9 @@
 const zhTW = {
   'app.brand': 'BeeCount 雲端控制台',
-  'app.subtitle': '遠端資料模式 · 共享帳本協作',
+  'app.subtitle': '遠端資料模式 · 多裝置同步',
 
   'login.title': 'BeeCount Web 控制台',
-  'login.subtitle': '遠端優先記帳與共享帳本',
+  'login.subtitle': '遠端優先記帳與多裝置同步',
   'login.email': '信箱',
   'login.password': '密碼',
   'login.submit': '登入',
@@ -34,7 +34,6 @@ const zhTW = {
   'shell.logout': '登出',
 
   'nav.group.bookkeeping': '記帳',
-  'nav.group.collaboration': '協作',
   'nav.group.settings': '設定',
   'nav.group.admin': '管理',
   'nav.overview': '總覽',
@@ -43,7 +42,6 @@ const zhTW = {
   'nav.accounts': '帳戶',
   'nav.categories': '分類',
   'nav.tags': '標籤',
-  'nav.shareMembers': '成員',
   'nav.health': '健康',
   'nav.devices': '裝置',
   'nav.users': '使用者管理',
@@ -55,7 +53,6 @@ const zhTW = {
   'tab.ledgers': '帳本列表',
   'tab.summary': '彙總',
   'tab.analytics': '圖表分析',
-  'tab.share-members': '共享成員',
   'tab.ops-health': '健康檢查',
   'tab.ops-devices': '線上裝置',
 
@@ -74,9 +71,6 @@ const zhTW = {
   'notice.tagCreated': '標籤已建立',
   'notice.tagUpdated': '標籤已更新',
   'notice.tagDeleted': '標籤已刪除',
-  'notice.memberUpserted': '成員已更新',
-  'notice.memberRemoved': '成員已移除',
-  'notice.roleUpdated': '成員角色已更新',
   'notice.ledgerCreated': '帳本已建立',
   'notice.ledgerUpdated': '帳本資訊已更新',
   'notice.backupCreated': '備份已建立',
@@ -194,22 +188,6 @@ const zhTW = {
   'tags.table.color': '顏色',
   'tags.table.ops': '操作',
 
-  'share.members.title': '共享成員',
-  'share.members.placeholder.userId': '目標使用者 ID',
-  'share.members.placeholder.email': '成員 Email',
-  'share.members.button.updateRole': '更新角色',
-  'share.members.button.addOrUpdate': '新增 / 更新',
-  'share.members.button.remove': '移除成員',
-  'share.members.table.user': '使用者',
-  'share.members.table.role': '角色',
-  'share.members.table.status': '狀態',
-  'share.members.table.joined': '加入時間',
-  'share.members.table.email': 'Email',
-  'share.members.manageHint': '透過 Email 直接新增成員、更新角色或移除成員。',
-  'share.members.registeredOnlyHint': '此 Email 必須先註冊 BeeCount 帳號。',
-  'share.members.readOnlyHint': '僅 Owner/Admin 可管理成員。',
-
-
   'ops.backup.title': '備份還原',
   'ops.backup.placeholder.snapshotId': '快照 ID',
   'ops.backup.button.restore': '還原',
@@ -222,7 +200,7 @@ const zhTW = {
   'overview.ledgerMeta.currency': '幣別',
   'overview.ledgerMeta.button.save': '儲存資訊',
   'overview.createLedger.title': '建立帳本',
-  'overview.createLedger.description': '直接在 Web 建立新的共享帳本。',
+  'overview.createLedger.description': '直接在 Web 建立新的帳本。',
   'overview.createLedger.name': '帳本名稱',
   'overview.createLedger.currency': '幣別',
   'overview.createLedger.button.create': '建立帳本',
@@ -302,12 +280,6 @@ const zhTW = {
   'enum.role.owner': '擁有者',
   'enum.role.editor': '編輯者',
   'enum.role.viewer': '唯讀',
-  'enum.member.active': '啟用',
-  'enum.member.left': '已離開',
-  'enum.inviteStatus.active': '可用',
-  'enum.inviteStatus.revoked': '已撤銷',
-  'enum.inviteStatus.expired': '已過期',
-  'enum.inviteStatus.exhausted': '已用盡',
   'enum.platformRole.admin': '管理員',
   'enum.platformRole.user': '一般使用者',
   'enum.userStatus.enabled': '啟用',
@@ -321,7 +293,6 @@ const zhTW = {
   'error.WRITE_CONFLICT':
     '資料已被其他裝置更新，請重新整理後重試。latest_change_id={latestChangeId}, latest_server_timestamp={latestServerTimestamp}',
   'error.WRITE_ROLE_FORBIDDEN': '目前角色沒有寫入權限。',
-  'error.SHARE_ROLE_FORBIDDEN': '僅帳本 Owner 可管理成員。',
   'error.SYNC_VIEWER_WRITE_FORBIDDEN': 'Viewer 角色不可寫入。',
   'error.SYNC_LEDGER_WRITE_FORBIDDEN': '目前帳本沒有寫入權限。',
   'error.AUTH_INSUFFICIENT_SCOPE': '權限範圍不足。',
@@ -332,7 +303,6 @@ const zhTW = {
   'error.WRITE_VALIDATION_FAILED': '寫入驗證失敗，請檢查輸入。',
   'error.USER_EMAIL_EXISTS': '此信箱已存在。',
   'error.USER_PASSWORD_TOO_SHORT': '密碼至少需 6 碼。',
-  'error.SHARE_MEMBER_USER_NOT_FOUND': '此信箱尚未註冊，請先在後台建立使用者或先在 App 完成註冊登入。',
 
   'notice.userCreated': '使用者已建立。'
 } as const

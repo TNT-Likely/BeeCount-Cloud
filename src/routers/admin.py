@@ -1,9 +1,10 @@
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -34,9 +35,7 @@ from ..models import (
     UserCategory,
     UserProfile,
     UserTag,
-    WebTransactionProjection,
 )
-from ..projection_service import rebuild_projection_from_snapshot_change
 from ..schemas import (
     AdminBackupArtifactOut,
     AdminBackupArtifactUploadResponse,
@@ -55,6 +54,8 @@ from ..schemas import (
     UserAdminPatchRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 _SAFE_FILE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
@@ -375,7 +376,11 @@ def admin_overview(
             db.scalar(select(func.count()).select_from(User).where(User.is_enabled.is_(True))) or 0
         ),
         ledgers_total=int(db.scalar(select(func.count()).select_from(Ledger)) or 0),
-        transactions_total=int(db.scalar(select(func.count()).select_from(WebTransactionProjection)) or 0),
+        transactions_total=int(
+            db.scalar(
+                select(func.count()).select_from(SyncChange).where(SyncChange.entity_type == "transaction")
+            ) or 0
+        ),
         accounts_total=int(
             db.scalar(
                 select(func.count()).select_from(UserAccount).where(UserAccount.deleted_at.is_(None))
@@ -835,7 +840,6 @@ async def restore_backup(
             metadata_json={"snapshotId": backup.id},
         )
     )
-    rebuild_projection_from_snapshot_change(db, ledger_id=backup.ledger_id, change=sync_row)
     db.commit()
     db.refresh(sync_row)
 
@@ -860,3 +864,93 @@ async def restore_backup(
         ledger_id=ledger.external_id,
         change_id=sync_row.change_id,
     )
+
+
+@router.get("/debug/snapshot/{ledger_external_id}")
+def debug_snapshot(
+    ledger_external_id: str,
+    recent_changes: int = Query(default=20, ge=1, le=100),
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    _admin_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Diagnostic endpoint: inspect the latest snapshot and recent SyncChanges for a ledger."""
+    ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+
+    # Latest snapshot
+    snapshot_row = db.scalar(
+        select(SyncChange)
+        .where(
+            SyncChange.ledger_id == ledger.id,
+            SyncChange.entity_type == "ledger_snapshot",
+        )
+        .order_by(SyncChange.change_id.desc())
+        .limit(1)
+    )
+
+    snapshot_info: dict[str, Any] = {"exists": False}
+    if snapshot_row is not None:
+        payload = snapshot_row.payload_json
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+
+        raw_json = json.dumps(payload, ensure_ascii=False) if payload else ""
+        content_snapshot: dict[str, Any] = {}
+        if isinstance(payload, dict):
+            content = payload.get("content")
+            if isinstance(content, str) and content.strip():
+                try:
+                    content_snapshot = json.loads(content)
+                except json.JSONDecodeError:
+                    content_snapshot = {}
+            metadata = payload.get("metadata")
+        else:
+            metadata = None
+
+        snapshot_info = {
+            "exists": True,
+            "change_id": snapshot_row.change_id,
+            "updated_at": snapshot_row.updated_at.isoformat() if snapshot_row.updated_at else None,
+            "source": metadata.get("source") if isinstance(metadata, dict) else None,
+            "entity_counts": {
+                "accounts": len(content_snapshot.get("accounts", [])) if isinstance(content_snapshot.get("accounts"), list) else 0,
+                "categories": len(content_snapshot.get("categories", [])) if isinstance(content_snapshot.get("categories"), list) else 0,
+                "tags": len(content_snapshot.get("tags", [])) if isinstance(content_snapshot.get("tags"), list) else 0,
+                "items": len(content_snapshot.get("items", [])) if isinstance(content_snapshot.get("items"), list) else 0,
+            },
+            "raw_preview": raw_json[:500] if raw_json else "",
+        }
+
+    # Recent SyncChanges
+    recent_rows = db.scalars(
+        select(SyncChange)
+        .where(SyncChange.ledger_id == ledger.id)
+        .order_by(SyncChange.change_id.desc())
+        .limit(recent_changes)
+    ).all()
+
+    entity_type_counts: dict[str, int] = {}
+    recent_list: list[dict[str, Any]] = []
+    for row in recent_rows:
+        entity_type_counts[row.entity_type] = entity_type_counts.get(row.entity_type, 0) + 1
+        recent_list.append({
+            "change_id": row.change_id,
+            "entity_type": row.entity_type,
+            "entity_sync_id": row.entity_sync_id,
+            "action": row.action,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "updated_by_device_id": row.updated_by_device_id,
+        })
+
+    return {
+        "ledger_id": ledger.external_id,
+        "ledger_internal_id": ledger.id,
+        "snapshot": snapshot_info,
+        "recent_changes": {
+            "count": len(recent_list),
+            "entity_type_distribution": entity_type_counts,
+            "items": recent_list,
+        },
+    }

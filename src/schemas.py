@@ -4,7 +4,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 MemberRole = Literal["owner", "editor", "viewer"]
-MemberStatus = Literal["active", "left"]
 SyncAction = Literal["upsert", "delete"]
 
 
@@ -166,134 +165,7 @@ class SyncLedgerOut(BaseModel):
     role: MemberRole
 
 
-class LedgerMemberOut(BaseModel):
-    user_id: str
-    user_email: str | None = None
-    user_display_name: str | None = None
-    user_avatar_url: str | None = None
-    user_avatar_version: int | None = None
-    role: MemberRole
-    status: MemberStatus
-    joined_at: datetime
-    left_at: datetime | None
-
-
-class ShareInviteCreateRequest(BaseModel):
-    ledger_id: str
-    role: Literal["editor", "viewer"] = "editor"
-    max_uses: int = Field(default=1, ge=1, le=100)
-    expires_in_hours: int = Field(default=72, ge=1, le=720)
-
-
-class ShareInviteCreateResponse(BaseModel):
-    invite_id: str
-    invite_code: str
-    ledger_id: str
-    role: MemberRole
-    max_uses: int
-    expires_at: datetime
-
-
-class ShareInviteRevokeRequest(BaseModel):
-    invite_id: str
-
-
-class ShareInviteRevokeResponse(BaseModel):
-    invite_id: str
-    revoked: bool
-
-
-class ShareJoinRequest(BaseModel):
-    invite_code: str = Field(min_length=6)
-
-
-class ShareJoinResponse(BaseModel):
-    joined: bool
-    ledger_id: str
-    role: MemberRole
-
-
-class ShareLeaveRequest(BaseModel):
-    ledger_id: str
-
-
-class ShareLeaveResponse(BaseModel):
-    left: bool
-    ledger_id: str
-
-
-class ShareMemberAddRequest(BaseModel):
-    ledger_id: str
-    member_email: str
-    role: Literal["editor", "viewer"] = "editor"
-
-    @field_validator("member_email")
-    @classmethod
-    def validate_member_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if "@" not in normalized or "." not in normalized.split("@")[-1]:
-            raise ValueError("Invalid email format")
-        return normalized
-
-
-class ShareMemberAddResponse(BaseModel):
-    result: Literal["created", "reactivated", "updated", "unchanged"]
-    ledger_id: str
-    user_id: str
-    user_email: str
-    role: MemberRole
-    status: MemberStatus
-
-
-class ShareMemberRemoveRequest(BaseModel):
-    ledger_id: str
-    member_email: str
-
-    @field_validator("member_email")
-    @classmethod
-    def validate_member_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if "@" not in normalized or "." not in normalized.split("@")[-1]:
-            raise ValueError("Invalid email format")
-        return normalized
-
-
-class ShareMemberRemoveResponse(BaseModel):
-    removed: bool
-    ledger_id: str
-    user_id: str
-    user_email: str
-    role: MemberRole
-    status: MemberStatus
-
-
-class ShareMemberRoleRequest(BaseModel):
-    ledger_id: str
-    user_id: str
-    role: Literal["editor", "viewer"]
-
-
-class ShareMemberRoleResponse(BaseModel):
-    updated: bool
-    ledger_id: str
-    user_id: str
-    role: MemberRole
-
-
-InviteStatus = Literal["active", "revoked", "expired", "exhausted"]
 BackupArtifactKind = Literal["db", "snapshot"]
-
-
-class ShareInviteListItem(BaseModel):
-    invite_id: str
-    ledger_id: str
-    role: Literal["editor", "viewer"]
-    max_uses: int | None
-    used_count: int
-    expires_at: datetime
-    revoked_at: datetime | None
-    status: InviteStatus
-    created_at: datetime
 
 
 class AdminBackupCreateRequest(BaseModel):

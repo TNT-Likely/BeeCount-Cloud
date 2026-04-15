@@ -16,7 +16,6 @@ export const APP_SECTIONS: AppSection[] = [
   'categories',
   'tags',
   'overview',
-  'share-members',
   'settings-health',
   'settings-devices',
   'admin-users'
@@ -51,15 +50,6 @@ function parseSettingsSection(parts: string[]): AppSection {
   }
 }
 
-function parseShareSection(parts: string[]): AppSection {
-  switch (parts.join('/')) {
-    case 'members':
-      return 'share-members'
-    default:
-      return DEFAULT_APP_SECTION
-  }
-}
-
 function parseRootSection(parts: string[]): AppSection {
   if (parts.length === 0) return DEFAULT_APP_SECTION
   const raw = parts.join('/')
@@ -76,8 +66,6 @@ function parseRootSection(parts: string[]): AppSection {
       return 'overview'
     case 'admin/users':
       return 'admin-users'
-    case 'share/members':
-      return 'share-members'
     case 'settings/health':
       return 'settings-health'
     case 'settings/devices':
@@ -101,8 +89,6 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'tags'
     case 'overview':
       return 'overview'
-    case 'share/members':
-      return 'share-members'
     case 'settings/health':
       return 'settings-health'
     case 'settings/devices':
@@ -135,9 +121,6 @@ export function parseRoute(pathname: string): AppRoute {
   }
   if (parts[1] === 'settings') {
     return { kind: 'app', ledgerId: '', section: parseSettingsSection(parts.slice(2)) }
-  }
-  if (parts[1] === 'share') {
-    return { kind: 'app', ledgerId: '', section: parseShareSection(parts.slice(2)) }
   }
   if (
     parts[1] === 'transactions' ||
@@ -172,8 +155,6 @@ export function routePath(route: AppRoute): string {
       return '/app/tags'
     case 'overview':
       return '/app/overview'
-    case 'share-members':
-      return '/app/share/members'
     case 'settings-health':
       return '/app/settings/health'
     case 'settings-devices':

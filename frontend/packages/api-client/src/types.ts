@@ -292,57 +292,6 @@ export type AdminBackupRestoreResponse = {
   change_id: number
 }
 
-export type ShareMember = {
-  user_id: string
-  user_email?: string | null
-  user_display_name?: string | null
-  user_avatar_url?: string | null
-  user_avatar_version?: number | null
-  role: 'owner' | 'editor' | 'viewer'
-  status: 'active' | 'left'
-  joined_at: string
-  left_at: string | null
-}
-
-export type ShareMemberAddResponse = {
-  result: 'created' | 'reactivated' | 'updated' | 'unchanged'
-  ledger_id: string
-  user_id: string
-  user_email: string
-  role: 'owner' | 'editor' | 'viewer'
-  status: 'active' | 'left'
-}
-
-export type ShareMemberRemoveResponse = {
-  removed: boolean
-  ledger_id: string
-  user_id: string
-  user_email: string
-  role: 'owner' | 'editor' | 'viewer'
-  status: 'active' | 'left'
-}
-
-export type ShareInviteResponse = {
-  invite_id: string
-  invite_code: string
-  ledger_id: string
-  role: 'owner' | 'editor' | 'viewer'
-  max_uses: number
-  expires_at: string
-}
-
-export type ShareInviteListItem = {
-  invite_id: string
-  ledger_id: string
-  role: 'editor' | 'viewer'
-  max_uses: number | null
-  used_count: number
-  expires_at: string
-  revoked_at: string | null
-  status: 'active' | 'revoked' | 'expired' | 'exhausted'
-  created_at: string
-}
-
 export type TxPayload = {
   tx_type: 'expense' | 'income' | 'transfer'
   amount: number

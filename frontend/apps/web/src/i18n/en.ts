@@ -1,9 +1,9 @@
 const en = {
   'app.brand': 'BeeCount Cloud Console',
-  'app.subtitle': 'Remote-first bookkeeping with shared ledgers',
+  'app.subtitle': 'Remote-first bookkeeping with multi-device sync',
 
   'login.title': 'BeeCount Web Console',
-  'login.subtitle': 'Remote-first bookkeeping with shared ledgers',
+  'login.subtitle': 'Remote-first bookkeeping with multi-device sync',
   'login.email': 'Email',
   'login.password': 'Password',
   'login.submit': 'Login',
@@ -34,7 +34,6 @@ const en = {
   'shell.logout': 'Logout',
 
   'nav.group.bookkeeping': 'Bookkeeping',
-  'nav.group.collaboration': 'Collaboration',
   'nav.group.settings': 'Settings',
   'nav.group.admin': 'Admin',
   'nav.overview': 'Overview',
@@ -43,7 +42,6 @@ const en = {
   'nav.accounts': 'Accounts',
   'nav.categories': 'Categories',
   'nav.tags': 'Tags',
-  'nav.shareMembers': 'Members',
   'nav.health': 'Health',
   'nav.devices': 'Devices',
   'nav.users': 'Users',
@@ -55,7 +53,6 @@ const en = {
   'tab.ledgers': 'Ledgers',
   'tab.summary': 'Summary',
   'tab.analytics': 'Analytics',
-  'tab.share-members': 'Share Members',
   'tab.ops-health': 'Ops Health',
   'tab.ops-devices': 'Ops Devices',
 
@@ -74,9 +71,6 @@ const en = {
   'notice.tagCreated': 'Tag created',
   'notice.tagUpdated': 'Tag updated',
   'notice.tagDeleted': 'Tag deleted',
-  'notice.memberUpserted': 'Member updated',
-  'notice.memberRemoved': 'Member removed',
-  'notice.roleUpdated': 'Member role updated',
   'notice.ledgerCreated': 'Ledger created',
   'notice.ledgerUpdated': 'Ledger metadata updated',
   'notice.backupCreated': 'Backup created',
@@ -194,22 +188,6 @@ const en = {
   'tags.table.color': 'color',
   'tags.table.ops': 'ops',
 
-  'share.members.title': 'Share Members',
-  'share.members.placeholder.userId': 'Target user id',
-  'share.members.placeholder.email': 'Member email',
-  'share.members.button.updateRole': 'Update Role',
-  'share.members.button.addOrUpdate': 'Add / Update',
-  'share.members.button.remove': 'Remove',
-  'share.members.table.user': 'user',
-  'share.members.table.role': 'role',
-  'share.members.table.status': 'status',
-  'share.members.table.joined': 'joined',
-  'share.members.table.email': 'email',
-  'share.members.manageHint': 'Use email to add members, update role, or remove members.',
-  'share.members.registeredOnlyHint': 'The email must already have a BeeCount account.',
-  'share.members.readOnlyHint': 'Only owner/admin can manage members.',
-
-
   'ops.backup.title': 'Backup Restore',
   'ops.backup.placeholder.snapshotId': 'Snapshot ID',
   'ops.backup.button.restore': 'Restore',
@@ -222,7 +200,7 @@ const en = {
   'overview.ledgerMeta.currency': 'Currency',
   'overview.ledgerMeta.button.save': 'Save Metadata',
   'overview.createLedger.title': 'Create Ledger',
-  'overview.createLedger.description': 'Create a new shared ledger directly from Web.',
+  'overview.createLedger.description': 'Create a new ledger directly from Web.',
   'overview.createLedger.name': 'Ledger Name',
   'overview.createLedger.currency': 'Currency',
   'overview.createLedger.button.create': 'Create Ledger',
@@ -302,12 +280,6 @@ const en = {
   'enum.role.owner': 'owner',
   'enum.role.editor': 'editor',
   'enum.role.viewer': 'viewer',
-  'enum.member.active': 'active',
-  'enum.member.left': 'left',
-  'enum.inviteStatus.active': 'active',
-  'enum.inviteStatus.revoked': 'revoked',
-  'enum.inviteStatus.expired': 'expired',
-  'enum.inviteStatus.exhausted': 'exhausted',
   'enum.platformRole.admin': 'admin',
   'enum.platformRole.user': 'user',
   'enum.userStatus.enabled': 'enabled',
@@ -322,7 +294,6 @@ const en = {
   'error.WRITE_CONFLICT':
     'Data changed on server. Refresh and retry. latest_change_id={latestChangeId}, latest_server_timestamp={latestServerTimestamp}',
   'error.WRITE_ROLE_FORBIDDEN': 'Current role has no write permission.',
-  'error.SHARE_ROLE_FORBIDDEN': 'Only ledger owner can manage members.',
   'error.SYNC_VIEWER_WRITE_FORBIDDEN': 'Viewer cannot write changes.',
   'error.SYNC_LEDGER_WRITE_FORBIDDEN': 'No write access to current ledger.',
   'error.AUTH_INSUFFICIENT_SCOPE': 'Permission scope is insufficient.',
@@ -333,8 +304,6 @@ const en = {
   'error.WRITE_VALIDATION_FAILED': 'Write validation failed. Please check input values.',
   'error.USER_EMAIL_EXISTS': 'Email already exists.',
   'error.USER_PASSWORD_TOO_SHORT': 'Password must be at least 6 characters.',
-  'error.SHARE_MEMBER_USER_NOT_FOUND':
-    'This email is not registered yet. Create the user first or let them sign in on app once.',
 
   'notice.userCreated': 'User created.'
 } as const

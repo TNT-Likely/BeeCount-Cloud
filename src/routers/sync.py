@@ -1,3 +1,5 @@
+import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -18,7 +20,6 @@ from ..ledger_access import (
 )
 from ..metrics import metrics
 from ..models import AuditLog, Device, Ledger, LedgerMember, SyncChange, SyncCursor, User
-from ..projection_service import rebuild_projection_from_snapshot_change
 from ..schemas import (
     SyncChangeOut,
     SyncFullResponse,
@@ -29,7 +30,150 @@ from ..schemas import (
 )
 from ..security import SCOPE_APP_WRITE
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+_INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag"}
+_ENTITY_TYPE_TO_SNAPSHOT_KEY = {
+    "transaction": "items",
+    "account": "accounts",
+    "category": "categories",
+    "tag": "tags",
+}
+
+
+def _materialize_individual_changes(
+    db: Session,
+    *,
+    ledger_id: str,
+    device_id: str,
+    user_id: str,
+) -> None:
+    """Merge individual entity changes into the latest ledger_snapshot.
+
+    This ensures that incremental pushes from Mobile become visible to the Web
+    which reads from the latest snapshot.
+    """
+    # 1. Find latest snapshot
+    snapshot_row = db.scalar(
+        select(SyncChange)
+        .where(
+            SyncChange.ledger_id == ledger_id,
+            SyncChange.entity_type == "ledger_snapshot",
+        )
+        .order_by(SyncChange.change_id.desc())
+        .limit(1)
+    )
+
+    snapshot_change_id = 0
+    snapshot: dict[str, Any] = {}
+    if snapshot_row is not None:
+        snapshot_change_id = snapshot_row.change_id
+        payload = snapshot_row.payload_json
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if isinstance(payload, dict):
+            content = payload.get("content")
+            if isinstance(content, str) and content.strip():
+                try:
+                    snapshot = json.loads(content)
+                except json.JSONDecodeError:
+                    snapshot = {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+    else:
+        # No snapshot exists yet — populate basic metadata from Ledger table
+        ledger_row = db.scalar(select(Ledger).where(Ledger.id == ledger_id))
+        if ledger_row:
+            snapshot["ledgerName"] = ledger_row.name or ledger_row.external_id
+            snapshot["currency"] = "CNY"
+
+    logger.info(
+        "_materialize_individual_changes: ledger=%s snapshot_change_id=%d",
+        ledger_id, snapshot_change_id,
+    )
+
+    # 2. Get individual changes after the snapshot
+    individual_changes = db.execute(
+        select(SyncChange)
+        .where(
+            SyncChange.ledger_id == ledger_id,
+            SyncChange.change_id > snapshot_change_id,
+            SyncChange.entity_type.in_(_INDIVIDUAL_ENTITY_TYPES),
+        )
+        .order_by(SyncChange.change_id.asc())
+    ).scalars().all()
+
+    if not individual_changes:
+        logger.info("_materialize_individual_changes: no individual changes to apply for ledger=%s", ledger_id)
+        return
+
+    # Log per-entity-type counts
+    type_counts: dict[str, int] = {}
+    for ch in individual_changes:
+        type_counts[ch.entity_type] = type_counts.get(ch.entity_type, 0) + 1
+    logger.info(
+        "_materialize_individual_changes: found %d individual changes %s for ledger=%s",
+        len(individual_changes), type_counts, ledger_id,
+    )
+
+    # 3. Apply each change to the snapshot
+    for change in individual_changes:
+        key = _ENTITY_TYPE_TO_SNAPSHOT_KEY.get(change.entity_type)
+        if key is None:
+            continue
+        arr: list[dict[str, Any]] = snapshot.get(key) or []  # type: ignore[assignment]
+        sync_id = change.entity_sync_id
+
+        if change.action == "delete":
+            arr = [e for e in arr if e.get("syncId") != sync_id]
+        else:
+            # upsert
+            payload = change.payload_json
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                continue
+            # Ensure syncId is set
+            payload.setdefault("syncId", sync_id)
+            found = False
+            for i, e in enumerate(arr):
+                if e.get("syncId") == sync_id:
+                    arr[i] = payload
+                    found = True
+                    break
+            if not found:
+                arr.append(payload)
+
+        snapshot[key] = arr
+
+    logger.info(
+        "_materialize_individual_changes: after apply — items=%d accounts=%d categories=%d tags=%d for ledger=%s",
+        len(snapshot.get("items") or []),
+        len(snapshot.get("accounts") or []),
+        len(snapshot.get("categories") or []),
+        len(snapshot.get("tags") or []),
+        ledger_id,
+    )
+
+    # 4. Write updated snapshot as a new SyncChange
+    now = datetime.now(timezone.utc)
+    db.add(SyncChange(
+        user_id=db.scalar(select(Ledger.user_id).where(Ledger.id == ledger_id)) or user_id,
+        ledger_id=ledger_id,
+        entity_type="ledger_snapshot",
+        entity_sync_id=db.scalar(select(Ledger.external_id).where(Ledger.id == ledger_id)) or "",
+        action="upsert",
+        payload_json={
+            "content": json.dumps(snapshot, ensure_ascii=False),
+            "metadata": {"source": "materialize_individual"},
+        },
+        updated_at=now,
+        updated_by_device_id=device_id,
+        updated_by_user_id=user_id,
+    ))
+    db.flush()
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -74,7 +218,7 @@ async def push_changes(
     conflict_samples: list[dict[str, Any]] = []
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
-    projection_targets: dict[str, SyncChange] = {}
+    ledgers_with_individual_changes: set[str] = set()  # ledger internal ids
 
     for change in req.changes:
         row = get_accessible_ledger_by_external_id(
@@ -184,35 +328,27 @@ async def push_changes(
         accepted += 1
         max_cursor = max(max_cursor, row_change.change_id)
         touched_ledgers[ledger.external_id] = ledger.id
-        if change.entity_type == "ledger_snapshot":
-            projection_targets[ledger.id] = row_change
-
+        if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
+            ledgers_with_individual_changes.add(ledger.id)
     if max_cursor == 0:
         memberships = list_accessible_memberships(db, user_id=current_user.id, roles=READABLE_ROLES)
         max_cursor = _max_cursor_for_ledgers(db, [ledger.id for ledger, _ in memberships])
 
-    for ledger_id, snapshot_change in projection_targets.items():
-        try:
-            rebuild_projection_from_snapshot_change(
-                db,
-                ledger_id=ledger_id,
-                change=snapshot_change,
-            )
-        except Exception as exc:  # noqa: BLE001
-            metrics.inc("beecount_sync_projection_rebuild_failed_total")
-            failure = {
-                "ledgerId": ledger_id,
-                "snapshotChangeId": snapshot_change.change_id,
-                "error": str(exc),
-            }
-            db.add(
-                AuditLog(
-                    user_id=current_user.id,
-                    ledger_id=ledger_id,
-                    action="projection_rebuild_failed",
-                    metadata_json=failure,
-                )
-            )
+    # Materialize individual entity changes into snapshot so Web can see them
+    for ledger_ext_id, ledger_id in touched_ledgers.items():
+        if ledger_id not in ledgers_with_individual_changes:
+            continue
+        _materialize_individual_changes(
+            db,
+            ledger_id=ledger_id,
+            device_id=req.device_id,
+            user_id=current_user.id,
+        )
+    if touched_ledgers:
+        db.flush()
+        # Update max_cursor to include the new snapshot changes
+        new_max = _max_cursor_for_ledgers(db, list(touched_ledgers.values()))
+        max_cursor = max(max_cursor, new_max)
 
     db.commit()
 
