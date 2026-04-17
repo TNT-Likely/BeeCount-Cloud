@@ -46,6 +46,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
     await manager.connect(user_id, websocket)
     try:
         while True:
-            _ = await websocket.receive_text()
+            msg = await websocket.receive_text()
+            # Support client-initiated heartbeat: the client sends {"type":"ping"}
+            # every ~25s and waits for a pong. If the socket is silently broken,
+            # the pong won't arrive and the client's no-frames timer forces a
+            # reconnect. Tolerate malformed payloads silently.
+            if msg and '"ping"' in msg:
+                try:
+                    await websocket.send_text('{"type":"pong"}')
+                except Exception:
+                    break
     except Exception:
+        pass
+    finally:
         manager.disconnect(user_id, websocket)

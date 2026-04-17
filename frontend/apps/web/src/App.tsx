@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 
-import { API_BASE } from '@beecount/api-client'
+import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 
 import { AppPage } from './pages/AppPage'
 import { LoginPage } from './pages/LoginPage'
+import { clearCursor } from './state/sync-client'
 import { usePathRouter } from './state/usePathRouter'
 
 const LEGACY_TOKEN_KEY = 'beecount.token'
@@ -28,12 +29,32 @@ export function App() {
   }, [token])
 
   useEffect(() => {
+    configureHttp({
+      refreshToken: async () => {
+        const fresh = await refreshAuth()
+        setToken(fresh)
+        return fresh
+      },
+      onLogout: () => {
+        const prev = getStoredUserId()
+        if (prev) clearCursor(prev)
+        clearStoredSession()
+        setToken('')
+        navigate({ kind: 'login' }, { replace: true })
+      }
+    })
+    return () => {
+      configureHttp({ refreshToken: null, onLogout: null })
+    }
+  }, [navigate])
+
+  useEffect(() => {
     if (!token && route.kind !== 'login') {
       navigate({ kind: 'login' }, { replace: true })
       return
     }
     if (token && route.kind === 'login') {
-      navigate({ kind: 'app', ledgerId: '', section: 'transactions' }, { replace: true })
+      navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
     }
   }, [route.kind, token, navigate])
 
@@ -42,7 +63,7 @@ export function App() {
       <LoginPage
         onLoggedIn={(nextToken) => {
           setToken(nextToken)
-          navigate({ kind: 'app', ledgerId: '', section: 'transactions' }, { replace: true })
+          navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
         }}
       />
     )
@@ -58,6 +79,9 @@ export function App() {
       route={route}
       onNavigate={navigate}
       onLogout={() => {
+        const prev = getStoredUserId()
+        if (prev) clearCursor(prev)
+        clearStoredSession()
         setToken('')
         navigate({ kind: 'login' }, { replace: true })
       }}

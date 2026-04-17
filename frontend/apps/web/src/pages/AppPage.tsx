@@ -1,12 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { LogOut, MoreHorizontal, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
+
+import { useSyncSocket } from '../hooks/useSyncSocket'
+import { drainPull, startPoller } from '../state/sync-client'
+import { OverviewHero } from '../components/dashboard/OverviewHero'
+import { OverviewKeyMetrics } from '../components/dashboard/OverviewKeyMetrics'
+import { AssetCompositionDonut } from '../components/dashboard/AssetCompositionDonut'
+import { MonthlyTrendBars } from '../components/dashboard/MonthlyTrendBars'
+import { TopCategoriesList } from '../components/dashboard/TopCategoriesList'
+
+import { LogOut, MoreHorizontal, SlidersHorizontal } from 'lucide-react'
 
 import {
   Alert,
   AlertDescription,
   AlertTitle,
   Badge,
+  useToast,
   Button,
   Card,
   CardContent,
@@ -48,20 +59,22 @@ import {
   type ReadLedger,
   type ReadTag,
   type ReadTransaction,
+  type WorkspaceTag,
   type ProfileMe,
   type AdminDevice,
   type AdminHealth,
   type AdminOverview,
   type UserAdmin,
-  createWorkspaceAccount,
+  createAccount,
   createAdminUser,
-  createWorkspaceCategory,
+  createCategory,
   createLedger,
-  createWorkspaceTag,
+  deleteLedger,
+  createTag,
   createTransaction,
-  deleteWorkspaceAccount,
-  deleteWorkspaceCategory,
-  deleteWorkspaceTag,
+  deleteAccount,
+  deleteCategory,
+  deleteTag,
   deleteTransaction,
   fetchAdminDevices,
   fetchAdminHealth,
@@ -69,6 +82,8 @@ import {
   fetchAdminUsers,
   fetchReadLedgerDetail,
   fetchReadLedgers,
+  fetchWorkspaceAnalytics,
+  type WorkspaceAnalytics,
   fetchProfileMe,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
@@ -76,10 +91,10 @@ import {
   fetchWorkspaceTransactions,
   patchProfileMe,
   patchAdminUser,
-  updateWorkspaceAccount,
-  updateWorkspaceCategory,
+  updateAccount,
+  updateCategory,
   updateLedgerMeta,
-  updateWorkspaceTag,
+  updateTag,
   updateTransaction
 } from '@beecount/api-client'
 
@@ -88,10 +103,8 @@ import {
   AdminUsersPanel,
   CategoriesPanel,
   ConfirmDialog,
-  LedgerOverviewPanel,
   NAV_GROUPS,
   OpsDevicesPanel,
-  StatusBadge,
   TagsPanel,
   TransactionsPanel,
   accountDefaults,
@@ -99,7 +112,6 @@ import {
   canWriteTransactions,
   categoryDefaults,
   formatIsoDateTime,
-  formatLedgerLabel,
   tagDefaults,
   txDefaults,
   type AccountForm,
@@ -123,6 +135,7 @@ type PendingDelete =
   | { kind: 'account'; id: string }
   | { kind: 'category'; id: string }
   | { kind: 'tag'; id: string }
+  | { kind: 'ledger'; id: string; ledgerId: string }
   | null
 
 type AttachmentPreviewState = {
@@ -250,7 +263,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const txFilterRestoreInProgressRef = useRef(false)
   const txAttachmentPreviewUrlByFileIdRef = useRef<Record<string, string>>({})
 
-  const [notice, setNotice] = useState<Notice>(null)
+  // 原来用 Notice 顶栏显示成功/失败，改成 toast 后不再需要这个 state。
   const [baseChangeId, setBaseChangeId] = useState(0)
 
   const [ledgers, setLedgers] = useState<ReadLedger[]>([])
@@ -260,7 +273,9 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [txPageSize, setTxPageSize] = useState(TX_PAGE_SIZE_DEFAULT)
   const [accounts, setAccounts] = useState<ReadAccount[]>([])
   const [categories, setCategories] = useState<ReadCategory[]>([])
-  const [tags, setTags] = useState<ReadTag[]>([])
+  const [tags, setTags] = useState<WorkspaceTag[]>([])
+  const [analyticsData, setAnalyticsData] = useState<WorkspaceAnalytics | null>(null)
+  const [analyticsIncomeRanks, setAnalyticsIncomeRanks] = useState<WorkspaceAnalytics['category_ranks']>([])
   const [profileMe, setProfileMe] = useState<ProfileMe | null>(null)
   const [profileDisplayName, setProfileDisplayName] = useState('')
   const [adminUsers, setAdminUsers] = useState<UserAdmin[]>([])
@@ -274,7 +289,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
 
-  const [listLedgerFilter, setListLedgerFilter] = useState('__all__')
   const [listUserFilter, setListUserFilter] = useState('__all__')
   const [listQuery, setListQuery] = useState('')
   const [adminUserStatusFilter, setAdminUserStatusFilter] = useState<'enabled' | 'disabled' | 'all'>('enabled')
@@ -316,8 +330,8 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   )
   const sessionUserId = useMemo(() => jwtUserId(token), [token])
   const txFilterPersistKey = useMemo(
-    () => txFilterStorageKey(sessionUserId || 'anonymous', listLedgerFilter),
-    [sessionUserId, listLedgerFilter]
+    () => txFilterStorageKey(sessionUserId || 'anonymous', activeLedgerId || '__all__'),
+    [sessionUserId, activeLedgerId]
   )
   const profileDisplayLabel = useMemo(
     () => profileMe?.display_name?.trim() || profileMe?.email || sessionUserId || '-',
@@ -347,7 +361,26 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     () => txWritableLedgers.map((ledger) => ({ ledger_id: ledger.ledger_id, ledger_name: ledger.ledger_name })),
     [txWritableLedgers]
   )
-  const txWriteAccounts = txDictionaryAccounts
+  // 交易可选账户：与"当前写入账本"币种一致 + 排除估值账户（不动产 / 车辆 /
+  // 投资 / 保险 / 公积金 / 贷款 —— 这些是净值组件，不参与日常交易）。
+  // 对应 mobile 端 account_picker 里的同一套过滤条件。
+  const VALUATION_ACCOUNT_TYPES = useMemo(
+    () =>
+      new Set<string>(['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund', 'loan']),
+    []
+  )
+  const txWriteLedgerCurrency = useMemo(() => {
+    const hit = ledgers.find((ledger) => ledger.ledger_id === (txWriteLedgerId || activeLedgerId))
+    return (hit?.currency || 'CNY').trim().toUpperCase()
+  }, [ledgers, txWriteLedgerId, activeLedgerId])
+  const txWriteAccounts = useMemo(() => {
+    return txDictionaryAccounts.filter((row) => {
+      const currency = (row.currency || 'CNY').trim().toUpperCase()
+      if (currency !== txWriteLedgerCurrency) return false
+      if (VALUATION_ACCOUNT_TYPES.has(row.account_type || '')) return false
+      return true
+    })
+  }, [txDictionaryAccounts, txWriteLedgerCurrency, VALUATION_ACCOUNT_TYPES])
   const txWriteCategories = txDictionaryCategories
   const txWriteTags = txDictionaryTags
   const txFilterAccountOptions = useMemo(
@@ -377,19 +410,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     [headerMoreGroups, route.section]
   )
 
-  const setErrorNotice = (message: string) =>
-    setNotice({
-      type: 'destructive',
-      title: t('notice.failed'),
-      message
-    })
-
-  const setSuccessNotice = (message: string) =>
-    setNotice({
-      type: 'default',
-      title: t('notice.success'),
-      message
-    })
+  // 统一 UI 提示通过右上角 toast 呈现，替换原来的顶部 Alert 横幅。
+  // 保留函数名以避免修改几十处调用点。
+  const toast = useToast()
+  const setErrorNotice = (message: string) => {
+    toast.error(message, t('notice.failed'))
+  }
+  const setSuccessNotice = (message: string) => {
+    toast.success(message, t('notice.success'))
+  }
 
   const isSessionError = (err: unknown): boolean => {
     if (!(err instanceof ApiError)) return false
@@ -452,10 +481,23 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       return
     }
 
+    // Overview 页：需要 accounts（资产构成饼图） + 最近交易（最近列表）。
+    // 不等待图表 analytics 拉数（有单独 effect），这里只收集表数据。
+    if (section === 'overview') {
+      const [txPageResult, accountRows] = await Promise.all([
+        fetchWorkspaceTransactions(token, { limit: 10 }),
+        fetchWorkspaceAccounts(token, { limit: 500 })
+      ])
+      setTransactions(txPageResult.items)
+      setTxTotal(txPageResult.total)
+      setAccounts(accountRows)
+      return
+    }
+
     if (section === 'transactions') {
       const [txPageResult, accountRows, categoryRows, tagRows] = await Promise.all([
         fetchWorkspaceTransactions(token, {
-          ledgerId: listLedgerFilter === '__all__' ? undefined : listLedgerFilter,
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           q: listQuery || undefined,
           txType: txFilterApplied.txType || undefined,
@@ -464,15 +506,17 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           offset: (txPage - 1) * txPageSize
         }),
         fetchWorkspaceAccounts(token, {
-          ledgerId: listLedgerFilter === '__all__' ? undefined : listLedgerFilter,
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           limit: 500
         }),
         fetchWorkspaceCategories(token, {
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           limit: 500
         }),
         fetchWorkspaceTags(token, {
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           limit: 500
         })
@@ -509,6 +553,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     if (section === 'accounts') {
       setAccounts(
         await fetchWorkspaceAccounts(token, {
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           q: listQuery || undefined,
           limit: 500
@@ -520,6 +565,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     if (section === 'categories') {
       setCategories(
         await fetchWorkspaceCategories(token, {
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           q: listQuery || undefined,
           limit: 500
@@ -531,6 +577,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     if (section === 'tags') {
       setTags(
         await fetchWorkspaceTags(token, {
+          ledgerId: ledgerId || undefined,
           userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
           q: listQuery || undefined,
           limit: 500
@@ -572,6 +619,25 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       setBaseChangeId(0)
     }
     await refreshSectionData(effectiveLedgerId, section)
+  }
+
+  // WS / polling 事件触发时用这个：不止刷当前 section，也把 tags/categories/accounts
+  // 都重新拉一遍。否则用户停留在"交易"页看不到新建的标签，切过去时仍是旧缓存。
+  // 交易数据在 section='transactions' 分支里已经并行 fetch 了四类；这里补齐非交易
+  // 活动页时其他三类的兜底。
+  const refreshAllSections = async () => {
+    const firstLedgerId = await loadLedgers()
+    const section = route.section
+    const effectiveLedgerId = activeLedgerId || firstLedgerId
+    if (sectionNeedsLedger(section) && effectiveLedgerId) {
+      await loadLedgerBase(effectiveLedgerId)
+    }
+    await Promise.all([
+      refreshSectionData(effectiveLedgerId, section),
+      section === 'tags' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'tags'),
+      section === 'categories' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'categories'),
+      section === 'accounts' ? Promise.resolve() : refreshSectionData(effectiveLedgerId, 'accounts'),
+    ])
   }
 
   useEffect(() => {
@@ -665,23 +731,55 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     setEditCurrency(selectedLedger.currency)
   }, [selectedLedger])
 
-  useEffect(() => {
-    if (!token) return
-    const socket = new WebSocket(wsUrl(token))
-    socket.onmessage = async (event) => {
-      try {
-        const payload = JSON.parse(event.data) as any
-        if (payload?.type === 'sync_change' || payload?.type === 'backup_restore') {
-          await refreshCurrent()
-        }
-      } catch (err) {
-        if (err instanceof SyntaxError) return
-        handleTopLevelLoadError(err)
+  // Connection supervisor: WebSocket with reconnect/heartbeat + /sync/pull
+  // polling fallback + localStorage cursor, so mobile pushes still reach the
+  // web tab when the socket silently dies behind a proxy or during tab sleep.
+  const syncUserIdRef = useRef<string>('')
+  if (!syncUserIdRef.current) {
+    syncUserIdRef.current = getStoredUserId() || ''
+  }
+  const syncDeviceId = useMemo(() => getStoredDeviceId(), [token])
+  const refreshCurrentRef = useRef(refreshCurrent)
+  refreshCurrentRef.current = refreshCurrent
+  const refreshAllSectionsRef = useRef(refreshAllSections)
+  refreshAllSectionsRef.current = refreshAllSections
+
+  const wsBuildUrl = useCallback((tok: string) => wsUrl(tok), [])
+
+  useSyncSocket({
+    token,
+    buildUrl: wsBuildUrl,
+    onEvent: (payload: unknown) => {
+      const p = payload as { type?: string } | null
+      if (p?.type === 'sync_change' || p?.type === 'backup_restore') {
+        void refreshAllSectionsRef.current()
+      }
+    },
+    onOpen: () => {
+      // Socket (re)connected — catch up on anything the polling missed.
+      if (token && syncUserIdRef.current) {
+        void drainPull(token, syncUserIdRef.current, syncDeviceId).then((res) => {
+          if (res.changes.length > 0) void refreshAllSectionsRef.current()
+        })
       }
     }
-    return () => socket.close()
+  })
+
+  useEffect(() => {
+    if (!token) return
+    const userId = syncUserIdRef.current
+    if (!userId) return
+    const poller = startPoller({
+      token,
+      userId,
+      deviceId: syncDeviceId,
+      onChanges: () => {
+        void refreshAllSectionsRef.current()
+      }
+    })
+    return () => poller.stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, route.section, activeLedgerId])
+  }, [token, syncDeviceId])
 
   useEffect(() => {
     if (route.section !== 'transactions') return
@@ -735,7 +833,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    listLedgerFilter,
     listUserFilter,
     listQuery,
     txFilterApplied.txType,
@@ -755,7 +852,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       setTxPage(1)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listLedgerFilter, listUserFilter, listQuery, txFilterApplied.txType, txFilterApplied.accountName, route.section])
+  }, [activeLedgerId, listUserFilter, listQuery, txFilterApplied.txType, txFilterApplied.accountName, route.section])
 
   useEffect(() => {
     if (route.section !== 'transactions' || !isAdminResolved) return
@@ -799,12 +896,12 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   useEffect(() => {
     const allowedIds = new Set(txWriteLedgerOptions.map((ledger) => ledger.ledger_id))
     if (txWriteLedgerId && allowedIds.has(txWriteLedgerId)) return
-    if (listLedgerFilter !== '__all__' && allowedIds.has(listLedgerFilter)) {
-      setTxWriteLedgerId(listLedgerFilter)
+    if (activeLedgerId && allowedIds.has(activeLedgerId)) {
+      setTxWriteLedgerId(activeLedgerId)
       return
     }
     setTxWriteLedgerId(txWriteLedgerOptions[0]?.ledger_id || '')
-  }, [txWriteLedgerId, txWriteLedgerOptions, listLedgerFilter])
+  }, [txWriteLedgerId, txWriteLedgerOptions, activeLedgerId])
 
   const resolveTxDictionaryUserId = (): string | undefined => {
     if (!isAdminUser) return undefined
@@ -827,6 +924,9 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
 
   const loadTxDictionaries = async () => {
     const targetUserId = resolveTxDictionaryUserId()
+    // 账户 / 分类 / 标签在本产品里是"用户级"的 —— 一个用户的所有账本共享一套，
+    // 所以这里拉全量，不按 ledger 过滤。具体哪些账户能在某个账本做交易的校验
+    // 交给下面 useMemo（同币种 + 非估值账户）。
     setTxDictionaryLoading(true)
     try {
       const [accountRows, categoryRows, tagRows] = await Promise.all([
@@ -856,6 +956,34 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const fetchBaseChangeId = async (ledgerId: string): Promise<number> => {
     const detail = await fetchReadLedgerDetail(token, ledgerId)
     return detail.source_change_id
+  }
+
+  /**
+   * Run a write that takes a base_change_id, auto-retrying on 409 WRITE_CONFLICT.
+   * 409 almost always just means "mobile pushed a change between our base fetch
+   * and our write"; the user's intent is still valid against the new head, so
+   * we refetch and resubmit. Try up to 4 times (original + 3 retries) with a
+   * tiny random back-off so we don't lock-step with a streaming mobile pusher.
+   */
+  const retryOnConflict = async <T,>(
+    ledgerId: string,
+    submit: (baseChangeId: number) => Promise<T>
+  ): Promise<T> => {
+    const maxAttempts = 4
+    let lastErr: unknown
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const base = await fetchBaseChangeId(ledgerId)
+      try {
+        return await submit(base)
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.code !== 'WRITE_CONFLICT') throw err
+        lastErr = err
+        if (attempt < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, 50 + Math.random() * 100))
+        }
+      }
+    }
+    throw lastErr
   }
 
   const handleWriteFailure = async (
@@ -1109,10 +1237,12 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const onUpdateLedgerMeta = async () => {
     if (!activeLedgerId) return
     try {
-      const response = await updateLedgerMeta(token, activeLedgerId, baseChangeId, {
-        ledger_name: editLedgerName,
-        currency: editCurrency
-      })
+      const response = await retryOnConflict(activeLedgerId, (base) =>
+        updateLedgerMeta(token, activeLedgerId, base, {
+          ledger_name: editLedgerName,
+          currency: editCurrency
+        })
+      )
       setBaseChangeId(response.new_change_id)
       await refreshCurrent('overview')
       setSuccessNotice(t('notice.ledgerUpdated'))
@@ -1129,6 +1259,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       return false
     }
     if (txForm.tx_type === 'transfer') {
+      // 转账必须两边都选且不同 —— 否则语义无法表达。
       if (!txForm.from_account_name.trim() || !txForm.to_account_name.trim()) {
         setErrorNotice(t('transactions.error.transferAccountsRequired'))
         return false
@@ -1137,13 +1268,11 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         setErrorNotice(t('transactions.error.transferAccountsDifferent'))
         return false
       }
-    } else if (!txForm.account_name.trim()) {
-      setErrorNotice(t('transactions.error.accountRequired'))
-      return false
     }
+    // 非转账交易允许不选账户（mobile 端 accountId 本来就是 nullable），之前 web
+    // 强制校验导致 mobile 导入的无账户交易在 web 上无法编辑。
 
     try {
-      const baseChangeIdForLedger = await fetchBaseChangeId(ledgerId)
       const isTransfer = txForm.tx_type === 'transfer'
       const accountByName = new Map(
         txWriteAccounts
@@ -1188,14 +1317,53 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         tag_ids: txTagIds.length > 0 ? txTagIds : null,
         attachments: txForm.attachments.length > 0 ? txForm.attachments : null
       }
-      const res = txForm.editingId
-        ? await updateTransaction(token, ledgerId, txForm.editingId, baseChangeIdForLedger, payload)
-        : await createTransaction(token, ledgerId, baseChangeIdForLedger, payload)
+      // eslint-disable-next-line no-console
+      console.info('[tx-save] request', {
+        editingId: txForm.editingId,
+        ledgerId,
+        payload_tags: payload.tags,
+        payload_account_name: payload.account_name,
+        payload_account_id: payload.account_id
+      })
+      const res = await retryOnConflict(ledgerId, (base) =>
+        txForm.editingId
+          ? updateTransaction(token, ledgerId, txForm.editingId, base, payload)
+          : createTransaction(token, ledgerId, base, payload)
+      )
+      // eslint-disable-next-line no-console
+      console.info('[tx-save] response', {
+        entity_id: res.entity_id,
+        new_change_id: res.new_change_id,
+        server_timestamp: res.server_timestamp
+      })
       if (activeLedgerId === ledgerId) {
         setBaseChangeId(res.new_change_id)
       }
+      const editingTxId = txForm.editingId
       setTxForm(txDefaults())
-      await refreshSectionData(activeLedgerId || ledgerId, 'transactions')
+      const refreshLedger = activeLedgerId || ledgerId
+      await refreshSectionData(refreshLedger, 'transactions')
+      // 再打一次查询看服务端回给我们的具体这条 tx 的 tags/account_name；
+      // 排查"更新没生效"时先看 server 是不是真的返回新值了。
+      if (editingTxId) {
+        try {
+          const verifyPage = await fetchWorkspaceTransactions(token, {
+            ledgerId: refreshLedger || undefined,
+            limit: txPageSize,
+            offset: (txPage - 1) * txPageSize
+          })
+          const hit = verifyPage.items.find((row) => row.id === editingTxId)
+          // eslint-disable-next-line no-console
+          console.info('[tx-save] server returned for updated tx', {
+            id: editingTxId,
+            tags: hit?.tags,
+            tags_list: hit?.tags_list,
+            account_name: hit?.account_name
+          })
+        } catch (_) {
+          // 诊断用，静默失败
+        }
+      }
       setSuccessNotice(txForm.editingId ? t('notice.txUpdated') : t('notice.txCreated'))
       return true
     } catch (err) {
@@ -1207,8 +1375,9 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
 
   const onDeleteTransaction = async (txId: string, ledgerId: string) => {
     if (!ledgerId) return
-    const baseChangeIdForLedger = await fetchBaseChangeId(ledgerId)
-    const res = await deleteTransaction(token, ledgerId, txId, baseChangeIdForLedger)
+    const res = await retryOnConflict(ledgerId, (base) =>
+      deleteTransaction(token, ledgerId, txId, base)
+    )
     if (activeLedgerId === ledgerId) {
       setBaseChangeId(res.new_change_id)
     }
@@ -1217,6 +1386,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   }
 
   const onSaveAccount = async (): Promise<boolean> => {
+    if (!activeLedgerId) return false
     try {
       const payload = {
         name: accountForm.name,
@@ -1224,29 +1394,35 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         currency: accountForm.currency || null,
         initial_balance: Number(accountForm.initial_balance || 0)
       }
-      const targetUserId = resolveWorkspaceTargetUserId(accountForm.editingOwnerUserId)
-      if (accountForm.editingId) {
-        await updateWorkspaceAccount(token, accountForm.editingId, payload)
-      } else {
-        await createWorkspaceAccount(token, payload, isAdminUser ? targetUserId : undefined)
-      }
+      const res = await retryOnConflict(activeLedgerId, (base) =>
+        accountForm.editingId
+          ? updateAccount(token, activeLedgerId, accountForm.editingId, base, payload)
+          : createAccount(token, activeLedgerId, base, payload)
+      )
+      setBaseChangeId(res.new_change_id)
       setAccountForm(accountDefaults())
       await refreshSectionData(activeLedgerId, 'accounts')
       setSuccessNotice(accountForm.editingId ? t('notice.accountUpdated') : t('notice.accountCreated'))
       return true
     } catch (err) {
+      if (await handleWriteFailure(err, 'accounts', activeLedgerId)) return false
       setErrorNotice(renderError(err))
       return false
     }
   }
 
   const onDeleteAccount = async (accountId: string) => {
-    await deleteWorkspaceAccount(token, accountId)
+    if (!activeLedgerId) return
+    const res = await retryOnConflict(activeLedgerId, (base) =>
+      deleteAccount(token, activeLedgerId, accountId, base)
+    )
+    setBaseChangeId(res.new_change_id)
     await refreshSectionData(activeLedgerId, 'accounts')
     setSuccessNotice(t('notice.accountDeleted'))
   }
 
   const onSaveCategory = async (): Promise<boolean> => {
+    if (!activeLedgerId) return false
     try {
       const payload = {
         name: categoryForm.name,
@@ -1260,52 +1436,63 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         icon_cloud_sha256: categoryForm.icon_cloud_sha256 || null,
         parent_name: categoryForm.parent_name || null
       }
-      const targetUserId = resolveWorkspaceTargetUserId(categoryForm.editingOwnerUserId)
-      if (categoryForm.editingId) {
-        await updateWorkspaceCategory(token, categoryForm.editingId, payload)
-      } else {
-        await createWorkspaceCategory(token, payload, isAdminUser ? targetUserId : undefined)
-      }
+      const res = await retryOnConflict(activeLedgerId, (base) =>
+        categoryForm.editingId
+          ? updateCategory(token, activeLedgerId, categoryForm.editingId, base, payload)
+          : createCategory(token, activeLedgerId, base, payload)
+      )
+      setBaseChangeId(res.new_change_id)
       setCategoryForm(categoryDefaults())
       await refreshSectionData(activeLedgerId, 'categories')
       setSuccessNotice(categoryForm.editingId ? t('notice.categoryUpdated') : t('notice.categoryCreated'))
       return true
     } catch (err) {
+      if (await handleWriteFailure(err, 'categories', activeLedgerId)) return false
       setErrorNotice(renderError(err))
       return false
     }
   }
 
   const onDeleteCategory = async (categoryId: string) => {
-    await deleteWorkspaceCategory(token, categoryId)
+    if (!activeLedgerId) return
+    const res = await retryOnConflict(activeLedgerId, (base) =>
+      deleteCategory(token, activeLedgerId, categoryId, base)
+    )
+    setBaseChangeId(res.new_change_id)
     await refreshSectionData(activeLedgerId, 'categories')
     setSuccessNotice(t('notice.categoryDeleted'))
   }
 
   const onSaveTag = async (): Promise<boolean> => {
+    if (!activeLedgerId) return false
     try {
       const payload = {
         name: tagForm.name,
         color: tagForm.color || null
       }
-      const targetUserId = resolveWorkspaceTargetUserId(tagForm.editingOwnerUserId)
-      if (tagForm.editingId) {
-        await updateWorkspaceTag(token, tagForm.editingId, payload)
-      } else {
-        await createWorkspaceTag(token, payload, isAdminUser ? targetUserId : undefined)
-      }
+      const res = await retryOnConflict(activeLedgerId, (base) =>
+        tagForm.editingId
+          ? updateTag(token, activeLedgerId, tagForm.editingId, base, payload)
+          : createTag(token, activeLedgerId, base, payload)
+      )
+      setBaseChangeId(res.new_change_id)
       setTagForm(tagDefaults())
       await refreshSectionData(activeLedgerId, 'tags')
       setSuccessNotice(tagForm.editingId ? t('notice.tagUpdated') : t('notice.tagCreated'))
       return true
     } catch (err) {
+      if (await handleWriteFailure(err, 'tags', activeLedgerId)) return false
       setErrorNotice(renderError(err))
       return false
     }
   }
 
   const onDeleteTag = async (tagId: string) => {
-    await deleteWorkspaceTag(token, tagId)
+    if (!activeLedgerId) return
+    const res = await retryOnConflict(activeLedgerId, (base) =>
+      deleteTag(token, activeLedgerId, tagId, base)
+    )
+    setBaseChangeId(res.new_change_id)
     await refreshSectionData(activeLedgerId, 'tags')
     setSuccessNotice(t('notice.tagDeleted'))
   }
@@ -1364,6 +1551,12 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
   }
 
+  const onDeleteLedger = async (ledgerId: string) => {
+    await deleteLedger(token, ledgerId)
+    await refreshCurrent('overview')
+    setSuccessNotice(t('notice.ledgerDeleted') || '账本已删除')
+  }
+
   const onConfirmDelete = async () => {
     if (!pendingDelete) return
     try {
@@ -1371,6 +1564,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       if (pendingDelete.kind === 'account') await onDeleteAccount(pendingDelete.id)
       if (pendingDelete.kind === 'category') await onDeleteCategory(pendingDelete.id)
       if (pendingDelete.kind === 'tag') await onDeleteTag(pendingDelete.id)
+      if (pendingDelete.kind === 'ledger') await onDeleteLedger(pendingDelete.ledgerId)
     } catch (err) {
       if (
         pendingDelete.kind === 'tx' &&
@@ -1407,6 +1601,66 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
   }, [])
 
+  // Overview 页的图表数据：跨账本的月度序列 + Top 分类排行。
+  // 同步完成/账本切换时 analyticsRefreshTick 变更，触发重新拉。
+  const [analyticsRefreshTick, setAnalyticsRefreshTick] = useState(0)
+  useEffect(() => {
+    if (route.section !== 'overview') return
+    let cancelled = false
+    ;(async () => {
+      try {
+        // 用 scope=year 覆盖整年数据，避免当月为空时 Top 分类/趋势图空白；
+        // ledgerId 传 active 账本以缩小范围，用户在 header 切账本时同步刷新。
+        // 支出/收入 Top 各一轮查询（backend 按 metric 过滤 category_ranks）。
+        const [yearlyExpense, yearlyIncome] = await Promise.all([
+          fetchWorkspaceAnalytics(token, {
+            scope: 'year',
+            metric: 'expense',
+            ledgerId: activeLedgerId || undefined
+          }),
+          fetchWorkspaceAnalytics(token, {
+            scope: 'year',
+            metric: 'income',
+            ledgerId: activeLedgerId || undefined
+          })
+        ])
+        if (!cancelled) {
+          setAnalyticsData(yearlyExpense)
+          setAnalyticsIncomeRanks(yearlyIncome.category_ranks || [])
+        }
+      } catch (err) {
+        // 静默降级：dashboard 空态已覆盖。
+        void err
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.section, token, analyticsRefreshTick, activeLedgerId])
+
+  // 同步/实时事件发生时 bump analytics 刷新 tick（复用 sync generation 思路）。
+  useEffect(() => {
+    setAnalyticsRefreshTick((v) => v + 1)
+  }, [ledgers.length, transactions.length])
+
+  // 每个 tag 的统计：笔数 / 支出 / 收入。服务端一次性按全账本全期汇总好直接
+  // 放在 WorkspaceTag 上（tx_count / expense_total / income_total），不再
+  // 基于分页后的 transactions 自己聚合 —— 那会导致收入常被漏（当前页只有支
+  // 出）、笔数偏少。
+  const tagStatsById = useMemo(() => {
+    const out: Record<string, { count: number; expense: number; income: number }> = {}
+    for (const tag of tags) {
+      if (!tag.id) continue
+      out[tag.id] = {
+        count: tag.tx_count ?? 0,
+        expense: tag.expense_total ?? 0,
+        income: tag.income_total ?? 0
+      }
+    }
+    return out
+  }, [tags])
+
   const showTxFilter = route.section === 'transactions'
 
   return (
@@ -1419,6 +1673,25 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 <div className="flex items-center gap-2.5">
                   <img alt="蜜蜂记账" className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
                   <p className="text-[15px] font-bold text-foreground">蜜蜂记账</p>
+                  {/* 账本切换器：常驻 header 左侧，全局控制 activeLedger。
+                      需要账本上下文的分区（交易/账户/分类/标签/纵览）全部以它为准。 */}
+                  {ledgers.length > 0 ? (
+                    <Select
+                      value={activeLedgerId || undefined}
+                      onValueChange={setActiveLedgerId}
+                    >
+                      <SelectTrigger className="ml-1 hidden h-8 w-[180px] border-border/50 bg-background/60 text-xs md:flex">
+                        <SelectValue placeholder={t('shell.ledger')} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ledgers.map((ledger) => (
+                          <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
+                            {ledger.ledger_name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : null}
                   {ledgers.length === 0 ? (
                     <Button
                       className="ml-1 hidden h-8 px-3 text-xs md:inline-flex"
@@ -1505,18 +1778,24 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   </DropdownMenu>
                 </nav>
 
-                <div className="flex items-center gap-1.5 rounded-2xl border border-border/40 bg-accent/20 px-1.5 py-1">
-                  <Tooltip content={t('shell.refresh')}>
-                    <Button
-                      aria-label={t('shell.refresh')}
-                      className="h-9 w-9 bg-transparent"
-                      size="icon"
-                      variant="ghost"
-                      onClick={onRefresh}
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
+                <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
+                  {/* 登录邮箱 + 头像；点头像打开菜单看完整邮箱/profile。 */}
+                  {/* 只展示头像（hover 时 title 提示邮箱），不再用文字占横向空间 */}
+                  {profileMe?.email ? (
+                    <Tooltip content={profileMe.display_name || profileMe.email}>
+                      {profileMe.avatar_url ? (
+                        <img
+                          src={profileMe.avatar_url}
+                          alt=""
+                          className="h-8 w-8 shrink-0 rounded-full border border-border/40 object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/40 bg-muted text-[11px] font-semibold text-muted-foreground">
+                          {profileMe.email.slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
+                    </Tooltip>
+                  ) : null}
                   <LanguageToggle />
                   <ThemeToggle />
                   <Tooltip content={t('shell.logout')}>
@@ -1532,6 +1811,26 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   </Tooltip>
                 </div>
               </div>
+
+              {ledgers.length > 0 ? (
+                <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
+                  <Select
+                    value={activeLedgerId || undefined}
+                    onValueChange={setActiveLedgerId}
+                  >
+                    <SelectTrigger className="h-8 flex-1 border-border/50 bg-background/60 text-xs">
+                      <SelectValue placeholder={t('shell.ledger')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ledgers.map((ledger) => (
+                        <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
+                          {ledger.ledger_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
               <div className="border-t border-border/50 py-2 md:hidden">
                 <div className="flex items-center gap-2">
@@ -1608,83 +1907,35 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         }
       >
         <div className="space-y-4">
-          {notice ? (
-            <Alert variant={notice.type}>
-              <AlertTitle>{notice.title}</AlertTitle>
-              <AlertDescription>{notice.message}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {sectionNeedsLedger(route.section) ? (
-            <Card className="bc-panel">
-              <CardContent className="pt-4">
-                <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">{t('shell.ledger')}</Label>
-                  <Select
-                    value={activeLedgerId || undefined}
-                    onValueChange={setActiveLedgerId}
-                    disabled={ledgers.length === 0}
-                  >
-                    <SelectTrigger className="w-[320px] max-w-full">
-                      <SelectValue placeholder={t('shell.ledger')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ledgers.map((ledger) => (
-                        <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
-                          {formatLedgerLabel(ledger, t(`enum.role.${ledger.role}`))}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedLedger ? <StatusBadge value={selectedLedger.role} /> : null}
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
-
           {route.section === 'overview' ? (
-            <>
-              <LedgerOverviewPanel
-                ledgers={ledgers}
-                selectedLedger={selectedLedger}
-                canManageMeta={Boolean(canManageSelectedLedger)}
-                createDialogOpen={createLedgerDialogOpen}
-                createLedgerName={createLedgerName}
-                createCurrency={createCurrency}
-                editLedgerName={editLedgerName}
-                editCurrency={editCurrency}
-                onCreateDialogOpenChange={setCreateLedgerDialogOpen}
-                onCreateLedgerNameChange={setCreateLedgerName}
-                onCreateCurrencyChange={setCreateCurrency}
-                onEditLedgerNameChange={setEditLedgerName}
-                onEditCurrencyChange={setEditCurrency}
-                onCreateLedger={onCreateLedger}
-                onUpdateLedgerMeta={onUpdateLedgerMeta}
-              />
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('ledgers.title')}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {ledgers.length === 0 ? <p className="text-sm text-muted-foreground">{t('overview.empty')}</p> : null}
-                  {ledgers.map((ledger) => (
-                    <div
-                      key={ledger.ledger_id}
-                      className="flex items-center justify-between rounded-md border border-border px-3 py-2"
-                    >
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium">{ledger.ledger_name}</p>
-                        <p className="text-xs text-muted-foreground">{ledger.ledger_id}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <StatusBadge value={ledger.role} />
-                        <Badge variant="secondary">{ledger.currency}</Badge>
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            </>
+            <div className="space-y-4">
+              <OverviewHero ledgers={ledgers} monthSeries={analyticsData?.series} />
+              <OverviewKeyMetrics summary={analyticsData?.summary} />
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+                <AssetCompositionDonut accounts={accounts} />
+                <MonthlyTrendBars data={analyticsData?.series || []} />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <TopCategoriesList
+                  ranks={analyticsData?.category_ranks || []}
+                  variant="expense"
+                  title="今年支出 Top 5"
+                  onClickCategory={(name) => {
+                    setListQuery(name)
+                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
+                  }}
+                />
+                <TopCategoriesList
+                  ranks={analyticsIncomeRanks}
+                  variant="income"
+                  title="今年收入 Top 5"
+                  onClickCategory={(name) => {
+                    setListQuery(name)
+                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
+                  }}
+                />
+              </div>
+            </div>
           ) : null}
 
           {route.section === 'transactions' ? (
@@ -1698,19 +1949,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       value={listQuery}
                       onChange={(event) => setListQuery(event.target.value)}
                     />
-                    <Select value={listLedgerFilter} onValueChange={setListLedgerFilter}>
-                      <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                        <SelectValue placeholder={t('shell.ledgerFilter')} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__all__">{t('shell.allLedgers')}</SelectItem>
-                        {ledgers.map((ledger) => (
-                          <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
-                            {formatLedgerLabel(ledger, t(`enum.role.${ledger.role}`))}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
                     {isAdminUser ? (
                       <Select value={listUserFilter} onValueChange={setListUserFilter}>
                         <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
@@ -1773,16 +2011,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 onReset={() => {
                   setTxForm(txDefaults())
                   if (
-                    listLedgerFilter !== '__all__' &&
-                    txWriteLedgerOptions.some((option) => option.ledger_id === listLedgerFilter)
+                    activeLedgerId &&
+                    txWriteLedgerOptions.some((option) => option.ledger_id === activeLedgerId)
                   ) {
-                    setTxWriteLedgerId(listLedgerFilter)
+                    setTxWriteLedgerId(activeLedgerId)
                     return
                   }
                   setTxWriteLedgerId(txWriteLedgerOptions[0]?.ledger_id || '')
                 }}
                 onReload={onRefresh}
-                onUploadAttachments={onUploadTxAttachments}
                 onPreviewAttachment={onPreviewTxAttachment}
                 resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
                 onEdit={(tx) => {
@@ -1867,12 +2104,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     initial_balance: String(row.initial_balance ?? 0)
                   })
                 }}
-                onDelete={(row) =>
-                  setPendingDelete({
-                    kind: 'account',
-                    id: row.id
-                  })
-                }
               />
             </div>
           ) : null}
@@ -1931,12 +2162,22 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     parent_name: row.parent_name || ''
                   })
                 }}
-                onDelete={(row) =>
-                  setPendingDelete({
-                    kind: 'category',
-                    id: row.id
-                  })
-                }
+                onUploadIcon={async (file) => {
+                  if (!activeLedgerId) {
+                    setErrorNotice(t('accounts.error.ledgerRequired'))
+                    return null
+                  }
+                  try {
+                    const out = await uploadAttachment(token, {
+                      ledger_id: activeLedgerId,
+                      file
+                    })
+                    return { fileId: out.file_id, sha256: out.sha256 }
+                  } catch (err) {
+                    setErrorNotice(renderError(err))
+                    return null
+                  }
+                }}
               />
             </div>
           ) : null}
@@ -1975,6 +2216,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 rows={tags}
                 canManage
                 showCreatorColumn={isAdminUser}
+                statsById={tagStatsById}
                 onFormChange={setTagForm}
                 onSave={onSaveTag}
                 onReset={() => setTagForm(tagDefaults())}
@@ -1986,12 +2228,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     color: row.color || '#F59E0B'
                   })
                 }}
-                onDelete={(row) =>
-                  setPendingDelete({
-                    kind: 'tag',
-                    id: row.id
-                  })
-                }
               />
             </div>
           ) : null}
@@ -2316,6 +2552,39 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         onCancel={() => setPendingDelete(null)}
         onConfirm={onConfirmDelete}
       />
+
+      {/* 创建账本对话框：常驻 root，任何分区 header 的"新建账本"按钮都能唤起。 */}
+      <Dialog open={createLedgerDialogOpen} onOpenChange={setCreateLedgerDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('overview.createLedger.title')}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="space-y-1">
+              <Label>{t('overview.createLedger.name')}</Label>
+              <Input
+                value={createLedgerName}
+                onChange={(e) => setCreateLedgerName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>{t('overview.createLedger.currency')}</Label>
+              <Input
+                value={createCurrency}
+                onChange={(e) => setCreateCurrency(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateLedgerDialogOpen(false)}>
+              {t('dialog.cancel')}
+            </Button>
+            <Button onClick={() => void onCreateLedger()}>
+              {t('overview.createLedger.button.create')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

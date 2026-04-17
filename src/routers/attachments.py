@@ -6,14 +6,13 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
-from ..ledger_access import ACTIVE_MEMBER_STATUS, READABLE_ROLES, WRITABLE_ROLES
-from ..models import AttachmentFile, Ledger, LedgerMember, User
+from ..models import AttachmentFile, Ledger, User
 from ..schemas import (
     AttachmentBatchExistsRequest,
     AttachmentBatchExistsResponse,
@@ -44,50 +43,24 @@ def _resolve_ledger(
     *,
     ledger_external_id: str,
     current_user: User,
-    roles: set[str],
-    forbidden_detail: str | None = None,
-) -> tuple[Ledger, LedgerMember | None]:
+    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
+    forbidden_detail: str | None = None,  # noqa: ARG001 — no role hierarchy anymore
+) -> tuple[Ledger, None]:
     if current_user.is_admin:
         ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
         if ledger is None:
             raise HTTPException(status_code=404, detail="Ledger not found")
-        membership = db.scalar(
-            select(LedgerMember).where(
-                LedgerMember.ledger_id == ledger.id,
-                LedgerMember.user_id == current_user.id,
-                LedgerMember.status == ACTIVE_MEMBER_STATUS,
-            )
-        )
-        return ledger, membership
+        return ledger, None
 
-    row = db.execute(
-        select(Ledger, LedgerMember)
-        .join(LedgerMember, LedgerMember.ledger_id == Ledger.id)
-        .where(
+    ledger = db.scalar(
+        select(Ledger).where(
             Ledger.external_id == ledger_external_id,
-            LedgerMember.user_id == current_user.id,
-            LedgerMember.status == ACTIVE_MEMBER_STATUS,
-            LedgerMember.role.in_(roles),
+            Ledger.user_id == current_user.id,
         )
-        .limit(1)
-    ).first()
-    if row is None:
-        if forbidden_detail:
-            readable = db.execute(
-                select(Ledger, LedgerMember)
-                .join(LedgerMember, LedgerMember.ledger_id == Ledger.id)
-                .where(
-                    Ledger.external_id == ledger_external_id,
-                    LedgerMember.user_id == current_user.id,
-                    LedgerMember.status == ACTIVE_MEMBER_STATUS,
-                    LedgerMember.role.in_(READABLE_ROLES),
-                )
-                .limit(1)
-            ).first()
-            if readable is not None:
-                raise HTTPException(status_code=403, detail=forbidden_detail)
+    )
+    if ledger is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
-    return row[0], row[1]
+    return ledger, None
 
 
 def _to_upload_out(row: AttachmentFile, ledger_external_id: str) -> AttachmentUploadOut:
@@ -114,8 +87,7 @@ async def upload_attachment(
         db,
         ledger_external_id=ledger_id,
         current_user=current_user,
-        roles=WRITABLE_ROLES,
-        forbidden_detail="Attachment write forbidden",
+        roles=set(),
     )
     data = await file.read()
     if not data:
@@ -167,8 +139,7 @@ def batch_exists(
         db,
         ledger_external_id=req.ledger_id,
         current_user=current_user,
-        roles=WRITABLE_ROLES,
-        forbidden_detail="Attachment write forbidden",
+        roles=set(),
     )
     wanted = [value.strip().lower() for value in req.sha256_list if isinstance(value, str) and value.strip()]
     if not wanted:
@@ -206,20 +177,14 @@ def download_attachment(
     if row is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    if current_user.is_admin:
-        pass
-    else:
-        membership = db.scalar(
-            select(LedgerMember).where(
-                and_(
-                    LedgerMember.ledger_id == row.ledger_id,
-                    LedgerMember.user_id == current_user.id,
-                    LedgerMember.status == ACTIVE_MEMBER_STATUS,
-                    LedgerMember.role.in_(READABLE_ROLES),
-                )
+    if not current_user.is_admin:
+        ledger = db.scalar(
+            select(Ledger).where(
+                Ledger.id == row.ledger_id,
+                Ledger.user_id == current_user.id,
             )
         )
-        if membership is None:
+        if ledger is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Attachment access forbidden")
 
     path = Path(row.storage_path)

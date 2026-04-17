@@ -1,25 +1,21 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..concurrency import lock_ledger_for_materialize
 from ..database import get_db
-from ..deps import get_current_user, require_scopes
+from ..deps import get_current_user, require_any_scopes, require_scopes
 from ..ledger_access import (
-    ACTIVE_MEMBER_STATUS,
-    READABLE_ROLES,
-    ROLE_OWNER,
-    ROLE_VIEWER,
-    WRITABLE_ROLES,
     get_accessible_ledger_by_external_id,
-    list_accessible_memberships,
+    list_accessible_ledgers,
 )
 from ..metrics import metrics
-from ..models import AuditLog, Device, Ledger, LedgerMember, SyncChange, SyncCursor, User
+from ..models import AuditLog, Device, Ledger, SyncChange, SyncCursor, User
 from ..schemas import (
     SyncChangeOut,
     SyncFullResponse,
@@ -28,7 +24,7 @@ from ..schemas import (
     SyncPushRequest,
     SyncPushResponse,
 )
-from ..security import SCOPE_APP_WRITE
+from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +51,10 @@ def _materialize_individual_changes(
     This ensures that incremental pushes from Mobile become visible to the Web
     which reads from the latest snapshot.
     """
+    # 0. Serialize materialization per ledger to prevent two concurrent pushes
+    #    from each reading the same snapshot and writing competing new ones.
+    lock_ledger_for_materialize(db, ledger_id)
+
     # 1. Find latest snapshot
     snapshot_row = db.scalar(
         select(SyncChange)
@@ -138,13 +138,61 @@ def _materialize_individual_changes(
             # Ensure syncId is set
             payload.setdefault("syncId", sync_id)
             found = False
+            old_entity: dict[str, Any] | None = None
             for i, e in enumerate(arr):
                 if e.get("syncId") == sync_id:
-                    arr[i] = payload
+                    old_entity = e
+                    # 合并而不是整体替换：mobile 的增量 push 只带发生变化的核心
+                    # 字段（如 name / icon），不会每次都带上 iconCloudFileId /
+                    # iconCloudSha256 这种"得先上传文件才知道"的字段。直接替换
+                    # 会把 snapshot 里已有的云端图标引用弄丢。合并时 payload 里
+                    # 未出现的键沿用旧值，显式 null 也视为保留（无法区分"缺失"
+                    # vs "null"），只覆盖明确带有非空值的字段。
+                    merged = {**e, **{k: v for k, v in payload.items() if v is not None}}
+                    # 强制采用 payload 的 syncId（保证一致），并确保核心字段若
+                    # payload 显式传空字符串则仍覆盖（name 改空的边缘情况）。
+                    if "name" in payload and isinstance(payload.get("name"), str):
+                        merged["name"] = payload["name"]
+                    arr[i] = merged
                     found = True
                     break
             if not found:
                 arr.append(payload)
+
+            # 重命名级联：当 account / category / tag 的 name 变了，snapshot.items
+            # 里以前引用旧 name 的 tx 也要跟着改。否则 web 查 tx 列表返回的
+            # categoryName / accountName / tags 字符串就是老名字，表现为
+            # "mobile 改了名，web 上 tx 里的标签/分类还是老名字（看起来是缓存）"。
+            if old_entity is not None and change.entity_type in {"account", "category", "tag"}:
+                old_name = str(old_entity.get("name") or "").strip()
+                new_name = str(payload.get("name") or "").strip()
+                if old_name and new_name and old_name != new_name:
+                    items_arr = snapshot.get("items") or []
+                    if change.entity_type == "category":
+                        old_kind = str(old_entity.get("kind") or "").strip()
+                        for tx in items_arr:
+                            if tx.get("categoryName") == old_name and (
+                                not old_kind or tx.get("categoryKind") == old_kind
+                            ):
+                                tx["categoryName"] = new_name
+                    elif change.entity_type == "account":
+                        for tx in items_arr:
+                            if tx.get("accountName") == old_name:
+                                tx["accountName"] = new_name
+                            if tx.get("fromAccountName") == old_name:
+                                tx["fromAccountName"] = new_name
+                            if tx.get("toAccountName") == old_name:
+                                tx["toAccountName"] = new_name
+                    elif change.entity_type == "tag":
+                        for tx in items_arr:
+                            raw_tags = tx.get("tags")
+                            if not raw_tags or not isinstance(raw_tags, str):
+                                continue
+                            parts = [
+                                new_name if part.strip() == old_name else part
+                                for part in raw_tags.split(",")
+                            ]
+                            tx["tags"] = ",".join(p for p in parts if p.strip())
 
         snapshot[key] = arr
 
@@ -225,37 +273,26 @@ async def push_changes(
             db,
             user_id=current_user.id,
             ledger_external_id=change.ledger_id,
-            roles=READABLE_ROLES,
         )
         if row is None:
-            existing_ledger = db.scalar(
-                select(Ledger).where(Ledger.external_id == change.ledger_id).limit(1)
-            )
-            if existing_ledger is not None:
-                metrics.inc("beecount_sync_push_failed_total")
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No write access to ledger",
-                )
+            # Caller doesn't own a ledger with this external_id — auto-create.
+            # The (user_id, external_id) unique constraint keeps per-user ids
+            # isolated, so two users can independently own "default".
             ledger = Ledger(user_id=current_user.id, external_id=change.ledger_id)
             db.add(ledger)
             db.flush()
-            member = LedgerMember(
-                ledger_id=ledger.id,
-                user_id=current_user.id,
-                role=ROLE_OWNER,
-                status=ACTIVE_MEMBER_STATUS,
-            )
-            db.add(member)
-            db.flush()
         else:
-            ledger, member = row
+            ledger, _ = row
 
-        if member.role == ROLE_VIEWER or member.role not in WRITABLE_ROLES:
-            metrics.inc("beecount_sync_push_failed_total")
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Viewer cannot push changes")
-
-        incoming_updated_at = _to_utc(change.updated_at)
+        # Clamp incoming updated_at to the server clock to neutralize client
+        # clock skew. Without this, a mobile device whose local clock is ahead
+        # of the server by minutes/hours will always win LWW against a legitimate
+        # web write that used server time — silently overriding the user's latest
+        # change. Cap the incoming timestamp at (server_now + 5s); legitimate
+        # small skew still passes, intentional-or-accidental future dates don't.
+        raw_updated_at = _to_utc(change.updated_at)
+        max_allowed = now + timedelta(seconds=5)
+        incoming_updated_at = min(raw_updated_at, max_allowed)
         latest_entity_change = db.scalar(
             select(SyncChange)
             .where(
@@ -267,7 +304,19 @@ async def push_changes(
             .limit(1)
         )
 
-        if latest_entity_change and _to_utc(latest_entity_change.updated_at) > incoming_updated_at:
+        # Deterministic LWW with device_id tie-break:
+        # compare (updated_at, device_id) tuples lexicographically so two servers
+        # or retried calls produce the same winner regardless of arrival order.
+        incoming_device_id = req.device_id or ""
+        incoming_tuple = (incoming_updated_at, incoming_device_id)
+        existing_tuple: tuple[datetime, str] | None = None
+        if latest_entity_change:
+            existing_tuple = (
+                _to_utc(latest_entity_change.updated_at),
+                latest_entity_change.updated_by_device_id or "",
+            )
+
+        if existing_tuple is not None and existing_tuple > incoming_tuple:
             rejected += 1
             conflict_count += 1
             sample = {
@@ -287,29 +336,18 @@ async def push_changes(
                     metadata_json={
                         **sample,
                         "incomingUpdatedAt": incoming_updated_at.isoformat(),
-                        "existingUpdatedAt": _to_utc(latest_entity_change.updated_at).isoformat(),
+                        "existingUpdatedAt": existing_tuple[0].isoformat(),
                         "incomingDeviceId": req.device_id,
+                        "existingDeviceId": existing_tuple[1],
                     },
                 )
             )
             continue
 
-        if latest_entity_change and _to_utc(latest_entity_change.updated_at) == incoming_updated_at:
-            db.add(
-                AuditLog(
-                    user_id=current_user.id,
-                    ledger_id=ledger.id,
-                    action="sync_conflict",
-                    metadata_json={
-                        "reason": "lww_same_timestamp_accept_latest_arrival",
-                        "ledgerId": change.ledger_id,
-                        "entityType": change.entity_type,
-                        "entitySyncId": change.entity_sync_id,
-                        "existingChangeId": latest_entity_change.change_id,
-                        "incomingDeviceId": req.device_id,
-                    },
-                )
-            )
+        if existing_tuple is not None and existing_tuple == incoming_tuple:
+            # Idempotent replay (same device, same timestamp) — don't duplicate.
+            accepted += 1
+            continue
 
         row_change = SyncChange(
             user_id=ledger.user_id,
@@ -331,8 +369,8 @@ async def push_changes(
         if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
             ledgers_with_individual_changes.add(ledger.id)
     if max_cursor == 0:
-        memberships = list_accessible_memberships(db, user_id=current_user.id, roles=READABLE_ROLES)
-        max_cursor = _max_cursor_for_ledgers(db, [ledger.id for ledger, _ in memberships])
+        accessible = list_accessible_ledgers(db, user_id=current_user.id)
+        max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
 
     # Materialize individual entity changes into snapshot so Web can see them
     for ledger_ext_id, ledger_id in touched_ledgers.items():
@@ -354,16 +392,14 @@ async def push_changes(
 
     if touched_ledgers:
         ws_manager = request.app.state.ws_manager
-        for ledger_external_id, ledger_id in touched_ledgers.items():
-            member_user_ids = db.scalars(
-                select(LedgerMember.user_id).where(
-                    LedgerMember.ledger_id == ledger_id,
-                    LedgerMember.status == ACTIVE_MEMBER_STATUS,
-                )
-            ).all()
-            for member_user_id in set(member_user_ids):
+        # Single-user-per-ledger: broadcast only to the owner.
+        owner_user_ids = db.scalars(
+            select(Ledger.user_id).where(Ledger.id.in_(list(touched_ledgers.values())))
+        ).all()
+        for owner_user_id in set(owner_user_ids):
+            for ledger_external_id in touched_ledgers:
                 await ws_manager.broadcast_to_user(
-                    member_user_id,
+                    owner_user_id,
                     {
                         "type": "sync_change",
                         "ledgerId": ledger_external_id,
@@ -387,7 +423,7 @@ def pull_changes(
     since: int = Query(default=0, ge=0),
     device_id: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
-    _scopes: set[str] = Depends(require_scopes(SCOPE_APP_WRITE)),
+    _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SyncPullResponse:
@@ -407,8 +443,8 @@ def pull_changes(
         device.last_seen_at = datetime.now(timezone.utc)
         heartbeat_updated = True
 
-    memberships = list_accessible_memberships(db, user_id=current_user.id, roles=READABLE_ROLES)
-    ledger_ids = [ledger.id for ledger, _ in memberships]
+    accessible = list_accessible_ledgers(db, user_id=current_user.id)
+    ledger_ids = [lg.id for lg in accessible]
     if not ledger_ids:
         if heartbeat_updated:
             db.commit()
@@ -485,19 +521,18 @@ def pull_changes(
 @router.get("/full", response_model=SyncFullResponse)
 def full_snapshot(
     ledger_id: str,
-    _scopes: set[str] = Depends(require_scopes(SCOPE_APP_WRITE)),
+    _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SyncFullResponse:
-    memberships = list_accessible_memberships(db, user_id=current_user.id, roles=READABLE_ROLES)
-    ledger_ids = [ledger.id for ledger, _ in memberships]
+    accessible = list_accessible_ledgers(db, user_id=current_user.id)
+    ledger_ids = [lg.id for lg in accessible]
     latest_cursor = _max_cursor_for_ledgers(db, ledger_ids)
 
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=current_user.id,
         ledger_external_id=ledger_id,
-        roles=READABLE_ROLES,
     )
     if row is None:
         return SyncFullResponse(ledger_id=ledger_id, snapshot=None, latest_cursor=latest_cursor)
@@ -531,13 +566,13 @@ def full_snapshot(
 
 @router.get("/ledgers", response_model=list[SyncLedgerOut])
 def list_ledgers(
-    _scopes: set[str] = Depends(require_scopes(SCOPE_APP_WRITE)),
+    _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[SyncLedgerOut]:
-    memberships = list_accessible_memberships(db, user_id=current_user.id, roles=READABLE_ROLES)
+    accessible = list_accessible_ledgers(db, user_id=current_user.id)
     out: list[SyncLedgerOut] = []
-    for ledger, membership in memberships:
+    for ledger in accessible:
         latest_change = db.scalar(
             select(SyncChange)
             .where(
@@ -568,7 +603,7 @@ def list_ledgers(
                 updated_at=updated_at,
                 size=size,
                 metadata=metadata,
-                role=cast("Any", membership.role),
+                role=cast("Any", "owner"),
             )
         )
     return out

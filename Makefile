@@ -1,4 +1,4 @@
-.PHONY: setup-backend migrate dev-up dev-api dev-web dev-db seed-demo grant-admin cleanup-diag-users test lint typecheck
+.PHONY: setup-backend migrate dev-up dev-api dev-web dev-db seed-demo grant-admin cleanup-diag-users test lint typecheck wipe-local
 
 setup-backend:
 	python3 -m venv .venv
@@ -10,7 +10,9 @@ migrate:
 	. .venv/bin/activate && alembic upgrade head
 
 dev-api: setup-backend migrate
-	. .venv/bin/activate && uvicorn server:app --reload --port 8080
+	# --host 0.0.0.0 必要：模拟器/手机经 WiFi 用 IP 访问时才能连进来。
+	# uvicorn 默认绑 127.0.0.1，会导致 "Connection refused"。
+	. .venv/bin/activate && uvicorn server:app --reload --host 0.0.0.0 --port 8080
 
 dev-up:
 	./scripts/dev_up.sh
@@ -47,3 +49,13 @@ lint:
 
 typecheck:
 	. .venv/bin/activate && mypy src
+
+# 一键清空本地开发数据：停服、删 sqlite dev DB、清 data/ 下运行时附件。
+# 保留 data/ 目录结构和 .gitkeep；不动 Postgres。
+wipe-local:
+	@pkill -f "python.*server\.py" 2>/dev/null || true
+	@pkill -f "uvicorn server:app" 2>/dev/null || true
+	@rm -f beecount.db
+	@find data -mindepth 1 -not -name '.gitkeep' -delete 2>/dev/null || true
+	@echo "✓ wiped: beecount.db + data/*"
+	@echo "next: make migrate && make seed-demo && make dev-api"

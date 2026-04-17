@@ -94,19 +94,6 @@ class Ledger(Base):
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")
 
 
-class LedgerMember(Base):
-    __tablename__ = "ledger_members"
-    __table_args__ = (UniqueConstraint("ledger_id", "user_id", name="uq_ledger_members"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    role: Mapped[str] = mapped_column(String(16), index=True)
-    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
-    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class UserAccount(Base):
     __tablename__ = "user_accounts"
 

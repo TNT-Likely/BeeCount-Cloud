@@ -10,13 +10,10 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes, require_scopes
 from ..ledger_access import (
-    ACTIVE_MEMBER_STATUS,
-    READABLE_ROLES,
     get_accessible_ledger_by_external_id,
 )
 from ..models import (
     Ledger,
-    LedgerMember,
     SyncChange,
     User,
     UserAccount,
@@ -67,27 +64,29 @@ def _require_ledger(
     user_id: str,
     ledger_external_id: str,
     is_admin: bool,
-) -> tuple[Ledger, LedgerMember | None]:
+) -> tuple[Ledger, None]:
+    """Resolve a ledger for the caller. Admin bypasses ownership check.
+
+    Returns ``(ledger, None)`` — the second slot used to hold a LedgerMember
+    row and is retained for back-compat with callers that destructure.
+    """
     if is_admin:
         ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
         if ledger is None:
             raise HTTPException(status_code=404, detail="Ledger not found")
-        membership = db.scalar(
-            select(LedgerMember).where(
-                LedgerMember.ledger_id == ledger.id,
-                LedgerMember.user_id == user_id,
-                LedgerMember.status == ACTIVE_MEMBER_STATUS,
-            )
-        )
-        return ledger, membership
+        if _is_ledger_deleted(db, ledger_id=ledger.id):
+            raise HTTPException(status_code=404, detail="Ledger not found")
+        return ledger, None
 
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user_id,
         ledger_external_id=ledger_external_id,
-        roles=READABLE_ROLES,
     )
     if row is None:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    ledger_row, _ = row
+    if _is_ledger_deleted(db, ledger_id=ledger_row.id):
         raise HTTPException(status_code=404, detail="Ledger not found")
     return row
 
@@ -136,6 +135,43 @@ def _get_latest_change_id(db: Session, *, ledger_id: str) -> int:
     return int(val or 0)
 
 
+def _owner_map_for_ledgers(
+    db: Session, ledgers: list[Ledger]
+) -> dict[str, tuple[str, str | None]]:
+    """Return {ledger_external_id: (user_id, email)} for the given ledgers.
+    Single-user-per-ledger: every entity in a ledger was created by its owner,
+    so this is the right attribution for the web tables.
+    """
+    user_ids = {lg.user_id for lg in ledgers}
+    if not user_ids:
+        return {}
+    rows = db.execute(
+        select(User.id, User.email).where(User.id.in_(user_ids))
+    ).all()
+    email_by_uid = {row[0]: row[1] for row in rows}
+    return {
+        lg.external_id: (lg.user_id, email_by_uid.get(lg.user_id))
+        for lg in ledgers
+    }
+
+
+def _is_ledger_deleted(db: Session, *, ledger_id: str) -> bool:
+    """True iff the latest ledger_snapshot sync change for this ledger is a
+    tombstone (``action='delete'``). Used to filter / 404 deleted ledgers in
+    read endpoints without dropping the underlying rows (we keep the audit
+    trail under the soft-delete model)."""
+    latest_action = db.scalar(
+        select(SyncChange.action)
+        .where(
+            SyncChange.ledger_id == ledger_id,
+            SyncChange.entity_type == "ledger_snapshot",
+        )
+        .order_by(SyncChange.change_id.desc())
+        .limit(1)
+    )
+    return latest_action == "delete"
+
+
 def _snapshot_ledger_info(
     snapshot: dict[str, Any] | None,
     *,
@@ -160,6 +196,28 @@ def _snapshot_transactions(snapshot: dict[str, Any] | None) -> list[dict[str, An
     if snapshot is None:
         return []
     return snapshot.get("items") or []
+
+
+def _load_owner_identity(db: Session, *, ledger: Ledger) -> tuple[str, str | None, str | None, str | None, int]:
+    """Return (user_id, email, display_name, avatar_url, avatar_version) for
+    the ledger owner. Single-user-per-ledger model: every row in the ledger
+    was created by the owner."""
+    row = db.execute(
+        select(
+            User.id,
+            User.email,
+            UserProfile.display_name,
+            UserProfile.avatar_file_id,
+            UserProfile.avatar_version,
+        )
+        .join(UserProfile, UserProfile.user_id == User.id, isouter=True)
+        .where(User.id == ledger.user_id)
+    ).first()
+    if row is None:
+        return ledger.user_id, None, None, None, 0
+    return row[0], row[1], row[2], (
+        f"/api/v1/attachments/{row[3]}" if row[3] else None
+    ), int(row[4] or 0)
 
 
 def _snapshot_accounts(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -229,6 +287,14 @@ def _parse_datetime(value: Any) -> datetime | None:
         except (OSError, ValueError, OverflowError):
             return None
     if isinstance(value, str):
+        # Try full ISO 8601 first (handles microseconds + timezone offsets like
+        # "2026-04-17T02:49:19.858771+00:00" which strptime cannot match).
+        # Accept both "Z" suffix and "+HH:MM" offsets by normalizing.
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+            return _to_utc(dt)
+        except ValueError:
+            pass
         for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
             try:
                 dt = datetime.strptime(value, fmt)
@@ -292,40 +358,27 @@ def list_ledgers(
     db: Session = Depends(get_db),
 ) -> list[ReadLedgerOut]:
     if _is_admin(current_user):
-        rows = db.execute(
-            select(Ledger, LedgerMember)
-            .outerjoin(
-                LedgerMember,
-                and_(
-                    LedgerMember.ledger_id == Ledger.id,
-                    LedgerMember.user_id == current_user.id,
-                    LedgerMember.status == ACTIVE_MEMBER_STATUS,
-                ),
-            )
-            .order_by(Ledger.created_at.desc())
-        ).all()
+        ledgers = list(db.scalars(select(Ledger).order_by(Ledger.created_at.desc())).all())
     else:
-        rows = db.execute(
-            select(Ledger, LedgerMember)
-            .join(
-                LedgerMember,
-                and_(
-                    LedgerMember.ledger_id == Ledger.id,
-                    LedgerMember.user_id == current_user.id,
-                    LedgerMember.status == ACTIVE_MEMBER_STATUS,
-                ),
-            )
-            .order_by(Ledger.created_at.desc())
-        ).all()
+        ledgers = list(
+            db.scalars(
+                select(Ledger)
+                .where(Ledger.user_id == current_user.id)
+                .order_by(Ledger.created_at.desc())
+            ).all()
+        )
 
     out: list[ReadLedgerOut] = []
-    for ledger, member in rows:
+    for ledger in ledgers:
+        # Hide soft-deleted ledgers.
+        if _is_ledger_deleted(db, ledger_id=ledger.id):
+            continue
         snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
         ledger_name, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
         items = _snapshot_transactions(snapshot)
         tx_count, income_total, expense_total = _compute_totals(items)
         now = datetime.now(timezone.utc)
-        role = cast("Any", member.role if member is not None else "viewer")
+        role = cast("Any", "owner" if ledger.user_id == current_user.id else "viewer")
         out.append(
             ReadLedgerOut(
                 ledger_id=ledger.external_id,
@@ -405,6 +458,33 @@ def list_transactions(
     ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
     items = _snapshot_transactions(snapshot)
+    owner_id, owner_email, owner_display, owner_avatar, owner_avatar_ver = (
+        _load_owner_identity(db, ledger=ledger)
+    )
+    # id→name 表：tx 的 account/category/tag 名字优先按 id 反查，id 查不到
+    # 时再 fallback 到 item 里存的老字符串。详见 list_workspace_transactions
+    # 同段注释。
+    acc_map: dict[str, str] = {
+        str(a.get("syncId")): (a.get("name") or "").strip()
+        for a in _snapshot_accounts(snapshot)
+        if a.get("syncId")
+    }
+    cat_map: dict[str, tuple[str, str]] = {
+        str(c.get("syncId")): (
+            (c.get("name") or "").strip(),
+            (c.get("kind") or "").strip(),
+        )
+        for c in _snapshot_categories(snapshot)
+        if c.get("syncId")
+    }
+    tag_map: dict[str, tuple[str, str | None]] = {
+        str(t.get("syncId")): (
+            (t.get("name") or "").strip(),
+            t.get("color"),
+        )
+        for t in _snapshot_tags(snapshot)
+        if t.get("syncId")
+    }
 
     # Apply filters in Python
     filtered: list[dict[str, Any]] = []
@@ -447,14 +527,58 @@ def list_transactions(
         happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
         if happened_at is None:
             happened_at = datetime.now(timezone.utc)
-        raw_tags = item.get("tags") or ""
-        if isinstance(raw_tags, list):
-            tags_str = ", ".join(raw_tags)
-        else:
-            tags_str = str(raw_tags) if raw_tags else ""
-        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
         raw_attachments = item.get("attachments")
         sync_id = item.get("syncId") or item.get("sync_id") or item.get("id") or ""
+
+        acc_id = item.get("accountId") or item.get("account_id")
+        account_name_live = acc_map.get(str(acc_id)) if acc_id else None
+        account_name = account_name_live or item.get("accountName") or item.get("account_name")
+
+        from_acc_id = item.get("fromAccountId") or item.get("from_account_id")
+        from_account_name_live = acc_map.get(str(from_acc_id)) if from_acc_id else None
+        from_account_name = (
+            from_account_name_live
+            or item.get("fromAccountName")
+            or item.get("from_account_name")
+        )
+
+        to_acc_id = item.get("toAccountId") or item.get("to_account_id")
+        to_account_name_live = acc_map.get(str(to_acc_id)) if to_acc_id else None
+        to_account_name = (
+            to_account_name_live
+            or item.get("toAccountName")
+            or item.get("to_account_name")
+        )
+
+        cat_id = item.get("categoryId") or item.get("category_id")
+        cat_entry = cat_map.get(str(cat_id)) if cat_id else None
+        category_name = (
+            cat_entry[0] if cat_entry else (item.get("categoryName") or item.get("category_name"))
+        )
+        category_kind = (
+            cat_entry[1] if cat_entry else (item.get("categoryKind") or item.get("category_kind"))
+        )
+
+        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
+        if isinstance(raw_tag_ids, list) and raw_tag_ids:
+            tags_list_live: list[str] = []
+            for tid in raw_tag_ids:
+                entry = tag_map.get(str(tid))
+                if entry and entry[0]:
+                    tags_list_live.append(entry[0])
+            if tags_list_live:
+                tags_str = ",".join(tags_list_live)
+            else:
+                raw_tags = item.get("tags") or ""
+                tags_str = (
+                    ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
+                )
+        else:
+            raw_tags = item.get("tags") or ""
+            tags_str = (
+                ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
+            )
+
         results.append(
             ReadTransactionOut(
                 id=sync_id,
@@ -463,15 +587,15 @@ def list_transactions(
                 amount=float(item.get("amount") or 0.0),
                 happened_at=happened_at,
                 note=item.get("note"),
-                category_name=item.get("categoryName") or item.get("category_name"),
-                category_kind=item.get("categoryKind") or item.get("category_kind"),
-                account_name=item.get("accountName") or item.get("account_name"),
-                from_account_name=item.get("fromAccountName") or item.get("from_account_name"),
-                to_account_name=item.get("toAccountName") or item.get("to_account_name"),
-                category_id=item.get("categoryId") or item.get("category_id"),
-                account_id=item.get("accountId") or item.get("account_id"),
-                from_account_id=item.get("fromAccountId") or item.get("from_account_id"),
-                to_account_id=item.get("toAccountId") or item.get("to_account_id"),
+                category_name=category_name,
+                category_kind=category_kind,
+                account_name=account_name,
+                from_account_name=from_account_name,
+                to_account_name=to_account_name,
+                category_id=cat_id,
+                account_id=acc_id,
+                from_account_id=from_acc_id,
+                to_account_id=to_acc_id,
                 tags=tags_str or None,
                 tags_list=_tags_list(tags_str),
                 tag_ids=raw_tag_ids if isinstance(raw_tag_ids, list) else [],
@@ -479,11 +603,11 @@ def list_transactions(
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
-                created_by_user_id=None,
-                created_by_email=None,
-                created_by_display_name=None,
-                created_by_avatar_url=None,
-                created_by_avatar_version=None,
+                created_by_user_id=owner_id,
+                created_by_email=owner_email,
+                created_by_display_name=owner_display,
+                created_by_avatar_url=owner_avatar,
+                created_by_avatar_version=owner_avatar_ver,
             )
         )
     return results
@@ -664,13 +788,52 @@ def list_workspace_transactions(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all()
 
+    # 每个账本一张 "syncId → 当前 name" 表，给下面 out_items 组装时按 id 反查用。
+    # 为什么要按 id 反查：snapshot.items[i] 里存的 accountName / categoryName /
+    # tags (comma-names) 是 tx 写入那一刻的名字，标签/分类/账户之后改名的话，
+    # 这些字段就"过期"了。名字改写靠 update_* mutator 的 cascade 或 materialize
+    # 的 cascade 来兜，但任何路径漏了一次 cascade 就会永久陈旧。read 时按 id
+    # 反查最新名字能彻底绕开 cascade 失败 —— id 没变，snapshot 里实体最新名字
+    # 就是最新名字。id 查不到时再 fallback 到 item 里存的 name 兼容老数据。
+    per_ledger_maps: dict[
+        str,
+        tuple[
+            dict[str, str],  # account syncId → name
+            dict[str, tuple[str, str]],  # category syncId → (name, kind)
+            dict[str, tuple[str, str | None]],  # tag syncId → (name, color)
+        ],
+    ] = {}
     all_items: list[tuple[dict[str, Any], str, str, int]] = []
     for led in ledgers:
         snapshot = _get_latest_snapshot(db, ledger_id=led.id)
         led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
         change_id = _get_latest_change_id(db, ledger_id=led.id)
+        acc_map = {
+            str(a.get("syncId")): (a.get("name") or "").strip()
+            for a in _snapshot_accounts(snapshot)
+            if a.get("syncId")
+        }
+        cat_map = {
+            str(c.get("syncId")): (
+                (c.get("name") or "").strip(),
+                (c.get("kind") or "").strip(),
+            )
+            for c in _snapshot_categories(snapshot)
+            if c.get("syncId")
+        }
+        tag_map = {
+            str(t.get("syncId")): (
+                (t.get("name") or "").strip(),
+                t.get("color"),
+            )
+            for t in _snapshot_tags(snapshot)
+            if t.get("syncId")
+        }
+        per_ledger_maps[led.external_id] = (acc_map, cat_map, tag_map)
         for item in _snapshot_transactions(snapshot):
             all_items.append((item, led.external_id, led_name, change_id))
+    # Owner map: 单用户单账本模型下每条交易的创建人 = 账本 owner。
+    owner_map = _owner_map_for_ledgers(db, list(ledgers))
 
     filtered: list[tuple[dict[str, Any], str, str, int]] = []
     for item, led_ext_id, led_name, change_id in all_items:
@@ -714,14 +877,66 @@ def list_workspace_transactions(
         happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
         if happened_at is None:
             happened_at = datetime.now(timezone.utc)
-        raw_tags = item.get("tags") or ""
-        if isinstance(raw_tags, list):
-            tags_str = ", ".join(raw_tags)
-        else:
-            tags_str = str(raw_tags) if raw_tags else ""
-        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
         raw_attachments = item.get("attachments")
         sync_id = item.get("syncId") or item.get("sync_id") or item.get("id") or ""
+        owner_info = owner_map.get(led_ext_id) or (None, None)
+
+        acc_map, cat_map, tag_map = per_ledger_maps.get(led_ext_id, ({}, {}, {}))
+
+        # 账户：id 查到就用最新 name，查不到 fallback 到 item 里存的名字。
+        acc_id = item.get("accountId") or item.get("account_id")
+        account_name_live = acc_map.get(str(acc_id)) if acc_id else None
+        account_name = account_name_live or item.get("accountName") or item.get("account_name")
+
+        from_acc_id = item.get("fromAccountId") or item.get("from_account_id")
+        from_account_name_live = acc_map.get(str(from_acc_id)) if from_acc_id else None
+        from_account_name = (
+            from_account_name_live
+            or item.get("fromAccountName")
+            or item.get("from_account_name")
+        )
+
+        to_acc_id = item.get("toAccountId") or item.get("to_account_id")
+        to_account_name_live = acc_map.get(str(to_acc_id)) if to_acc_id else None
+        to_account_name = (
+            to_account_name_live
+            or item.get("toAccountName")
+            or item.get("to_account_name")
+        )
+
+        # 分类：同上
+        cat_id = item.get("categoryId") or item.get("category_id")
+        cat_entry = cat_map.get(str(cat_id)) if cat_id else None
+        category_name = (
+            cat_entry[0] if cat_entry else (item.get("categoryName") or item.get("category_name"))
+        )
+        category_kind = (
+            cat_entry[1] if cat_entry else (item.get("categoryKind") or item.get("category_kind"))
+        )
+
+        # 标签：优先按 tagIds 顺序解析实时名字；没 ids 就 fallback 到 item.tags
+        # comma-string。id 存在但查不到（tag 被删）忽略该项。
+        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
+        if isinstance(raw_tag_ids, list) and raw_tag_ids:
+            tags_list_live: list[str] = []
+            for tid in raw_tag_ids:
+                entry = tag_map.get(str(tid))
+                if entry and entry[0]:
+                    tags_list_live.append(entry[0])
+            if tags_list_live:
+                tags_str = ",".join(tags_list_live)
+            else:
+                # 所有 id 都查不到：退回到 item.tags 历史字符串。
+                raw_tags = item.get("tags") or ""
+                tags_str = (
+                    ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
+                )
+        else:
+            raw_tags = item.get("tags") or ""
+            tags_str = (
+                ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
+            )
+
         out_items.append(
             WorkspaceTransactionOut(
                 id=sync_id,
@@ -730,15 +945,15 @@ def list_workspace_transactions(
                 amount=float(item.get("amount") or 0.0),
                 happened_at=happened_at,
                 note=item.get("note"),
-                category_name=item.get("categoryName") or item.get("category_name"),
-                category_kind=item.get("categoryKind") or item.get("category_kind"),
-                account_name=item.get("accountName") or item.get("account_name"),
-                from_account_name=item.get("fromAccountName") or item.get("from_account_name"),
-                to_account_name=item.get("toAccountName") or item.get("to_account_name"),
-                category_id=item.get("categoryId") or item.get("category_id"),
-                account_id=item.get("accountId") or item.get("account_id"),
-                from_account_id=item.get("fromAccountId") or item.get("from_account_id"),
-                to_account_id=item.get("toAccountId") or item.get("to_account_id"),
+                category_name=category_name,
+                category_kind=category_kind,
+                account_name=account_name,
+                from_account_name=from_account_name,
+                to_account_name=to_account_name,
+                category_id=cat_id,
+                account_id=acc_id,
+                from_account_id=from_acc_id,
+                to_account_id=to_acc_id,
                 tags=tags_str or None,
                 tags_list=_tags_list(tags_str),
                 tag_ids=raw_tag_ids if isinstance(raw_tag_ids, list) else [],
@@ -746,8 +961,8 @@ def list_workspace_transactions(
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
-                created_by_user_id=None,
-                created_by_email=None,
+                created_by_user_id=owner_info[0],
+                created_by_email=owner_info[1],
                 created_by_display_name=None,
                 created_by_avatar_url=None,
                 created_by_avatar_version=None,
@@ -788,9 +1003,10 @@ def list_workspace_accounts(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all()
 
-    all_accounts: list[WorkspaceAccountOut] = []
-    seen_keys: set[str] = set()  # (name_lower) for dedup
-
+    # 见 list_workspace_tags 的注释：先收集所有 ledger 的账户快照，再按
+    # syncId/name 取 last_change_id 最大的那份。否则 web 刚在 L1 改了账户，
+    # 另一账本的陈旧副本会被 dedup 保留，用户看到"改了没生效"。
+    account_rows: list[tuple[str, WorkspaceAccountOut]] = []
     for led in ledgers:
         snapshot = _get_latest_snapshot(db, ledger_id=led.id)
         led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
@@ -801,59 +1017,52 @@ def list_workspace_accounts(
                 continue
             if q and q.lower() not in name.lower():
                 continue
-            key = name.lower()
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            all_accounts.append(WorkspaceAccountOut(
-                id=acct.get("syncId") or acct.get("sync_id") or "",
-                name=name,
-                account_type=acct.get("type"),
-                currency=acct.get("currency"),
-                initial_balance=_safe_float(acct.get("initialBalance")),
-                last_change_id=change_id,
-                ledger_id=led.external_id,
-                ledger_name=led_name,
-                created_by_user_id=None,
-                created_by_email=None,
-            ))
+            sync_id = acct.get("syncId") or acct.get("sync_id") or ""
+            account_rows.append(
+                (
+                    sync_id.lower() if sync_id else name.lower(),
+                    WorkspaceAccountOut(
+                        id=sync_id,
+                        name=name,
+                        account_type=acct.get("type"),
+                        currency=acct.get("currency"),
+                        initial_balance=_safe_float(acct.get("initialBalance")),
+                        last_change_id=change_id,
+                        ledger_id=led.external_id,
+                        ledger_name=led_name,
+                        created_by_user_id=None,
+                        created_by_email=None,
+                    ),
+                )
+            )
+    best_by_key: dict[str, WorkspaceAccountOut] = {}
+    for key, entry in account_rows:
+        existing = best_by_key.get(key)
+        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
+            best_by_key[key] = entry
+    name_seen_acct: dict[str, WorkspaceAccountOut] = {}
+    for entry in best_by_key.values():
+        nk = (entry.name or "").lower()
+        prev = name_seen_acct.get(nk)
+        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
+            name_seen_acct[nk] = entry
+    all_accounts: list[WorkspaceAccountOut] = list(name_seen_acct.values())
 
-    # --- 2. 合并 UserAccount 表数据（Web 端直接创建的），保持向后兼容 ---
-    dedupe_scope_user_id = user_id if is_admin else current_user.id
-    if deduplicate_user_dictionaries(db, user_id=dedupe_scope_user_id):
-        db.commit()
-    ua_conditions: list[Any] = [UserAccount.deleted_at.is_(None)]
-    if q:
-        ua_conditions.append(UserAccount.name.ilike(f"%{q}%"))
-    if is_admin:
-        if user_id:
-            ua_conditions.append(UserAccount.user_id == user_id)
-    else:
-        ua_conditions.append(UserAccount.user_id == current_user.id)
+    # 历史上这里还会合并 UserAccount 表（web 直接建账户的兜底来源）。
+    # 问题：mobile 重命名 A→B，snapshot 更到 B，但 UserAccount 里还有 A（那是
+    # 之前 web 给 tx 指定账户时 _get_or_create_user_account 落下的条目），名字
+    # 不匹配 → 列表 A/B 同时出现，看起来"新建了一个"。
+    # 账户本就是 user-global 的，snapshot 里已经是权威来源；UserAccount 只用来
+    # 给 tx write 做 id→name 回填，不再混进列表，避免重命名后陈旧残留。
 
-    rows = db.execute(
-        select(UserAccount, User.email)
-        .join(User, User.id == UserAccount.user_id)
-        .where(and_(*ua_conditions))
-        .order_by(UserAccount.name.asc())
-    ).all()
-    for row, email in rows:
-        key = (row.name or "").strip().lower()
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        all_accounts.append(WorkspaceAccountOut(
-            id=row.id,
-            name=row.name,
-            account_type=row.account_type,
-            currency=row.currency,
-            initial_balance=row.initial_balance,
-            last_change_id=0,
-            ledger_id=None,
-            ledger_name=None,
-            created_by_user_id=row.user_id,
-            created_by_email=email,
-        ))
+    # 对来自 snapshot 的条目（ledger_id 非空 + created_by_user_id 为空）
+    # 填充账本 owner 身份；单用户单账本模型下这就是真正的创建人。
+    owner_map = _owner_map_for_ledgers(db, list(ledgers))
+    for e in all_accounts:
+        if e.created_by_user_id is None and e.ledger_id in owner_map:
+            uid, email = owner_map[e.ledger_id]
+            e.created_by_user_id = uid
+            e.created_by_email = email
 
     # Sort by name, then paginate
     all_accounts.sort(key=lambda a: (a.name or "").lower())
@@ -887,9 +1096,10 @@ def list_workspace_categories(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all()
 
-    all_categories: list[WorkspaceCategoryOut] = []
-    seen_keys: set[str] = set()  # (kind + name_lower) for dedup
-
+    # 见 list_workspace_tags 的注释：同名同 kind 的分类可能在多个 ledger
+    # snapshot 里都有，其中一份是最新的（web 刚改过）而其他是旧副本。按
+    # last_change_id 取最大者，避免用户看到"改了没生效"。
+    cat_rows: list[tuple[str, WorkspaceCategoryOut]] = []
     for led in ledgers:
         snapshot = _get_latest_snapshot(db, ledger_id=led.id)
         led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
@@ -901,73 +1111,56 @@ def list_workspace_categories(
             if q and q.lower() not in name.lower():
                 continue
             kind = cat.get("kind") or cat.get("categoryKind") or "expense"
-            key = f"{kind}:{name.lower()}"
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            all_categories.append(WorkspaceCategoryOut(
-                id=cat.get("syncId") or cat.get("sync_id") or "",
-                name=name,
-                kind=kind,
-                level=int(cat.get("level") or 1),
-                sort_order=int(cat.get("sortOrder") or cat.get("sort_order") or 0),
-                icon=cat.get("icon"),
-                icon_type=cat.get("iconType") or cat.get("icon_type"),
-                custom_icon_path=cat.get("customIconPath") or cat.get("custom_icon_path"),
-                icon_cloud_file_id=cat.get("iconCloudFileId") or cat.get("icon_cloud_file_id"),
-                icon_cloud_sha256=cat.get("iconCloudSha256") or cat.get("icon_cloud_sha256"),
-                parent_name=cat.get("parentName") or cat.get("parent_name"),
-                last_change_id=change_id,
-                ledger_id=led.external_id,
-                ledger_name=led_name,
-                created_by_user_id=None,
-                created_by_email=None,
-            ))
+            sync_id = cat.get("syncId") or cat.get("sync_id") or ""
+            key = sync_id.lower() if sync_id else f"{kind}:{name.lower()}"
+            cat_rows.append(
+                (
+                    key,
+                    WorkspaceCategoryOut(
+                        id=sync_id,
+                        name=name,
+                        kind=kind,
+                        level=int(cat.get("level") or 1),
+                        sort_order=int(cat.get("sortOrder") or cat.get("sort_order") or 0),
+                        icon=cat.get("icon"),
+                        icon_type=cat.get("iconType") or cat.get("icon_type"),
+                        custom_icon_path=cat.get("customIconPath") or cat.get("custom_icon_path"),
+                        icon_cloud_file_id=cat.get("iconCloudFileId") or cat.get("icon_cloud_file_id"),
+                        icon_cloud_sha256=cat.get("iconCloudSha256") or cat.get("icon_cloud_sha256"),
+                        parent_name=cat.get("parentName") or cat.get("parent_name"),
+                        last_change_id=change_id,
+                        ledger_id=led.external_id,
+                        ledger_name=led_name,
+                        created_by_user_id=None,
+                        created_by_email=None,
+                    ),
+                )
+            )
+    best_by_key: dict[str, WorkspaceCategoryOut] = {}
+    for key, entry in cat_rows:
+        existing = best_by_key.get(key)
+        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
+            best_by_key[key] = entry
+    kindname_seen: dict[str, WorkspaceCategoryOut] = {}
+    for entry in best_by_key.values():
+        kk = f"{entry.kind}:{(entry.name or '').lower()}"
+        prev = kindname_seen.get(kk)
+        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
+            kindname_seen[kk] = entry
+    all_categories: list[WorkspaceCategoryOut] = list(kindname_seen.values())
 
-    # --- 2. 合并 UserCategory 表数据（Web 端直接创建的），保持向后兼容 ---
-    dedupe_scope_user_id = user_id if is_admin else current_user.id
-    if deduplicate_user_dictionaries(db, user_id=dedupe_scope_user_id):
-        db.commit()
-    uc_conditions: list[Any] = [UserCategory.deleted_at.is_(None)]
-    if q:
-        uc_conditions.append(UserCategory.name.ilike(f"%{q}%"))
-    if is_admin:
-        if user_id:
-            uc_conditions.append(UserCategory.user_id == user_id)
-    else:
-        uc_conditions.append(UserCategory.user_id == current_user.id)
+    # 不再合并 UserCategory 表。原因同 list_workspace_accounts：
+    # UserCategory 是 web 给 tx 指定分类时 _get_or_create_user_category 落下的
+    # 旁枝，mobile 重命名后这里会残留旧名字，导致列表"看起来多了一个"。
+    # snapshot 是权威来源。
 
-    rows = db.execute(
-        select(UserCategory, User.email)
-        .join(User, User.id == UserCategory.user_id)
-        .where(and_(*uc_conditions))
-        .order_by(UserCategory.kind.asc(), UserCategory.sort_order.asc(), UserCategory.name.asc())
-    ).all()
-    for row, email in rows:
-        name = (row.name or "").strip()
-        kind = row.kind or "expense"
-        key = f"{kind}:{name.lower()}"
-        if not name or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        all_categories.append(WorkspaceCategoryOut(
-            id=row.id,
-            name=row.name,
-            kind=kind,
-            level=row.level,
-            sort_order=row.sort_order,
-            icon=row.icon,
-            icon_type=row.icon_type,
-            custom_icon_path=row.custom_icon_path,
-            icon_cloud_file_id=row.icon_cloud_file_id,
-            icon_cloud_sha256=row.icon_cloud_sha256,
-            parent_name=None,
-            last_change_id=0,
-            ledger_id=None,
-            ledger_name=None,
-            created_by_user_id=row.user_id,
-            created_by_email=email,
-        ))
+    # Snapshot 条目填 owner 身份，见 list_workspace_accounts 同样处理。
+    owner_map = _owner_map_for_ledgers(db, list(ledgers))
+    for e in all_categories:
+        if e.created_by_user_id is None and e.ledger_id in owner_map:
+            uid, email = owner_map[e.ledger_id]
+            e.created_by_user_id = uid
+            e.created_by_email = email
 
     # Sort by kind, sort_order, name, then paginate
     all_categories.sort(key=lambda c: (c.kind or "", c.sort_order or 0, (c.name or "").lower()))
@@ -1004,6 +1197,12 @@ def list_workspace_tags(
     all_tags: list[WorkspaceTagOut] = []
     seen_keys: set[str] = set()  # name_lower for dedup
 
+    # Collect all tag entries from every ledger snapshot first, tracking which
+    # ledger + which change_id each came from. Then for each (syncId or name)
+    # pick the entry with the highest per-tag SyncChange row — i.e. the most
+    # recently-updated copy. This prevents "web changed tag color in L1 but
+    # the list still shows L2's old copy because L2 came first in the dedup".
+    tag_rows: list[tuple[str, WorkspaceTagOut]] = []
     for led in ledgers:
         snapshot = _get_latest_snapshot(db, ledger_id=led.id)
         led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
@@ -1014,57 +1213,111 @@ def list_workspace_tags(
                 continue
             if q and q.lower() not in name.lower():
                 continue
-            key = name.lower()
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            all_tags.append(WorkspaceTagOut(
-                id=tag.get("syncId") or tag.get("sync_id") or "",
-                name=name,
-                color=tag.get("color"),
-                last_change_id=change_id,
-                ledger_id=led.external_id,
-                ledger_name=led_name,
-                created_by_user_id=None,
-                created_by_email=None,
-            ))
+            sync_id = tag.get("syncId") or tag.get("sync_id") or ""
+            tag_rows.append(
+                (
+                    sync_id.lower() if sync_id else name.lower(),
+                    WorkspaceTagOut(
+                        id=sync_id,
+                        name=name,
+                        color=tag.get("color"),
+                        last_change_id=change_id,
+                        ledger_id=led.external_id,
+                        ledger_name=led_name,
+                        created_by_user_id=None,
+                        created_by_email=None,
+                    ),
+                )
+            )
 
-    # --- 2. 合并 UserTag 表数据（Web 端直接创建的），保持向后兼容 ---
-    dedupe_scope_user_id = user_id if is_admin else current_user.id
-    if deduplicate_user_dictionaries(db, user_id=dedupe_scope_user_id):
-        db.commit()
-    ut_conditions: list[Any] = [UserTag.deleted_at.is_(None)]
-    if q:
-        ut_conditions.append(UserTag.name.ilike(f"%{q}%"))
-    if is_admin:
-        if user_id:
-            ut_conditions.append(UserTag.user_id == user_id)
-    else:
-        ut_conditions.append(UserTag.user_id == current_user.id)
+    # Prefer highest last_change_id per dedup key; then also track name-level
+    # dedup so the final list doesn't repeat the same name twice under two
+    # different syncIds (mobile fullPush can produce this on legacy data).
+    best_by_key: dict[str, WorkspaceTagOut] = {}
+    for key, entry in tag_rows:
+        existing = best_by_key.get(key)
+        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
+            best_by_key[key] = entry
 
-    rows = db.execute(
-        select(UserTag, User.email)
-        .join(User, User.id == UserTag.user_id)
-        .where(and_(*ut_conditions))
-        .order_by(UserTag.name.asc())
-    ).all()
-    for row, email in rows:
-        key = (row.name or "").strip().lower()
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        all_tags.append(WorkspaceTagOut(
-            id=row.id,
-            name=row.name,
-            color=row.color,
-            last_change_id=0,
-            ledger_id=None,
-            ledger_name=None,
-            created_by_user_id=row.user_id,
-            created_by_email=email,
-        ))
+    name_seen: dict[str, WorkspaceTagOut] = {}
+    for entry in best_by_key.values():
+        nk = (entry.name or "").lower()
+        prev = name_seen.get(nk)
+        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
+            name_seen[nk] = entry
+
+    for entry in name_seen.values():
+        all_tags.append(entry)
+
+    # 不再合并 UserTag 表。原因同 accounts/categories：mobile 重命名"出差"→"差旅"
+    # 后，snapshot 更新成"差旅"，但 UserTag 里还有"出差"（web 给 tx 指定标签时
+    # _get_or_create_user_tag 落下的），名字不同 dedup 折不掉 → 列表同时出现
+    # "出差" + "差旅"，看起来 web 没刷新。snapshot 作为唯一权威。
 
     # Sort by name, then paginate
+    # Snapshot 条目填 owner 身份。
+    owner_map = _owner_map_for_ledgers(db, list(ledgers))
+    for e in all_tags:
+        if e.created_by_user_id is None and e.ledger_id in owner_map:
+            uid, email = owner_map[e.ledger_id]
+            e.created_by_user_id = uid
+            e.created_by_email = email
+
+    # 按 tag 聚合跨所有账本的全部交易 —— 用 tx.tagIds（当前真实引用）优先匹配，
+    # 查不到再回退到 tx.tags（comma-name）按 name 匹配。这样 web 的标签页统计
+    # 笔数/支出/收入不再依赖前端抓到的分页 transactions，而是全量汇总。
+    tag_id_to_stats: dict[str, dict[str, float]] = {
+        e.id: {"count": 0.0, "expense": 0.0, "income": 0.0}
+        for e in all_tags
+        if e.id
+    }
+    tag_name_to_id: dict[str, str] = {
+        (e.name or "").strip().lower(): e.id
+        for e in all_tags
+        if e.name and e.id
+    }
+    for led in ledgers:
+        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
+        for tx in _snapshot_transactions(snapshot):
+            tx_type_val = (
+                tx.get("txType") or tx.get("tx_type") or tx.get("type") or ""
+            )
+            amount = float(tx.get("amount") or 0.0)
+            # 先按 tagIds 解析
+            matched_ids: set[str] = set()
+            raw_tag_ids = tx.get("tagIds") or tx.get("tag_ids")
+            if isinstance(raw_tag_ids, list):
+                for tid in raw_tag_ids:
+                    tid_s = str(tid).strip()
+                    if tid_s and tid_s in tag_id_to_stats:
+                        matched_ids.add(tid_s)
+            # 没命中就按 name 解析（老 tx 没有 tagIds，或 id 被删了）
+            if not matched_ids:
+                raw_tags = tx.get("tags")
+                if isinstance(raw_tags, str) and raw_tags.strip():
+                    for part in raw_tags.split(","):
+                        key = part.strip().lower()
+                        if key and key in tag_name_to_id:
+                            matched_ids.add(tag_name_to_id[key])
+                elif isinstance(raw_tags, list):
+                    for part in raw_tags:
+                        key = str(part).strip().lower()
+                        if key and key in tag_name_to_id:
+                            matched_ids.add(tag_name_to_id[key])
+            for tid in matched_ids:
+                slot = tag_id_to_stats[tid]
+                slot["count"] += 1.0
+                if tx_type_val == "expense":
+                    slot["expense"] += amount
+                elif tx_type_val == "income":
+                    slot["income"] += amount
+    for e in all_tags:
+        if e.id and e.id in tag_id_to_stats:
+            s = tag_id_to_stats[e.id]
+            e.tx_count = int(s["count"])
+            e.expense_total = float(s["expense"])
+            e.income_total = float(s["income"])
+
     all_tags.sort(key=lambda t: (t.name or "").lower())
     return all_tags[offset : offset + limit]
 

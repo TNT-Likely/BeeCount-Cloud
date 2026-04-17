@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import {
   LocaleProvider,
   ThemeProvider,
+  ToastProvider,
   applyDocumentLocale,
   applyTheme,
   initialLocale,
@@ -20,7 +21,9 @@ createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <LocaleProvider dictionaries={dictionaries}>
       <ThemeProvider>
-        <App />
+        <ToastProvider>
+          <App />
+        </ToastProvider>
       </ThemeProvider>
     </LocaleProvider>
   </React.StrictMode>

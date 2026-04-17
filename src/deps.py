@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .ledger_access import get_accessible_ledger_by_external_id
-from .models import Ledger, LedgerMember, User
+from .models import Ledger, User
 from .security import decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -69,7 +69,7 @@ def require_ledger_role(*roles: str) -> Callable:
         request: Request,
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
-    ) -> tuple[Ledger, LedgerMember]:
+    ) -> tuple[Ledger, None]:
         ledger_external_id = (
             request.path_params.get("ledger_external_id")
             or request.path_params.get("ledger_id")

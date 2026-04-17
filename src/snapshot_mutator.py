@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 def _new_sync_id(prefix: str) -> str:
@@ -273,11 +276,18 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             else:
                 item[snapshot_key] = str(value)
     if "tags" in payload:
-        normalized = _normalize_tx_tags(payload.get("tags"))
+        raw_tags = payload.get("tags")
+        normalized = _normalize_tx_tags(raw_tags)
+        logger.info(
+            "update_transaction.tags tx_id=%s raw=%r normalized=%r",
+            tx_id, raw_tags, normalized,
+        )
         if normalized is None:
             item.pop("tags", None)
         else:
             item["tags"] = normalized
+    else:
+        logger.info("update_transaction.tags tx_id=%s 'tags' key NOT in payload", tx_id)
     if "tag_ids" in payload:
         raw = payload.get("tag_ids")
         if isinstance(raw, list):

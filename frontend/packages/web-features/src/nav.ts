@@ -24,11 +24,11 @@ export const NAV_GROUPS: NavGroup[] = [
     key: 'bookkeeping',
     titleKey: 'nav.group.bookkeeping',
     items: [
+      { key: 'overview', labelKey: 'nav.overview' },
       { key: 'transactions', labelKey: 'nav.transactions' },
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
-      { key: 'tags', labelKey: 'nav.tags' },
-      { key: 'overview', labelKey: 'nav.overview' }
+      { key: 'tags', labelKey: 'nav.tags' }
     ]
   },
   {

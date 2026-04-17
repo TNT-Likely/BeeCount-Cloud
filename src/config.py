@@ -29,6 +29,21 @@ class Settings(BaseSettings):
     device_online_window_minutes: int = 10
     allow_app_rw_scopes: bool = True
 
+    # Open registration is a footgun on self-hosted deployments: anyone with
+    # the public URL could create a user. Default OFF; operators set this to
+    # true during bootstrap, create the first admin, then flip back to false.
+    # Admins can still create users via POST /api/v1/admin/users regardless.
+    registration_enabled: bool = Field(default=False, alias="REGISTRATION_ENABLED")
+
+    # Legacy strict `base_change_id` check on /write/* endpoints. When mobile
+    # fullPush is streaming changes, the server-side materializer bumps the
+    # latest ledger_snapshot change_id faster than any web retry can catch up,
+    # producing endless 409s. With this flag OFF (default) we drop the strict
+    # equality check and fall back to per-entity LWW for actual conflict
+    # resolution. Set to ``true`` to re-enable the old behavior if something
+    # regresses in the field.
+    strict_base_change_id: bool = Field(default=False, alias="STRICT_BASE_CHANGE_ID")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

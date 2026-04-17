@@ -7,13 +7,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  EmptyState,
   Input,
   Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Table,
   TableBody,
   TableCell,
@@ -33,11 +29,13 @@ type TagsPanelProps = {
   rows: ReadTag[]
   canManage: boolean
   showCreatorColumn?: boolean
+  /** 按 tag.id 查询的统计（交易数/支出/收入），未传则不展开详情。 */
+  statsById?: Record<string, { count: number; expense: number; income: number }>
   onFormChange: (next: TagForm) => void
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onEdit: (row: ReadTag) => void
-  onDelete: (row: ReadTag) => void
+  onDelete?: (row: ReadTag) => void
 }
 
 export function TagsPanel({
@@ -45,6 +43,7 @@ export function TagsPanel({
   rows,
   canManage,
   showCreatorColumn = false,
+  statsById,
   onFormChange,
   onSave,
   onReset,
@@ -53,8 +52,9 @@ export function TagsPanel({
 }: TagsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  const colCount = 2 + (showCreatorColumn ? 1 : 0)
-  const colors = ['#F59E0B', '#EF4444', '#10B981', '#3B82F6', '#8B5CF6', '#EC4899', '#6B7280']
+  const hasStats = Boolean(statsById)
+  // 无色列：name + ops(+stats +creator)
+  const colCount = (hasStats ? 4 : 1) + (showCreatorColumn ? 1 : 0)
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -62,26 +62,20 @@ export function TagsPanel({
 
   return (
     <>
-      <ListTableShell
-        title={t('tags.title')}
-        actions={
-          <Button
-            disabled={!canManage}
-            onClick={() => {
-              onReset()
-              setOpen(true)
-            }}
-          >
-            {t('tags.button.create')}
-          </Button>
-        }
-      >
+      {/* 同账户/分类：两端模型未对齐前屏蔽 web 新建标签。保留编辑入口。 */}
+      <ListTableShell title={t('tags.title')}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="bc-table-head">{t('tags.table.name')}</TableHead>
-                <TableHead className="bc-table-head">{t('tags.table.color')}</TableHead>
+                {hasStats ? (
+                  <>
+                    <TableHead className="bc-table-head text-right">笔数</TableHead>
+                    <TableHead className="bc-table-head text-right">支出</TableHead>
+                    <TableHead className="bc-table-head text-right">收入</TableHead>
+                  </>
+                ) : null}
                 {showCreatorColumn ? (
                   <TableHead className="bc-table-head">
                     {t('transactions.table.user')}
@@ -95,26 +89,51 @@ export function TagsPanel({
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={colCount} className="py-12 text-center text-sm text-muted-foreground">
-                    {t('table.empty')}
+                  <TableCell colSpan={colCount} className="p-0">
+                    <EmptyState
+                      icon={
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                             strokeLinejoin="round">
+                          <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                          <circle cx="7" cy="7" r="1.5" />
+                        </svg>
+                      }
+                      title="还没有标签"
+                      description={'标签可以给交易打备注。点击"新建标签"开始。'}
+                    />
                   </TableCell>
                 </TableRow>
               ) : null}
-              {rows.map((row) => (
+              {rows.map((row) => {
+                const stats = statsById?.[row.id]
+                return (
                 <TableRow
                   key={row.id}
                   className="odd:bg-muted/20 [&>td:last-child]:sticky [&>td:last-child]:right-0 [&>td:last-child]:z-10 [&>td:last-child]:min-w-[132px] [&>td:last-child]:bg-background odd:[&>td:last-child]:bg-muted/20"
                 >
-                  <TableCell>{row.name}</TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-2">
+                      {/* 颜色只读展示，不在 web 端编辑。 */}
                       <span
-                        className="h-4 w-4 rounded-full border border-border"
-                        style={{ background: row.color || '#F59E0B' }}
+                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-border/50"
+                        style={{ background: row.color || '#94a3b8' }}
+                        aria-hidden
                       />
-                      {row.color || '-'}
-                    </div>
+                      <span>{row.name}</span>
+                    </span>
                   </TableCell>
+                  {hasStats ? (
+                    <>
+                      <TableCell className="text-right">{stats?.count ?? 0}</TableCell>
+                      <TableCell className="text-right text-destructive">
+                        {stats ? stats.expense.toFixed(2) : '0.00'}
+                      </TableCell>
+                      <TableCell className="text-right text-emerald-600">
+                        {stats ? stats.income.toFixed(2) : '0.00'}
+                      </TableCell>
+                    </>
+                  ) : null}
                   {showCreatorColumn ? <TableCell>{row.created_by_email || row.created_by_user_id || '-'}</TableCell> : null}
                   <TableCell>
                     <div className="flex items-center gap-3 whitespace-nowrap">
@@ -129,18 +148,21 @@ export function TagsPanel({
                       >
                         {t('common.edit')}
                       </button>
-                      <button
-                        className={textDangerActionClass}
-                        disabled={!canManage}
-                        type="button"
-                        onClick={() => onDelete(row)}
-                      >
-                        {t('common.delete')}
-                      </button>
+                      {onDelete ? (
+                        <button
+                          className={textDangerActionClass}
+                          disabled={!canManage}
+                          type="button"
+                          onClick={() => onDelete(row)}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      ) : null}
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </TableBody>
           </Table>
         </div>
@@ -161,25 +183,6 @@ export function TagsPanel({
                   onFormChange({ ...form, name: event.target.value })
                 }
               />
-            </div>
-            <div className="space-y-1">
-              <Label>{t('tags.table.color')}</Label>
-              <Select value={form.color || '#F59E0B'} onValueChange={(value) => onFormChange({ ...form, color: value })}>
-                <SelectTrigger>
-                  <SelectValue placeholder={t('tags.placeholder.color')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {colors.map((color) => (
-                    <SelectItem key={color} value={color}>
-                      {color}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="h-4 w-4 rounded-full border border-border" style={{ background: form.color || '#F59E0B' }} />
-                {t('tags.preview')}
-              </div>
             </div>
           </div>
           <DialogFooter>

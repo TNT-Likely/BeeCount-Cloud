@@ -174,6 +174,10 @@ export type WorkspaceTag = ReadTag & {
   ledger_name: string | null
   created_by_user_id: string | null
   created_by_email: string | null
+  // 服务端一次性算好，跨全账本全期。前端不再需要自己从分页 tx 里聚合。
+  tx_count?: number | null
+  expense_total?: number | null
+  income_total?: number | null
 }
 
 export type AnalyticsScope = 'month' | 'year' | 'all'

@@ -16,9 +16,6 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_admin_user, require_any_scopes, require_scopes
 from ..ledger_access import (
-    ACTIVE_MEMBER_STATUS,
-    READABLE_ROLES,
-    WRITABLE_ROLES,
     get_accessible_ledger_by_external_id,
 )
 from ..models import (
@@ -27,7 +24,6 @@ from ..models import (
     BackupSnapshot,
     Device,
     Ledger,
-    LedgerMember,
     RefreshToken,
     SyncChange,
     User,
@@ -550,7 +546,6 @@ async def upload_backup_db(
         db,
         user_id=current_user.id,
         ledger_external_id=ledger_id,
-        roles=WRITABLE_ROLES,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
@@ -624,7 +619,6 @@ def upload_backup_snapshot(
         db,
         user_id=current_user.id,
         ledger_external_id=req.ledger_id,
-        roles=WRITABLE_ROLES,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
@@ -703,14 +697,7 @@ def list_backup_artifacts(
     query = (
         select(BackupArtifact, Ledger.external_id)
         .join(Ledger, Ledger.id == BackupArtifact.ledger_id)
-        .join(
-            LedgerMember,
-            and_(
-                LedgerMember.ledger_id == Ledger.id,
-                LedgerMember.user_id == current_user.id,
-                LedgerMember.status == ACTIVE_MEMBER_STATUS,
-            ),
-        )
+        .where(Ledger.user_id == current_user.id)
         .order_by(BackupArtifact.created_at.desc())
         .limit(limit)
     )
@@ -720,7 +707,6 @@ def list_backup_artifacts(
             db,
             user_id=current_user.id,
             ledger_external_id=ledger_id,
-            roles=READABLE_ROLES,
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Ledger not found")
@@ -747,7 +733,6 @@ def create_backup(
         db,
         user_id=current_user.id,
         ledger_external_id=req.ledger_id,
-        roles=WRITABLE_ROLES,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
@@ -805,17 +790,8 @@ async def restore_backup(
     if not ledger:
         raise HTTPException(status_code=404, detail="Ledger not found")
 
-    row = db.execute(
-        select(LedgerMember)
-        .where(
-            LedgerMember.ledger_id == backup.ledger_id,
-            LedgerMember.user_id == current_user.id,
-            LedgerMember.status == ACTIVE_MEMBER_STATUS,
-            LedgerMember.role.in_(WRITABLE_ROLES),
-        )
-        .limit(1)
-    ).first()
-    if row is None:
+    # Single-user-per-ledger: only the owner (or an admin) may restore.
+    if ledger.user_id != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Ledger not found")
 
     payload = json.loads(backup.snapshot_json)
@@ -843,21 +819,15 @@ async def restore_backup(
     db.commit()
     db.refresh(sync_row)
 
-    member_user_ids = db.scalars(
-        select(LedgerMember.user_id).where(
-            LedgerMember.ledger_id == backup.ledger_id,
-            LedgerMember.status == ACTIVE_MEMBER_STATUS,
-        )
-    ).all()
-    for member_user_id in set(member_user_ids):
-        await request.app.state.ws_manager.broadcast_to_user(
-            member_user_id,
-            {
-                "type": "backup_restore",
-                "serverCursor": sync_row.change_id,
-                "serverTimestamp": sync_row.updated_at.isoformat(),
-            },
-        )
+    # Single-user-per-ledger: notify the owner only.
+    await request.app.state.ws_manager.broadcast_to_user(
+        ledger.user_id,
+        {
+            "type": "backup_restore",
+            "serverCursor": sync_row.change_id,
+            "serverTimestamp": sync_row.updated_at.isoformat(),
+        },
+    )
 
     return AdminBackupRestoreResponse(
         restored=True,

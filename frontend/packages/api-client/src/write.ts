@@ -28,6 +28,11 @@ export async function updateLedgerMeta(
   })
 }
 
+/** Soft-delete a ledger. Server writes a tombstone SyncChange; history kept. */
+export async function deleteLedger(token: string, ledgerId: string): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(`/write/ledgers/${encodeURIComponent(ledgerId)}`, token)
+}
+
 export async function createTransaction(
   token: string,
   ledgerId: string,
@@ -202,65 +207,9 @@ export async function deleteTag(
   )
 }
 
-export async function createWorkspaceAccount(
-  token: string,
-  payload: AccountPayload,
-  userId?: string
-): Promise<ReadAccount> {
-  const query = userId ? `?user_id=${encodeURIComponent(userId)}` : ''
-  return authedPost<ReadAccount>(`/write/workspace/accounts${query}`, token, payload)
-}
-
-export async function updateWorkspaceAccount(
-  token: string,
-  accountId: string,
-  payload: Partial<AccountPayload>
-): Promise<ReadAccount> {
-  return authedPatch<ReadAccount>(`/write/workspace/accounts/${encodeURIComponent(accountId)}`, token, payload)
-}
-
-export async function deleteWorkspaceAccount(token: string, accountId: string) {
-  return authedDelete<ReadAccount>(`/write/workspace/accounts/${encodeURIComponent(accountId)}`, token)
-}
-
-export async function createWorkspaceCategory(
-  token: string,
-  payload: CategoryPayload,
-  userId?: string
-): Promise<ReadCategory> {
-  const query = userId ? `?user_id=${encodeURIComponent(userId)}` : ''
-  return authedPost<ReadCategory>(`/write/workspace/categories${query}`, token, payload)
-}
-
-export async function updateWorkspaceCategory(
-  token: string,
-  categoryId: string,
-  payload: Partial<CategoryPayload>
-): Promise<ReadCategory> {
-  return authedPatch<ReadCategory>(`/write/workspace/categories/${encodeURIComponent(categoryId)}`, token, payload)
-}
-
-export async function deleteWorkspaceCategory(token: string, categoryId: string) {
-  return authedDelete<ReadCategory>(`/write/workspace/categories/${encodeURIComponent(categoryId)}`, token)
-}
-
-export async function createWorkspaceTag(
-  token: string,
-  payload: TagPayload,
-  userId?: string
-): Promise<ReadTag> {
-  const query = userId ? `?user_id=${encodeURIComponent(userId)}` : ''
-  return authedPost<ReadTag>(`/write/workspace/tags${query}`, token, payload)
-}
-
-export async function updateWorkspaceTag(
-  token: string,
-  tagId: string,
-  payload: Partial<TagPayload>
-): Promise<ReadTag> {
-  return authedPatch<ReadTag>(`/write/workspace/tags/${encodeURIComponent(tagId)}`, token, payload)
-}
-
-export async function deleteWorkspaceTag(token: string, tagId: string) {
-  return authedDelete<ReadTag>(`/write/workspace/tags/${encodeURIComponent(tagId)}`, token)
-}
+// NOTE: the old ``createWorkspaceAccount`` / ``updateWorkspaceCategory`` /
+// ``deleteWorkspaceTag`` helpers that targeted /write/workspace/* have been
+// removed. They were replaced by per-ledger endpoints (createAccount,
+// updateCategory, deleteTag above) which carry base_change_id for conflict
+// detection. The server-side /write/workspace/* routes were already unwired
+// when multi-user collaboration was simplified out.

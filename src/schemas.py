@@ -373,7 +373,11 @@ class WorkspaceCategoryOut(ReadCategoryOut):
 
 
 class WorkspaceTagOut(ReadTagOut):
-    pass
+    # 跨所有账本按该标签聚合的交易统计，列表接口一次性给。
+    # 全部 None = list_workspace_tags 可选择不提供（legacy 调用）。
+    tx_count: int | None = None
+    expense_total: float | None = None
+    income_total: float | None = None
 
 
 AnalyticsScope = Literal["month", "year", "all"]

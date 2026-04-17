@@ -157,6 +157,11 @@ def register(
     request: Request,
     db: Session = Depends(get_db),
 ) -> AuthTokenResponse:
+    if not settings.registration_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration disabled",
+        )
     _apply_rate_limit(request, "register")
     email = _normalize_email(req.email)
     existing = db.scalar(select(User).where(User.email == email))

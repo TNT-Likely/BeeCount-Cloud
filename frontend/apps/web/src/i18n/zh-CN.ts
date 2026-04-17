@@ -39,7 +39,7 @@ const zhCN = {
   'nav.overview': '总览',
   'nav.analytics': '图表分析',
   'nav.transactions': '交易',
-  'nav.accounts': '账户',
+  'nav.accounts': '资产',
   'nav.categories': '分类',
   'nav.tags': '标签',
   'nav.health': '健康',
@@ -138,7 +138,7 @@ const zhCN = {
   'transactions.attachment.notPreviewable': '该附件不是图片，当前不支持预览。',
   'transactions.attachment.empty': '暂无附件',
 
-  'accounts.title': '账户管理',
+  'accounts.title': '资产管理',
   'accounts.placeholder.name': '账户名称',
   'accounts.placeholder.type': '账户类型',
   'accounts.placeholder.currency': '币种',

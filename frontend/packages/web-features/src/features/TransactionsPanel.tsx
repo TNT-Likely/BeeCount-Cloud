@@ -58,7 +58,6 @@ type TransactionsPanelProps = {
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onReload: () => void
-  onUploadAttachments: (files: File[]) => Promise<AttachmentRef[]>
   onPreviewAttachment: (ref: AttachmentRef) => Promise<void>
   resolveAttachmentPreviewUrl: (ref: AttachmentRef) => Promise<string | null>
   onEdit: (row: ReadTransaction) => void
@@ -222,7 +221,6 @@ export function TransactionsPanel({
   onSave,
   onReset,
   onReload,
-  onUploadAttachments,
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
   onEdit,
@@ -230,10 +228,6 @@ export function TransactionsPanel({
 }: TransactionsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  const [uploadingAttachments, setUploadingAttachments] = useState(false)
-  const [dialogAttachmentIndex, setDialogAttachmentIndex] = useState(0)
-  const [dialogAttachmentPreviewUrl, setDialogAttachmentPreviewUrl] = useState<string | null>(null)
-  const [dialogAttachmentPreviewLoading, setDialogAttachmentPreviewLoading] = useState(false)
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -255,95 +249,23 @@ export function TransactionsPanel({
     .filter((name) => name.length > 0)
     .filter((name, index, self) => self.indexOf(name) === index)
     .sort((a, b) => a.localeCompare(b))
+  // 按 name 反查 tag 颜色，tx 列表行里给每个标签 badge 上色。大小写不敏感。
+  const tagColorByName = new Map<string, string>()
+  for (const row of tags) {
+    const key = (row.name || '').trim().toLowerCase()
+    if (!key) continue
+    if (row.color && !tagColorByName.has(key)) tagColorByName.set(key, row.color)
+  }
 
   const isTransfer = form.tx_type === 'transfer'
+  // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
+  // 转账必须两端都选（否则无法表达方向）。
   const canSubmit = Boolean(writeLedgerId.trim()) && (isTransfer
     ? Boolean(form.from_account_name.trim()) && Boolean(form.to_account_name.trim())
-    : Boolean(form.account_name.trim()))
+    : true)
   const selectedTags = form.tags
   const categoryValue = form.category_name.trim()
   const tagsSummary = selectedTags.length === 0 ? t('common.none') : selectedTags.join(', ')
-  const attachmentRows = [...form.attachments].sort(
-    (a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
-  )
-  const currentDialogAttachment = attachmentRows[dialogAttachmentIndex]
-  const currentDialogAttachmentKey = currentDialogAttachment
-    ? `${currentDialogAttachment.cloudFileId ?? ''}:${currentDialogAttachment.cloudSha256 ?? ''}:${currentDialogAttachment.fileName ?? ''}:${currentDialogAttachment.originalName ?? ''}`
-    : ''
-  const currentDialogAttachmentReady =
-    typeof currentDialogAttachment?.cloudFileId === 'string' &&
-    currentDialogAttachment.cloudFileId.trim().length > 0
-
-  const setAttachments = (next: AttachmentRef[]) => {
-    onFormChange({
-      ...form,
-      attachments: next.map((item, idx) => ({
-        ...item,
-        sortOrder: idx
-      }))
-    })
-  }
-
-  const moveAttachment = (index: number, offset: -1 | 1) => {
-    const target = index + offset
-    if (target < 0 || target >= attachmentRows.length) return
-    const next = [...attachmentRows]
-    const [picked] = next.splice(index, 1)
-    next.splice(target, 0, picked)
-    setAttachments(next)
-  }
-
-  const removeAttachment = (index: number) => {
-    const next = [...attachmentRows]
-    next.splice(index, 1)
-    setAttachments(next)
-  }
-
-  const addAttachments = async (files: FileList | null) => {
-    if (!files || files.length === 0) return
-    setUploadingAttachments(true)
-    try {
-      const incoming = await onUploadAttachments(Array.from(files))
-      if (incoming.length === 0) return
-      setAttachments([...attachmentRows, ...incoming])
-    } finally {
-      setUploadingAttachments(false)
-    }
-  }
-
-  useEffect(() => {
-    if (attachmentRows.length === 0) {
-      setDialogAttachmentIndex(0)
-      return
-    }
-    if (dialogAttachmentIndex >= attachmentRows.length) {
-      setDialogAttachmentIndex(attachmentRows.length - 1)
-    }
-  }, [attachmentRows.length, dialogAttachmentIndex])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!open || !currentDialogAttachment || !currentDialogAttachmentReady) {
-      setDialogAttachmentPreviewUrl(null)
-      setDialogAttachmentPreviewLoading(false)
-      return () => {
-        cancelled = true
-      }
-    }
-    setDialogAttachmentPreviewLoading(true)
-    void resolveAttachmentPreviewUrl(currentDialogAttachment)
-      .then((url) => {
-        if (cancelled) return
-        setDialogAttachmentPreviewUrl(url)
-      })
-      .finally(() => {
-        if (cancelled) return
-        setDialogAttachmentPreviewLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [open, currentDialogAttachmentKey, currentDialogAttachmentReady, resolveAttachmentPreviewUrl])
 
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
@@ -367,7 +289,7 @@ export function TransactionsPanel({
     })
   }
 
-  const colCount = 7 + (showCreatorColumn ? 1 : 0) + (showLedgerColumn ? 1 : 0)
+  const colCount = 8 + (showCreatorColumn ? 1 : 0) + (showLedgerColumn ? 1 : 0)
   const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)))
   const safePage = Math.min(Math.max(page, 1), totalPages)
   const rangeStart = total === 0 ? 0 : (safePage - 1) * pageSize + 1
@@ -375,26 +297,9 @@ export function TransactionsPanel({
 
   return (
     <>
-      <ListTableShell
-        title={t('transactions.title')}
-        actions={
-          <>
-            <Button variant="outline" onClick={onReload}>
-              {t('transactions.button.reload')}
-            </Button>
-            <Button
-              disabled={!canWrite}
-              onClick={() => {
-                onReset()
-                setDialogAttachmentIndex(0)
-                setOpen(true)
-              }}
-            >
-              {t('transactions.button.create')}
-            </Button>
-          </>
-        }
-      >
+      {/* 同账户/分类/标签：两端模型未对齐前，web 端不提供新建交易。
+          Reload 按钮也撤掉 —— WS + polling 已经覆盖刷新，手动 reload 是多余出口。 */}
+      <ListTableShell title={t('transactions.title')}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -416,6 +321,9 @@ export function TransactionsPanel({
                 </TableHead>
                 <TableHead className="bc-table-head">
                   {t('transactions.table.note')}
+                </TableHead>
+                <TableHead className="bc-table-head">
+                  {t('tags.title')}
                 </TableHead>
                 <TableHead className="bc-table-head">
                   {t('transactions.table.attachments')}
@@ -457,6 +365,34 @@ export function TransactionsPanel({
                     <TableCell>{row.account_name || row.from_account_name || '-'}</TableCell>
                     <TableCell className="max-w-[300px] truncate">{row.note || '-'}</TableCell>
                     <TableCell>
+                      {row.tags_list && row.tags_list.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {row.tags_list.map((tagName) => {
+                            const color = tagColorByName.get(tagName.trim().toLowerCase())
+                            return (
+                              <span
+                                key={tagName}
+                                className="inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium"
+                                style={
+                                  color
+                                    ? {
+                                        color,
+                                        borderColor: `${color}66`,
+                                        background: `${color}1a`
+                                      }
+                                    : undefined
+                                }
+                              >
+                                {tagName}
+                              </span>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
                       <AttachmentCarouselCell
                         attachments={txAttachments}
                         metadataOnlyLabel={t('transactions.attachment.metadataOnly')}
@@ -480,7 +416,6 @@ export function TransactionsPanel({
                           type="button"
                           onClick={() => {
                             onEdit(row)
-                            setDialogAttachmentIndex(0)
                             setOpen(true)
                           }}
                         >
@@ -546,11 +481,11 @@ export function TransactionsPanel({
       </ListTableShell>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[80vh] max-w-2xl overflow-hidden p-0">
-          <DialogHeader className="px-6 pt-6">
+        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-6 py-4">
             <DialogTitle>{form.editingId ? t('transactions.button.update') : t('transactions.button.create')}</DialogTitle>
           </DialogHeader>
-          <div className="overflow-y-auto px-6 pb-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
               <Label>{t('shell.ledger')}</Label>
@@ -698,7 +633,10 @@ export function TransactionsPanel({
                     <span className="truncate text-left">{tagsSummary}</span>
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="max-h-64 w-[320px] overflow-y-auto">
+                <DropdownMenuContent
+                  align="start"
+                  className="max-h-64 w-[320px] overflow-y-auto border-border/60 bg-popover text-popover-foreground shadow-lg"
+                >
                   <DropdownMenuLabel>{t('tags.title')}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   {tagOptions.map((name) => (
@@ -730,164 +668,6 @@ export function TransactionsPanel({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <div className="space-y-2 md:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>{t('transactions.table.attachments')}</Label>
-                <label className="inline-flex cursor-pointer">
-                  <input
-                    className="hidden"
-                    type="file"
-                    multiple
-                    onChange={async (event) => {
-                      await addAttachments(event.target.files)
-                      event.currentTarget.value = ''
-                    }}
-                  />
-                  <Button disabled={!canWrite || !writeLedgerId || uploadingAttachments} size="sm" variant="outline">
-                    {uploadingAttachments
-                      ? t('transactions.attachment.uploading')
-                      : t('transactions.attachment.upload')}
-                  </Button>
-                </label>
-              </div>
-              {dictionariesLoading ? (
-                <p className="text-xs text-muted-foreground">{t('transactions.dictionary.loading')}</p>
-              ) : null}
-              <div className="space-y-2 rounded-md border border-border/70 bg-muted/30 p-3">
-                {attachmentRows.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">{t('transactions.attachment.empty')}</p>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="relative overflow-hidden rounded-md border border-border/60 bg-background">
-                      <div className="flex h-56 items-center justify-center bg-muted/30">
-                        {dialogAttachmentPreviewUrl ? (
-                          <img
-                            alt={currentDialogAttachment?.originalName || currentDialogAttachment?.fileName || 'attachment-preview'}
-                            className="h-full w-full cursor-zoom-in object-contain"
-                            src={dialogAttachmentPreviewUrl}
-                            onClick={() => {
-                              if (!currentDialogAttachment || !currentDialogAttachmentReady) return
-                              void onPreviewAttachment(currentDialogAttachment)
-                            }}
-                          />
-                        ) : (
-                          <p className="px-3 text-center text-xs text-muted-foreground">
-                            {dialogAttachmentPreviewLoading
-                              ? '...'
-                              : currentDialogAttachmentReady
-                                ? t('transactions.attachment.notPreviewable')
-                                : t('transactions.attachment.metadataOnly')}
-                          </p>
-                        )}
-                      </div>
-                      {attachmentRows.length > 1 ? (
-                        <>
-                          <button
-                            aria-label={t('transactions.attachment.prev')}
-                            className="absolute left-2 top-1/2 h-7 w-7 -translate-y-1/2 rounded-full border border-border/70 bg-background/90 text-sm"
-                            type="button"
-                            onClick={() =>
-                              setDialogAttachmentIndex((prev) => (prev - 1 + attachmentRows.length) % attachmentRows.length)
-                            }
-                          >
-                            ‹
-                          </button>
-                          <button
-                            aria-label={t('transactions.attachment.next')}
-                            className="absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 rounded-full border border-border/70 bg-background/90 text-sm"
-                            type="button"
-                            onClick={() => setDialogAttachmentIndex((prev) => (prev + 1) % attachmentRows.length)}
-                          >
-                            ›
-                          </button>
-                        </>
-                      ) : null}
-                    </div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {currentDialogAttachment?.originalName || currentDialogAttachment?.fileName || '-'}
-                        </p>
-                        <p className="text-muted-foreground">
-                          {typeof currentDialogAttachment?.fileSize === 'number'
-                            ? `${Math.round(currentDialogAttachment.fileSize / 1024)} KB`
-                            : '-'}
-                          {currentDialogAttachment?.width && currentDialogAttachment?.height
-                            ? ` · ${currentDialogAttachment.width}x${currentDialogAttachment.height}`
-                            : ''}
-                          {` · ${Math.min(dialogAttachmentIndex + 1, attachmentRows.length)}/${attachmentRows.length}`}
-                        </p>
-                      </div>
-                      <Badge variant={currentDialogAttachmentReady ? 'default' : 'secondary'}>
-                        {currentDialogAttachmentReady
-                          ? t('transactions.attachment.ready')
-                          : t('transactions.attachment.metadataOnly')}
-                      </Badge>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        className={textActionClass}
-                        disabled={attachmentRows.length <= 1}
-                        type="button"
-                        onClick={() =>
-                          setDialogAttachmentIndex((prev) => (prev - 1 + attachmentRows.length) % attachmentRows.length)
-                        }
-                      >
-                        {t('transactions.attachment.prev')}
-                      </button>
-                      <button
-                        className={textActionClass}
-                        disabled={attachmentRows.length <= 1}
-                        type="button"
-                        onClick={() => setDialogAttachmentIndex((prev) => (prev + 1) % attachmentRows.length)}
-                      >
-                        {t('transactions.attachment.next')}
-                      </button>
-                      <button
-                        className={textActionClass}
-                        disabled={!currentDialogAttachmentReady || !currentDialogAttachment}
-                        type="button"
-                        onClick={() => {
-                          if (!currentDialogAttachment) return
-                          void onPreviewAttachment(currentDialogAttachment)
-                        }}
-                      >
-                        {t('transactions.attachment.preview')}
-                      </button>
-                      <button
-                        className={textActionClass}
-                        disabled={dialogAttachmentIndex === 0}
-                        type="button"
-                        onClick={() => moveAttachment(dialogAttachmentIndex, -1)}
-                      >
-                        {t('transactions.attachment.movePrev')}
-                      </button>
-                      <button
-                        className={textActionClass}
-                        disabled={dialogAttachmentIndex >= attachmentRows.length - 1}
-                        type="button"
-                        onClick={() => moveAttachment(dialogAttachmentIndex, 1)}
-                      >
-                        {t('transactions.attachment.moveNext')}
-                      </button>
-                      <button
-                        className={textDangerActionClass}
-                        type="button"
-                        onClick={() => removeAttachment(dialogAttachmentIndex)}
-                      >
-                        {t('transactions.attachment.remove')}
-                      </button>
-                    </div>
-                    {attachmentRows.some(
-                      (item) =>
-                        typeof item.cloudFileId !== 'string' || item.cloudFileId.trim().length === 0
-                    ) ? (
-                      <p className="text-xs text-muted-foreground">{t('transactions.attachment.partial')}</p>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
             <div className="space-y-1 md:col-span-2">
               <Label>{t('transactions.table.note')}</Label>
               <Input
@@ -898,7 +678,7 @@ export function TransactionsPanel({
             </div>
           </div>
           </div>
-          <DialogFooter className="border-t border-border/60 px-6 py-4">
+          <DialogFooter className="shrink-0 border-t border-border/60 bg-card px-6 py-4">
             <Button
               variant="outline"
               onClick={() => {

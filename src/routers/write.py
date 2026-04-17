@@ -13,11 +13,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..concurrency import lock_ledger_for_materialize
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes, require_scopes
 from ..ledger_access import (
-    ACTIVE_MEMBER_STATUS,
     ROLE_EDITOR,
     ROLE_OWNER,
     get_accessible_ledger_by_external_id,
@@ -25,7 +25,6 @@ from ..ledger_access import (
 from ..models import (
     AuditLog,
     Ledger,
-    LedgerMember,
     SyncChange,
     SyncPushIdempotency,
     User,
@@ -177,17 +176,24 @@ def _emit_entity_diffs(
     next_snapshot: dict[str, Any],
     now: datetime,
 ) -> None:
-    """Diff prev/next snapshots and emit individual SyncChange rows for each changed entity."""
+    """Diff prev/next snapshots and emit individual SyncChange rows for each changed entity.
+
+    顺序很重要：先 account / category / tag（被引用方），最后 transaction（引用
+    方）。mobile 在 _pull 里按 change_id ASC 逐条 apply，若 tx change 的 change_id
+    比它引用的 category change 还小，`_resolveCategoryId` 在 category 更新前就
+    查老名字 → 查不到 → tx.categoryId = null。典型表现：web 改分类名后 mobile
+    上的相关交易分类变空。
+    """
     prev = prev or {}
     count = 0
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("items") or [], next_snapshot.get("items") or [], "transaction")
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
                                prev.get("accounts") or [], next_snapshot.get("accounts") or [], "account")
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
                                prev.get("categories") or [], next_snapshot.get("categories") or [], "category")
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
                                prev.get("tags") or [], next_snapshot.get("tags") or [], "tag")
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("items") or [], next_snapshot.get("items") or [], "transaction")
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", count, ledger.external_id)
 
 
@@ -196,21 +202,16 @@ def _load_ledger_for_write(
     *,
     user_id: str,
     ledger_external_id: str,
-    roles: set[str],
-) -> tuple[Ledger, LedgerMember]:
+    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
+) -> tuple[Ledger, None]:
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user_id,
         ledger_external_id=ledger_external_id,
-        roles=roles,
     )
     if row is not None:
         return row
-
-    ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
-    if ledger is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
 
 
 def _latest_snapshot_change(db: Session, ledger_id: str) -> SyncChange | None:
@@ -302,9 +303,19 @@ async def _commit_write(
     audit_action: str,
     mutate: Callable[[dict], tuple[dict, str | None]],
 ) -> WriteCommitMeta:
+    # Serialize concurrent writers on the same ledger so the subsequent
+    # snapshot write doesn't race with /sync/push's materializer.
+    lock_ledger_for_materialize(db, ledger.id)
     latest = _latest_snapshot_change(db, ledger.id)
     latest_change_id = latest.change_id if latest is not None else 0
-    if base_change_id != latest_change_id:
+
+    # Legacy strict base_change_id comparison — guarded by a feature flag.
+    # Default OFF: during a mobile fullPush the server-side materializer bumps
+    # latest_change_id faster than any web retry can catch up, producing
+    # endless 409s. Instead we always mutate against the LATEST snapshot and
+    # let per-entity LWW (`_emit_entity_diffs` → incoming vs existing
+    # updated_at tuples) resolve the rare real conflict.
+    if settings.strict_base_change_id and base_change_id != latest_change_id:
         latest_ts = latest.updated_at.isoformat() if latest is not None else None
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -410,22 +421,16 @@ async def _commit_write(
                 return replay
         raise exc
 
-    member_user_ids = db.scalars(
-        select(LedgerMember.user_id).where(
-            LedgerMember.ledger_id == ledger.id,
-            LedgerMember.status == ACTIVE_MEMBER_STATUS,
-        )
-    ).all()
-    for member_user_id in set(member_user_ids):
-        await request.app.state.ws_manager.broadcast_to_user(
-            member_user_id,
-            {
-                "type": "sync_change",
-                "ledgerId": ledger.external_id,
-                "serverCursor": response.new_change_id,
-                "serverTimestamp": response.server_timestamp.isoformat(),
-            },
-        )
+    # Single-user-per-ledger: notify only the owner.
+    await request.app.state.ws_manager.broadcast_to_user(
+        ledger.user_id,
+        {
+            "type": "sync_change",
+            "ledgerId": ledger.external_id,
+            "serverCursor": response.new_change_id,
+            "serverTimestamp": response.server_timestamp.isoformat(),
+        },
+    )
     return response
 
 
@@ -483,21 +488,14 @@ def _payload_with_actor(payload: dict, current_user: User) -> dict:
 
 def _assert_can_modify_entity(
     *,
-    db: Session,
+    db: Session,  # noqa: ARG001 — retained for signature compat
     ledger: Ledger,
     current_user: User,
-    entity_sync_id: str,
+    entity_sync_id: str,  # noqa: ARG001 — retained for signature compat
 ) -> None:
-    """Assert the current user owns the ledger and thus can modify any entity in it."""
-    member = db.scalar(
-        select(LedgerMember).where(
-            LedgerMember.ledger_id == ledger.id,
-            LedgerMember.user_id == current_user.id,
-            LedgerMember.status == ACTIVE_MEMBER_STATUS,
-        )
-    )
-    if member is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
+    """Ownership check: ledger.user_id must match current user."""
+    if ledger.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
 def _normalize_dict_name(raw: object) -> str:
@@ -680,25 +678,40 @@ def _resolve_tx_dictionary_payload(
 
     tag_rows: list[UserTag] = []
     raw_tag_ids = resolved.get("tag_ids")
+    raw_tag_names = _split_tag_names(resolved.get("tags"))
     if isinstance(raw_tag_ids, list) and raw_tag_ids:
-        for raw_tag_id in raw_tag_ids:
-            if not isinstance(raw_tag_id, str) or not raw_tag_id.strip():
-                continue
-            row = db.scalar(
-                select(UserTag).where(
-                    UserTag.id == raw_tag_id.strip(),
-                    UserTag.deleted_at.is_(None),
+        # ID 找不到时按 name 兜底（跟 resolve_account 一样）。
+        # 核心场景：mobile 创建的 tag 在 snapshot 里用 UUID/tx_xxx 这种 syncId，
+        # 没写进 UserTag 表；web 在 tx 编辑弹窗里读到这个 syncId 作为 tag.id 再
+        # 回传时，UserTag 查不到。以前的逻辑是 skip → resolved["tags"]=None →
+        # 整条 tx 的 tags 被清空。现在同位置的 name 还在 raw_tag_names 里，按
+        # 顺序回退到 _get_or_create_user_tag 保住这一条 tag。
+        for idx, raw_tag_id in enumerate(raw_tag_ids):
+            row: UserTag | None = None
+            if isinstance(raw_tag_id, str) and raw_tag_id.strip():
+                row = db.scalar(
+                    select(UserTag).where(
+                        UserTag.id == raw_tag_id.strip(),
+                        UserTag.deleted_at.is_(None),
+                    )
                 )
-            )
+                if row is not None:
+                    _ensure_target_user_writable(current_user=current_user, target_user_id=row.user_id)
+                    if row.user_id != target_user_id:
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
             if row is None:
-                # Tag ID not found (e.g. mobile-synced snapshot ID) — skip it
-                continue
-            _ensure_target_user_writable(current_user=current_user, target_user_id=row.user_id)
-            if row.user_id != target_user_id:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write role forbidden")
-            tag_rows.append(row)
+                fallback_name = raw_tag_names[idx] if idx < len(raw_tag_names) else None
+                if fallback_name:
+                    row = _get_or_create_user_tag(db, target_user_id=target_user_id, name=fallback_name)
+            if row is not None:
+                tag_rows.append(row)
+        # 如果 tag_ids 数组比 tag_names 短（早期的 payload 结构可能），把剩余 name 也补上。
+        if len(raw_tag_ids) < len(raw_tag_names):
+            for extra_name in raw_tag_names[len(raw_tag_ids):]:
+                if extra_name:
+                    tag_rows.append(_get_or_create_user_tag(db, target_user_id=target_user_id, name=extra_name))
     else:
-        for name in _split_tag_names(resolved.get("tags")):
+        for name in raw_tag_names:
             tag_rows.append(_get_or_create_user_tag(db, target_user_id=target_user_id, name=name))
 
     deduped_tag_ids: list[str] = []
@@ -730,7 +743,14 @@ async def create_ledger(
     external_id = (req.ledger_id or f"ledger_{uuid4().hex[:12]}").strip()
     if not external_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ledger id is required")
-    exists = db.scalar(select(Ledger).where(Ledger.external_id == external_id))
+    # Scope uniqueness to current user — different users can use the same
+    # external_id (enforced by the (user_id, external_id) unique constraint).
+    exists = db.scalar(
+        select(Ledger).where(
+            Ledger.external_id == external_id,
+            Ledger.user_id == current_user.id,
+        )
+    )
     if exists is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ledger already exists")
 
@@ -745,16 +765,6 @@ async def create_ledger(
     )
     db.add(ledger)
     db.flush()
-
-    db.add(
-        LedgerMember(
-            ledger_id=ledger.id,
-            user_id=current_user.id,
-            role=ROLE_OWNER,
-            status=ACTIVE_MEMBER_STATUS,
-            joined_at=now,
-        )
-    )
 
     snapshot = ensure_snapshot_v2(
         {
@@ -872,6 +882,77 @@ async def update_ledger_meta(
         device_id=device_id,
         audit_action="web_ledger_meta_update",
         mutate=mutate,
+    )
+
+
+@router.delete(
+    "/ledgers/{ledger_id}",
+    response_model=WriteCommitMeta,
+    responses=_WRITE_RESPONSES,
+)
+async def delete_ledger(
+    ledger_id: str,
+    request: Request,
+    device_id: str = Header(default="web-console", alias="X-Device-ID"),
+    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WriteCommitMeta:
+    """Soft-delete a ledger: append a ``ledger_snapshot action=delete`` tombstone
+    SyncChange. Reads filter it out; historical rows are retained for audit."""
+    row = get_accessible_ledger_by_external_id(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
+    ledger, _ = row
+
+    lock_ledger_for_materialize(db, ledger.id)
+    now = _utcnow()
+    tombstone = SyncChange(
+        user_id=ledger.user_id,
+        ledger_id=ledger.id,
+        entity_type="ledger_snapshot",
+        entity_sync_id=ledger.external_id,
+        action="delete",
+        payload_json={},
+        updated_at=now,
+        updated_by_device_id=device_id,
+        updated_by_user_id=current_user.id,
+    )
+    db.add(tombstone)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            ledger_id=ledger.id,
+            action="web_ledger_delete",
+            metadata_json={
+                "ledgerId": ledger.external_id,
+                "newChangeId": tombstone.change_id,
+            },
+        )
+    )
+    db.commit()
+
+    await request.app.state.ws_manager.broadcast_to_user(
+        ledger.user_id,
+        {
+            "type": "sync_change",
+            "ledgerId": ledger.external_id,
+            "serverCursor": tombstone.change_id,
+            "serverTimestamp": tombstone.updated_at.isoformat(),
+        },
+    )
+    return WriteCommitMeta(
+        ledger_id=ledger.external_id,
+        base_change_id=0,
+        new_change_id=tombstone.change_id,
+        server_timestamp=tombstone.updated_at,
+        idempotency_replayed=False,
+        entity_id=ledger.external_id,
     )
 
 

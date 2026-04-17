@@ -8,6 +8,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  EmptyState,
   Input,
   Label,
   Select,
@@ -39,7 +40,9 @@ type CategoriesPanelProps = {
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onEdit: (row: ReadCategory) => void
-  onDelete: (row: ReadCategory) => void
+  onDelete?: (row: ReadCategory) => void
+  /** Upload a custom icon file to the cloud and return the refs to store in the form. */
+  onUploadIcon?: (file: File) => Promise<{ fileId: string; sha256: string } | null>
 }
 
 export function CategoriesPanel({
@@ -52,7 +55,8 @@ export function CategoriesPanel({
   onSave,
   onReset,
   onEdit,
-  onDelete
+  onDelete,
+  onUploadIcon
 }: CategoriesPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -134,20 +138,9 @@ export function CategoriesPanel({
 
   return (
     <>
-      <ListTableShell
-        title={t('categories.title')}
-        actions={
-          <Button
-            disabled={!canManage}
-            onClick={() => {
-              onReset()
-              setOpen(true)
-            }}
-          >
-            {t('categories.button.create')}
-          </Button>
-        }
-      >
+      {/* 跟账户一样先屏蔽 web 端新建分类：两端模型未对齐，新建容易产生
+          snapshot / UserCategory 双份残留。只保留编辑/删除入口。 */}
+      <ListTableShell title={t('categories.title')}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -180,8 +173,20 @@ export function CategoriesPanel({
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={colCount} className="py-12 text-center text-sm text-muted-foreground">
-                    {t('table.empty')}
+                  <TableCell colSpan={colCount} className="p-0">
+                    <EmptyState
+                      icon={
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                             strokeLinejoin="round">
+                          <path d="M3 6l3-3h12l3 3" />
+                          <path d="M3 6v14a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V6" />
+                          <path d="M8 11h8" />
+                        </svg>
+                      }
+                      title="还没有分类"
+                      description={'从手机端同步后会自动出现，或点击"新建分类"手动添加。'}
+                    />
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -209,14 +214,16 @@ export function CategoriesPanel({
                       >
                         {t('common.edit')}
                       </button>
-                      <button
-                        className={textDangerActionClass}
-                        disabled={!canManage}
-                        type="button"
-                        onClick={() => onDelete(row)}
-                      >
-                        {t('common.delete')}
-                      </button>
+                      {onDelete ? (
+                        <button
+                          className={textDangerActionClass}
+                          disabled={!canManage}
+                          type="button"
+                          onClick={() => onDelete(row)}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      ) : null}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -240,6 +247,10 @@ export function CategoriesPanel({
                 onChange={(e) => onFormChange({ ...form, name: e.target.value })}
               />
             </div>
+            {/* 编辑模式下只允许改名；新建模式下保留全部字段。
+                其他字段在 mobile 端是跟着分类模板固化的，web 上改风险大，先屏蔽。 */}
+            {form.editingId ? null : (
+            <>
             <div className="space-y-1">
               <Label>{t('categories.table.kind')}</Label>
               <Select
@@ -319,6 +330,43 @@ export function CategoriesPanel({
                 </Select>
               </div>
             </div>
+            </>
+            )}
+            {!form.editingId && onUploadIcon && form.icon_type === 'custom' ? (
+              <div className="space-y-1">
+                <Label>{t('categories.placeholder.customIcon') || '自定义图标'}</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="text-sm"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      // Reset input so the same file can be re-picked after reset.
+                      e.currentTarget.value = ''
+                      if (!file) return
+                      const res = await onUploadIcon(file)
+                      if (res) {
+                        onFormChange({
+                          ...form,
+                          icon_cloud_file_id: res.fileId,
+                          icon_cloud_sha256: res.sha256
+                        })
+                      }
+                    }}
+                  />
+                  {form.icon_cloud_file_id ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onFormChange({ ...form, icon_cloud_file_id: '', icon_cloud_sha256: '' })}
+                    >
+                      {t('common.remove') || '移除'}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <div className="space-y-1">
               <Label>{t('categories.preview')}</Label>
               <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2">
