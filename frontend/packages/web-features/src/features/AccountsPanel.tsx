@@ -117,12 +117,12 @@ function MobileStyleAssets({
                       </span>
                       {group.isLiability ? (
                         <span className="rounded-md border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] leading-none text-destructive">
-                          负债
+                          {t('accounts.badge.liability')}
                         </span>
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">
-                      {group.isLiability ? '合计欠款' : '合计余额'}
+                      {group.isLiability ? t('accounts.totalOwed') : t('accounts.totalBalance')}
                     </div>
                   </div>
                 </div>
@@ -172,6 +172,7 @@ function MobileStyleAssets({
  * 区别在于不接 period income/expense，只展示 account 聚合后的静态净值。
  */
 function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
+  const t = useT()
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/30">
       <div
@@ -184,7 +185,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
       />
       <div className="relative p-6">
         <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-          净值（资产 - 负债）
+          {t('accounts.netWorth')}
         </div>
         <Amount
           value={summary.netWorth}
@@ -197,7 +198,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-emerald-600/80 dark:text-emerald-400/80">
-              资产
+              {t('accounts.assets')}
             </div>
             <Amount
               value={summary.assetTotal}
@@ -210,7 +211,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
           </div>
           <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-rose-600/80 dark:text-rose-400/80">
-              负债
+              {t('accounts.liabilities')}
             </div>
             <Amount
               value={summary.liabilityTotal}
@@ -238,6 +239,7 @@ function AssetsCompositionMini({
   groups: AssetGroup[]
   totalAbs: number
 }) {
+  const t = useT()
   const data = groups.map((g) => ({
     type: g.type,
     label: g.label,
@@ -261,11 +263,11 @@ function AssetsCompositionMini({
   return (
     <div className="overflow-hidden rounded-2xl border border-border/50 bg-card/80 p-5">
       <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-        资产构成
+        {t('accounts.composition')}
       </div>
       {data.length === 0 ? (
         <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
-          暂无账户数据
+          {t('accounts.empty.noData')}
         </div>
       ) : (
         <div className="flex items-center gap-5">
@@ -280,7 +282,7 @@ function AssetsCompositionMini({
             <div className="absolute inset-[18%] rounded-full bg-card" aria-hidden />
             <div className="absolute inset-0 flex flex-col items-center justify-center">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                合计
+                {t('common.total')}
               </div>
               <Amount value={totalAbs} size="md" bold className="mt-0.5" />
             </div>
@@ -445,7 +447,7 @@ function BankCardTile({
         {isValuation ? (
           <div className="mt-auto">
             <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-              {isLiability ? '当前欠款' : '当前估值'}
+              {isLiability ? t('accounts.bankcard.currentOwed') : t('accounts.bankcard.currentValue')}
             </div>
             <Amount
               value={valuationValue}
@@ -458,18 +460,18 @@ function BankCardTile({
         ) : hasStats ? (
           <div className="mt-auto grid grid-cols-3 gap-1 rounded-md bg-black/15 px-2 py-1.5 backdrop-blur-[1px]">
             <StatCell
-              label="余额"
+              label={t('accounts.bankcard.balance')}
               value={displayBalance}
               currency={currency}
               tone={displayBalance < 0 ? 'warn' : 'default'}
             />
             <StatCell
-              label="收入"
+              label={t('accounts.bankcard.income')}
               value={row.income_total ?? 0}
               currency={currency}
             />
             <StatCell
-              label="支出"
+              label={t('accounts.bankcard.expense')}
               value={row.expense_total ?? 0}
               currency={currency}
             />
@@ -477,7 +479,7 @@ function BankCardTile({
         ) : (
           <div className="mt-auto">
             <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-              {isLiability ? '欠款' : '余额'}
+              {isLiability ? t('accounts.bankcard.owedLabel') : t('accounts.bankcard.balanceLabel')}
             </div>
             <Amount
               value={displayBalance}
@@ -550,26 +552,24 @@ function StatCell({
 }
 
 // 与 mobile 端 accounts_page.dart / account_edit_page.dart 对齐的账户类型分组。
-// 业务上分"日常账户（可流动）"和"资产/负债（估值）"两大组；液体类是负债。
-const TRADABLE_TYPES: { value: string; label: string }[] = [
-  { value: 'cash', label: '现金' },
-  { value: 'bank_card', label: '银行卡' },
-  { value: 'credit_card', label: '信用卡' },
-  { value: 'alipay', label: '支付宝' },
-  { value: 'wechat', label: '微信' },
-  { value: 'other', label: '其他' }
+// label 由 accountTypeLabel() 走 i18n 查 accountType.<value>,这里只保留 value
+// 顺序——顺序决定了分组/下拉里的展示顺序。
+const TRADABLE_TYPES: { value: string }[] = [
+  { value: 'cash' },
+  { value: 'bank_card' },
+  { value: 'credit_card' },
+  { value: 'alipay' },
+  { value: 'wechat' },
+  { value: 'other' }
 ]
-const VALUATION_TYPES: { value: string; label: string }[] = [
-  { value: 'real_estate', label: '不动产' },
-  { value: 'vehicle', label: '车辆' },
-  { value: 'investment', label: '投资理财' },
-  { value: 'insurance', label: '保险' },
-  { value: 'social_fund', label: '公积金/社保' },
-  { value: 'loan', label: '贷款' }
+const VALUATION_TYPES: { value: string }[] = [
+  { value: 'real_estate' },
+  { value: 'vehicle' },
+  { value: 'investment' },
+  { value: 'insurance' },
+  { value: 'social_fund' },
+  { value: 'loan' }
 ]
-const TYPE_LABEL_MAP = new Map<string, string>(
-  [...TRADABLE_TYPES, ...VALUATION_TYPES].map((t) => [t.value, t.label])
-)
 const LIABILITY_TYPES = new Set(['credit_card', 'loan'])
 
 // 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
@@ -621,9 +621,15 @@ const TYPE_COLORS: Record<string, string> = {
   loan: '#dc2626'
 }
 
-function accountTypeLabel(t?: string | null): string {
-  if (!t) return '-'
-  return TYPE_LABEL_MAP.get(t) || t
+/** 账户类型 label i18n 查找:先看 accountType.<value> key,回退到原始 value。
+ *  参数 tt 是 useT() 返回的查找函数。 */
+function accountTypeLabel(tt: (k: string) => string, value?: string | null): string {
+  if (!value) return '-'
+  const key = `accountType.${value}`
+  const translated = tt(key)
+  // useT 没命中的 key 会把 key 原样返回,说明当前 locale 没定义
+  if (translated === key) return value
+  return translated
 }
 
 type AccountsPanelProps = {
@@ -688,7 +694,7 @@ export function AccountsPanel({
       .filter((type) => (buckets[type] || []).length > 0)
       .map((type) => ({
         type,
-        label: TYPE_LABEL_MAP.get(type) || type,
+        label: accountTypeLabel(t, type),
         color: TYPE_COLORS[type] || '#94a3b8',
         isLiability: LIABILITY_TYPES.has(type),
         rows: (buckets[type] || []).sort((a, b) => a.name.localeCompare(b.name)),
@@ -701,7 +707,7 @@ export function AccountsPanel({
           return s + Math.abs(raw)
         }, 0)
       }))
-  }, [rows])
+  }, [rows, t])
 
   return (
     <>
@@ -718,8 +724,8 @@ export function AccountsPanel({
               <path d="M6 15h4" />
             </svg>
           }
-          title="还没有账户"
-          description="从移动端添加账户后会自动同步到这里。"
+          title={t('accounts.empty.title')}
+          description={t('accounts.empty.desc')}
         />
       ) : (
         <MobileStyleAssets
@@ -758,19 +764,19 @@ export function AccountsPanel({
                   </SelectTrigger>
                   <SelectContent className="max-h-80">
                     <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                      日常账户
+                      {t('accounts.group.tradable')}
                     </div>
                     {TRADABLE_TYPES.map((ty) => (
                       <SelectItem key={ty.value} value={ty.value}>
-                        {ty.label}
+                        {accountTypeLabel(t, ty.value)}
                       </SelectItem>
                     ))}
                     <div className="mt-1 border-t border-border/50 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                      资产 / 负债
+                      {t('accounts.group.valuation')}
                     </div>
                     {VALUATION_TYPES.map((ty) => (
                       <SelectItem key={ty.value} value={ty.value}>
-                        {ty.label}
+                        {accountTypeLabel(t, ty.value)}
                       </SelectItem>
                     ))}
                   </SelectContent>

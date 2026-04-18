@@ -14,6 +14,7 @@ import type {
   WorkspaceLedgerCounts
 } from '@beecount/api-client'
 import { Amount } from '@beecount/web-features'
+import { useT } from '@beecount/ui'
 
 type HeroScope = 'month' | 'year' | 'all'
 
@@ -29,11 +30,8 @@ interface Props {
   ledgerCounts?: WorkspaceLedgerCounts
 }
 
-const SCOPE_OPTIONS: Array<{ value: HeroScope; label: string; hint: string }> = [
-  { value: 'month', label: '本月', hint: '本月结余' },
-  { value: 'year', label: '今年', hint: '今年结余' },
-  { value: 'all', label: '汇总', hint: '全部结余' }
-]
+// 三个 scope 的 label/hint 在组件里 t() 时动态查,这里只留 value 列表
+const SCOPE_VALUES: HeroScope[] = ['month', 'year', 'all']
 
 /**
  * 首页 hero 卡。三视角切换（本月 / 今年 / 汇总）：
@@ -54,6 +52,7 @@ export function HomeHero({
   allSeries,
   ledgerCounts
 }: Props) {
+  const t = useT()
   const [scope, setScope] = useState<HeroScope>('month')
 
   const activeLedger =
@@ -73,9 +72,8 @@ export function HomeHero({
 
   const activeSummary = summaryByScope[scope]
   const activeSeries = seriesByScope[scope]
-  const scopeLabel = SCOPE_OPTIONS.find((o) => o.value === scope)?.label || '本月'
-  const scopeBalanceHint =
-    SCOPE_OPTIONS.find((o) => o.value === scope)?.hint || '本月结余'
+  const scopeLabel = t(`home.scope.${scope}`)
+  const scopeBalanceHint = t(`home.scope.${scope}.hint`)
 
   const income = activeSummary?.income_total ?? 0
   const expense = activeSummary?.expense_total ?? 0
@@ -119,7 +117,7 @@ export function HomeHero({
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 <CalendarDays className="h-3 w-3" />
-                当前账本 · {scopeLabel}
+                {t('home.scope.current')} · {scopeLabel}
               </div>
               <div className="mt-1 flex items-baseline gap-3">
                 <span className="truncate text-xl font-bold">
@@ -149,7 +147,7 @@ export function HomeHero({
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <HeroStat
               icon={<ArrowDownLeft className="h-3.5 w-3.5 text-income" />}
-              label={`${scopeLabel}收入`}
+              label={t('home.hero.income').replace('{scope}', scopeLabel)}
             >
               <Amount
                 value={income}
@@ -163,7 +161,7 @@ export function HomeHero({
             </HeroStat>
             <HeroStat
               icon={<ArrowUpRight className="h-3.5 w-3.5 text-expense" />}
-              label={`${scopeLabel}支出`}
+              label={t('home.hero.expense').replace('{scope}', scopeLabel)}
             >
               <Amount
                 value={expense}
@@ -177,23 +175,23 @@ export function HomeHero({
             </HeroStat>
             <HeroStat
               icon={<Receipt className="h-3.5 w-3.5 text-amber-500" />}
-              label="记账笔数"
+              label={t('home.hero.count')}
             >
               <div className="mt-0.5 font-mono text-xl font-bold tabular-nums leading-tight">
-                {txCount.toLocaleString('zh-CN')}
+                {txCount.toLocaleString()}
                 <span className="ml-1 text-[11px] font-normal text-muted-foreground">
-                  笔
+                  {t('home.hero.countUnit')}
                 </span>
               </div>
             </HeroStat>
             <HeroStat
               icon={<CalendarDays className="h-3.5 w-3.5 text-sky-500" />}
-              label="记账天数"
+              label={t('home.hero.days')}
             >
               <div className="mt-0.5 font-mono text-xl font-bold tabular-nums leading-tight">
-                {days.toLocaleString('zh-CN')}
+                {days.toLocaleString()}
                 <span className="ml-1 text-[11px] font-normal text-muted-foreground">
-                  天
+                  {t('home.hero.daysUnit')}
                 </span>
               </div>
             </HeroStat>
@@ -203,11 +201,15 @@ export function HomeHero({
         {/* 右侧：sparkline，随 scope 变 */}
         <div className="flex min-h-[220px] flex-col gap-2 rounded-xl border border-border/40 bg-background/40 p-3 backdrop-blur-sm">
           <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-muted-foreground">
-            <span>{scopeLabel}结余走势</span>
+            <span>{t('home.hero.trend').replace('{scope}', scopeLabel)}</span>
             {trendData.length > 0 ? (
               <span className="font-mono tabular-nums">
                 {trendData.length}
-                {scope === 'month' ? '天' : scope === 'year' ? '月' : '期'}
+                {scope === 'month'
+                  ? t('home.hero.trendUnit.day')
+                  : scope === 'year'
+                    ? t('home.hero.trendUnit.month')
+                    : t('home.hero.trendUnit.period')}
               </span>
             ) : null}
           </div>
@@ -242,8 +244,8 @@ export function HomeHero({
                     }}
                     formatter={
                       ((v: number) => [
-                        v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
-                        '累计结余'
+                        v.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                        t('home.hero.balanceAccum')
                       ]) as unknown as never
                     }
                     labelFormatter={(_label, payload) => {
@@ -262,7 +264,7 @@ export function HomeHero({
               </ResponsiveContainer>
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                暂无交易
+                {t('home.hero.noTx')}
               </div>
             )}
           </div>
@@ -279,22 +281,23 @@ function ScopeSwitcher({
   value: HeroScope
   onChange: (v: HeroScope) => void
 }) {
+  const t = useT()
   return (
     <div className="inline-flex rounded-lg border border-border/60 bg-background/60 p-0.5 backdrop-blur-sm">
-      {SCOPE_OPTIONS.map((opt) => {
-        const active = opt.value === value
+      {SCOPE_VALUES.map((scope) => {
+        const active = scope === value
         return (
           <button
-            key={opt.value}
+            key={scope}
             type="button"
-            onClick={() => onChange(opt.value)}
+            onClick={() => onChange(scope)}
             className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
               active
                 ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >
-            {opt.label}
+            {t(`home.scope.${scope}`)}
           </button>
         )
       })}

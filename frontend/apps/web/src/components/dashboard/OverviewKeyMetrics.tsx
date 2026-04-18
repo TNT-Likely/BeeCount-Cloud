@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, ReceiptText, Wallet } from 'lucide-react'
 
 import type { WorkspaceAnalyticsSummary } from '@beecount/api-client'
+import { useT } from '@beecount/ui'
 
 interface Props {
   summary?: WorkspaceAnalyticsSummary
@@ -11,18 +12,19 @@ interface Props {
  * 每张卡片带不同色系的渐变边框 + 柔光。数字大号，图标与颜色对应语义。
  */
 export function OverviewKeyMetrics({ summary }: Props) {
+  const t = useT()
   const income = summary?.income_total ?? 0
   const expense = summary?.expense_total ?? 0
   const balance = summary?.balance ?? income - expense
   const txCount = summary?.transaction_count ?? 0
 
   const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   const cards = [
     {
       key: 'income',
-      label: '今年收入',
+      label: t('overview.metric.incomeYear'),
       value: fmt(income),
       icon: <ArrowDown className="h-4 w-4 text-income" />,
       glow: 'from-income/30 via-income/5 to-transparent',
@@ -30,7 +32,7 @@ export function OverviewKeyMetrics({ summary }: Props) {
     },
     {
       key: 'expense',
-      label: '今年支出',
+      label: t('overview.metric.expenseYear'),
       value: fmt(expense),
       icon: <ArrowUp className="h-4 w-4 text-expense" />,
       glow: 'from-expense/30 via-expense/5 to-transparent',
@@ -38,7 +40,7 @@ export function OverviewKeyMetrics({ summary }: Props) {
     },
     {
       key: 'balance',
-      label: '净流',
+      label: t('overview.metric.netFlow'),
       value: fmt(balance),
       icon: <Wallet className="h-4 w-4 text-sky-500" />,
       glow: 'from-sky-400/30 via-sky-400/5 to-transparent',
@@ -47,7 +49,7 @@ export function OverviewKeyMetrics({ summary }: Props) {
     },
     {
       key: 'count',
-      label: '交易笔数',
+      label: t('overview.metric.txCount'),
       value: txCount.toString(),
       icon: <ReceiptText className="h-4 w-4 text-amber-500" />,
       glow: 'from-amber-400/30 via-amber-400/5 to-transparent',

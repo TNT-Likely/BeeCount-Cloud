@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 import type { WorkspaceAccount } from '@beecount/api-client'
 import { Amount } from '@beecount/web-features'
@@ -42,6 +42,7 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 export function HomeTopAccounts({ accounts, currency = 'CNY' }: Props) {
+  const t = useT()
   const top = useMemo(() => {
     const withStats = accounts
       .filter((a) => !EXCLUDE_TYPES.has(a.account_type || ''))
@@ -63,12 +64,12 @@ export function HomeTopAccounts({ accounts, currency = 'CNY' }: Props) {
   return (
     <Card className="bc-panel overflow-hidden">
       <CardHeader>
-        <CardTitle className="text-base">活跃账户 Top 5</CardTitle>
+        <CardTitle className="text-base">{t('home.topAccounts.title')}</CardTitle>
       </CardHeader>
       <CardContent>
         {top.list.length === 0 ? (
           <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
-            暂无活跃账户
+            {t('home.topAccounts.empty')}
           </div>
         ) : (
           <ul className="space-y-2.5">
@@ -99,7 +100,7 @@ export function HomeTopAccounts({ accounts, currency = 'CNY' }: Props) {
                         <span className="font-mono font-semibold tabular-nums">
                           {a.count}
                         </span>{' '}
-                        笔
+                        {t('home.topAccounts.countUnit')}
                       </div>
                     </div>
                     <div className="mt-1 flex items-center gap-2">

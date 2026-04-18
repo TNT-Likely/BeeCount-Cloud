@@ -23,17 +23,20 @@ function deviceIcon(row: AdminDevice): { glyph: string; color: string } {
   return { glyph: '📟', color: '#94a3b8' }
 }
 
-// 相对时间（中文）—— 粗略即可，精确到天。
-function timeAgo(iso: string): string {
-  const ts = Date.parse(iso)
-  if (!Number.isFinite(ts)) return '-'
-  const diffSec = (Date.now() - ts) / 1000
-  if (diffSec < 60) return '刚刚'
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`
-  if (diffSec < 86400 * 30) return `${Math.floor(diffSec / 86400)} 天前`
-  if (diffSec < 86400 * 365) return `${Math.floor(diffSec / 86400 / 30)} 个月前`
-  return `${Math.floor(diffSec / 86400 / 365)} 年前`
+// 相对时间。用闭包形式接受 i18n t() 做 lookup,这样组件切语言时自动跟随。
+type TFn = (key: string) => string
+function makeTimeAgo(t: TFn) {
+  return (iso: string): string => {
+    const ts = Date.parse(iso)
+    if (!Number.isFinite(ts)) return '-'
+    const diffSec = (Date.now() - ts) / 1000
+    if (diffSec < 60) return t('time.justNow')
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}${t('time.minutesAgo')}`
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}${t('time.hoursAgo')}`
+    if (diffSec < 86400 * 30) return `${Math.floor(diffSec / 86400)}${t('time.daysAgo')}`
+    if (diffSec < 86400 * 365) return `${Math.floor(diffSec / 86400 / 30)}${t('time.monthsAgo')}`
+    return `${Math.floor(diffSec / 86400 / 365)}${t('time.yearsAgo')}`
+  }
 }
 
 type OpsDevicesPanelProps = {
@@ -67,6 +70,7 @@ function _safeTimestamp(value: string): number {
 
 export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
   const t = useT()
+  const timeAgo = useMemo(() => makeTimeAgo(t), [t])
   const [showAllSessions, setShowAllSessions] = useState(false)
 
   const dedupedRows = useMemo<DeviceRow[]>(() => {
@@ -153,7 +157,7 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold">
-                            {row.name || (row.device_model || row.platform || '未知设备')}
+                            {row.name || (row.device_model || row.platform || t('ops.device.unknownName'))}
                           </div>
                           <div className="truncate text-[11px] text-muted-foreground">
                             {row.user_email || row.user_id}
@@ -169,26 +173,26 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
 
                       <div className="grid grid-cols-2 gap-2 text-[11px]">
                         <div className="rounded-md bg-muted/30 px-2 py-1">
-                          <div className="text-muted-foreground">平台</div>
+                          <div className="text-muted-foreground">{t('ops.device.header.platform')}</div>
                           <div className="font-medium">{row.platform || '-'}</div>
                         </div>
                         <div className="rounded-md bg-muted/30 px-2 py-1">
-                          <div className="text-muted-foreground">版本</div>
+                          <div className="text-muted-foreground">{t('ops.device.header.version')}</div>
                           <div className="font-medium">{row.app_version || '-'}</div>
                         </div>
                         <div className="rounded-md bg-muted/30 px-2 py-1">
-                          <div className="text-muted-foreground">设备</div>
+                          <div className="text-muted-foreground">{t('ops.device.header.device')}</div>
                           <div className="truncate font-medium">{row.device_model || '-'}</div>
                         </div>
                         <div className="rounded-md bg-muted/30 px-2 py-1">
-                          <div className="text-muted-foreground">系统</div>
+                          <div className="text-muted-foreground">{t('ops.device.header.os')}</div>
                           <div className="truncate font-medium">{row.os_version || '-'}</div>
                         </div>
                       </div>
 
                       <div className="space-y-1 text-[11px] text-muted-foreground">
                         <div className="flex items-center justify-between gap-2">
-                          <span>最近活跃</span>
+                          <span>{t('ops.device.header.lastSeen')}</span>
                           <span
                             className="font-medium text-foreground"
                             title={formatIsoDateTime(row.last_seen_at)}
@@ -197,7 +201,7 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
-                          <span>首次登录</span>
+                          <span>{t('ops.device.header.firstSeen')}</span>
                           <span title={formatIsoDateTime(row.created_at)}>
                             {timeAgo(row.created_at)}
                           </span>
@@ -210,7 +214,7 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
                         ) : null}
                         {!showAllSessions && row.session_count > 1 ? (
                           <div className="flex items-center justify-between gap-2">
-                            <span>会话数</span>
+                            <span>{t('ops.device.header.sessions')}</span>
                             <Badge variant="secondary" className="text-[10px]">
                               {t('ops.devices.sessionCount', { count: row.session_count })}
                             </Badge>

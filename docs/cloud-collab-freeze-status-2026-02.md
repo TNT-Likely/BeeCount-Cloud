@@ -1,4 +1,4 @@
-# BeeCount-Platform 云协作封存状态（2026-02）
+# BeeCount-Cloud 云协作封存状态（2026-02）
 
 ## 目标
 - 作为 BeeCount App 实验态协作后端，保持接口稳定、可部署、可排障。

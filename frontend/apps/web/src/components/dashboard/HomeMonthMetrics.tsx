@@ -1,6 +1,7 @@
 import { ArrowDownLeft, ArrowUpRight, TrendingDown, TrendingUp } from 'lucide-react'
 
 import { Amount } from '@beecount/web-features'
+import { useT } from '@beecount/ui'
 
 interface Props {
   monthIncome: number
@@ -27,6 +28,7 @@ export function HomeMonthMetrics({
   monthTxCount,
   currency = 'CNY'
 }: Props) {
+  const t = useT()
   const monthBalance = monthIncome - monthExpense
   const prevBalance = prevMonthIncome - prevMonthExpense
 
@@ -50,7 +52,7 @@ export function HomeMonthMetrics({
     {
       // 收入卡：底色 / 边框 / 环 / 图标 全走 income semantic token，随 mobile 配色切换
       key: 'income',
-      label: '本月收入',
+      label: t('home.monthMetric.income'),
       value: monthIncome,
       prev: prevMonthIncome,
       positiveWhenUp: true,
@@ -63,7 +65,7 @@ export function HomeMonthMetrics({
     {
       // 支出卡：全套 expense 语义
       key: 'expense',
-      label: '本月支出',
+      label: t('home.monthMetric.expense'),
       value: monthExpense,
       prev: prevMonthExpense,
       positiveWhenUp: false,
@@ -75,7 +77,7 @@ export function HomeMonthMetrics({
     },
     {
       key: 'balance',
-      label: '本月结余',
+      label: t('home.monthMetric.balance'),
       value: monthBalance,
       prev: prevBalance,
       positiveWhenUp: true,
@@ -87,7 +89,7 @@ export function HomeMonthMetrics({
     },
     {
       key: 'count',
-      label: '本月笔数',
+      label: t('home.monthMetric.count'),
       value: monthTxCount,
       prev: null,
       positiveWhenUp: true,
@@ -144,8 +146,8 @@ export function HomeMonthMetrics({
 
             {card.isCount ? (
               <div className="relative mt-2 font-mono text-3xl font-bold tabular-nums leading-tight">
-                {(card.value as number).toLocaleString('zh-CN')}
-                <span className="ml-1 text-sm font-normal text-muted-foreground">笔</span>
+                {(card.value as number).toLocaleString()}
+                <span className="ml-1 text-sm font-normal text-muted-foreground">{t('home.monthMetric.countUnit')}</span>
               </div>
             ) : (
               <Amount
@@ -167,10 +169,10 @@ export function HomeMonthMetrics({
 
             {card.prev !== null ? (
               <div className="relative mt-1 text-[11px] text-muted-foreground">
-                上月{' '}
+                {t('home.monthMetric.prev')}{' '}
                 {card.isCount ? (
                   <span className="font-mono tabular-nums">
-                    {(card.prev as number).toLocaleString('zh-CN')}
+                    {(card.prev as number).toLocaleString()}
                   </span>
                 ) : (
                   <Amount

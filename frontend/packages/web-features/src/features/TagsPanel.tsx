@@ -64,8 +64,8 @@ export function TagsPanel({
               <circle cx="7" cy="7" r="1.5" />
             </svg>
           }
-          title="还没有标签"
-          description="在移动端添加标签后，这里会以卡片方式展示。"
+          title={t('tags.empty.title')}
+          description={t('tags.empty.desc')}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -141,7 +141,7 @@ export function TagsPanel({
                         <span className="font-mono text-2xl font-bold tabular-nums">
                           {stats?.count ?? 0}
                         </span>
-                        <span className="text-[11px] text-muted-foreground">笔</span>
+                        <span className="text-[11px] text-muted-foreground">{t('tags.count.unit')}</span>
                       </div>
                       {/* 次要统计：支出/收入左右排 */}
                       <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2 text-xs">

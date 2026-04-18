@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
+import { useT } from '@beecount/ui'
 
 import { AppPage } from './pages/AppPage'
 import { LoginPage } from './pages/LoginPage'
@@ -11,7 +12,12 @@ const LEGACY_TOKEN_KEY = 'beecount.token'
 const TOKEN_KEY = `beecount.token.${API_BASE}`
 
 export function App() {
+  const t = useT()
   const { route, navigate } = usePathRouter()
+
+  useEffect(() => {
+    document.title = t('shell.docTitle')
+  }, [t])
   const [token, setToken] = useState<string>(() => {
     const scoped = localStorage.getItem(TOKEN_KEY)
     if (scoped) return scoped

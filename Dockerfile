@@ -1,4 +1,4 @@
-# BeeCount-Platform Dockerfile
+# BeeCount-Cloud Dockerfile
 # 多阶段构建：frontend (pnpm + Vite) + Python (FastAPI + Alembic)
 
 # ===== Stage 1: frontend 构建 =====

@@ -1,5 +1,5 @@
 import type { ReadTransaction } from '@beecount/api-client'
-import { Card, CardContent, CardHeader, CardTitle } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 interface Props {
   transactions: ReadTransaction[]
@@ -20,17 +20,18 @@ function formatDate(s: string): string {
 }
 
 export function OverviewRecentTransactions({ transactions, onClickTransaction }: Props) {
+  const t = useT()
   const top = transactions.slice(0, 8)
 
   return (
     <Card className="bc-panel overflow-hidden">
       <CardHeader>
-        <CardTitle className="text-base">最近交易</CardTitle>
+        <CardTitle className="text-base">{t('overview.recent.title')}</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         {top.length === 0 ? (
           <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
-            暂无交易
+            {t('overview.recent.empty')}
           </div>
         ) : (
           <ul className="divide-y divide-border/50">
@@ -54,7 +55,10 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate font-medium">
-                        {tx.category_name || (tx.tx_type === 'transfer' ? '转账' : '未分类')}
+                        {tx.category_name ||
+                          (tx.tx_type === 'transfer'
+                            ? t('overview.recent.transfer')
+                            : t('overview.recent.uncategorized'))}
                       </span>
                       {tx.tags_list && tx.tags_list.length > 0 ? (
                         <span className="truncate text-[11px] text-muted-foreground">
@@ -70,7 +74,7 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                   </div>
                   <div className={`shrink-0 font-mono tabular-nums ${amountColor}`}>
                     {sign}
-                    {tx.amount.toLocaleString('zh-CN', {
+                    {tx.amount.toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2
                     })}

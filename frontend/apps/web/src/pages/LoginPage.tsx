@@ -80,7 +80,7 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
           {/* 左：品牌叙事 */}
           <div className="hidden space-y-6 lg:block">
             <div className="flex items-center gap-3">
-              <img src="/branding/logo.svg" alt="蜜蜂记账" className="h-12 w-12" />
+              <img src="/branding/logo.svg" alt={t('shell.appName')} className="h-12 w-12" />
               <div>
                 <div className="text-2xl font-bold">{t('app.brand')}</div>
                 <div className="text-sm text-muted-foreground">{t('app.subtitle')}</div>
@@ -88,36 +88,36 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
             </div>
             <h1 className="text-4xl font-bold leading-tight tracking-tight">
               <span className="bg-gradient-to-br from-primary to-primary/60 bg-clip-text text-transparent">
-                自部署
+                {t('login.heroHighlight')}
               </span>
-              <span>的个人记账云</span>
+              <span>{t('login.heroTail')}</span>
             </h1>
             <p className="text-base text-muted-foreground">
               {t('login.subtitle')}
             </p>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-xl border border-border/50 bg-card/60 p-3 backdrop-blur">
-                <div className="font-semibold">双向实时同步</div>
+                <div className="font-semibold">{t('login.feature.syncTitle')}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  手机 / 网页改动 2 秒内到达对端
+                  {t('login.feature.syncDesc')}
                 </div>
               </div>
               <div className="rounded-xl border border-border/50 bg-card/60 p-3 backdrop-blur">
-                <div className="font-semibold">完全自持数据</div>
+                <div className="font-semibold">{t('login.feature.selfHostTitle')}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  数据库 / 文件都在你自己的服务器
+                  {t('login.feature.selfHostDesc')}
                 </div>
               </div>
               <div className="rounded-xl border border-border/50 bg-card/60 p-3 backdrop-blur">
-                <div className="font-semibold">多端兼顾</div>
+                <div className="font-semibold">{t('login.feature.multiTitle')}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  iOS / Android / Web 同一套账本
+                  {t('login.feature.multiDesc')}
                 </div>
               </div>
               <div className="rounded-xl border border-border/50 bg-card/60 p-3 backdrop-blur">
-                <div className="font-semibold">零订阅费</div>
+                <div className="font-semibold">{t('login.feature.freeTitle')}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  无广告、无内购、无外部依赖
+                  {t('login.feature.freeDesc')}
                 </div>
               </div>
             </div>

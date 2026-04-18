@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 interface Rank {
   category_name: string
@@ -16,18 +16,19 @@ interface Props {
 }
 
 export function TopCategoriesList({ ranks, variant = 'expense', title, onClickCategory }: Props) {
+  const t = useT()
   const top = ranks.slice(0, 5)
   const maxTotal = Math.max(1, ...top.map((r) => r.total))
 
   const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   const isExpense = variant === 'expense'
   const barClass = isExpense
     ? 'bg-gradient-to-r from-expense/70 to-expense group-hover:from-expense group-hover:to-expense/90'
     : 'bg-gradient-to-r from-income/70 to-income group-hover:from-income group-hover:to-income/90'
-  const defaultTitle = isExpense ? '支出 Top 5' : '收入 Top 5'
-  const emptyLabel = isExpense ? '暂无支出数据' : '暂无收入数据'
+  const defaultTitle = isExpense ? t('home.topCat.expenseTitle') : t('home.topCat.incomeTitle')
+  const emptyLabel = isExpense ? t('home.topCat.empty.expense') : t('home.topCat.empty.income')
 
   return (
     <Card className="bc-panel overflow-hidden">
@@ -54,8 +55,8 @@ export function TopCategoriesList({ ranks, variant = 'expense', title, onClickCa
                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] font-semibold">
                         {i + 1}
                       </span>
-                      <span className="font-medium">{r.category_name || '(未分类)'}</span>
-                      <span className="text-[11px] text-muted-foreground">{r.tx_count} 笔</span>
+                      <span className="font-medium">{r.category_name || t('home.topCat.uncategorized')}</span>
+                      <span className="text-[11px] text-muted-foreground">{r.tx_count} {t('home.topCat.countUnit')}</span>
                     </span>
                     <span className="font-mono tabular-nums text-sm">{fmt(r.total)}</span>
                   </div>

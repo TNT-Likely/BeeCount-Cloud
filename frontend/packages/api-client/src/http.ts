@@ -67,6 +67,27 @@ async function parseResponse<T>(res: Response): Promise<T> {
   return res.json()
 }
 
+/**
+ * 公开 GET(无 Authorization header),目前用于 /version 这种不敏感且
+ * 未登录也应该能打到的端点。
+ */
+export async function publicGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  return parseResponse<T>(res)
+}
+
+export type BeeCountCloudVersion = {
+  name: string
+  version: string
+}
+
+export async function fetchCloudVersion(): Promise<BeeCountCloudVersion> {
+  return publicGet<BeeCountCloudVersion>('/version')
+}
+
 function authHeaders(token: string, idempotencyKey?: string): Record<string, string> {
   const out: Record<string, string> = {
     Authorization: `Bearer ${token}`

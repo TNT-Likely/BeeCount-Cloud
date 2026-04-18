@@ -102,8 +102,8 @@ function CategoriesCardBody({
             <path d="M8 11h8" />
           </svg>
         }
-        title="还没有分类"
-        description="移动端添加分类后会自动同步到这里，支持一级/二级层级。"
+        title={t('categories.empty.title')}
+        description={t('categories.empty.desc')}
       />
     )
   }
@@ -149,7 +149,7 @@ function CategoriesCardBody({
 
       {parents.length === 0 ? (
         <div className="py-8 text-center text-xs text-muted-foreground">
-          该类型下暂无分类
+          {t('categories.empty.byType')}
         </div>
       ) : (
         <div className="space-y-3">
@@ -428,7 +428,7 @@ export function CategoriesPanel({
             )}
             {!form.editingId && onUploadIcon && form.icon_type === 'custom' ? (
               <div className="space-y-1">
-                <Label>{t('categories.placeholder.customIcon') || '自定义图标'}</Label>
+                <Label>{t('categories.placeholder.customIcon')}</Label>
                 <div className="flex items-center gap-2">
                   <input
                     type="file"
@@ -455,7 +455,7 @@ export function CategoriesPanel({
                       size="sm"
                       onClick={() => onFormChange({ ...form, icon_cloud_file_id: '', icon_cloud_sha256: '' })}
                     >
-                      {t('common.remove') || '移除'}
+                      {t('common.remove')}
                     </Button>
                   ) : null}
                 </div>

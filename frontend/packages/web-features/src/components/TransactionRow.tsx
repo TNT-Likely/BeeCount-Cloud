@@ -195,7 +195,7 @@ export function TransactionRow({
                 void onPreviewAttachment?.(attachments, 0)
               }}
               className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary"
-              title={firstAttachment.originalName || firstAttachment.fileName || '附件'}
+              title={firstAttachment.originalName || firstAttachment.fileName || t('attachment.default')}
             >
               <span aria-hidden>📎</span>
               <span className="font-mono tabular-nums">{attachments.length}</span>

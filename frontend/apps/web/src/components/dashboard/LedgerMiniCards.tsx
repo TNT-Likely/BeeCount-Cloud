@@ -1,5 +1,5 @@
 import type { ReadLedger } from '@beecount/api-client'
-import { Badge, Button, Card, CardContent } from '@beecount/ui'
+import { Badge, Button, Card, CardContent, useT } from '@beecount/ui'
 
 interface Props {
   ledgers: ReadLedger[]
@@ -9,11 +9,12 @@ interface Props {
 }
 
 export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDeleteLedger }: Props) {
+  const t = useT()
   if (ledgers.length === 0) {
     return (
       <Card className="bc-panel">
         <CardContent className="py-10 text-center text-xs text-muted-foreground">
-          尚未创建账本
+          {t('home.ledgerMini.empty')}
         </CardContent>
       </Card>
     )
@@ -48,12 +49,12 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
                     <h3 className="truncate text-sm font-semibold">{ledger.ledger_name}</h3>
                     {active ? (
                       <Badge variant="default" className="h-4 px-1.5 text-[9px]">
-                        当前
+                        {t('home.ledgerMini.current')}
                       </Badge>
                     ) : null}
                   </div>
                   <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                    {ledger.currency} · {ledger.transaction_count} 笔
+                    {ledger.currency} · {ledger.transaction_count} {t('home.ledgerMini.txUnit')}
                   </div>
                 </div>
                 {onDeleteLedger ? (
@@ -65,7 +66,7 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
                       e.stopPropagation()
                       onDeleteLedger(ledger.ledger_id)
                     }}
-                    aria-label="删除账本"
+                    aria-label={t('home.ledgerMini.delete')}
                   >
                     ×
                   </Button>
@@ -74,14 +75,14 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
               <div className={`mt-3 text-2xl font-bold tracking-tight ${
                 net >= 0 ? 'text-income' : 'text-expense'
               }`}>
-                {net.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                 <div className="rounded bg-income/10 px-2 py-1 text-income">
-                  ↑ {ledger.income_total.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                  ↑ {ledger.income_total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </div>
                 <div className="rounded bg-expense/10 px-2 py-1 text-expense">
-                  ↓ {ledger.expense_total.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                  ↓ {ledger.expense_total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </div>
               </div>
               {!active ? (
@@ -91,7 +92,7 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
                   className="mt-3 h-7 w-full text-xs"
                   onClick={() => onSelectLedger(ledger.ledger_id)}
                 >
-                  设为当前账本
+                  {t('home.ledgerMini.setCurrent')}
                 </Button>
               ) : (
                 <div className="mt-3 h-7" />

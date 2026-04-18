@@ -184,9 +184,9 @@ function defaultTxFilter(): TxFilter {
   return { q: '', txType: '', accountName: '' }
 }
 
-/** 脱敏 API key:前 4 后 4,中间用 ••• 掩掉。空 / 短串直接返 '未配置'。 */
-function maskApiKey(key: unknown): string {
-  if (typeof key !== 'string' || key.trim().length === 0) return '未配置'
+/** 脱敏 API key:前 4 后 4,中间用 ••• 掩掉。空 / 短串返回 null,让 caller 走 i18n。 */
+function maskApiKey(key: unknown): string | null {
+  if (typeof key !== 'string' || key.trim().length === 0) return null
   const s = key.trim()
   if (s.length <= 8) return '•'.repeat(s.length)
   return `${s.slice(0, 4)}•••${s.slice(-4)}`
@@ -197,6 +197,7 @@ function maskApiKey(key: unknown): string {
  *  定义了字段约定:providers / binding / custom_prompt / strategy /
  *  bill_extraction_enabled / use_vision。 */
 function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
+  const t = useT()
   const providers = Array.isArray(config.providers) ? config.providers : []
   const binding =
     typeof config.binding === 'object' && config.binding !== null
@@ -210,54 +211,45 @@ function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
   }
 
   const capability = [
-    { key: 'textProviderId', label: '文本对话' },
-    { key: 'visionProviderId', label: '图片理解' },
-    { key: 'speechProviderId', label: '语音识别' }
+    { key: 'textProviderId', label: t('ai.binding.text') },
+    { key: 'visionProviderId', label: t('ai.binding.vision') },
+    { key: 'speechProviderId', label: t('ai.binding.speech') }
   ]
+
+  const onOff = (v: unknown) =>
+    v === true ? t('common.on') : v === false ? t('common.off') : t('common.dash')
 
   return (
     <div className="space-y-4">
       {/* 顶栏:策略 / 开关 */}
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">策略</p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('ai.strategy.label')}</p>
           <p className="mt-1 text-sm font-medium">
-            {config.strategy || '—'}
+            {config.strategy || t('common.dash')}
           </p>
         </div>
         <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">账单提取</p>
-          <p className="mt-1 text-sm font-medium">
-            {config.bill_extraction_enabled === true
-              ? '开启'
-              : config.bill_extraction_enabled === false
-                ? '关闭'
-                : '—'}
-          </p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('ai.billExtraction.label')}</p>
+          <p className="mt-1 text-sm font-medium">{onOff(config.bill_extraction_enabled)}</p>
         </div>
         <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">图片识别</p>
-          <p className="mt-1 text-sm font-medium">
-            {config.use_vision === true
-              ? '开启'
-              : config.use_vision === false
-                ? '关闭'
-                : '—'}
-          </p>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('ai.useVision.label')}</p>
+          <p className="mt-1 text-sm font-medium">{onOff(config.use_vision)}</p>
         </div>
       </div>
 
       {/* 能力绑定 */}
       <div>
         <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-          能力绑定
+          {t('ai.binding.title')}
         </p>
         <div className="space-y-1.5">
           {capability.map((cap) => {
             const providerId = binding[cap.key] as string | undefined
             const name = providerId
               ? providerNameById.get(providerId) || providerId
-              : '—'
+              : t('common.dash')
             return (
               <div
                 key={cap.key}
@@ -274,12 +266,13 @@ function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
       {/* 服务商列表 */}
       <div>
         <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-          服务商 ({providers.length})
+          {t('ai.providers.title')} ({providers.length})
         </p>
         <div className="space-y-2">
           {providers.map((p: any, idx: number) => {
             if (!p || typeof p !== 'object') return null
-            const name = typeof p.name === 'string' ? p.name : '(未命名)'
+            const name = typeof p.name === 'string' ? p.name : t('ai.providers.unnamed')
+            const apiKeyMasked = maskApiKey(p.apiKey)
             return (
               <div
                 key={typeof p.id === 'string' ? p.id : idx}
@@ -289,34 +282,34 @@ function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
                   <span className="text-sm font-medium">{name}</span>
                   {p.isBuiltIn ? (
                     <span className="rounded-full border border-border/60 bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider">
-                      内置
+                      {t('ai.providers.badge.builtin')}
                     </span>
                   ) : null}
                 </div>
                 <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px]">
-                  <span className="text-muted-foreground">API Key</span>
-                  <span className="font-mono">{maskApiKey(p.apiKey)}</span>
+                  <span className="text-muted-foreground">{t('ai.providers.field.apiKey')}</span>
+                  <span className="font-mono">{apiKeyMasked || t('common.unset')}</span>
                   {p.baseUrl ? (
                     <>
-                      <span className="text-muted-foreground">Base URL</span>
+                      <span className="text-muted-foreground">{t('ai.providers.field.baseUrl')}</span>
                       <span className="truncate font-mono">{String(p.baseUrl)}</span>
                     </>
                   ) : null}
                   {p.textModel ? (
                     <>
-                      <span className="text-muted-foreground">文本模型</span>
+                      <span className="text-muted-foreground">{t('ai.providers.field.textModel')}</span>
                       <span>{String(p.textModel)}</span>
                     </>
                   ) : null}
                   {p.visionModel ? (
                     <>
-                      <span className="text-muted-foreground">视觉模型</span>
+                      <span className="text-muted-foreground">{t('ai.providers.field.visionModel')}</span>
                       <span>{String(p.visionModel)}</span>
                     </>
                   ) : null}
                   {p.audioModel ? (
                     <>
-                      <span className="text-muted-foreground">语音模型</span>
+                      <span className="text-muted-foreground">{t('ai.providers.field.audioModel')}</span>
                       <span>{String(p.audioModel)}</span>
                     </>
                   ) : null}
@@ -331,7 +324,7 @@ function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
       {typeof config.custom_prompt === 'string' && config.custom_prompt.trim().length > 0 ? (
         <div>
           <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-            自定义提示词
+            {t('ai.customPrompt.title')}
           </p>
           <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-[12px]">
             {config.custom_prompt}
@@ -989,6 +982,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.section, route.ledgerId])
+
 
   useEffect(() => {
     let cancelled = false
@@ -2003,7 +1997,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const onDeleteLedger = async (ledgerId: string) => {
     await deleteLedger(token, ledgerId)
     await refreshCurrent('overview')
-    setSuccessNotice(t('notice.ledgerDeleted') || '账本已删除')
+    setSuccessNotice(t('notice.ledgerDeleted'))
   }
 
   const onConfirmDelete = async () => {
@@ -2170,14 +2164,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             <header className="card px-3 md:px-5">
               <div className="flex h-14 items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
-                  <img alt="蜜蜂记账" className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
+                  <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
                   <div className="flex items-baseline gap-1.5">
-                    <p className="text-[15px] font-bold text-foreground">蜜蜂记账</p>
-                    {/* 版本号从 package.json 注入，发版时更新 apps/web/package.json
-                        的 version 字段即可；字号很小、弱化展示，不抢视觉焦点。 */}
+                    <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
+                    {/* BeeCount Cloud 版本。web bundle 的 package.json version
+                        跟 server src/version.py 保持同步(发版时一起改),直接
+                        从 __APP_VERSION__ vite define 注入,不走接口。 */}
                     <span
                       className="font-mono text-[10px] leading-none text-muted-foreground/70"
-                      title={`web v${__APP_VERSION__}`}
+                      title={`BeeCount Cloud v${__APP_VERSION__}`}
                     >
                       v{__APP_VERSION__}
                     </span>
@@ -2336,18 +2331,41 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                           {/* 头部：用户身份 */}
                           <div className="px-2 py-2">
                             <div className="truncate text-[13px] font-semibold text-foreground">
-                              {profileMe.display_name || '蜜蜂用户'}
+                              {profileMe.display_name || t('shell.userDefault')}
                             </div>
                             <div className="truncate text-[11px] font-normal text-muted-foreground">
                               {profileMe.email}
                             </div>
                           </div>
                           <div className="mx-1 h-px bg-border/60" />
+                          {/* 工具组:预算从顶部 bookkeeping 搬过来,访问频率
+                              不够 tab 高,放下拉里刚好。 */}
+                          <div className="px-1 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                            {t('nav.group.tools')}
+                          </div>
+                          <button
+                            type="button"
+                            className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
+                              route.section === 'budgets'
+                                ? 'bg-primary/10 text-primary'
+                                : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                            }`}
+                            onClick={() =>
+                              onNavigate({
+                                kind: 'app',
+                                ledgerId: '',
+                                section: 'budgets'
+                              })
+                            }
+                          >
+                            {t('nav.budgets')}
+                          </button>
+                          <div className="mx-1 my-1 h-px bg-border/60" />
                           {/* 分组：按 avatarMenuItems 原来的顺序直出 —— 个人资料 /
                               健康 / 设备。目前三个 item 混在一组足够，等未来项
                               多了再拆子 section。 */}
                           <div className="px-1 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            账户
+                            {t('nav.group.settings')}
                           </div>
                           {avatarMenuItems.map((item) => {
                             const active = route.section === item.key
@@ -2377,7 +2395,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                             <>
                               <div className="mx-1 my-1 h-px bg-border/60" />
                               <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                                管理
+                                {t('nav.group.admin')}
                               </div>
                               <button
                                 type="button"
@@ -2402,7 +2420,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                               头像下拉只留账户 + 登出的快捷入口。 */}
                           <div className="mx-1 my-1 h-px bg-border/60" />
                           <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            操作
+                            {t('avatar.group.actions')}
                           </div>
                           <button
                             type="button"
@@ -2471,7 +2489,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               <div className="flex items-center gap-2 pt-2">
                 <span className="h-px flex-1 bg-border/60" aria-hidden />
                 <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                  扩展分析
+                  {t('analytics.ext.title')}
                 </span>
                 <span className="h-px flex-1 bg-border/60" aria-hidden />
               </div>
@@ -2497,7 +2515,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 <TopCategoriesList
                   ranks={analyticsData?.category_ranks || []}
                   variant="expense"
-                  title="今年支出 Top 5"
+                  title={t('analytics.expenseTop5')}
                   onClickCategory={(name) => {
                     setListQuery(name)
                     onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
@@ -2506,7 +2524,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 <TopCategoriesList
                   ranks={analyticsIncomeRanks}
                   variant="income"
-                  title="今年收入 Top 5"
+                  title={t('analytics.incomeTop5')}
                   onClickCategory={(name) => {
                     setListQuery(name)
                     onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
@@ -2737,21 +2755,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             <div className="space-y-4">
               <Card className="bc-panel">
                 <CardHeader>
-                  <CardTitle>预算</CardTitle>
+                  <CardTitle>{t('nav.budgets')}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    跟随移动端同步过来。web 只读,编辑在移动端"我的 → 预算"里。
-                    预算按当前账本展示;切换账本会重新加载。
-                  </p>
+                  <p className="mb-3 text-xs text-muted-foreground">{t('budgets.desc')}</p>
                   {!activeLedgerId ? (
-                    <p className="text-sm text-muted-foreground">
-                      请先在顶部选一个账本。
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t('shell.selectLedgerFirst')}</p>
                   ) : budgets.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      该账本还没有预算。
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t('budgets.empty')}</p>
                   ) : (
                     <div className="space-y-2">
                       {budgets.map((b) => (
@@ -2761,16 +2772,16 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                         >
                           <div className="flex items-center gap-3">
                             <span className="inline-flex items-center rounded-full border border-border/60 bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider">
-                              {b.type === 'total' ? '总预算' : '分类预算'}
+                              {b.type === 'total' ? t('budgets.type.total') : t('budgets.type.category')}
                             </span>
                             <span className="text-sm font-medium">
                               {b.type === 'category'
-                                ? (b.category_name || b.category_id || '(未知分类)')
-                                : '整账本'}
+                                ? (b.category_name || b.category_id || t('budgets.label.unknownCategory'))
+                                : t('budgets.label.allLedger')}
                             </span>
                             {!b.enabled ? (
                               <span className="text-[11px] text-muted-foreground">
-                                (已禁用)
+                                {t('budgets.disabled')}
                               </span>
                             ) : null}
                           </div>
@@ -2783,14 +2794,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                             </div>
                             <div className="text-[11px] text-muted-foreground">
                               {b.period === 'monthly'
-                                ? '月度'
+                                ? t('budgets.period.monthly')
                                 : b.period === 'weekly'
-                                  ? '周度'
+                                  ? t('budgets.period.weekly')
                                   : b.period === 'yearly'
-                                    ? '年度'
+                                    ? t('budgets.period.yearly')
                                     : b.period}
-                              {' · 起始日 '}
-                              {b.start_day}
+                              {' · '}
+                              {t('budgets.startDay').replace('{day}', String(b.start_day))}
                             </div>
                           </div>
                         </div>
@@ -2806,17 +2817,12 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             <div className="space-y-4">
               <Card className="bc-panel">
                 <CardHeader>
-                  <CardTitle>AI 配置</CardTitle>
+                  <CardTitle>{t('ai.title')}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    跟随移动端"我的 → AI 设置"同步下来。web 只读,编辑在移动端。
-                    API key 脱敏展示。
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t('ai.desc')}</p>
                   {!profileMe?.ai_config ? (
-                    <p className="text-sm text-muted-foreground">
-                      还没有 AI 配置同步过来。
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t('ai.empty')}</p>
                   ) : (
                     <AIConfigReadOnly config={profileMe.ai_config} />
                   )}
@@ -2827,42 +2833,39 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
 
           {route.section === 'settings-devices' ? (
             <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardContent className="pt-4">
-                  <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                    {isAdminUser ? (
-                      <Select value={listUserFilter} onValueChange={setListUserFilter}>
-                        <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                          <SelectValue placeholder={t('shell.userFilter')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
-                          {adminUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.email}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                    <Select value={devicesWindowDays} onValueChange={(value) => setDevicesWindowDays(value as '30' | 'all')}>
-                      <SelectTrigger className="h-9 w-[180px] bg-muted shadow-sm">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="30">{t('ops.devices.window.30d')}</SelectItem>
-                        <SelectItem value="all">{t('ops.devices.window.all')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </CardContent>
-              </Card>
+              {/* 工具栏直出,不再外套 Card —— 跟列表同一张 panel 视觉更平整 */}
+              <div className="bc-toolbar flex flex-wrap items-center gap-3">
+                <Input
+                  className="h-9 w-[220px] bg-muted lg:w-[320px]"
+                  placeholder={t('shell.placeholder.keyword')}
+                  value={listQuery}
+                  onChange={(event) => setListQuery(event.target.value)}
+                />
+                {isAdminUser ? (
+                  <Select value={listUserFilter} onValueChange={setListUserFilter}>
+                    <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
+                      <SelectValue placeholder={t('shell.userFilter')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
+                      {adminUsers.map((user) => (
+                        <SelectItem key={user.id} value={user.id}>
+                          {user.email}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : null}
+                <Select value={devicesWindowDays} onValueChange={(value) => setDevicesWindowDays(value as '30' | 'all')}>
+                  <SelectTrigger className="h-9 w-[180px] bg-muted shadow-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="30">{t('ops.devices.window.30d')}</SelectItem>
+                    <SelectItem value="all">{t('ops.devices.window.all')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <OpsDevicesPanel rows={adminDevices} onReload={onRefresh} />
             </div>
           ) : null}
@@ -2907,14 +2910,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               {/* 主题色(web 本地生效) */}
               <Card className="bc-panel">
                 <CardHeader>
-                  <CardTitle>主题色</CardTitle>
+                  <CardTitle>{t('profile.theme.title')}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    选一个 primary 色，整站按钮 / 边框 / 高亮跟着换。
-                    Web 本地改的色只保存在当前浏览器（localStorage），<span className="font-medium">不会同步回移动端</span>。
-                    移动端修改主题色会自动下发到 web；本地改过后以本地为准，移动端后续变更不覆盖。
-                  </p>
+                  <p className="mb-3 text-xs text-muted-foreground">{t('profile.theme.desc')}</p>
                   <PrimaryColorPicker />
                 </CardContent>
               </Card>
@@ -2922,13 +2921,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               {/* 从 mobile 同步下来的偏好(只读展示) */}
               <Card className="bc-panel">
                 <CardHeader>
-                  <CardTitle>同步偏好</CardTitle>
+                  <CardTitle>{t('profile.sync.title')}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-xs text-muted-foreground">
-                    以下偏好跟随移动端"我的 → 外观设置"自动同步,web 只展示不修改。
-                    mobile 修改后 2 秒内这里自动刷新。
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t('profile.sync.desc')}</p>
 
                   {/* 收支颜色方案 */}
                   <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
@@ -2937,21 +2933,23 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                         <span
                           className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
                           style={{ background: 'rgb(var(--income-rgb))' }}
-                          aria-label="收入色示例"
+                          aria-label={t('enum.txType.income')}
                         />
-                        <span className="text-sm">收入</span>
+                        <span className="text-sm">{t('enum.txType.income')}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span
                           className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
                           style={{ background: 'rgb(var(--expense-rgb))' }}
-                          aria-label="支出色示例"
+                          aria-label={t('enum.txType.expense')}
                         />
-                        <span className="text-sm">支出</span>
+                        <span className="text-sm">{t('enum.txType.expense')}</span>
                       </div>
                     </div>
                     <span className="rounded-full border border-border/60 bg-card px-3 py-1 text-xs font-medium">
-                      {(profileMe?.income_is_red ?? true) ? '红色收入 / 绿色支出' : '红色支出 / 绿色收入'}
+                      {(profileMe?.income_is_red ?? true)
+                        ? t('profile.sync.incomeScheme.red')
+                        : t('profile.sync.incomeScheme.green')}
                     </span>
                   </div>
 
@@ -2959,34 +2957,34 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   <div className="grid gap-2 sm:grid-cols-3">
                     <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        月显示装饰
+                        {t('profile.sync.headerDecoration')}
                       </p>
                       <p className="mt-1 text-sm font-medium">
-                        {profileMe?.appearance?.header_decoration_style || '—'}
+                        {profileMe?.appearance?.header_decoration_style || t('common.dash')}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        紧凑金额
+                        {t('profile.sync.compactAmount')}
                       </p>
                       <p className="mt-1 text-sm font-medium">
                         {profileMe?.appearance?.compact_amount === true
-                          ? '开启'
+                          ? t('common.on')
                           : profileMe?.appearance?.compact_amount === false
-                            ? '关闭'
-                            : '—'}
+                            ? t('common.off')
+                            : t('common.dash')}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        显示交易时间
+                        {t('profile.sync.showTime')}
                       </p>
                       <p className="mt-1 text-sm font-medium">
                         {profileMe?.appearance?.show_transaction_time === true
-                          ? '开启'
+                          ? t('common.on')
                           : profileMe?.appearance?.show_transaction_time === false
-                            ? '关闭'
-                            : '—'}
+                            ? t('common.off')
+                            : t('common.dash')}
                       </p>
                     </div>
                   </div>
@@ -3162,7 +3160,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        交易笔数
+                        {t('detail.stats.txCount')}
                       </div>
                       <div className="mt-0.5 font-mono text-xl font-bold tabular-nums">
                         {stats.count}
@@ -3170,10 +3168,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     </div>
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        累计支出
+                        {t('detail.stats.accumExpense')}
                       </div>
                       <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
-                        {stats.expense.toLocaleString('zh-CN', {
+                        {stats.expense.toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
@@ -3181,10 +3179,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     </div>
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        累计收入
+                        {t('detail.stats.accumIncome')}
                       </div>
                       <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
-                        {stats.income.toLocaleString('zh-CN', {
+                        {stats.income.toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
@@ -3208,8 +3206,8 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   }}
                   onPreviewAttachment={onPreviewTxAttachment}
                   resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
-                  emptyTitle="该标签下还没有交易"
-                  emptyDescription="新建一笔带此标签的交易就会出现在这里。"
+                  emptyTitle={t('transactions.empty.forTag.title')}
+                  emptyDescription={t('transactions.empty.forTag.desc')}
                 />
               </div>
             </div>
@@ -3249,7 +3247,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        当前余额
+                        {t('detail.stats.currentBalance')}
                       </div>
                       <div className={`mt-0.5 font-mono text-base font-bold tabular-nums ${
                         (hasServerStats ? a.balance! : a.initial_balance ?? 0) >= 0
@@ -3259,7 +3257,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                         {(hasServerStats
                           ? a.balance!
                           : a.initial_balance ?? 0
-                        ).toLocaleString('zh-CN', {
+                        ).toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
@@ -3267,10 +3265,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     </div>
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        累计收入
+                        {t('detail.stats.accumIncome')}
                       </div>
                       <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
-                        {(a.income_total ?? 0).toLocaleString('zh-CN', {
+                        {(a.income_total ?? 0).toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
@@ -3278,10 +3276,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                     </div>
                     <div>
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        累计支出
+                        {t('detail.stats.accumExpense')}
                       </div>
                       <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
-                        {(a.expense_total ?? 0).toLocaleString('zh-CN', {
+                        {(a.expense_total ?? 0).toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
@@ -3305,7 +3303,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   }}
                   onPreviewAttachment={onPreviewTxAttachment}
                   resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
-                  emptyTitle="该账户下还没有交易"
+                  emptyTitle={t('transactions.empty.forAccount.title')}
                 />
               </div>
             </div>

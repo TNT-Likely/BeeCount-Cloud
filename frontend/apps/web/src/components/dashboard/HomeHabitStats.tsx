@@ -2,6 +2,7 @@ import { Flame, PiggyBank, Sparkles } from 'lucide-react'
 
 import type { WorkspaceAnalyticsSummary, WorkspaceLedgerCounts } from '@beecount/api-client'
 import { Amount } from '@beecount/web-features'
+import { useT } from '@beecount/ui'
 
 interface Props {
   /** 本月 summary，用来算储蓄率、日均支出。 */
@@ -20,6 +21,7 @@ interface Props {
  * 目的：把用户"记账这件事本身"的行为数据做可视化，跟具体账目互补。
  */
 export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }: Props) {
+  const t = useT()
   const monthIncome = monthSummary?.income_total ?? 0
   const monthExpense = monthSummary?.expense_total ?? 0
 
@@ -54,7 +56,7 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-income/20 text-income">
               <PiggyBank className="h-4 w-4" />
             </span>
-            本月储蓄率
+            {t('home.habit.savingRate')}
           </span>
         </div>
         <div className="relative mt-2 font-mono text-3xl font-bold tabular-nums leading-tight">
@@ -91,10 +93,10 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
         </div>
         <div className="relative mt-1.5 text-[11px] text-muted-foreground">
           {savingRate === null
-            ? '本月暂无收入'
+            ? t('home.habit.savingRate.noIncome')
             : savingRate >= 0
-              ? '每 100 元收入存下约 ' + savingRate.toFixed(0) + ' 元'
-              : '本月支出超过收入'}
+              ? t('home.habit.savingRate.good').replace('{rate}', savingRate.toFixed(0))
+              : t('home.habit.savingRate.bad')}
         </div>
       </div>
 
@@ -113,7 +115,7 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-expense/20 text-expense">
               <Flame className="h-4 w-4" />
             </span>
-            本月日均支出
+            {t('home.habit.dailyExpense')}
           </span>
         </div>
         <Amount
@@ -126,14 +128,9 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
           className="relative mt-2 block leading-tight"
         />
         <div className="relative mt-1.5 text-[11px] text-muted-foreground">
-          本月已过 {dayOfMonth} 天，合计支出{' '}
-          <Amount
-            value={monthExpense}
-            currency={currency}
-            size="xs"
-            tone="muted"
-            className="inline"
-          />
+          {t('home.habit.dailyExpense.footer')
+            .replace('{day}', String(dayOfMonth))
+            .replace('{total}', monthExpense.toLocaleString(undefined, { maximumFractionDigits: 2 }))}
         </div>
       </div>
 
@@ -152,17 +149,19 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-sky-500/20 text-sky-600 dark:text-sky-400">
               <Sparkles className="h-4 w-4" />
             </span>
-            记账习惯
+            {t('home.habit.routine')}
           </span>
         </div>
         <div className="relative mt-2 font-mono text-3xl font-bold tabular-nums leading-tight">
           {avgTxPerDay.toFixed(2)}
           <span className="ml-1 text-sm font-normal text-muted-foreground">
-            笔 / 天
+            {t('home.habit.routine.unit')}
           </span>
         </div>
         <div className="relative mt-1.5 text-[11px] text-muted-foreground">
-          累计 {totalTx.toLocaleString('zh-CN')} 笔 · 记账 {totalDays.toLocaleString('zh-CN')} 天
+          {t('home.habit.routine.footer')
+            .replace('{tx}', totalTx.toLocaleString())
+            .replace('{days}', totalDays.toLocaleString())}
         </div>
       </div>
     </div>

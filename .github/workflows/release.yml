@@ -1,7 +1,7 @@
 name: release
 
 # 打 tag（如 0.2.0 或 v0.2.0）推 Docker 镜像 + 生成 GitHub Release。
-# 参考 PanWatch 的 release.yml，为 BeeCount-Platform 定制后端测试步骤 +
+# 参考 PanWatch 的 release.yml，为 BeeCount-Cloud 定制后端测试步骤 +
 # 前端构建参数。
 
 on:
@@ -123,7 +123,7 @@ jobs:
             type=raw,value=${{ steps.vars.outputs.version_no_v }},enable=${{ steps.vars.outputs.version_no_v != steps.vars.outputs.version }}
             type=raw,value=latest,enable=${{ steps.vars.outputs.push_latest == 'true' }}
           labels: |
-            org.opencontainers.image.title=BeeCount-Platform
+            org.opencontainers.image.title=BeeCount-Cloud
             org.opencontainers.image.version=${{ steps.vars.outputs.version }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
 
@@ -206,7 +206,7 @@ jobs:
           COMMITS_ESCAPED=$(echo "$COMMITS" | sed 's/\*/\\*/g; s/_/\\_/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g')
           COMMITS_ENCODED=$(echo "$COMMITS_ESCAPED" | sed 's/$/%0A/g' | tr -d '\n')
 
-          MESSAGE="🐝 *BeeCount-Platform ${TAG}* 发布%0A%0A"
+          MESSAGE="🐝 *BeeCount-Cloud ${TAG}* 发布%0A%0A"
           MESSAGE="${MESSAGE}🔗 [查看完整说明](${RELEASE_URL})%0A%0A"
           MESSAGE="${MESSAGE}*变更内容*:%0A${COMMITS_ENCODED}"
 

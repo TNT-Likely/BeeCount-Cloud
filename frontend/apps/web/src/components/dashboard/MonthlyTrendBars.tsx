@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import { Card, CardContent, CardHeader, CardTitle } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 interface SeriesItem {
   bucket: string
@@ -22,21 +22,22 @@ interface Props {
 }
 
 export function MonthlyTrendBars({ data }: Props) {
+  const t = useT()
   // 取最近 6 期。backend 的 bucket 已经是 YYYY-MM 或 YYYY-MM-DD。
   const slice = data.slice(-6)
 
   const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 
   return (
     <Card className="bc-panel overflow-hidden">
       <CardHeader>
-        <CardTitle className="text-base">近 6 期收支</CardTitle>
+        <CardTitle className="text-base">{t('home.trendBars.title')}</CardTitle>
       </CardHeader>
       <CardContent>
         {slice.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
-            暂无交易数据
+            {t('home.trendBars.empty')}
           </div>
         ) : (
           <div className="h-56">
@@ -51,7 +52,7 @@ export function MonthlyTrendBars({ data }: Props) {
                 <YAxis
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
                   stroke="hsl(var(--border))"
-                  tickFormatter={(v) => (Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}万` : String(v))}
+                  tickFormatter={(v) => (Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}${t('home.trendBars.10kUnit')}` : String(v))}
                 />
                 <Tooltip
                   contentStyle={{
@@ -62,14 +63,18 @@ export function MonthlyTrendBars({ data }: Props) {
                   }}
                   cursor={{ fill: 'hsl(var(--muted) / 0.4)' }}
                   formatter={((v: number, name: string) => {
-                    const label = name === 'income' ? '收入' : name === 'expense' ? '支出' : name
+                    const label = name === 'income'
+                      ? t('home.trendBars.income')
+                      : name === 'expense'
+                        ? t('home.trendBars.expense')
+                        : name
                     return [fmt(v), label]
                   }) as unknown as never}
                 />
                 <Legend
                   iconType="circle"
                   wrapperStyle={{ fontSize: 11 }}
-                  formatter={(v: string) => (v === 'income' ? '收入' : '支出')}
+                  formatter={(v: string) => (v === 'income' ? t('home.trendBars.income') : t('home.trendBars.expense'))}
                 />
                 <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="expense" fill="#ef4444" radius={[4, 4, 0, 0]} />

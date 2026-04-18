@@ -1,5 +1,6 @@
 import { Check } from 'lucide-react'
 
+import { useT } from '../locale/LocaleProvider'
 import { PRIMARY_COLOR_PRESETS } from './primary-color-script'
 import { usePrimaryColor } from './PrimaryColorProvider'
 
@@ -17,6 +18,7 @@ interface Props {
  */
 export function PrimaryColorPicker({ allowCustom = true, className }: Props) {
   const { color, setColor } = usePrimaryColor()
+  const t = useT()
   return (
     <div className={className}>
       <div className="grid grid-cols-5 gap-2">
@@ -26,7 +28,7 @@ export function PrimaryColorPicker({ allowCustom = true, className }: Props) {
             <button
               key={preset}
               type="button"
-              aria-label={`主题色 ${preset}`}
+              aria-label={t('theme.primaryAria').replace('{color}', preset)}
               onClick={() => setColor(preset)}
               className={`flex h-8 w-8 items-center justify-center rounded-full border shadow-sm transition-transform hover:scale-110 ${
                 selected ? 'border-foreground/40 ring-2 ring-foreground/50' : 'border-border/60'
@@ -40,7 +42,7 @@ export function PrimaryColorPicker({ allowCustom = true, className }: Props) {
       </div>
       {allowCustom ? (
         <label className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="uppercase tracking-wider">自定义</span>
+          <span className="uppercase tracking-wider">{t('theme.custom')}</span>
           <input
             type="color"
             value={color}

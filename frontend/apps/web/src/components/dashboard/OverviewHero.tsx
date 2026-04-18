@@ -1,5 +1,6 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ReadAccount, ReadLedger } from '@beecount/api-client'
+import { useT } from '@beecount/ui'
 
 interface Props {
   ledgers: ReadLedger[]
@@ -8,7 +9,7 @@ interface Props {
   periodSeries?: Array<{ bucket: string; income: number; expense: number; balance: number }>
   /** scope 的起止金额，避免重复把 series 再汇一次（也避免 series 空但 summary 有数的情况）。 */
   periodSummary?: { income_total: number; expense_total: number }
-  /** 当前 scope 的中文 label —— "今年" / "本月" / "全部" */
+  /** 当前 scope 的 label —— 由调用方根据 i18n 决定 */
   periodLabel?: string
 }
 
@@ -31,8 +32,10 @@ export function OverviewHero({
   accounts,
   periodSeries,
   periodSummary,
-  periodLabel = '今年'
+  periodLabel
 }: Props) {
+  const t = useT()
+  const scopeLabel = periodLabel ?? t('home.scope.year')
   const currency = currencyLabel(ledgers)
   let assetTotal = 0
   let liabilityTotal = 0
@@ -54,7 +57,7 @@ export function OverviewHero({
     (periodSeries || []).reduce((a, it) => a + (it.expense || 0), 0)
 
   const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   const trendData = (periodSeries || []).slice(-30).map((it, i) => ({
     idx: i,
@@ -74,7 +77,7 @@ export function OverviewHero({
       <div className="relative grid gap-4 p-6 md:grid-cols-[1.3fr_1fr]">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-            净值（资产 - 负债）
+            {t('overview.hero.netWorth')}
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-xs text-muted-foreground">{currency}</span>
@@ -89,14 +92,18 @@ export function OverviewHero({
           <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
             <span className="inline-flex items-center gap-1 text-income">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              {periodLabel}收入 {currency} {fmt(periodIncome)}
+              {t('overview.hero.scopeIncome')
+                .replace('{scope}', scopeLabel)
+                .replace('{value}', `${currency} ${fmt(periodIncome)}`)}
             </span>
             <span className="inline-flex items-center gap-1 text-expense">
               <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-              {periodLabel}支出 {currency} {fmt(periodExpense)}
+              {t('overview.hero.scopeExpense')
+                .replace('{scope}', scopeLabel)
+                .replace('{value}', `${currency} ${fmt(periodExpense)}`)}
             </span>
             <span className="text-xs text-muted-foreground">
-              跨 {ledgers.length} 个账本合计
+              {t('overview.hero.ledgerCount').replace('{count}', String(ledgers.length))}
             </span>
           </div>
         </div>
@@ -119,7 +126,7 @@ export function OverviewHero({
                     borderRadius: 6,
                     fontSize: 11
                   }}
-                  formatter={((v: number) => [fmt(v), '净值']) as unknown as never}
+                  formatter={((v: number) => [fmt(v), t('overview.hero.netWorthShort')]) as unknown as never}
                 />
                 <Area
                   type="monotone"
@@ -132,7 +139,7 @@ export function OverviewHero({
             </ResponsiveContainer>
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              暂无趋势数据
+              {t('overview.hero.noTrend')}
             </div>
           )}
         </div>

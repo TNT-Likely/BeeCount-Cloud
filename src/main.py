@@ -20,11 +20,21 @@ if settings.app_env != "development":
     if settings.has_wildcard_cors:
         raise RuntimeError("CORS_ORIGINS cannot contain wildcard '*' in non-development environments")
 
+from .version import __version__ as _beecount_cloud_version, APP_NAME as _beecount_cloud_name
+
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=_beecount_cloud_version,
     description="BeeCount Cloud v1 API",
 )
+
+
+# 公开版本接口:mobile / web UI 都会调用它,在设置区或 header 展示
+# "BeeCount Cloud vX.Y.Z"。不需要认证 —— 版本号不敏感,且 mobile 未登录
+# 状态下(登录页)也可能想告诉用户 server 版本。
+@app.get(f"{settings.api_prefix}/version")
+def public_version() -> dict:
+    return {"name": _beecount_cloud_name, "version": _beecount_cloud_version}
 
 app.state.ws_manager = WSConnectionManager()
 install_request_middleware(app)

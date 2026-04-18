@@ -1,6 +1,6 @@
-# BeeCount-Platform
+# BeeCount-Cloud
 
-BeeCount 平台仓库（独立项目），目标对齐云服务文档 v1：
+BeeCount 云端仓库（独立项目），目标对齐云服务文档 v1：
 
 - 多设备同步（push/pull/full + WebSocket）
 - 多用户共享账本（邀请码 + 角色权限）

@@ -32,8 +32,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'transactions', labelKey: 'nav.transactions' },
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
-      { key: 'tags', labelKey: 'nav.tags' },
-      { key: 'budgets', labelKey: 'nav.budgets' }
+      { key: 'tags', labelKey: 'nav.tags' }
+      // 预算从顶部 bookkeeping 组移出,改放头像下拉的"工具"里 —— 用户
+      // 场景下预算访问频率低于 tx/account/category,顶部 nav 保持瘦。
     ]
   },
   {

@@ -1,4 +1,4 @@
-import { Card, CardContent } from '@beecount/ui'
+import { Card, CardContent, useT } from '@beecount/ui'
 import type { ReadLedger } from '@beecount/api-client'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
 
 /** 总览顶部统计卡片。聚合所有账本的数据做"一眼看全"的数字+视觉层次。 */
 export function OverviewSummaryCards({ ledgers, currency }: Props) {
+  const t = useT()
   const totals = ledgers.reduce(
     (acc, l) => {
       acc.income += l.income_total
@@ -20,34 +21,37 @@ export function OverviewSummaryCards({ ledgers, currency }: Props) {
   )
 
   const fmt = (v: number) =>
-    `${currency} ${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    `${currency} ${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   const cards: { label: string; value: string; hint: string; tint: string }[] = [
     {
-      label: '净值 (收入−支出)',
+      label: t('overview.summary.netValue'),
       value: fmt(totals.balance),
-      hint: '全部账本合计',
+      hint: t('overview.summary.allLedgers'),
       tint:
         totals.balance >= 0
           ? 'from-emerald-400/25 to-emerald-400/5 text-emerald-700 dark:text-emerald-300'
           : 'from-rose-400/25 to-rose-400/5 text-rose-700 dark:text-rose-300'
     },
     {
-      label: '总支出',
+      label: t('overview.summary.totalExpense'),
       value: fmt(totals.expense),
-      hint: `${totals.txCount} 笔交易`,
+      hint: t('overview.summary.txCount').replace('{count}', String(totals.txCount)),
       tint: 'from-rose-400/25 to-rose-400/5 text-rose-700 dark:text-rose-300'
     },
     {
-      label: '总收入',
+      label: t('overview.summary.totalIncome'),
       value: fmt(totals.income),
-      hint: `${ledgers.length} 个账本`,
+      hint: t('overview.summary.ledgerCount').replace('{count}', String(ledgers.length)),
       tint: 'from-emerald-400/25 to-emerald-400/5 text-emerald-700 dark:text-emerald-300'
     },
     {
-      label: '账本',
+      label: t('overview.summary.ledgers'),
       value: String(ledgers.length),
-      hint: ledgers.length > 0 ? '点击卡片切换' : '尚未创建账本',
+      hint:
+        ledgers.length > 0
+          ? t('overview.summary.clickToSwitch')
+          : t('overview.summary.noLedger'),
       tint: 'from-sky-400/25 to-sky-400/5 text-sky-700 dark:text-sky-300'
     }
   ]

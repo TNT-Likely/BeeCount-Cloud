@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 import type { WorkspaceAnalyticsSeriesItem } from '@beecount/api-client'
 import { Amount } from '@beecount/web-features'
@@ -15,6 +15,7 @@ interface Props {
  * 一眼能看出。对比之下 MonthlyTrendBars 只展示最近 6 期，这里补齐整年。
  */
 export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
+  const t = useT()
   const data = useMemo(() => {
     const year = new Date().getFullYear()
     const byBucket = new Map<string, { income: number; expense: number }>()
@@ -29,20 +30,22 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
       if (rec.expense > maxExpense) maxExpense = rec.expense
       rows.push({
         monthIndex: m,
-        monthLabel: `${m + 1}月`,
+        monthLabel: t('home.heatmap.monthLabel').replace('{month}', String(m + 1)),
         income: rec.income,
         expense: rec.expense,
         balance: rec.income - rec.expense
       })
     }
     return { rows, maxExpense, year }
-  }, [yearSeries])
+  }, [yearSeries, t])
 
   return (
     <Card className="bc-panel overflow-hidden">
       <CardHeader className="flex flex-row items-end justify-between">
-        <CardTitle className="text-base">{data.year} 年月度支出热力</CardTitle>
-        <span className="text-[11px] text-muted-foreground">颜色越深 = 支出越大</span>
+        <CardTitle className="text-base">
+          {t('home.heatmap.title').replace('{year}', String(data.year))}
+        </CardTitle>
+        <span className="text-[11px] text-muted-foreground">{t('home.heatmap.hint')}</span>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-6 gap-2 sm:grid-cols-12">
@@ -63,7 +66,7 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                   isCurrent ? 'border-primary ring-1 ring-primary/40' : 'border-border/40'
                 }`}
                 style={{ background: bg }}
-                title={`${row.monthLabel} · 支出 ${row.expense.toFixed(2)}`}
+                title={`${row.monthLabel} · ${t('home.heatmap.tooltipExpense').replace('{value}', row.expense.toFixed(2))}`}
               >
                 <span
                   className={`text-[11px] font-semibold ${
@@ -90,13 +93,12 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                 <div className="pointer-events-none absolute -top-1 left-1/2 z-10 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
                   <div className="font-semibold">{row.monthLabel}</div>
                   <div className="text-income">
-                    收入 {row.income.toFixed(2)}
+                    {t('home.heatmap.tooltipIncome').replace('{value}', row.income.toFixed(2))}
                   </div>
                   <div className="text-expense">
-                    支出 {row.expense.toFixed(2)}
+                    {t('home.heatmap.tooltipExpense').replace('{value}', row.expense.toFixed(2))}
                   </div>
                   <div>
-                    结余{' '}
                     <span
                       className={
                         row.balance >= 0
@@ -104,7 +106,7 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                           : 'text-expense'
                       }
                     >
-                      {row.balance.toFixed(2)}
+                      {t('home.heatmap.tooltipBalance').replace('{value}', row.balance.toFixed(2))}
                     </span>
                   </div>
                 </div>

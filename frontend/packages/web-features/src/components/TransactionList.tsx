@@ -122,7 +122,7 @@ export function TransactionList({
       {loading ? (
         <div className="flex items-center justify-center py-4 text-xs text-muted-foreground">
           <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground/60 border-t-transparent" />
-          <span className="ml-2">加载中…</span>
+          <span className="ml-2">{t('txList.loading')}</span>
         </div>
       ) : null}
 
@@ -131,7 +131,7 @@ export function TransactionList({
           —— 明明还有下一页。 */}
       {onLoadMore && !hasMore && items.length > 0 && !loading ? (
         <div className="py-3 text-center text-[11px] text-muted-foreground">
-          — 没有更多了 —
+          {t('txList.noMore')}
         </div>
       ) : null}
     </div>
