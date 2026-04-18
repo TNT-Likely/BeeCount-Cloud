@@ -28,10 +28,7 @@ from ..models import (
     RefreshToken,
     SyncChange,
     User,
-    UserAccount,
-    UserCategory,
     UserProfile,
-    UserTag,
 )
 from ..schemas import (
     AdminBackupArtifactOut,
@@ -451,32 +448,30 @@ def admin_overview(
     _admin_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ) -> AdminOverviewOut:
+    # account/category/tag 本来从 UserAccount/UserCategory/UserTag 投影表数,
+    # 新架构全走 sync_changes 事件流后这些投影表不再维护。这里改成从
+    # sync_changes 的 DISTINCT entity_sync_id(action != 'delete')来算,
+    # 够管理员总览参考就行。
+    def _count_entity(entity_type: str) -> int:
+        return int(
+            db.scalar(
+                select(func.count(func.distinct(SyncChange.entity_sync_id)))
+                .where(SyncChange.entity_type == entity_type)
+                .where(SyncChange.action != "delete")
+            )
+            or 0
+        )
+
     return AdminOverviewOut(
         users_total=int(db.scalar(select(func.count()).select_from(User)) or 0),
         users_enabled_total=int(
             db.scalar(select(func.count()).select_from(User).where(User.is_enabled.is_(True))) or 0
         ),
         ledgers_total=int(db.scalar(select(func.count()).select_from(Ledger)) or 0),
-        transactions_total=int(
-            db.scalar(
-                select(func.count()).select_from(SyncChange).where(SyncChange.entity_type == "transaction")
-            ) or 0
-        ),
-        accounts_total=int(
-            db.scalar(
-                select(func.count()).select_from(UserAccount).where(UserAccount.deleted_at.is_(None))
-            )
-            or 0
-        ),
-        categories_total=int(
-            db.scalar(
-                select(func.count()).select_from(UserCategory).where(UserCategory.deleted_at.is_(None))
-            )
-            or 0
-        ),
-        tags_total=int(
-            db.scalar(select(func.count()).select_from(UserTag).where(UserTag.deleted_at.is_(None))) or 0
-        ),
+        transactions_total=_count_entity("transaction"),
+        accounts_total=_count_entity("account"),
+        categories_total=_count_entity("category"),
+        tags_total=_count_entity("tag"),
     )
 
 

@@ -17,10 +17,7 @@ from ..models import (
     Ledger,
     SyncChange,
     User,
-    UserAccount,
-    UserCategory,
     UserProfile,
-    UserTag,
 )
 from ..schemas import (
     AnalyticsMetric,
@@ -46,7 +43,6 @@ from ..schemas import (
     WorkspaceTransactionPageOut,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
-from ..user_dictionary_service import deduplicate_user_dictionaries
 
 router = APIRouter()
 settings = get_settings()

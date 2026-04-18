@@ -671,60 +671,6 @@ class WriteTagUpdateRequest(WriteBaseRequest):
     color: str | None = None
 
 
-class WorkspaceWriteBaseRequest(BaseModel):
-    request_id: str | None = Field(default=None, max_length=128)
-
-
-class WorkspaceAccountCreateRequest(WorkspaceWriteBaseRequest):
-    name: str = Field(min_length=1, max_length=255)
-    account_type: str | None = None
-    currency: str | None = None
-    initial_balance: float | None = None
-
-
-class WorkspaceAccountUpdateRequest(WorkspaceWriteBaseRequest):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    account_type: str | None = None
-    currency: str | None = None
-    initial_balance: float | None = None
-
-
-class WorkspaceCategoryCreateRequest(WorkspaceWriteBaseRequest):
-    name: str = Field(min_length=1, max_length=255)
-    kind: Literal["expense", "income", "transfer"]
-    level: int | None = None
-    sort_order: int | None = None
-    icon: str | None = None
-    icon_type: str | None = None
-    custom_icon_path: str | None = None
-    icon_cloud_file_id: str | None = None
-    icon_cloud_sha256: str | None = None
-    parent_name: str | None = None
-
-
-class WorkspaceCategoryUpdateRequest(WorkspaceWriteBaseRequest):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    kind: Literal["expense", "income", "transfer"] | None = None
-    level: int | None = None
-    sort_order: int | None = None
-    icon: str | None = None
-    icon_type: str | None = None
-    custom_icon_path: str | None = None
-    icon_cloud_file_id: str | None = None
-    icon_cloud_sha256: str | None = None
-    parent_name: str | None = None
-
-
-class WorkspaceTagCreateRequest(WorkspaceWriteBaseRequest):
-    name: str = Field(min_length=1, max_length=255)
-    color: str | None = None
-
-
-class WorkspaceTagUpdateRequest(WorkspaceWriteBaseRequest):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    color: str | None = None
-
-
 class AdminDeviceOut(BaseModel):
     id: str
     name: str

@@ -116,63 +116,6 @@ class Ledger(Base):
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")
 
 
-class UserAccount(Base):
-    __tablename__ = "user_accounts"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    name: Mapped[str] = mapped_column(String(255), index=True)
-    account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-
-
-Index("idx_user_accounts_user_name", UserAccount.user_id, UserAccount.name)
-
-
-class UserCategory(Base):
-    __tablename__ = "user_categories"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    name: Mapped[str] = mapped_column(String(255), index=True)
-    kind: Mapped[str] = mapped_column(String(32), index=True)
-    level: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    icon: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    icon_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    custom_icon_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    icon_cloud_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    icon_cloud_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    parent_id: Mapped[str | None] = mapped_column(
-        ForeignKey("user_categories.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-
-
-Index("idx_user_categories_user_kind_name", UserCategory.user_id, UserCategory.kind, UserCategory.name)
-
-
-class UserTag(Base):
-    __tablename__ = "user_tags"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    name: Mapped[str] = mapped_column(String(255), index=True)
-    color: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-
-
-Index("idx_user_tags_user_name", UserTag.user_id, UserTag.name)
 
 
 class SyncChange(Base):
