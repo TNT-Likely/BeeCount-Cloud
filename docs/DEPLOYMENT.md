@@ -11,25 +11,14 @@ docker compose up -d --build
 - Backup artifact dir: `/data/backups` (`BACKUP_STORAGE_DIR`)
 - App collaboration read/device scope: `ALLOW_APP_RW_SCOPES` defaults to `true` (set `false` only if you explicitly want to restrict App RW scopes)
 
-## 2) PostgreSQL optional production mode
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
-```
-
-## 3) Health checks
+## 2) Health checks
 
 - Liveness: `GET /healthz`
 - Readiness: `GET /ready`
 - Metrics: `GET /metrics`
-- Compose includes container health checks (ready probe + `pg_isready`)
+- Compose includes container health checks (ready probe)
 
-## 4) TLS reverse proxy
-
-- Nginx template: `deploy/nginx/default.conf`
-- Put cert/key under `/etc/nginx/certs` in your proxy container
-
-## 5) Backup
+## 3) Backup
 
 SQLite:
 
@@ -37,20 +26,15 @@ SQLite:
 ./scripts/backup_sqlite.sh /data/beecount.db ./backups/sqlite
 ```
 
-PostgreSQL:
+Or simply snapshot the whole `beecount_data` volume — it contains DB, attachments, backups, avatars, and the JWT secret in one place.
 
-```bash
-./scripts/backup_postgres.sh ./backups/postgres
-```
+## 4) Security baseline
 
-## 6) Security baseline
+- First boot auto-generates a 32-byte `JWT_SECRET` into `/data/.jwt_secret`; override the env var if you want to manage the key yourself.
+- Put the API behind your own TLS reverse proxy (Caddy / Nginx / Traefik / Cloudflare).
+- Keep `/data` on persistent storage — DB, attachments, backups, and the JWT secret all live there.
 
-- Use `JWT_SECRET` with at least 32 bytes in production
-- Keep `CORS_ORIGINS` as explicit allow-list (no `*`)
-- Put API behind TLS reverse proxy (`deploy/nginx/default.conf`)
-- Keep `BACKUP_STORAGE_DIR` on persistent storage
-
-## 7) App scope troubleshooting
+## 5) App scope troubleshooting
 
 - Symptom: App shows collaboration role as not ready or device page reports `Insufficient scope`.
 - Check env: ensure `ALLOW_APP_RW_SCOPES` is not set to `false`.
@@ -59,12 +43,12 @@ PostgreSQL:
   - Full sessions: `GET /api/v1/devices?view=sessions&active_within_days=0`
   - Deduped devices keep `session_count` for readability.
 
-## 8) Self-host member management
+## 6) Self-host member management
 
 - Web collaboration page supports direct member management by email (`add/update/remove`) without requiring invite-code flow.
 - Recommended operation path for self-hosting: manage shared ledger members in Web/admin, keep App as collaboration read surface.
 
-## 9) Minimal SOP (self-host)
+## 7) Minimal SOP (self-host)
 
 - If App role shows "Permission not ready", copy diagnostics from App ledger collaboration page and verify:
   - `role_resolve_status`
@@ -77,7 +61,7 @@ PostgreSQL:
   - `sync_queue`/`sync_state` references are migrated automatically,
   - old snapshot path is copied to the new path best-effort when target path is empty.
 
-## 10) Experimental collaboration policy
+## 8) Experimental collaboration policy
 
 - Current collaboration capability is treated as **experimental** for self-host deployments.
 - Keep backend API compatibility stable; avoid destructive API removal while App/UI continues to iterate.

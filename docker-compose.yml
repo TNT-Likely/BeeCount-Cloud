@@ -12,10 +12,7 @@ services:
       # 一个 volume 装全部数据:SQLite DB + 附件 + 备份归档 + 头像 + JWT 密钥。
       # 首次启动会在 /data/.jwt_secret 自动生成 32 bytes 强密钥,用户零配置。
       - beecount_data:/data
-    # 跨域访问(web 和 api 不同域)或想用自己的 JWT 密钥时,按需设置 environment:
-    # environment:
-    #   JWT_SECRET: <自己的 32+ bytes 随机串>
-    #   CORS_ORIGINS: https://web.example.com,https://api.example.com
+    # 想自己管理 JWT 密钥时:environment 里加 JWT_SECRET: <32+ bytes 随机串>
 
 volumes:
   beecount_data:

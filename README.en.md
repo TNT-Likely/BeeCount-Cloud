@@ -78,8 +78,6 @@ volumes:
   beecount_data:
 ```
 
-> Cross-domain deploy (web and API on different domains)? Add `CORS_ORIGINS: https://web.example.com` under `environment:`.
-> Want to manage your own JWT secret? Add `JWT_SECRET: <32+ bytes>`.
 
 ### 2) Start
 
@@ -106,29 +104,6 @@ The `beecount_data` volume holds everything: SQLite DB, attachments, backup arti
 docker run --rm -v beecount_data:/data -v $(pwd):/backup alpine \
   tar czf /backup/beecount-$(date +%F).tar.gz /data
 ```
-
-### Optional: PostgreSQL
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
-```
-
----
-
-## ⚙️ Configuration
-
-**Zero config** out of the box — the image bakes in production defaults and auto-generates the JWT secret on first boot. You only need to override these for edge cases:
-
-| Variable | Image default | When to override |
-|----------|---------------|------------------|
-| `JWT_SECRET` | auto-generated 32-byte secret at `/data/.jwt_secret` | You want to manage your own key / reuse across environments |
-| `CORS_ORIGINS` | `http://localhost:8080,5173,3000` | Web and API on different domains (e.g. `https://web.example.com`) |
-| `DATABASE_URL` | `sqlite:////data/beecount.db` | Switch to PostgreSQL |
-| `BACKUP_STORAGE_DIR` | `/data/backups` | Mount a separate volume |
-| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | Same (avatars auto-live under `<attachments>/profile-avatars/`) |
-| `ALLOW_APP_RW_SCOPES` | `true` | Keep `true` for mobile sync |
-| `REGISTRATION_ENABLED` | `false` | Allow public signup (default off; admins can create users from the console) |
-| `TZ` | `Asia/Shanghai` | Non-CST deployment |
 
 ---
 
@@ -205,8 +180,7 @@ pnpm -C frontend/apps/web exec tsc --noEmit --skipLibCheck
 ### One-command local stack
 
 ```bash
-make dev-up                  # SQLite
-MODE=postgres make dev-up    # PostgreSQL
+make dev-up
 ```
 
 ### Frontend packages
