@@ -1,12 +1,20 @@
 import logging
 from pathlib import Path
 
+# !!! 顺序关键 !!!
+# 必须在**任何** `from .routers ...` 之前把 JWT 密钥灌进 env。部分 router
+# 模块(write.py)顶层有 `settings = get_settings()`,`get_settings` 是
+# @lru_cache 的 —— 首次调用会冻结当前 env 里的 JWT_SECRET。若先触发 routers
+# 导入、再 ensure_jwt_secret,settings 已经缓存了默认占位符,后续 env 变更
+# 不再被反映,下面 production 校验就会 raise。
+from .bootstrap import ensure_jwt_secret
+ensure_jwt_secret()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import text
 
-from .bootstrap import ensure_jwt_secret
 from .config import get_settings
 from .database import SessionLocal
 from .error_handling import register_exception_handlers
@@ -21,11 +29,9 @@ from .websocket_manager import WSConnectionManager
 install_ring_buffer(capacity=1000)
 logging.getLogger().setLevel(logging.INFO)
 
-# JWT 密钥引导:用户没提供强密钥时,自动从 volume 持久化文件读 / 或首次生成。
-# 必须在 get_settings() 之前调用 —— pydantic-settings 是 lru_cache 的,
-# 第一次读取后 env 的变更不再被反应。
-ensure_jwt_secret()
-
+# 双保险:即便后续代码触发了更早的 get_settings 调用,这里清掉 lru_cache
+# 让下面的 `settings = get_settings()` 读到 ensure_jwt_secret 注入的新值。
+get_settings.cache_clear()
 settings = get_settings()
 if settings.app_env != "development":
     if settings.is_default_jwt_secret or settings.is_weak_jwt_secret:
