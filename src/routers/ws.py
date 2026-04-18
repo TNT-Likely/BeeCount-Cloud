@@ -1,9 +1,13 @@
+import logging
+
 from fastapi import APIRouter, Query, WebSocket
 from sqlalchemy import select
 
 from ..database import SessionLocal
 from ..models import User
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE, decode_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -44,6 +48,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
 
     manager = websocket.app.state.ws_manager
     await manager.connect(user_id, websocket)
+    logger.info("ws.connect user=%s", user_id)
     try:
         while True:
             msg = await websocket.receive_text()
@@ -60,3 +65,4 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
         pass
     finally:
         manager.disconnect(user_id, websocket)
+        logger.info("ws.disconnect user=%s", user_id)

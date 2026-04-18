@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,6 +21,8 @@ from ..schemas import (
     AttachmentUploadOut,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 _READ_SCOPE_DEP = require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE)
@@ -104,6 +107,13 @@ async def upload_attachment(
         )
     )
     if existing is not None:
+        logger.info(
+            "attachments.upload.dedup ledger=%s sha256=%s size=%d user=%s",
+            ledger.external_id,
+            sha256,
+            len(data),
+            current_user.id,
+        )
         return _to_upload_out(existing, ledger.external_id)
 
     safe_name = _safe_file_name(file.filename or "attachment.bin")
@@ -125,6 +135,14 @@ async def upload_attachment(
     db.add(row)
     db.commit()
     db.refresh(row)
+    logger.info(
+        "attachments.upload ledger=%s file=%s size=%d sha256=%s user=%s",
+        ledger.external_id,
+        safe_name,
+        len(data),
+        sha256,
+        current_user.id,
+    )
     return _to_upload_out(row, ledger.external_id)
 
 
@@ -191,6 +209,13 @@ def download_attachment(
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment file missing")
 
+    logger.info(
+        "attachments.download file=%s name=%s size=%d user=%s",
+        row.id,
+        row.file_name,
+        row.size_bytes,
+        current_user.id,
+    )
     return FileResponse(
         path=path,
         media_type=row.mime_type or "application/octet-stream",

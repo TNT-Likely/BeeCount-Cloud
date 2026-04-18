@@ -325,6 +325,23 @@ export type AdminSyncErrors = {
   items: AdminSyncErrorItem[]
 }
 
+export type AdminLogEntry = {
+  seq: number
+  ts: string
+  level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL' | string
+  logger: string
+  message: string
+  ledger_id?: string | null
+  user_id?: string | null
+  device_id?: string | null
+}
+
+export type AdminLogList = {
+  items: AdminLogEntry[]
+  capacity: number
+  latest_seq: number
+}
+
 export type AdminBackupArtifact = {
   id: string
   ledger_id: string

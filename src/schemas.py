@@ -300,6 +300,25 @@ class AdminOverviewOut(BaseModel):
     tags_total: int
 
 
+class AdminLogEntryOut(BaseModel):
+    """Ring buffer 一条日志;字段对应 RingBufferLogHandler.emit 的 dict。"""
+
+    seq: int
+    ts: str
+    level: str
+    logger: str
+    message: str
+    ledger_id: str | None = None
+    user_id: str | None = None
+    device_id: str | None = None
+
+
+class AdminLogListOut(BaseModel):
+    items: list[AdminLogEntryOut]
+    capacity: int
+    latest_seq: int
+
+
 class ReadLedgerOut(BaseModel):
     ledger_id: str
     ledger_name: str

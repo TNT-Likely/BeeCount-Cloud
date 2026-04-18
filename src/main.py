@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -8,10 +9,16 @@ from sqlalchemy import text
 from .config import get_settings
 from .database import SessionLocal
 from .error_handling import register_exception_handlers
+from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import install_request_middleware
 from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
 from .websocket_manager import WSConnectionManager
+
+# 把所有应用日志同时送进内存 ring buffer,web 管理员页面从 /admin/logs 拉出来。
+# 放在 import 块之后,设置读取之前 —— 这样启动阶段的 log 也能被捕获。
+install_ring_buffer(capacity=1000)
+logging.getLogger().setLevel(logging.INFO)
 
 settings = get_settings()
 if settings.app_env != "development":

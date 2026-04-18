@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -41,15 +40,16 @@ def install_request_middleware(app: FastAPI) -> None:
         finally:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             metrics.inc(f"beecount_http_status_{status_code // 100}xx_total")
-            log_payload = {
-                "event": "http_request",
-                "requestId": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status": status_code,
-                "durationMs": round(elapsed_ms, 2),
-            }
-            logger.info(json.dumps(log_payload, ensure_ascii=False))
+            # 人类可读格式,ring buffer 里直接看也舒服。保留 requestId 方便
+            # 跨日志对照(应用日志会用同一个 requestId 作为 extra 输出)。
+            logger.info(
+                "%s %s → %d %.1fms req=%s",
+                request.method,
+                request.url.path,
+                status_code,
+                elapsed_ms,
+                request_id,
+            )
 
         if response is None:
             raise RuntimeError("response missing")

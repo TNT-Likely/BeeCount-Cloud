@@ -5,6 +5,7 @@ import type {
   AdminBackupRestoreResponse,
   AdminDeviceList,
   AdminHealth,
+  AdminLogList,
   AdminOverview,
   AdminSyncErrors,
   UserAdmin,
@@ -87,6 +88,26 @@ export async function fetchAdminHealth(token: string): Promise<AdminHealth> {
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {
   return authedGet<AdminSyncErrors>('/admin/sync/errors', token)
+}
+
+export async function fetchAdminLogs(
+  token: string,
+  options?: {
+    level?: string
+    q?: string
+    source?: string
+    limit?: number
+    since_seq?: number
+  }
+): Promise<AdminLogList> {
+  const query = new URLSearchParams()
+  if (options?.level) query.set('level', options.level)
+  if (options?.q) query.set('q', options.q)
+  if (options?.source) query.set('source', options.source)
+  if (typeof options?.limit === 'number') query.set('limit', `${options.limit}`)
+  if (typeof options?.since_seq === 'number') query.set('since_seq', `${options.since_seq}`)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<AdminLogList>(`/admin/logs${suffix}`, token)
 }
 
 export async function listAdminBackupArtifacts(

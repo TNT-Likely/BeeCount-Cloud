@@ -329,6 +329,18 @@ async def push_changes(
             }
             if len(conflict_samples) < 20:
                 conflict_samples.append(sample)
+            logger.warning(
+                "sync.push.conflict entity=%s action=%s ledger=%s sync_id=%s device=%s "
+                "incoming_ts=%s existing_ts=%s existing_change=%d",
+                change.entity_type,
+                change.action,
+                change.ledger_id,
+                change.entity_sync_id,
+                req.device_id,
+                incoming_updated_at.isoformat(),
+                existing_tuple[0].isoformat(),
+                latest_entity_change.change_id,
+            )
             db.add(
                 AuditLog(
                     user_id=current_user.id,
@@ -348,6 +360,14 @@ async def push_changes(
         if existing_tuple is not None and existing_tuple == incoming_tuple:
             # Idempotent replay (same device, same timestamp) — don't duplicate.
             accepted += 1
+            logger.debug(
+                "sync.push.replay entity=%s action=%s ledger=%s sync_id=%s device=%s",
+                change.entity_type,
+                change.action,
+                change.ledger_id,
+                change.entity_sync_id,
+                req.device_id,
+            )
             continue
 
         row_change = SyncChange(
@@ -369,6 +389,16 @@ async def push_changes(
         touched_ledgers[ledger.external_id] = ledger.id
         if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
             ledgers_with_individual_changes.add(ledger.id)
+        logger.info(
+            "sync.push.accept entity=%s action=%s ledger=%s sync_id=%s change_id=%d device=%s user=%s",
+            change.entity_type,
+            change.action,
+            change.ledger_id,
+            change.entity_sync_id,
+            row_change.change_id,
+            req.device_id,
+            current_user.id,
+        )
     if max_cursor == 0:
         accessible = list_accessible_ledgers(db, user_id=current_user.id)
         max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
@@ -409,6 +439,15 @@ async def push_changes(
                     },
                 )
 
+    logger.info(
+        "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d",
+        current_user.id,
+        req.device_id,
+        accepted,
+        rejected,
+        conflict_count,
+        len(touched_ledgers),
+    )
     return SyncPushResponse(
         accepted=accepted,
         rejected=rejected,
@@ -516,6 +555,15 @@ def pull_changes(
     elif heartbeat_updated:
         db.commit()
 
+    if changes:
+        logger.info(
+            "sync.pull user=%s device=%s since=%d returned=%d hasMore=%s",
+            current_user.id,
+            device_id,
+            since,
+            len(changes),
+            has_more,
+        )
     return SyncPullResponse(changes=changes, server_cursor=server_cursor, has_more=has_more)
 
 

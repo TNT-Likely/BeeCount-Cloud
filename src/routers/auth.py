@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ from ..security import (
     hash_token,
     verify_password,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 settings = get_settings()
@@ -185,6 +188,13 @@ def register(
     )
     token_response = _issue_tokens(db, user, device, client_type=req.client_type)
     db.commit()
+    logger.info(
+        "auth.register user=%s email=%s device=%s platform=%s",
+        user.id,
+        email,
+        device.id,
+        req.platform,
+    )
     return token_response
 
 
@@ -215,6 +225,13 @@ def login(
     )
     token_response = _issue_tokens(db, user, device, client_type=req.client_type)
     db.commit()
+    logger.info(
+        "auth.login user=%s device=%s platform=%s client_type=%s",
+        user.id,
+        device.id,
+        req.platform,
+        req.client_type,
+    )
     return token_response
 
 
@@ -302,6 +319,12 @@ def refresh(
         scopes=scopes,
     )
     db.commit()
+    logger.info(
+        "auth.refresh user=%s device=%s client_type=%s",
+        user.id,
+        device.id if device else None,
+        client_type,
+    )
     return token_response
 
 
@@ -311,6 +334,7 @@ def logout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    revoked = False
     if req.refresh_token:
         token_h = hash_token(req.refresh_token)
         token_row = db.scalar(
@@ -323,5 +347,7 @@ def logout(
         if token_row:
             token_row.revoked_at = datetime.now(timezone.utc)
             db.commit()
+            revoked = True
 
+    logger.info("auth.logout user=%s refresh_revoked=%s", current_user.id, revoked)
     return {"ok": True}

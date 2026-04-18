@@ -421,6 +421,15 @@ async def _commit_write(
                 return replay
         raise exc
 
+    logger.info(
+        "write.commit action=%s ledger=%s entity=%s change_id=%d device=%s user=%s",
+        audit_action,
+        ledger.external_id,
+        entity_id,
+        response.new_change_id,
+        device_id,
+        current_user.id,
+    )
     # Single-user-per-ledger: notify only the owner.
     await request.app.state.ws_manager.broadcast_to_user(
         ledger.user_id,
@@ -816,6 +825,13 @@ async def create_ledger(
         },
     )
 
+    logger.info(
+        "write.ledger.create ledger=%s name=%s currency=%s user=%s",
+        external_id,
+        name,
+        currency,
+        current_user.id,
+    )
     return WriteCommitMeta(
         ledger_id=external_id,
         base_change_id=0,

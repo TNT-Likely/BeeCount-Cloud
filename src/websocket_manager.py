@@ -1,10 +1,13 @@
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 
 from fastapi import WebSocket
 
 from .metrics import metrics
+
+logger = logging.getLogger(__name__)
 
 
 class WSConnectionManager:
@@ -25,11 +28,21 @@ class WSConnectionManager:
 
     async def broadcast_to_user(self, user_id: str, payload: dict) -> None:
         stale: list[WebSocket] = []
-        for ws in self._connections.get(user_id, set()):
+        conns = self._connections.get(user_id, set())
+        for ws in conns:
             try:
                 await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
             except Exception:
                 stale.append(ws)
+
+        if conns:
+            logger.info(
+                "ws.broadcast user=%s type=%s sockets=%d stale=%d",
+                user_id,
+                payload.get("type"),
+                len(conns),
+                len(stale),
+            )
 
         for ws in stale:
             self.disconnect(user_id, ws)

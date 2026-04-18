@@ -18,6 +18,7 @@ from ..deps import get_current_user, require_admin_user, require_any_scopes, req
 from ..ledger_access import (
     get_accessible_ledger_by_external_id,
 )
+from ..logging_ring import get_ring_buffer
 from ..models import (
     AuditLog,
     BackupArtifact,
@@ -42,6 +43,8 @@ from ..schemas import (
     AdminBackupUploadSnapshotRequest,
     AdminDeviceListOut,
     AdminDeviceOut,
+    AdminLogEntryOut,
+    AdminLogListOut,
     AdminOverviewOut,
     BackupArtifactKind,
     UserAdminCreateRequest,
@@ -833,6 +836,32 @@ async def restore_backup(
         restored=True,
         ledger_id=ledger.external_id,
         change_id=sync_row.change_id,
+    )
+
+
+@router.get("/logs", response_model=AdminLogListOut)
+def read_logs(
+    level: str | None = Query(default=None, description="最小日志级别,DEBUG/INFO/WARNING/ERROR"),
+    q: str | None = Query(default=None, description="关键词过滤(message / logger 子串匹配)"),
+    source: str | None = Query(
+        default=None,
+        description="日志类型过滤,logger 名称前缀;多个用逗号分隔(如 'src.routers.sync,uvicorn')",
+    ),
+    limit: int = Query(default=200, ge=1, le=1000),
+    since_seq: int | None = Query(default=None, ge=0, description="只拉 seq > since_seq 的条目,用于轮询增量"),
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    _admin_user: User = Depends(require_admin_user),
+) -> AdminLogListOut:
+    buffer = get_ring_buffer()
+    if buffer is None:
+        return AdminLogListOut(items=[], capacity=0, latest_seq=0)
+    source_list = [s for s in (source or "").split(",") if s.strip()] or None
+    items = buffer.snapshot(limit=limit, level=level, q=q, since_seq=since_seq, sources=source_list)
+    latest_seq = items[-1]["seq"] if items else (since_seq or 0)
+    return AdminLogListOut(
+        items=[AdminLogEntryOut(**entry) for entry in items],
+        capacity=buffer.capacity,
+        latest_seq=latest_seq,
     )
 
 

@@ -4,6 +4,7 @@ import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
 
 import { useSyncSocket } from '../hooks/useSyncSocket'
 import { drainPull, startPoller } from '../state/sync-client'
+import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
 import { HomeHero } from '../components/dashboard/HomeHero'
 import { HomeHabitStats } from '../components/dashboard/HomeHabitStats'
@@ -15,7 +16,7 @@ import { AssetCompositionDonut } from '../components/dashboard/AssetCompositionD
 import { MonthlyTrendBars } from '../components/dashboard/MonthlyTrendBars'
 import { TopCategoriesList } from '../components/dashboard/TopCategoriesList'
 
-import { LogOut, MoreHorizontal, SlidersHorizontal } from 'lucide-react'
+import { LogOut, MoreHorizontal, ScrollText, SlidersHorizontal } from 'lucide-react'
 
 import {
   Alert,
@@ -486,6 +487,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [adminHealth, setAdminHealth] = useState<AdminHealth | null>(null)
   const [isAdminUser, setIsAdminUser] = useState(false)
   const [isAdminResolved, setIsAdminResolved] = useState(false)
+  const [logsOpen, setLogsOpen] = useState(false)
   const [txDictionaryLoading, setTxDictionaryLoading] = useState(false)
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
@@ -2165,13 +2167,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               <div className="flex h-14 items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
                   <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
-                  <div className="flex items-baseline gap-1.5">
+                  {/* BeeCount Cloud 版本。web bundle 的 package.json version
+                      跟 server src/version.py 保持同步(发版时一起改),直接
+                      从 __APP_VERSION__ vite define 注入,不走接口。
+                      移动端空间紧张,版本号换到第二行;桌面端保留 baseline 同行。 */}
+                  <div className="flex flex-col leading-tight md:flex-row md:items-baseline md:gap-1.5">
                     <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
-                    {/* BeeCount Cloud 版本。web bundle 的 package.json version
-                        跟 server src/version.py 保持同步(发版时一起改),直接
-                        从 __APP_VERSION__ vite define 注入,不走接口。 */}
                     <span
-                      className="font-mono text-[10px] leading-none text-muted-foreground/70"
+                      className="font-mono text-[10px] text-muted-foreground/70"
                       title={`BeeCount Cloud v${__APP_VERSION__}`}
                     >
                       v{__APP_VERSION__}
@@ -2289,6 +2292,17 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 </nav>
 
                 <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
+                  {isAdminUser ? (
+                    <button
+                      type="button"
+                      title={t('logs.open')}
+                      aria-label={t('logs.open')}
+                      onClick={() => setLogsOpen(true)}
+                      className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                    >
+                      <ScrollText className="h-4 w-4" />
+                    </button>
+                  ) : null}
                   <LanguageToggle />
                   <ThemeToggle />
                   {/* 头像 hover 悬浮下拉：Radix 原生只支持 click，这里用 pure
@@ -3458,6 +3472,9 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         onCancel={() => setPendingDelete(null)}
         onConfirm={onConfirmDelete}
       />
+
+      {/* 服务端日志弹窗:只有 admin 才能在 toolbar 看到入口按钮,对话框常驻 root。 */}
+      <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
 
       {/* 创建账本对话框：常驻 root，任何分区 header 的"新建账本"按钮都能唤起。 */}
       <Dialog open={createLedgerDialogOpen} onOpenChange={setCreateLedgerDialogOpen}>
