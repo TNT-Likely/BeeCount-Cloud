@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 5
 
-  beecount-platform:
+  beecount-cloud:
     environment:
       DATABASE_URL: postgresql+psycopg://beecount:beecount@db:5432/beecount
     depends_on:
