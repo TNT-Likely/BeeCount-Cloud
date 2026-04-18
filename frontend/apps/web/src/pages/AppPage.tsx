@@ -42,6 +42,7 @@ import {
   Input,
   Label,
   LanguageToggle,
+  PrimaryColorPicker,
   Select,
   SelectContent,
   SelectItem,
@@ -521,8 +522,29 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
 
   const loadProfile = async () => {
     const row = await fetchProfileMe(token)
+    console.info(
+      '[avatar_sync] profile loaded',
+      'avatar_url=', row.avatar_url,
+      'avatar_version=', row.avatar_version
+    )
     setProfileMe(row)
     setProfileDisplayName(row.display_name || '')
+  }
+
+  /**
+   * 头像 URL cache-bust：避免浏览器把旧头像长期留在 disk cache。优先用后端
+   * 给的 `?v=<version>` 参数；如果 URL 里没有 v（老客户端 / 代理 strip 了）
+   * 再手动拼一次。`img` 外层也会用 `key={avatar_version}` 强制重挂，两层兜底。
+   */
+  const withAvatarCacheBust = (url?: string | null, version?: number | null): string => {
+    if (!url) return ''
+    if (version == null) return url
+    // 已经有 v 参数就 replace，没有就 append
+    const separator = url.includes('?') ? '&' : '?'
+    if (/[?&]v=\d+/.test(url)) {
+      return url.replace(/([?&])v=\d+/, `$1v=${version}`)
+    }
+    return `${url}${separator}v=${version}`
   }
 
   const loadLedgerBase = async (ledgerId: string) => {
@@ -823,7 +845,13 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     token,
     buildUrl: wsBuildUrl,
     onEvent: (payload: unknown) => {
-      const p = payload as { type?: string } | null
+      const p = payload as { type?: string; avatar_version?: number } | null
+      console.info('[avatar_sync] ws event', p)
+      if (p?.type === 'profile_change') {
+        // profile_change 只需重拉 profile，不必 refetch 交易 / 账户。
+        void loadProfile()
+        return
+      }
       if (p?.type === 'sync_change' || p?.type === 'backup_restore') {
         void refreshAllSectionsRef.current()
       }
@@ -1980,7 +2008,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       >
                         {profileMe.avatar_url ? (
                           <img
-                            src={profileMe.avatar_url}
+                            // key 跟 avatar_version 绑定：服务端 bump 版本号后
+                            // React 会重挂载 <img>，彻底绕开浏览器 disk cache
+                            // 把旧帧当新 URL 继续复用的场景。
+                            key={profileMe.avatar_version ?? 0}
+                            src={withAvatarCacheBust(
+                              profileMe.avatar_url,
+                              profileMe.avatar_version
+                            )}
                             alt=""
                             className="h-8 w-8 rounded-full border border-border/40 object-cover"
                           />
@@ -2060,6 +2095,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                               </button>
                             </>
                           ) : null}
+                          {/* 主题色选择器：直接塞进 hover 下拉，让 primary 色
+                              修改的触发路径跟深浅主题 toggle 同一个位置。 */}
+                          <div className="mx-1 my-1 h-px bg-border/60" />
+                          <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                            主题色
+                          </div>
+                          <div className="px-2 pb-2">
+                            <PrimaryColorPicker />
+                          </div>
                           <div className="mx-1 my-1 h-px bg-border/60" />
                           <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                             操作

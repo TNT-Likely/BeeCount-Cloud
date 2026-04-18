@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
@@ -22,6 +24,27 @@ from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, SCOPE_WEB_READ, SCOPE_W
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+async def _broadcast_profile_change(
+    request: Request, *, user_id: str, payload: dict[str, Any]
+) -> None:
+    """Profile 是 user-scoped 小状态：上传头像 / 改昵称后，把变更推给该用户所
+    有连着的 WS（mobile、多标签 web）。对齐 sync.py:393-409 的 sync_change
+    广播模式，但 type 用 `profile_change` 区分，客户端只做 profile refetch
+    不去重拉交易等其它 section。失败不 break 请求。"""
+    try:
+        ws_manager = getattr(request.app.state, "ws_manager", None)
+        if ws_manager is None:
+            logger.info("avatar_sync: ws_manager unavailable, skip broadcast user=%s", user_id)
+            return
+        message = {"type": "profile_change", **payload}
+        logger.info("avatar_sync: broadcast profile_change user=%s payload=%s", user_id, payload)
+        await ws_manager.broadcast_to_user(user_id, message)
+        logger.info("avatar_sync: broadcast done user=%s", user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("avatar_sync: broadcast failed user=%s err=%s", user_id, exc)
 _READ_SCOPE_DEP = require_any_scopes(
     SCOPE_APP_WRITE,
     SCOPE_WEB_READ,
@@ -104,8 +127,9 @@ def get_my_profile(
 
 
 @router.patch("/me", response_model=UserProfileOut)
-def patch_my_profile(
+async def patch_my_profile(
     req: UserProfilePatchRequest,
+    request: Request,
     _scopes: set[str] = Depends(_PATCH_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -123,6 +147,20 @@ def patch_my_profile(
         profile.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(profile)
+    logger.info(
+        "avatar_sync: profile patched user=%s display_name=%s avatar_version=%s",
+        current_user.id,
+        profile.display_name,
+        profile.avatar_version,
+    )
+    await _broadcast_profile_change(
+        request,
+        user_id=current_user.id,
+        payload={
+            "avatar_version": profile.avatar_version,
+            "display_name": profile.display_name,
+        },
+    )
     return UserProfileOut(
         user_id=current_user.id,
         email=current_user.email,
@@ -139,6 +177,7 @@ def patch_my_profile(
 
 @router.post("/avatar", response_model=UserProfileAvatarUploadOut)
 async def upload_my_avatar(
+    request: Request,
     file: UploadFile = File(...),
     _scopes: set[str] = Depends(_AVATAR_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
@@ -156,6 +195,12 @@ async def upload_my_avatar(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Profile avatar upload too large",
         )
+    logger.info(
+        "avatar_sync: upload start user=%s size=%d content_type=%s",
+        current_user.id,
+        len(payload),
+        file.content_type,
+    )
 
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
     if profile is None:
@@ -185,6 +230,20 @@ async def upload_my_avatar(
     profile.updated_at = now
     db.commit()
     db.refresh(profile)
+    logger.info(
+        "avatar_sync: saved user=%s file_id=%s new_version=%d",
+        current_user.id,
+        avatar_file_id,
+        profile.avatar_version,
+    )
+    await _broadcast_profile_change(
+        request,
+        user_id=current_user.id,
+        payload={
+            "avatar_version": profile.avatar_version,
+            "display_name": profile.display_name,
+        },
+    )
     return UserProfileAvatarUploadOut(
         avatar_url=_avatar_url(
             user_id=current_user.id,
