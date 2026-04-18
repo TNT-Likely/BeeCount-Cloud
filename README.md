@@ -1,210 +1,258 @@
-# BeeCount-Cloud
+# BeeCount Cloud
 
-BeeCount 云端仓库（独立项目），目标对齐云服务文档 v1：
+[![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
+[![License](https://img.shields.io/badge/license-custom-blue)](./LICENSE)
 
-- 多设备同步（push/pull/full + WebSocket）
-- 多用户共享账本（邀请码 + 角色权限）
-- Web 完整记账 + 运维控制台
-- 自部署优先（SQLite 默认，PostgreSQL 可选）
+**[BeeCount（蜜蜂记账）](https://github.com/TNT-Likely/BeeCount)App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
 
-## Scope (v1)
+🌐 **语言**: [中文](./README.md) | [English](./README.en.md)
 
-- 用户认证：邮箱密码 + JWT Access/Refresh
-- 共享账本：邀请兼容 + 后台按邮箱添加/移除成员 + 成员角色调整
-- 邀请记录：可查看邀请码状态（active/revoked/expired/exhausted）
-- 权限模型：`owner` / `editor` / `viewer`
-- 成员管理口径：`owner/admin` 可管理成员（member/add/member/remove/member-role）
-- 同步权限：
-  - `push`: owner/editor 可写，viewer 拒绝
-  - `pull`/`full`: owner/editor/viewer 可读
-- 运维：健康检查、在线设备、错误检索、备份创建/恢复
-- 备份副通道：DB/快照上传归档（不参与实时协同冲突）
-- Web：远端数据模式的完整记账（交易/账户/分类/标签 CRUD）+ 运维入口
+![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
 
-## Frontend 包结构（v1）
+---
 
-- `frontend/packages/api-client`：统一 API 请求与错误类型（auth/read/write/share/admin）。
-- `frontend/packages/web-features`：业务功能组件与权限/导航/格式化逻辑。
-- `frontend/packages/ui`：shadcn 风格 UI 基座（含 Radix 交互组件）。
-- `frontend/apps/web`：仅负责路由、壳层布局（Top + Left + Content）与页面编排。
+## ✨ 核心特性
 
-## 推荐环境（非强制）
+### 同步
+- **双向实时同步** — 手机 / 网页改动约 2 秒内送达其他设备（WebSocket）
+- **离线优先** — App 本地先写,恢复网络后自动对账;冲突按"最后写入 + 设备 ID"确定性解决
+- **实体级变更** — 交易 / 账户 / 分类 / 标签 / 预算 分别跟踪,不做全量快照覆盖
+- **会话自愈** — token 过期自动用本地凭证重登,网络抖动后设备重连不掉线
+- **深度体检** — 同步页下拉刷新时对比本地和云端计数,发现差异自动修复
 
+### 记账
+- **多账本**,每本独立币种
+- **交易** — 收入 / 支出 / 转账,多账户、分类、标签、附件
+- **预算** — 按分类或总额,月 / 年周期
+- **周期记账**（App）
+- **CSV 导入导出**（App）
+- **丰富图表** — 月度趋势、分类占比、年度热力图、储蓄率、标签/账户 Top 排行
+
+### 偏好（跨端同步）
+- 主题色、收支配色、头像、昵称
+- 月份显示格式、紧凑金额、交易时间展示开关
+- AI 服务商配置 + 自定义提示词（App AI 集成）
+
+### Web 控制台
+- 完整记账 UI（交易 / 账户 / 分类 / 标签）
+- 响应式 Dashboard(与 App 观感一致)
+- 三语 — 简体中文 / 繁體中文 / English
+- 深浅色主题 + 个性化主题色
+- 管理面板 — 设备 / 健康 / 同步错误 / 备份归档 / **实时服务端日志**
+
+### 管理与运维
+- 内存 ring buffer 日志查看器(级别 / 来源 / 关键词过滤 + 自动刷新)
+- 设备会话列表、在线状态、强制下线
+- 快照备份创建 / 恢复
+- Prometheus `/metrics`,`/ready` 健康探针
+
+---
+
+## 📸 截图
+
+| 中文 UI | English UI |
+|---------|------------|
+| ![ZH](./docs/screenshot-zh.png) | ![EN](./docs/screenshot-en.png) |
+
+---
+
+## 🚀 Docker Compose 部署
+
+预构建镜像 [`sunxiao0721/beecount-cloud`](https://hub.docker.com/r/sunxiao0721/beecount-cloud) 一体化打包 FastAPI 后端 + Web 控制台 — 单容器 + 一个数据卷,搞定。
+
+### 1) 新建 `docker-compose.yml`
+
+```yaml
+services:
+  beecount-cloud:
+    image: sunxiao0721/beecount-cloud:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////data/beecount.db
+      # 生产部署务必改成 32+ bytes 的强随机值
+      JWT_SECRET: change-me-in-production-at-least-32-bytes
+      CORS_ORIGINS: http://localhost:8080
+      # 所有数据(DB / 附件 / 备份 / 头像)统一放 /data,一次 volume 快照全量备份
+      BACKUP_STORAGE_DIR: /data/backups
+      ATTACHMENT_STORAGE_DIR: /data/attachments
+      ALLOW_APP_RW_SCOPES: "true"
+      TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+    volumes:
+      - beecount_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSL http://127.0.0.1:8080/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  beecount_data:
+```
+
+### 2) 启动
+
+```bash
+docker compose up -d
+```
+
+访问 http://localhost:8080 — 注册的第一个账号自动成为管理员,然后在 App 里填自己的服务器地址即可。
+
+### 3) 升级
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Alembic 迁移会在容器启动时自动执行(详见[数据库迁移](#-数据库迁移))。
+
+### 4) 备份
+
+`beecount_data` volume 包含所有持久化数据:SQLite 数据库、附件、备份归档。直接打包 volume 即可:
+
+```bash
+docker run --rm -v beecount_data:/data -v $(pwd):/backup alpine \
+  tar czf /backup/beecount-$(date +%F).tar.gz /data
+```
+
+### 可选:PostgreSQL
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+```
+
+---
+
+## ⚙️ 配置项
+
+大多数用户只需要改 `JWT_SECRET` 和 `CORS_ORIGINS`。完整参考:
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DATABASE_URL` | `sqlite:////data/beecount.db` | SQLite 路径或 PostgreSQL URL |
+| `JWT_SECRET` | *(必填)* | JWT 签名密钥,必须 32+ bytes |
+| `CORS_ORIGINS` | `http://localhost:8080` | 逗号分隔的白名单 |
+| `ALLOW_APP_RW_SCOPES` | `true` | App 同步必须保持 `true` |
+| `BACKUP_STORAGE_DIR` | `/data/backups` | 备份归档目录 |
+| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | 交易附件(头像存在 `<附件>/profile-avatars/`) |
+| `REGISTRATION_ENABLED` | `false` | 是否允许新用户注册(管理员可在控制台直接建用户) |
+| `TZ` | `Asia/Shanghai` | 容器时区 |
+
+---
+
+## 🗄️ 数据库迁移
+
+schema 版本由 [Alembic](https://alembic.sqlalchemy.org/) 管理。
+
+**每次容器启动**入口脚本会执行:
+
+```bash
+alembic upgrade head && uvicorn server:app --host 0.0.0.0 --port 8080
+```
+
+所以升级镜像后,任何新迁移会在服务接收请求前自动按顺序执行。数据持久化在 `beecount_data` volume,升级无需手动介入。
+
+如果迁移失败(罕见),容器会退出、数据库保留在升级前的版本上 — 修复问题后 `docker compose pull && up -d` 重试即可。
+
+---
+
+## 📱 移动端 App
+
+安装 [BeeCount](https://github.com/TNT-Likely/BeeCount) App(iOS / Android),然后在 App 中:
+
+1. 设置 → 云服务 → BeeCount Cloud
+2. 填写服务器地址(如 `https://your-domain.com`)和登录凭证
+3. 开启同步 — 首次同步会把本地已有数据推送到云端
+
+---
+
+## 🛠️ 本地开发
+
+<details>
+<summary>点击展开开发环境搭建</summary>
+
+### 依赖
 - Python `3.11+`
-- Node `20+`
-- pnpm `9+`
+- Node `20+`、pnpm `9+`
 
-## 本地开发最短路径
-
-本地默认数据库：
-
-- `DATABASE_URL=sqlite:///./beecount.db`
-- `ALLOW_APP_RW_SCOPES` 默认 `true`（App 协作读取/设备会话所需，可按需显式设为 `false`）
-- Docker 里会覆盖为 `/data/beecount.db`（容器挂载卷）
-
-### 1) 首次安装（后端）
+### 首次安装
 
 ```bash
 make setup-backend
+pnpm -C frontend install
 ```
 
-### 2) 启动 API
+### 本地启动
 
 ```bash
+# 终端 1 — API(端口 8080)
 make migrate
 make dev-api
-```
 
-API 地址：`http://localhost:8080`
-
-如果你的本地环境变量被覆盖导致数据库路径异常，可临时强制：
-
-```bash
-DATABASE_URL=sqlite:///./beecount.db make migrate
-DATABASE_URL=sqlite:///./beecount.db make dev-api
-```
-
-### 3) 启动 Web（另一个终端）
-
-```bash
+# 终端 2 — Web 开发服务(端口 5173)
 make dev-web
 ```
 
-Web 地址：`http://localhost:5173`
-
-### 4) 第一次登录（本地开发）
-
-首次本地启动通常没有用户，先注入示例账号：
+### 示例账号
 
 ```bash
 make seed-demo
+# Email: owner@example.com  Password: 123456
 ```
 
-默认登录信息：
-
-- Email: `owner@example.com`
-- Password: `123456`
-
-登录异常排查：
-
-- `AUTH_INVALID_CREDENTIALS`: 账号不存在或密码错误，先执行 `make seed-demo`。
-- `INTERNAL_ERROR`: 通常是数据库迁移未完成或 `DATABASE_URL` 配置异常，执行 `make migrate`，并确认本地为 `sqlite:///./beecount.db`。
-- App 端角色显示“权限未就绪”或设备会话 `Insufficient scope`: 检查服务端环境变量 `ALLOW_APP_RW_SCOPES` 未被设为 `false`，重启服务后在 App 重新登录一次。
-
-管理员可见性排查：
-
-- 从 `0007_admin_bootstrap` 起，若系统没有任何管理员，迁移会自动把最早创建且启用的用户提升为管理员。
-- 也可手动授予管理员：
+### 测试
 
 ```bash
-make grant-admin EMAIL=owner@example.com
-```
-
-发布前清理诊断测试用户（`diag_*@example.com`）：
-
-```bash
-make cleanup-diag-users        # 先 dry-run
-make cleanup-diag-users APPLY=1
-```
-
-### 5) 跑测试
-
-```bash
-make test
-make lint
-make typecheck
+make test        # pytest
+make lint        # ruff
+make typecheck   # mypy
 pnpm -C frontend/apps/web test:unit
+pnpm -C frontend/apps/web exec tsc --noEmit --skipLibCheck
 ```
 
-说明：当前阶段已移除 Web E2E 门禁，前端以 unit + 关键手工冒烟为主。
-
-## 一键联动开发
-
-SQLite 模式（默认）：
+### 一键联动
 
 ```bash
-make dev-up
+make dev-up                  # SQLite
+MODE=postgres make dev-up    # PostgreSQL
 ```
 
-PostgreSQL 联调模式：
+### 前端包结构
+
+- `frontend/apps/web` — shell、路由、页面编排
+- `frontend/packages/api-client` — HTTP + 类型化响应
+- `frontend/packages/web-features` — 业务面板、权限、格式化
+- `frontend/packages/ui` — shadcn 风格基座(Radix)
+
+### 构建 Docker 镜像
 
 ```bash
-MODE=postgres make dev-up
+docker build -t sunxiao0721/beecount-cloud:dev .
+docker run -p 8080:8080 -v beecount_data:/data \
+  -e JWT_SECRET=dev-secret-at-least-32-bytes-long \
+  sunxiao0721/beecount-cloud:dev
 ```
 
-## Docker 部署
+</details>
 
-### 1) SQLite 单容器（默认）
+---
 
-```bash
-docker compose up -d --build
-```
+## 📚 更多文档
 
-### 2) PostgreSQL 叠加模式（联调/生产可选）
+- [部署指南](./docs/DEPLOYMENT.md)
+- [迁移与回滚](./docs/MIGRATION.md)
+- [可观测性](./docs/OBSERVABILITY.md)
+- 运行时 OpenAPI / Swagger UI: 访问 `http://your-domain.com/docs`
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
-```
+## 📄 许可证
 
-访问：
+见 [LICENSE](./LICENSE)。BeeCount Cloud 双协议 — 个人自部署免费;商业使用需单独授权。
 
-- API + Web Console: `http://localhost:8080`
-- OpenAPI Docs: `http://localhost:8080/docs`
-- Readiness: `http://localhost:8080/ready`
-- Metrics: `http://localhost:8080/metrics`
+## 🔗 相关链接
 
-### 常见排查
-
-- 查看容器：`docker compose ps`
-- 查看日志：`docker compose logs -f beecount-platform`
-- 检查就绪：`curl -f http://localhost:8080/ready`
-- App 协作 scope：`docker compose exec beecount-platform /bin/sh -lc 'echo $ALLOW_APP_RW_SCOPES'` 应为 `true`
-
-## CI / Perf 说明
-
-- `nightly-perf` 工作流默认仅手动触发（`workflow_dispatch`）。
-- 不做自动定时，避免持续消耗免费 CI 时长。
-- 本地也可手动运行：
-
-```bash
-python scripts/nightly_perf.py --dataset-size 1000 --read-samples 100 --output artifacts/nightly-perf.json
-```
-
-## Demo 数据
-
-```bash
-make seed-demo
-```
-
-## OpenAPI 与文档
-
-- OpenAPI: `openapi/beecount-cloud-v1.yaml`
-- 协同/备份双通道说明: `docs/COLLAB_SYNC_ARCHITECTURE.md`
-- Web 写入契约: `docs/API_WRITE_CONTRACT.md`
-- Web 记账说明: `docs/WEB_BOOKKEEPING_V1.md`
-- 可观测说明: `docs/OBSERVABILITY.md`
-- 回滚手册: `docs/ROLLBACK_SOP.md`
-
-## 统一错误响应
-
-API 返回统一结构（并保留 `detail` 兼容字段）：
-
-```json
-{
-  "error": {
-    "code": "LEDGER_NOT_FOUND",
-    "message": "Ledger not found",
-    "request_id": "req_xxx"
-  },
-  "detail": "Ledger not found"
-}
-```
-
-## 网络/代理说明（pnpm）
-
-如果 `pnpm install` 在受限网络下失败，建议先配置镜像或代理后重试：
-
-```bash
-pnpm config set registry https://registry.npmmirror.com
-# 或按你本地网络策略配置 HTTPS 代理
-```
+- 移动端 App: https://github.com/TNT-Likely/BeeCount
+- Docker Hub: https://hub.docker.com/r/sunxiao0721/beecount-cloud
+- 问题反馈: https://github.com/TNT-Likely/BeeCount-Cloud/issues
