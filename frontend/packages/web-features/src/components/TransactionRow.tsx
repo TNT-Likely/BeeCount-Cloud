@@ -12,8 +12,12 @@ type CommonProps = {
   onEdit?: (row: ReadTransaction) => void
   onDelete?: (row: ReadTransaction) => void
   canManage?: boolean
-  /** 附件预览入口：点行内 📎 chip 时触发。 */
-  onPreviewAttachment?: (ref: AttachmentRef) => Promise<void>
+  /** 附件预览入口：点行内 📎 chip 时触发。接收整组 attachments + 起始 index，
+   *  让预览 Dialog 能做 prev/next 轮播。单附件时传 [attachment], 0 即可。 */
+  onPreviewAttachment?: (
+    refs: AttachmentRef[],
+    startIndex: number
+  ) => Promise<void>
   /** 点标签可以 emit 让外层打开标签详情弹窗或过滤。 */
   onClickTag?: (tagName: string) => void
   /** 额外的 className，外层可以加边距 / 分隔线。 */
@@ -188,7 +192,7 @@ export function TransactionRow({
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                void onPreviewAttachment?.(firstAttachment)
+                void onPreviewAttachment?.(attachments, 0)
               }}
               className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary"
               title={firstAttachment.originalName || firstAttachment.fileName || '附件'}

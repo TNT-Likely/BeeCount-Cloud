@@ -21,7 +21,10 @@ interface Props {
   canManage?: boolean
   onEdit?: (row: ReadTransaction) => void
   onDelete?: (row: ReadTransaction) => void
-  onPreviewAttachment?: (ref: AttachmentRef) => Promise<void>
+  onPreviewAttachment?: (
+    refs: AttachmentRef[],
+    startIndex: number
+  ) => Promise<void>
   /** @deprecated 新布局把附件简化成 📎 chip，不再需要缩略图预解析 URL。保留
    *  prop 是为了避免旧调用点报类型错误，内部不再消费。 */
   resolveAttachmentPreviewUrl?: (ref: AttachmentRef) => Promise<string | null>

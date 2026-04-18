@@ -51,7 +51,10 @@ type TransactionsPanelProps = {
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onReload: () => void
-  onPreviewAttachment: (ref: AttachmentRef) => Promise<void>
+  onPreviewAttachment: (
+    refs: AttachmentRef[],
+    startIndex: number
+  ) => Promise<void>
   resolveAttachmentPreviewUrl: (ref: AttachmentRef) => Promise<string | null>
   onEdit: (row: ReadTransaction) => void
   onDelete: (row: ReadTransaction) => void
@@ -59,7 +62,10 @@ type TransactionsPanelProps = {
 
 type AttachmentCarouselCellProps = {
   attachments: AttachmentRef[]
-  onPreviewAttachment: (ref: AttachmentRef) => Promise<void>
+  onPreviewAttachment: (
+    refs: AttachmentRef[],
+    startIndex: number
+  ) => Promise<void>
   resolveAttachmentPreviewUrl: (ref: AttachmentRef) => Promise<string | null>
   partialLabel: string
   metadataOnlyLabel: string
@@ -142,7 +148,7 @@ function AttachmentCarouselCell({
             src={previewUrl}
             onClick={() => {
               if (!current) return
-              void onPreviewAttachment(current)
+              void onPreviewAttachment(readyAttachments, index)
             }}
           />
         ) : (

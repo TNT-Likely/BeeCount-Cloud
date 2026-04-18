@@ -152,8 +152,14 @@ type PendingDelete =
 
 type AttachmentPreviewState = {
   open: boolean
-  fileName: string
+  /** 整组可预览附件。单附件时数组长度为 1；多附件时允许 prev/next 切换。 */
+  attachments: AttachmentRef[]
+  /** 当前显示的附件下标。 */
+  currentIndex: number
+  /** 当前附件的 blob URL（解码完成才设）。 */
   objectUrl: string
+  /** 当前附件的文件名，用于 Dialog 标题。 */
+  fileName: string
 }
 
 type AppPageProps = {
@@ -398,6 +404,8 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [categoryIconPreviewByFileId, setCategoryIconPreviewByFileId] = useState<Record<string, string>>({})
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewState>({
     open: false,
+    attachments: [],
+    currentIndex: 0,
     fileName: '',
     objectUrl: ''
   })
@@ -1301,41 +1309,95 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     [token]
   )
 
-  const openImagePreview = (objectUrl: string, fileName: string) => {
-    setAttachmentPreview((prev) => {
-      if (prev.objectUrl && prev.objectUrl !== objectUrl) {
-        URL.revokeObjectURL(prev.objectUrl)
-      }
+  /** 加载指定 index 的附件 blob，复用 txAttachmentPreviewUrlByFileIdRef 缓存，
+   *  返回 (fileName, objectUrl) 或 null（下载失败 / 非图片格式）。 */
+  const loadAttachmentBlob = async (
+    attachment: AttachmentRef
+  ): Promise<{ fileName: string; objectUrl: string } | null> => {
+    const fileId = attachment.cloudFileId?.trim()
+    if (!fileId) return null
+    const cached = txAttachmentPreviewUrlByFileIdRef.current[fileId]
+    if (cached) {
       return {
-        open: true,
-        fileName,
-        objectUrl
+        fileName:
+          attachment.originalName ||
+          attachment.fileName ||
+          `attachment-${fileId}`,
+        objectUrl: cached
       }
-    })
+    }
+    const response = await downloadAttachment(token, fileId)
+    const fileName =
+      response.fileName ||
+      attachment.originalName ||
+      attachment.fileName ||
+      `attachment-${fileId}`
+    if (!isPreviewableImage(response.mimeType, fileName)) {
+      return null
+    }
+    const blobUrl = URL.createObjectURL(response.blob)
+    txAttachmentPreviewUrlByFileIdRef.current[fileId] = blobUrl
+    return { fileName, objectUrl: blobUrl }
   }
 
-  const onPreviewTxAttachment = async (attachment: AttachmentRef) => {
+  /** 切换当前预览索引：异步下载目标附件 blob，更新 state。 */
+  const switchPreviewIndex = async (nextIndex: number) => {
     const requestSeq = ++previewRequestSeqRef.current
-    const fileId = attachment.cloudFileId?.trim()
-    if (!fileId) {
-      setErrorNotice(t('transactions.attachment.metadataOnly'))
-      return
-    }
+    const list = attachmentPreview.attachments
+    if (list.length === 0) return
+    const clamped = ((nextIndex % list.length) + list.length) % list.length
+    const target = list[clamped]
     try {
-      const response = await downloadAttachment(token, fileId)
-      const fileName =
-        response.fileName ||
-        attachment.originalName ||
-        attachment.fileName ||
-        `attachment-${fileId}`
-      if (!isPreviewableImage(response.mimeType, fileName)) {
-        if (requestSeq !== previewRequestSeqRef.current) return
+      const loaded = await loadAttachmentBlob(target)
+      if (requestSeq !== previewRequestSeqRef.current) return
+      if (!loaded) {
         setErrorNotice(t('transactions.attachment.notPreviewable'))
         return
       }
+      setAttachmentPreview((prev) => ({
+        ...prev,
+        currentIndex: clamped,
+        fileName: loaded.fileName,
+        objectUrl: loaded.objectUrl
+      }))
+    } catch (err) {
       if (requestSeq !== previewRequestSeqRef.current) return
-      const blobUrl = URL.createObjectURL(response.blob)
-      openImagePreview(blobUrl, fileName)
+      setErrorNotice(renderError(err))
+    }
+  }
+
+  const onPreviewTxAttachment = async (
+    attachments: AttachmentRef[],
+    startIndex: number
+  ) => {
+    const requestSeq = ++previewRequestSeqRef.current
+    // 只预览有 cloudFileId 的附件（没上传的没法查 blob），index 对齐后的新数组。
+    const ready = attachments.filter(
+      (a) => typeof a.cloudFileId === 'string' && a.cloudFileId.trim().length > 0
+    )
+    if (ready.length === 0) {
+      setErrorNotice(t('transactions.attachment.metadataOnly'))
+      return
+    }
+    const safeIndex = Math.min(
+      Math.max(0, startIndex),
+      ready.length - 1
+    )
+    const target = ready[safeIndex]
+    try {
+      const loaded = await loadAttachmentBlob(target)
+      if (requestSeq !== previewRequestSeqRef.current) return
+      if (!loaded) {
+        setErrorNotice(t('transactions.attachment.notPreviewable'))
+        return
+      }
+      setAttachmentPreview({
+        open: true,
+        attachments: ready,
+        currentIndex: safeIndex,
+        fileName: loaded.fileName,
+        objectUrl: loaded.objectUrl
+      })
     } catch (err) {
       if (requestSeq !== previewRequestSeqRef.current) return
       setErrorNotice(renderError(err))
@@ -3029,9 +3091,17 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       <Dialog
         open={attachmentPreview.open}
         onOpenChange={(open) => {
-          if (!open && attachmentPreview.objectUrl) {
-            URL.revokeObjectURL(attachmentPreview.objectUrl)
-            setAttachmentPreview({ open: false, fileName: '', objectUrl: '' })
+          if (!open) {
+            // 关闭时不在这里 revokeObjectURL —— blob URL 存在
+            // txAttachmentPreviewUrlByFileIdRef 里，组件 unmount 时统一清理；
+            // 否则下次预览同一附件会拿到 revoked 的 URL 加载失败。
+            setAttachmentPreview({
+              open: false,
+              attachments: [],
+              currentIndex: 0,
+              fileName: '',
+              objectUrl: ''
+            })
             return
           }
           setAttachmentPreview((prev) => ({ ...prev, open }))
@@ -3039,9 +3109,16 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       >
         <DialogContent className="max-h-[88vh] max-w-4xl">
           <DialogHeader>
-            <DialogTitle>{attachmentPreview.fileName || t('transactions.attachment.preview')}</DialogTitle>
+            <DialogTitle>
+              {attachmentPreview.fileName || t('transactions.attachment.preview')}
+              {attachmentPreview.attachments.length > 1 ? (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {attachmentPreview.currentIndex + 1} / {attachmentPreview.attachments.length}
+                </span>
+              ) : null}
+            </DialogTitle>
           </DialogHeader>
-          <div className="overflow-hidden rounded-md border border-border/70 bg-muted/30 p-2">
+          <div className="relative overflow-hidden rounded-md border border-border/70 bg-muted/30 p-2">
             {attachmentPreview.objectUrl ? (
               <img
                 alt={attachmentPreview.fileName || 'attachment-preview'}
@@ -3051,6 +3128,30 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             ) : (
               <div className="py-12 text-center text-sm text-muted-foreground">{t('table.empty')}</div>
             )}
+            {attachmentPreview.attachments.length > 1 ? (
+              <>
+                <button
+                  type="button"
+                  aria-label={t('transactions.attachment.prev')}
+                  className="absolute left-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full border border-border bg-background/90 text-lg shadow hover:bg-background"
+                  onClick={() =>
+                    void switchPreviewIndex(attachmentPreview.currentIndex - 1)
+                  }
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('transactions.attachment.next')}
+                  className="absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full border border-border bg-background/90 text-lg shadow hover:bg-background"
+                  onClick={() =>
+                    void switchPreviewIndex(attachmentPreview.currentIndex + 1)
+                  }
+                >
+                  ›
+                </button>
+              </>
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>
