@@ -62,6 +62,7 @@ import {
   uploadAttachment,
   type AttachmentRef,
   type ReadAccount,
+  type ReadBudget,
   type ReadCategory,
   type ReadLedger,
   type ReadTag,
@@ -96,6 +97,7 @@ import {
   type WorkspaceLedgerCounts,
   type WorkspaceTransaction,
   fetchProfileMe,
+  fetchReadBudgets,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
@@ -182,6 +184,164 @@ function defaultTxFilter(): TxFilter {
   return { q: '', txType: '', accountName: '' }
 }
 
+/** 脱敏 API key:前 4 后 4,中间用 ••• 掩掉。空 / 短串直接返 '未配置'。 */
+function maskApiKey(key: unknown): string {
+  if (typeof key !== 'string' || key.trim().length === 0) return '未配置'
+  const s = key.trim()
+  if (s.length <= 8) return '•'.repeat(s.length)
+  return `${s.slice(0, 4)}•••${s.slice(-4)}`
+}
+
+/** AI 配置的只读展示 —— 提供商数组 + 能力绑定 + 其它开关/自定义提示词。
+ *  全部从 profileMe.ai_config 的 dict 结构里读。移动端的 snapshotForSync()
+ *  定义了字段约定:providers / binding / custom_prompt / strategy /
+ *  bill_extraction_enabled / use_vision。 */
+function AIConfigReadOnly({ config }: { config: Record<string, any> }) {
+  const providers = Array.isArray(config.providers) ? config.providers : []
+  const binding =
+    typeof config.binding === 'object' && config.binding !== null
+      ? (config.binding as Record<string, any>)
+      : {}
+  const providerNameById = new Map<string, string>()
+  for (const p of providers) {
+    if (p && typeof p === 'object' && typeof p.id === 'string') {
+      providerNameById.set(p.id, typeof p.name === 'string' ? p.name : p.id)
+    }
+  }
+
+  const capability = [
+    { key: 'textProviderId', label: '文本对话' },
+    { key: 'visionProviderId', label: '图片理解' },
+    { key: 'speechProviderId', label: '语音识别' }
+  ]
+
+  return (
+    <div className="space-y-4">
+      {/* 顶栏:策略 / 开关 */}
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">策略</p>
+          <p className="mt-1 text-sm font-medium">
+            {config.strategy || '—'}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">账单提取</p>
+          <p className="mt-1 text-sm font-medium">
+            {config.bill_extraction_enabled === true
+              ? '开启'
+              : config.bill_extraction_enabled === false
+                ? '关闭'
+                : '—'}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">图片识别</p>
+          <p className="mt-1 text-sm font-medium">
+            {config.use_vision === true
+              ? '开启'
+              : config.use_vision === false
+                ? '关闭'
+                : '—'}
+          </p>
+        </div>
+      </div>
+
+      {/* 能力绑定 */}
+      <div>
+        <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+          能力绑定
+        </p>
+        <div className="space-y-1.5">
+          {capability.map((cap) => {
+            const providerId = binding[cap.key] as string | undefined
+            const name = providerId
+              ? providerNameById.get(providerId) || providerId
+              : '—'
+            return (
+              <div
+                key={cap.key}
+                className="flex items-center justify-between rounded-md border border-border/60 bg-muted/10 px-3 py-1.5"
+              >
+                <span className="text-sm">{cap.label}</span>
+                <span className="text-sm text-muted-foreground">{name}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* 服务商列表 */}
+      <div>
+        <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+          服务商 ({providers.length})
+        </p>
+        <div className="space-y-2">
+          {providers.map((p: any, idx: number) => {
+            if (!p || typeof p !== 'object') return null
+            const name = typeof p.name === 'string' ? p.name : '(未命名)'
+            return (
+              <div
+                key={typeof p.id === 'string' ? p.id : idx}
+                className="rounded-lg border border-border/60 bg-muted/10 px-3 py-2"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{name}</span>
+                  {p.isBuiltIn ? (
+                    <span className="rounded-full border border-border/60 bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider">
+                      内置
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px]">
+                  <span className="text-muted-foreground">API Key</span>
+                  <span className="font-mono">{maskApiKey(p.apiKey)}</span>
+                  {p.baseUrl ? (
+                    <>
+                      <span className="text-muted-foreground">Base URL</span>
+                      <span className="truncate font-mono">{String(p.baseUrl)}</span>
+                    </>
+                  ) : null}
+                  {p.textModel ? (
+                    <>
+                      <span className="text-muted-foreground">文本模型</span>
+                      <span>{String(p.textModel)}</span>
+                    </>
+                  ) : null}
+                  {p.visionModel ? (
+                    <>
+                      <span className="text-muted-foreground">视觉模型</span>
+                      <span>{String(p.visionModel)}</span>
+                    </>
+                  ) : null}
+                  {p.audioModel ? (
+                    <>
+                      <span className="text-muted-foreground">语音模型</span>
+                      <span>{String(p.audioModel)}</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* 自定义提示词 */}
+      {typeof config.custom_prompt === 'string' && config.custom_prompt.trim().length > 0 ? (
+        <div>
+          <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+            自定义提示词
+          </p>
+          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-[12px]">
+            {config.custom_prompt}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function txFilterStorageKey(userId: string, ledgerFilter: string): string {
   const normalizedUserId = (userId || 'anonymous').trim() || 'anonymous'
   const normalizedLedgerFilter = (ledgerFilter || '__all__').trim() || '__all__'
@@ -206,7 +366,10 @@ function parseStoredTxFilter(raw: string | null): TxFilter | null {
 }
 
 function sectionNeedsLedger(section: AppSection): boolean {
-  return ['overview'].includes(section)
+  // overview / budgets 必须跟账本绑定:切换账本时 refresh effect 会重新拉数据。
+  // 其它(transactions/accounts/categories/tags)是跨账本聚合视图,用户切换
+  // 账本时跟顶部 dropdown 不强耦合。
+  return ['overview', 'budgets'].includes(section)
 }
 
 function isListSection(section: AppSection): boolean {
@@ -294,6 +457,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [accounts, setAccounts] = useState<ReadAccount[]>([])
   const [categories, setCategories] = useState<ReadCategory[]>([])
   const [tags, setTags] = useState<WorkspaceTag[]>([])
+  const [budgets, setBudgets] = useState<ReadBudget[]>([])
   const [analyticsData, setAnalyticsData] = useState<WorkspaceAnalytics | null>(null)
   const [analyticsIncomeRanks, setAnalyticsIncomeRanks] = useState<WorkspaceAnalytics['category_ranks']>([])
   // 首页 Hero 支持 月/年/汇总 三个视角切换：预先一次性把三个 scope 拉回来，
@@ -732,6 +896,20 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           limit: 500
         })
       )
+      return
+    }
+
+    if (section === 'budgets') {
+      // 预算按账本取 —— 没选账本就清空。跟 workspace 的跨账本聚合不同,
+      // 预算天然是账本级概念。ledgerId 参数这里是 route.ledgerId(老链接
+      // 兼容),新路由是空串;真正的"当前账本"来自 activeLedgerId 状态,
+      // 跟 accounts / categories 一致。
+      const effectiveId = ledgerId || activeLedgerId
+      if (!effectiveId) {
+        setBudgets([])
+        return
+      }
+      setBudgets(await fetchReadBudgets(token, effectiveId))
       return
     }
 
@@ -2555,6 +2733,98 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             />
           ) : null}
 
+          {route.section === 'budgets' ? (
+            <div className="space-y-4">
+              <Card className="bc-panel">
+                <CardHeader>
+                  <CardTitle>预算</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    跟随移动端同步过来。web 只读,编辑在移动端"我的 → 预算"里。
+                    预算按当前账本展示;切换账本会重新加载。
+                  </p>
+                  {!activeLedgerId ? (
+                    <p className="text-sm text-muted-foreground">
+                      请先在顶部选一个账本。
+                    </p>
+                  ) : budgets.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      该账本还没有预算。
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {budgets.map((b) => (
+                        <div
+                          key={b.id}
+                          className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="inline-flex items-center rounded-full border border-border/60 bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider">
+                              {b.type === 'total' ? '总预算' : '分类预算'}
+                            </span>
+                            <span className="text-sm font-medium">
+                              {b.type === 'category'
+                                ? (b.category_name || b.category_id || '(未知分类)')
+                                : '整账本'}
+                            </span>
+                            {!b.enabled ? (
+                              <span className="text-[11px] text-muted-foreground">
+                                (已禁用)
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-right">
+                            <div className="font-semibold tabular-nums">
+                              {b.amount.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2
+                              })}
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              {b.period === 'monthly'
+                                ? '月度'
+                                : b.period === 'weekly'
+                                  ? '周度'
+                                  : b.period === 'yearly'
+                                    ? '年度'
+                                    : b.period}
+                              {' · 起始日 '}
+                              {b.start_day}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {route.section === 'settings-ai' ? (
+            <div className="space-y-4">
+              <Card className="bc-panel">
+                <CardHeader>
+                  <CardTitle>AI 配置</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    跟随移动端"我的 → AI 设置"同步下来。web 只读,编辑在移动端。
+                    API key 脱敏展示。
+                  </p>
+                  {!profileMe?.ai_config ? (
+                    <p className="text-sm text-muted-foreground">
+                      还没有 AI 配置同步过来。
+                    </p>
+                  ) : (
+                    <AIConfigReadOnly config={profileMe.ai_config} />
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
           {route.section === 'settings-devices' ? (
             <div className="space-y-4">
               <Card className="bc-panel">
@@ -2597,8 +2867,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             </div>
           ) : null}
 
-          {route.section === 'settings-profile' ? (
+          {/* 个人资料 + 外观合并为同一个页面。
+              用户侧心智模型:这些都是"我的偏好",不该拆两处。
+              原 `settings-appearance` 路由被合进来,旧链接兼容由头像菜单
+              只保留 `settings-profile` 项实现。 */}
+          {route.section === 'settings-profile' ||
+          route.section === 'settings-appearance' ? (
             <div className="space-y-4">
+              {/* 账号卡片:头像 + display_name 编辑 */}
               <Card className="bc-panel overflow-hidden">
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/20 via-primary/5 to-transparent" />
@@ -2620,35 +2896,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                         <p className="truncate text-xs text-muted-foreground">{profileMe?.email || '-'}</p>
                       </div>
                     </div>
-                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                      <div className="space-y-1">
-                        <Label>{t('profile.displayName')}</Label>
-                        <Input
-                          maxLength={32}
-                          placeholder={t('profile.displayNamePlaceholder')}
-                          value={profileDisplayName}
-                          onChange={(event) => setProfileDisplayName(event.target.value)}
-                        />
-                      </div>
-                      <div className="flex items-end">
-                        <Button
-                          className="h-9"
-                          onClick={onSaveProfileDisplayName}
-                          disabled={!profileDisplayName.trim() || profileDisplayName.trim() === (profileMe?.display_name || '').trim()}
-                        >
-                          {t('profile.save')}
-                        </Button>
-                      </div>
-                    </div>
+                    {/* 显示名称 / 头像编辑已移除:跟主题色 / 收支配色一样,
+                        统一在移动端"我的"里修改,web 只读展示。避免两端
+                        都能改导致 LWW 抖动。 */}
                     <p className="text-xs text-muted-foreground">{t('profile.avatarManagedByApp')}</p>
                   </CardContent>
                 </div>
               </Card>
-            </div>
-          ) : null}
 
-          {route.section === 'settings-appearance' ? (
-            <div className="space-y-4">
+              {/* 主题色(web 本地生效) */}
               <Card className="bc-panel">
                 <CardHeader>
                   <CardTitle>主题色</CardTitle>
@@ -2663,11 +2919,18 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 </CardContent>
               </Card>
 
+              {/* 从 mobile 同步下来的偏好(只读展示) */}
               <Card className="bc-panel">
                 <CardHeader>
-                  <CardTitle>收支颜色方案</CardTitle>
+                  <CardTitle>同步偏好</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-4">
+                  <p className="text-xs text-muted-foreground">
+                    以下偏好跟随移动端"我的 → 外观设置"自动同步,web 只展示不修改。
+                    mobile 修改后 2 秒内这里自动刷新。
+                  </p>
+
+                  {/* 收支颜色方案 */}
                   <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-2">
@@ -2691,10 +2954,42 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       {(profileMe?.income_is_red ?? true) ? '红色收入 / 绿色支出' : '红色支出 / 绿色收入'}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    收支颜色方案跟随移动端"我的 → 外观设置"里的选择。Web
-                    端仅展示，暂不支持修改；修改后 2 秒内 web 自动同步。
-                  </p>
+
+                  {/* 外观 JSON:月显示格式 / 紧凑金额 / 交易时间 */}
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        月显示装饰
+                      </p>
+                      <p className="mt-1 text-sm font-medium">
+                        {profileMe?.appearance?.header_decoration_style || '—'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        紧凑金额
+                      </p>
+                      <p className="mt-1 text-sm font-medium">
+                        {profileMe?.appearance?.compact_amount === true
+                          ? '开启'
+                          : profileMe?.appearance?.compact_amount === false
+                            ? '关闭'
+                            : '—'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        显示交易时间
+                      </p>
+                      <p className="mt-1 text-sm font-medium">
+                        {profileMe?.appearance?.show_transaction_time === true
+                          ? '开启'
+                          : profileMe?.appearance?.show_transaction_time === false
+                            ? '关闭'
+                            : '—'}
+                      </p>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </div>

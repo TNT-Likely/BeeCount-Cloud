@@ -13,6 +13,7 @@ from ..ledger_access import (
     get_accessible_ledger_by_external_id,
 )
 from ..models import (
+    AttachmentFile,
     Ledger,
     SyncChange,
     User,
@@ -25,6 +26,7 @@ from ..schemas import (
     AnalyticsMetric,
     AnalyticsScope,
     ReadAccountOut,
+    ReadBudgetOut,
     ReadCategoryOut,
     ReadLedgerDetailOut,
     ReadLedgerOut,
@@ -233,6 +235,12 @@ def _snapshot_categories(snapshot: dict[str, Any] | None) -> list[dict[str, Any]
     return snapshot.get("categories") or []
 
 
+def _snapshot_budgets(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if snapshot is None:
+        return []
+    return snapshot.get("budgets") or []
+
+
 def _snapshot_tags(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
     if snapshot is None:
         return []
@@ -397,6 +405,42 @@ def list_ledgers(
             )
         )
     return out
+
+
+@router.get("/ledgers/{ledger_external_id}/stats")
+def get_ledger_stats(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """给 mobile 的"深度同步检测"用。返回 server 实际的 tx / attachment / budget
+    数,mobile 拉下来跟本地 Drift 对比,检测到差异就触发自动 sync。
+
+    tx_count 从最新 snapshot 的 items 长度算(和 /read/ledgers 保持一致)。
+    attachment_count 从 attachment_files 表按 ledger_id 直接 COUNT。
+    budget_count 从 snapshot.budgets 长度算(Feature 3b 后生效,materializer
+    已经把 budget 写进 snapshot 了)。
+    """
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=_is_admin(current_user),
+    )
+    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
+    tx_items = _snapshot_transactions(snapshot)
+    budget_items = (snapshot or {}).get("budgets") or []
+    attachment_count = db.scalar(
+        select(func.count(AttachmentFile.id)).where(
+            AttachmentFile.ledger_id == ledger.id
+        )
+    ) or 0
+    return {
+        "transaction_count": len(tx_items) if isinstance(tx_items, list) else 0,
+        "attachment_count": int(attachment_count),
+        "budget_count": len(budget_items) if isinstance(budget_items, list) else 0,
+    }
 
 
 @router.get("/ledgers/{ledger_external_id}", response_model=ReadLedgerDetailOut)
@@ -690,6 +734,77 @@ def list_categories(
         )
         for cat in categories
     ]
+
+
+@router.get("/ledgers/{ledger_external_id}/budgets", response_model=list[ReadBudgetOut])
+def list_budgets(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadBudgetOut]:
+    """预算只读列表。mobile Feature 3b 之后,snapshot.budgets 由 server
+    materializer 维护,这里按 categoryId syncId 反查 category name 填上,
+    跟 tx/tag 接口同一套 id→name 映射思路。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
+    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    # 构建 category syncId → name 查找表,避免每条预算都扫一遍 categories 数组
+    cat_map: dict[str, str] = {
+        str(c.get("syncId")): (c.get("name") or "").strip()
+        for c in _snapshot_categories(snapshot)
+        if c.get("syncId")
+    }
+
+    # 展示前做两步脏数据过滤(这批脏数据来自早期同步链路 bug,已经在新版修了,
+    # 老数据还在 snapshot 里。后续清 server / 让 A 重推一次就会彻底没了):
+    #   1) 分类预算但 categoryId 为空 —— 孤儿,category 已删 / 创建时没带上
+    #   2) (type, categoryId) 维度去重 —— 同一维度只保留一条,挑 syncId
+    #      字典序最大的(snapshot items 的顺序等价于 server 先后,最大 sync
+    #      相当于"最后一次 push 的"大概率对的)
+    raw = _snapshot_budgets(snapshot)
+    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    for b in raw:
+        sync_id = str(b.get("syncId") or "").strip()
+        if not sync_id:
+            continue
+        btype = str(b.get("type") or "total")
+        category_sync_id = b.get("categoryId")
+        if btype == "category" and not category_sync_id:
+            continue
+        key = (btype, str(category_sync_id or ""))
+        current = dedup.get(key)
+        if current is None or str(current.get("syncId") or "") < sync_id:
+            dedup[key] = b
+
+    results: list[ReadBudgetOut] = []
+    for b in dedup.values():
+        sync_id = str(b.get("syncId") or "")
+        category_sync_id = b.get("categoryId")
+        results.append(
+            ReadBudgetOut(
+                id=sync_id,
+                type=str(b.get("type") or "total"),
+                category_id=category_sync_id if category_sync_id else None,
+                category_name=cat_map.get(str(category_sync_id)) if category_sync_id else None,
+                amount=float(b.get("amount") or 0),
+                period=str(b.get("period") or "monthly"),
+                start_day=int(b.get("startDay") or 1),
+                enabled=bool(b.get("enabled", True)),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
 
 
 @router.get("/ledgers/{ledger_external_id}/tags", response_model=list[ReadTagOut])

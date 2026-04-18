@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,6 +109,29 @@ def _resolve_avatar_extension(file: UploadFile) -> str:
     )
 
 
+def _parse_appearance_json(raw: str | None) -> dict | None:
+    """把 DB 里的 appearance_json TEXT 解析成 dict。无值 / 非法 JSON 都返 None,
+    让客户端按"未设置"处理,不至于请求失败。"""
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        logger.warning("profile appearance_json parse failed: %s", stripped[:80])
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _dump_appearance_json(value: dict | None) -> str | None:
+    """把客户端传来的 dict 序列化成 TEXT 存库。None / 空 dict 都存 NULL 清掉。"""
+    if value is None or not isinstance(value, dict) or not value:
+        return None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
 @router.get("/me", response_model=UserProfileOut)
 def get_my_profile(
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -120,6 +144,8 @@ def get_my_profile(
     avatar_version = profile.avatar_version if profile is not None else 0
     income_is_red = profile.income_is_red if profile is not None else None
     theme_primary_color = profile.theme_primary_color if profile is not None else None
+    appearance = _parse_appearance_json(profile.appearance_json) if profile is not None else None
+    ai_config = _parse_appearance_json(profile.ai_config_json) if profile is not None else None
     return UserProfileOut(
         user_id=current_user.id,
         email=current_user.email,
@@ -130,6 +156,8 @@ def get_my_profile(
         avatar_version=avatar_version,
         income_is_red=income_is_red,
         theme_primary_color=theme_primary_color,
+        appearance=appearance,
+        ai_config=ai_config,
     )
 
 
@@ -149,29 +177,41 @@ async def patch_my_profile(
             display_name=req.display_name,
             income_is_red=req.income_is_red,
             theme_primary_color=req.theme_primary_color,
+            appearance_json=_dump_appearance_json(req.appearance),
+            ai_config_json=_dump_appearance_json(req.ai_config),
             updated_at=now,
         )
         db.add(profile)
     else:
         # 只更新显式提供的字段，None 表示不改。这样 mobile 切单项配色时
-        # 不会把其它字段清掉；反之亦然。
+        # 不会把其它字段清掉；反之亦然。appearance / ai_config 例外:客户端
+        # 传 {} 时视为清空（_dump_appearance_json 返回 None），传 dict 时
+        # 整体替换。
         if req.display_name is not None:
             profile.display_name = req.display_name
         if req.income_is_red is not None:
             profile.income_is_red = req.income_is_red
         if req.theme_primary_color is not None:
             profile.theme_primary_color = req.theme_primary_color
+        if req.appearance is not None:
+            profile.appearance_json = _dump_appearance_json(req.appearance)
+        if req.ai_config is not None:
+            profile.ai_config_json = _dump_appearance_json(req.ai_config)
         profile.updated_at = now
     db.commit()
     db.refresh(profile)
     logger.info(
-        "profile_patch: user=%s display_name=%s income_is_red=%s theme=%s avatar_version=%s",
+        "profile_patch: user=%s display_name=%s income_is_red=%s theme=%s appearance=%s ai_config_len=%s avatar_version=%s",
         current_user.id,
         profile.display_name,
         profile.income_is_red,
         profile.theme_primary_color,
+        profile.appearance_json,
+        len(profile.ai_config_json or ""),
         profile.avatar_version,
     )
+    appearance = _parse_appearance_json(profile.appearance_json)
+    ai_config = _parse_appearance_json(profile.ai_config_json)
     await _broadcast_profile_change(
         request,
         user_id=current_user.id,
@@ -180,6 +220,9 @@ async def patch_my_profile(
             "display_name": profile.display_name,
             "income_is_red": profile.income_is_red,
             "theme_primary_color": profile.theme_primary_color,
+            "appearance": appearance,
+            # ai_config 可能很大(providers 数组里若干对象),WS payload 不塞,
+            # 客户端收到 profile_change 自己拉 /profile/me 即可。
         },
     )
     return UserProfileOut(
@@ -195,6 +238,8 @@ async def patch_my_profile(
         avatar_version=profile.avatar_version,
         income_is_red=profile.income_is_red,
         theme_primary_color=profile.theme_primary_color,
+        appearance=appearance,
+        ai_config=ai_config,
     )
 
 

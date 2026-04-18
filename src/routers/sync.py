@@ -30,12 +30,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag"}
+_INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget"}
 _ENTITY_TYPE_TO_SNAPSHOT_KEY = {
     "transaction": "items",
     "account": "accounts",
     "category": "categories",
     "tag": "tags",
+    "budget": "budgets",
 }
 
 

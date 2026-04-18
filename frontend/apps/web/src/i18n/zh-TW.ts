@@ -42,6 +42,8 @@ const zhTW = {
   'nav.accounts': '帳戶',
   'nav.categories': '分類',
   'nav.tags': '標籤',
+  'nav.budgets': '預算',
+  'nav.ai': 'AI 設定',
   'nav.health': '健康',
   'nav.devices': '裝置',
   'nav.users': '使用者管理',

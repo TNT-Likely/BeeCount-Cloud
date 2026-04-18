@@ -4,10 +4,12 @@ export type AppSection =
   | 'accounts'
   | 'categories'
   | 'tags'
+  | 'budgets'
   | 'settings-profile'
   | 'settings-appearance'
   | 'settings-health'
   | 'settings-devices'
+  | 'settings-ai'
   | 'admin-users'
 
 export type NavItem = {
@@ -30,15 +32,19 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'transactions', labelKey: 'nav.transactions' },
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
-      { key: 'tags', labelKey: 'nav.tags' }
+      { key: 'tags', labelKey: 'nav.tags' },
+      { key: 'budgets', labelKey: 'nav.budgets' }
     ]
   },
   {
     key: 'settings',
     titleKey: 'nav.group.settings',
     items: [
+      // 个人资料 + 外观合并:两者都是"我的偏好",心智上不该分两处。
+      // 保留 `settings-appearance` AppSection 是为了兼容老的分享链接,
+      // AppPage 把 appearance 的 route section 也渲染同一个卡片集。
       { key: 'settings-profile', labelKey: 'nav.profile' },
-      { key: 'settings-appearance', labelKey: 'nav.appearance' },
+      { key: 'settings-ai', labelKey: 'nav.ai' },
       { key: 'settings-health', labelKey: 'nav.health' },
       { key: 'settings-devices', labelKey: 'nav.devices' }
     ]

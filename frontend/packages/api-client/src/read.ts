@@ -3,6 +3,7 @@ import type {
   AnalyticsMetric,
   AnalyticsScope,
   ReadAccount,
+  ReadBudget,
   ReadCategory,
   ReadLedger,
   ReadLedgerDetail,
@@ -59,6 +60,10 @@ export async function fetchReadCategories(token: string, ledgerId: string): Prom
 
 export async function fetchReadTags(token: string, ledgerId: string): Promise<ReadTag[]> {
   return authedGet<ReadTag[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/tags`, token)
+}
+
+export async function fetchReadBudgets(token: string, ledgerId: string): Promise<ReadBudget[]> {
+  return authedGet<ReadBudget[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/budgets`, token)
 }
 
 export async function fetchWorkspaceTransactions(

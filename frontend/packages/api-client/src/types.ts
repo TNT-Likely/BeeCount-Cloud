@@ -7,6 +7,15 @@ export type LoginResponse = {
   user: { id: string; email: string; is_admin?: boolean }
 }
 
+export type ProfileAppearance = {
+  /** 月显示装饰风格:'icons' | 'particles' | 'honeycomb' | … */
+  header_decoration_style?: string
+  /** 紧凑金额显示(万/亿) */
+  compact_amount?: boolean
+  /** 交易行是否显示时间 */
+  show_transaction_time?: boolean
+}
+
 export type ProfileMe = {
   user_id: string
   email: string
@@ -22,6 +31,12 @@ export type ProfileMe = {
    *  - 用户在 web 本地改过主题色（localStorage 有值）→ 本地优先，忽略 server
    *  - 否则 apply server 值到 CSS var（不写 localStorage，保持 server 作权威） */
   theme_primary_color?: string | null
+  /** mobile 推过来的外观偏好(打包的 JSON)。web 目前只读展示,不编辑。 */
+  appearance?: ProfileAppearance | null
+  /** mobile 推过来的 AI 配置(providers / binding / custom_prompt / strategy …)。
+   *  API key 存在这里面,只读展示时要脱敏。shape 由 mobile 的 snapshotForSync
+   *  定义,这里用 Record 宽松接收,避免 web 跟 mobile 的实现耦合。 */
+  ai_config?: Record<string, any> | null
 }
 
 export type WriteCommitMeta = {
@@ -145,6 +160,21 @@ export type ReadTag = {
   ledger_name?: string | null
   created_by_user_id?: string | null
   created_by_email?: string | null
+}
+
+export type ReadBudget = {
+  id: string
+  /** `total` = 整账本总预算 / `category` = 分类预算 */
+  type: 'total' | 'category' | string
+  category_id?: string | null
+  category_name?: string | null
+  amount: number
+  period: 'monthly' | 'weekly' | 'yearly' | string
+  start_day: number
+  enabled: boolean
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
 }
 
 export type WorkspaceTransaction = ReadTransaction & {

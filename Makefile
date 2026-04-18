@@ -52,10 +52,14 @@ typecheck:
 
 # 一键清空本地开发数据：停服、删 sqlite dev DB、清 data/ 下运行时附件。
 # 保留 data/ 目录结构和 .gitkeep；不动 Postgres。
+#
+# macOS BSD `find -delete` 不会自动 `-depth`,不加显式 -depth 时 find 会
+# 按先序访问目录,试着删非空目录 → EPERM/ENOTEMPTY → `|| true` 把错误吞掉,
+# 结果啥都没删。GNU find 默认会 -depth,macOS 必须显式加。
 wipe-local:
 	@pkill -f "python.*server\.py" 2>/dev/null || true
 	@pkill -f "uvicorn server:app" 2>/dev/null || true
 	@rm -f beecount.db
-	@find data -mindepth 1 -not -name '.gitkeep' -delete 2>/dev/null || true
+	@find data -depth -mindepth 1 -not -name '.gitkeep' -delete 2>/dev/null || true
 	@echo "✓ wiped: beecount.db + data/*"
 	@echo "next: make migrate && make seed-demo && make dev-api"

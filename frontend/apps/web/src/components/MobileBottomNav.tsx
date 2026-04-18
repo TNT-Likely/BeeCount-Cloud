@@ -46,7 +46,9 @@ export function MobileBottomNav({
   ]
 
   const moreActive =
+    activeSection === 'budgets' ||
     activeSection === 'settings-profile' ||
+    activeSection === 'settings-ai' ||
     activeSection === 'settings-health' ||
     activeSection === 'settings-devices' ||
     activeSection === 'admin-users'
@@ -104,11 +106,28 @@ export function MobileBottomNav({
             sideOffset={6}
             className="mb-1 w-56 rounded-xl border-border/60 bg-card/95 p-1.5 backdrop-blur"
           >
+            {/* 记账辅助视图(跟底部 5 个主 tab 同组但不够频繁放进 tab bar) */}
+            <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+              {t('nav.group.bookkeeping')}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className={`rounded-lg px-2.5 py-2 text-[12px] ${
+                activeSection === 'budgets'
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+              }`}
+              onClick={() => onNavigate('budgets')}
+            >
+              {t('nav.budgets')}
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
             <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
               {t('nav.group.settings')}
             </DropdownMenuLabel>
             {([
               { key: 'settings-profile' as AppSection, labelKey: 'nav.profile' },
+              { key: 'settings-ai' as AppSection, labelKey: 'nav.ai' },
               { key: 'settings-health' as AppSection, labelKey: 'nav.health' },
               { key: 'settings-devices' as AppSection, labelKey: 'nav.devices' }
             ]).map((item) => (

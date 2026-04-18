@@ -55,6 +55,19 @@ class UserProfile(Base):
     # 后会写 localStorage，本地值永远优先；没改过的 web 客户端跟 mobile 同步。
     # 格式：hex `#RRGGBB`。长度给 7 预留 # + 6 位。
     theme_primary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    # 外观类设置的 JSON blob（跟 theme_primary_color / income_is_red 性质相同
+    # 但字段碎片化，打包到一起）。当前 mobile 推送的 key 包括：
+    #   - header_decoration_style: 月显示头部装饰 "none"/"minimal"/…
+    #   - compact_amount: 紧凑金额显示 true/false
+    #   - show_transaction_time: 交易是否显示时间 true/false
+    # 字体缩放 font_scale 故意不进来（跨设备屏幕尺寸不同，不该强行拉齐）。
+    # 用 Text 存 JSON string；/profile/me 接口 GET/PATCH 时序列化为 dict。
+    appearance_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI 配置 JSON blob:providers(服务商数组)、binding(能力 ↔ 服务商绑定)、
+    # custom_prompt(自定义提示词)、strategy(cloud_first/local_first…)、
+    # bill_extraction_enabled、use_vision。
+    # API key 敏感,只在登录用户自己的 profile 上传下行,不对外暴露。
+    ai_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

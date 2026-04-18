@@ -78,6 +78,15 @@ class UserProfileOut(BaseModel):
     # 主题色 hex（#RRGGBB），mobile 设置后推上来；web 把它当作"初始偏好"，
     # 用户在 web 本地改色会写 localStorage 优先生效。
     theme_primary_color: str | None = None
+    # 外观类设置 JSON 对象（解析后的 dict）。mobile 推上来，web 只读展示。
+    # 目前约定的 key：
+    #   header_decoration_style (str) / compact_amount (bool) / show_transaction_time (bool)
+    # 将来加新 key 不需要加 schema 字段。None = 没设置过。
+    appearance: dict | None = None
+    # AI 配置 JSON 对象。mobile 推上来,web 只读展示,另一台 mobile 设备也会拉。
+    # key: providers (list) / binding (dict) / custom_prompt (str) /
+    # strategy (str) / bill_extraction_enabled (bool) / use_vision (bool)
+    ai_config: dict | None = None
 
 
 class UserProfilePatchRequest(BaseModel):
@@ -86,6 +95,8 @@ class UserProfilePatchRequest(BaseModel):
     display_name: str | None = None
     income_is_red: bool | None = None
     theme_primary_color: str | None = None
+    appearance: dict | None = None
+    ai_config: dict | None = None
 
     @field_validator("display_name")
     @classmethod
@@ -379,6 +390,25 @@ class ReadTagOut(BaseModel):
     ledger_name: str | None = None
     created_by_user_id: str | None = None
     created_by_email: str | None = None
+
+
+class ReadBudgetOut(BaseModel):
+    """预算只读视图。mobile 同步上来的 snapshot.budgets 逐条 map 过来。
+    category_name 不进 snapshot,这里从 categoryId 反查填上,跟 tx/account
+    同一套 id→name 映射思路。"""
+    id: str
+    """`total` = 总预算(全账本),`category` = 分类预算"""
+    type: str
+    category_id: str | None = None
+    category_name: str | None = None
+    amount: float
+    """`monthly` / `weekly` / `yearly`"""
+    period: str
+    start_day: int
+    enabled: bool
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
 
 
 class WorkspaceTransactionOut(ReadTransactionOut):
