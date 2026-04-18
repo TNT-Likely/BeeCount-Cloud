@@ -25,6 +25,7 @@ from ..schemas import (
     SyncPushResponse,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
+from .. import snapshot_cache
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,10 @@ def _materialize_individual_changes(
         updated_by_user_id=user_id,
     ))
     db.flush()
+    # 写完新快照立即让进程内 snapshot 缓存失效 —— 下一次 /read/* 会重新 parse。
+    # 同进程 miss 一次即可,跨 uvicorn worker 的旧缓存也会被 change_id 对账拦下
+    # (见 snapshot_cache.get 的 change_id 比较)。
+    snapshot_cache.invalidate(ledger_id)
 
 
 def _to_utc(dt: datetime) -> datetime:

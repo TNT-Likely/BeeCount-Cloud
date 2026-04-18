@@ -51,6 +51,7 @@ from ..schemas import (
     UserAdminPatchRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password, verify_password
+from .. import snapshot_cache
 
 logger = logging.getLogger(__name__)
 
@@ -888,6 +889,7 @@ async def restore_backup(
     )
     db.add(sync_row)
     db.flush()
+    snapshot_cache.invalidate(backup.ledger_id)
     db.add(
         AuditLog(
             user_id=current_user.id,

@@ -44,6 +44,7 @@ from ..schemas import (
     WriteTransactionUpdateRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
+from .. import snapshot_cache
 from ..snapshot_mutator import (
     create_account,
     create_category,
@@ -343,6 +344,7 @@ async def _commit_write(
     )
     db.add(row_change)
     db.flush()
+    snapshot_cache.invalidate(ledger.id)
 
     # Emit individual entity SyncChanges so Mobile can see Web changes
     _emit_entity_diffs(
@@ -555,6 +557,7 @@ async def create_ledger(
     )
     db.add(row_change)
     db.flush()
+    snapshot_cache.invalidate(ledger.id)
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -693,6 +696,7 @@ async def delete_ledger(
     )
     db.add(tombstone)
     db.flush()
+    snapshot_cache.invalidate(ledger.id)
     db.add(
         AuditLog(
             user_id=current_user.id,
