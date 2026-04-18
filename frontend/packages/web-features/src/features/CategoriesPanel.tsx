@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import {
-  Badge,
   Button,
   Dialog,
   DialogContent,
@@ -16,19 +15,231 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
   useT
 } from '@beecount/ui'
 
 import type { ReadCategory } from '@beecount/api-client'
 
 import type { CategoryForm } from '../forms'
-import { ListTableShell } from '../components/ListTableShell'
+
+type CategoryKind = 'expense' | 'income' | 'transfer'
+
+type CardBodyProps = {
+  rows: ReadCategory[]
+  onEdit: (row: ReadCategory) => void
+  onDelete?: (row: ReadCategory) => void
+  canManage: boolean
+  showCreatorColumn: boolean
+  renderIcon: (
+    icon: string | null | undefined,
+    iconType: string | null | undefined,
+    iconCloudFileId?: string | null
+  ) => ReactNode
+}
+
+/**
+ * 分类卡片视图：kind tab（支出 / 收入 / 转账）+ 父分类分组，子分类以小卡嵌
+ * 在父卡片下方。与 mobile 的 category_manage_page 结构对齐。
+ */
+function CategoriesCardBody({
+  rows,
+  onEdit,
+  onDelete,
+  canManage,
+  showCreatorColumn,
+  renderIcon
+}: CardBodyProps) {
+  const t = useT()
+  const [activeKind, setActiveKind] = useState<CategoryKind>('expense')
+  const grouped = useMemo(() => {
+    const parentsByKind: Record<CategoryKind, ReadCategory[]> = {
+      expense: [],
+      income: [],
+      transfer: []
+    }
+    const childrenByParent: Record<string, ReadCategory[]> = {}
+    for (const row of rows) {
+      const kind = (row.kind as CategoryKind) || 'expense'
+      const parent = (row.parent_name || '').trim()
+      if (parent) {
+        childrenByParent[`${kind}::${parent.toLowerCase()}`] =
+          childrenByParent[`${kind}::${parent.toLowerCase()}`] || []
+        childrenByParent[`${kind}::${parent.toLowerCase()}`].push(row)
+      } else {
+        parentsByKind[kind].push(row)
+      }
+    }
+    for (const kind of Object.keys(parentsByKind) as CategoryKind[]) {
+      parentsByKind[kind].sort(
+        (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)
+      )
+    }
+    for (const key of Object.keys(childrenByParent)) {
+      childrenByParent[key].sort(
+        (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)
+      )
+    }
+    return { parentsByKind, childrenByParent }
+  }, [rows])
+  const kindCounts = useMemo(
+    () => ({
+      expense: rows.filter((r) => r.kind === 'expense').length,
+      income: rows.filter((r) => r.kind === 'income').length,
+      transfer: rows.filter((r) => r.kind === 'transfer').length
+    }),
+    [rows]
+  )
+
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+               strokeLinejoin="round">
+            <path d="M3 6l3-3h12l3 3" />
+            <path d="M3 6v14a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V6" />
+            <path d="M8 11h8" />
+          </svg>
+        }
+        title="还没有分类"
+        description="移动端添加分类后会自动同步到这里，支持一级/二级层级。"
+      />
+    )
+  }
+
+  const parents = grouped.parentsByKind[activeKind]
+  const kinds: CategoryKind[] = ['expense', 'income', 'transfer']
+
+  return (
+    <div className="space-y-4">
+      {/* tabs — 选中态用主题色背景 + 主题色左边框强化存在感，dark mode 下
+          原来的 bg-card 跟 bg-muted 差异太小（基本都是深灰），看不出来。 */}
+      <div className="flex gap-1 rounded-xl border border-border/50 bg-muted/30 p-1">
+        {kinds.map((k) => {
+          const active = k === activeKind
+          const label = t(`enum.txType.${k}`)
+          const count = kindCounts[k]
+          return (
+            <button
+              key={k}
+              type="button"
+              aria-selected={active}
+              className={`relative flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all ${
+                active
+                  ? 'bg-primary/15 text-primary ring-1 ring-primary/40 shadow-[0_6px_20px_-12px_hsl(var(--primary)/0.55)]'
+                  : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
+              }`}
+              onClick={() => setActiveKind(k)}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <span>{label}</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none ${
+                    active ? 'bg-primary/25 text-primary' : 'bg-muted text-muted-foreground/80'
+                  }`}
+                >
+                  {count}
+                </span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {parents.length === 0 ? (
+        <div className="py-8 text-center text-xs text-muted-foreground">
+          该类型下暂无分类
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {parents.map((parent) => {
+            const children =
+              grouped.childrenByParent[`${activeKind}::${parent.name.toLowerCase()}`] || []
+            return (
+              <div key={parent.id} className="rounded-xl border border-border/60 bg-card/60 p-3">
+                {/* parent row */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                      {renderIcon(parent.icon, parent.icon_type, parent.icon_cloud_file_id)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold">{parent.name}</div>
+                      {showCreatorColumn ? (
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {parent.created_by_email || parent.created_by_user_id || '-'}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      className="text-xs text-muted-foreground hover:text-primary"
+                      disabled={!canManage}
+                      type="button"
+                      onClick={() => onEdit(parent)}
+                    >
+                      {t('common.edit')}
+                    </button>
+                    {onDelete ? (
+                      <button
+                        className="text-xs text-muted-foreground hover:text-destructive"
+                        disabled={!canManage}
+                        type="button"
+                        onClick={() => onDelete(parent)}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {/* children grid */}
+                {children.length > 0 ? (
+                  <div className="mt-3 grid gap-2 pl-12 sm:grid-cols-2 lg:grid-cols-3">
+                    {children.map((child) => (
+                      <div
+                        key={child.id}
+                        className="group flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/60 px-2.5 py-1.5 text-xs"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/50">
+                            {renderIcon(child.icon, child.icon_type, child.icon_cloud_file_id)}
+                          </div>
+                          <span className="truncate">{child.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                          <button
+                            className="text-[10px] text-muted-foreground hover:text-primary"
+                            disabled={!canManage}
+                            type="button"
+                            onClick={() => onEdit(child)}
+                          >
+                            {t('common.edit')}
+                          </button>
+                          {onDelete ? (
+                            <button
+                              className="text-[10px] text-muted-foreground hover:text-destructive"
+                              disabled={!canManage}
+                              type="button"
+                              onClick={() => onDelete(child)}
+                            >
+                              {t('common.delete')}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 type CategoriesPanelProps = {
   form: CategoryForm
@@ -60,16 +271,15 @@ export function CategoriesPanel({
 }: CategoriesPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  const textActionClass =
-    'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
-  const textDangerActionClass =
-    'text-sm text-destructive underline-offset-4 hover:text-destructive/90 hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const parentOptions = rows
     .map((row) => row.name.trim())
     .filter((name) => name.length > 0 && name !== form.name.trim())
     .sort((a, b) => a.localeCompare(b))
-  const colCount = 5 + (showCreatorColumn ? 1 : 0)
 
+  // 只输出一个"小图标视觉"，不再带名字文本/badge —— 放在 h-9 w-9 的方块里
+  // 要小而稳定，不能出现原来那样图标名 + Material/Custom 标签叠加导致的错乱
+  // 排版。图标数据三种来源：云端文件（有 cloudFileId + 本地 map 到 URL）>
+  // 文件本身是 URL/路径（绝对路径时直接显示）> material 名字（取首字母）。
   const renderIcon = (
     icon: string | null | undefined,
     iconType: string | null | undefined,
@@ -81,157 +291,41 @@ export function CategoriesPanel({
     const cloudPreview = cloudFileId ? iconPreviewUrlByFileId[cloudFileId] : undefined
     if (kind === 'custom' && cloudPreview) {
       return (
-        <div className="flex items-center gap-2">
-          <img alt="custom icon" className="h-7 w-7 rounded-md border border-border object-cover" src={cloudPreview} />
-          <Badge variant="secondary" className="h-5 rounded px-1.5 text-[10px]">
-            custom
-          </Badge>
-        </div>
+        <img
+          alt=""
+          className="h-full w-full rounded-[inherit] object-cover"
+          src={cloudPreview}
+        />
       )
-    }
-    if (!normalized) {
-      if (kind === 'custom') {
-        return (
-          <Badge variant="secondary" className="h-6 rounded px-2 text-[10px]">
-            {t('categories.icon.unsynced')}
-          </Badge>
-        )
-      }
-      return <span className="text-xs text-muted-foreground">{t('common.none')}</span>
     }
     if (kind === 'custom' && /^(https?:\/\/|data:image\/|\/)/.test(normalized)) {
       return (
-        <div className="flex items-center gap-2">
-          <img
-            alt={normalized}
-            className="h-7 w-7 rounded-md border border-border object-cover"
-            src={normalized}
-          />
-          <Badge variant="secondary" className="h-5 rounded px-1.5 text-[10px]">
-            {kind}
-          </Badge>
-        </div>
+        <img
+          alt=""
+          className="h-full w-full rounded-[inherit] object-cover"
+          src={normalized}
+        />
       )
     }
-    if (kind === 'custom') {
-      return (
-        <Badge variant="secondary" className="h-6 rounded px-2 text-[10px]">
-          {t('categories.icon.unsynced')}
-        </Badge>
-      )
-    }
-    const display = normalized.length > 24 ? `${normalized.slice(0, 24)}...` : normalized
+    const letter = (normalized[0] || '?').toUpperCase()
     return (
-      <div className="flex items-center gap-2">
-        <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border bg-muted px-2 text-xs font-medium">
-          {normalized[0]?.toUpperCase() || '?'}
-        </span>
-        <div className="min-w-0">
-          <p className="truncate text-xs font-medium">{display}</p>
-          <Badge variant="secondary" className="h-5 rounded px-1.5 text-[10px]">
-            {kind}
-          </Badge>
-        </div>
-      </div>
+      <span className="text-[13px] font-medium text-primary">{letter}</span>
     )
   }
 
   return (
     <>
-      {/* 跟账户一样先屏蔽 web 端新建分类：两端模型未对齐，新建容易产生
-          snapshot / UserCategory 双份残留。只保留编辑/删除入口。 */}
-      <ListTableShell title={t('categories.title')}>
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="bc-table-head">
-                  {t('categories.table.name')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('categories.table.kind')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('categories.table.level')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('categories.table.sort')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('categories.table.icon')}
-                </TableHead>
-                {showCreatorColumn ? (
-                  <TableHead className="bc-table-head">
-                    {t('transactions.table.user')}
-                  </TableHead>
-                ) : null}
-                <TableHead className="bc-table-head sticky right-0 z-20 min-w-[132px] bg-card">
-                  {t('categories.table.ops')}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={colCount} className="p-0">
-                    <EmptyState
-                      icon={
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
-                             stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                             strokeLinejoin="round">
-                          <path d="M3 6l3-3h12l3 3" />
-                          <path d="M3 6v14a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V6" />
-                          <path d="M8 11h8" />
-                        </svg>
-                      }
-                      title="还没有分类"
-                      description={'从手机端同步后会自动出现，或点击"新建分类"手动添加。'}
-                    />
-                  </TableCell>
-                </TableRow>
-              ) : null}
-              {rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  className="odd:bg-muted/20 [&>td:last-child]:sticky [&>td:last-child]:right-0 [&>td:last-child]:z-10 [&>td:last-child]:min-w-[132px] [&>td:last-child]:bg-background odd:[&>td:last-child]:bg-muted/20"
-                >
-                  <TableCell>{row.name}</TableCell>
-                  <TableCell>{t(`enum.txType.${row.kind}`)}</TableCell>
-                  <TableCell>{row.level ?? '-'}</TableCell>
-                  <TableCell>{row.sort_order ?? '-'}</TableCell>
-                  <TableCell>{renderIcon(row.icon, row.icon_type, row.icon_cloud_file_id)}</TableCell>
-                  {showCreatorColumn ? <TableCell>{row.created_by_email || row.created_by_user_id || '-'}</TableCell> : null}
-                  <TableCell>
-                    <div className="flex items-center gap-3 whitespace-nowrap">
-                      <button
-                        className={textActionClass}
-                        disabled={!canManage}
-                        type="button"
-                        onClick={() => {
-                          onEdit(row)
-                          setOpen(true)
-                        }}
-                      >
-                        {t('common.edit')}
-                      </button>
-                      {onDelete ? (
-                        <button
-                          className={textDangerActionClass}
-                          disabled={!canManage}
-                          type="button"
-                          onClick={() => onDelete(row)}
-                        >
-                          {t('common.delete')}
-                        </button>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </ListTableShell>
+      <CategoriesCardBody
+        rows={rows}
+        onEdit={(row) => {
+          onEdit(row)
+          setOpen(true)
+        }}
+        onDelete={onDelete}
+        canManage={canManage}
+        showCreatorColumn={showCreatorColumn}
+        renderIcon={renderIcon}
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>

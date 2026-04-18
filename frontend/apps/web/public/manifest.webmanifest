@@ -1,0 +1,31 @@
+{
+  "name": "蜜蜂记账",
+  "short_name": "蜜蜂记账",
+  "description": "自部署的个人记账云 · 移动端 / 网页端实时同步",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#F59E0B",
+  "scope": "/",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/branding/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/branding/favicon-216.png",
+      "sizes": "216x216",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/branding/favicon-216.png",
+      "sizes": "216x216",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

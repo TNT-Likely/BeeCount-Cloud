@@ -36,7 +36,7 @@ const zhTW = {
   'nav.group.bookkeeping': '記帳',
   'nav.group.settings': '設定',
   'nav.group.admin': '管理',
-  'nav.overview': '總覽',
+  'nav.overview': '首頁',
   'nav.analytics': '圖表分析',
   'nav.transactions': '交易',
   'nav.accounts': '帳戶',

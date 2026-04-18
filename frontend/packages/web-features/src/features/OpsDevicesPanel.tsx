@@ -5,18 +5,36 @@ import {
   Button,
   Card,
   CardContent,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
   useT
 } from '@beecount/ui'
 
 import type { AdminDevice } from '@beecount/api-client'
 
 import { formatIsoDateTime } from '../format'
+
+// 根据 platform 选一个图标 + 语义色。
+function deviceIcon(row: AdminDevice): { glyph: string; color: string } {
+  const platform = (row.platform || '').toLowerCase()
+  if (platform === 'web') return { glyph: '🌐', color: '#3b82f6' }
+  if (platform === 'ios') return { glyph: '📱', color: '#8b5cf6' }
+  if (platform === 'android') return { glyph: '🤖', color: '#22c55e' }
+  if (platform === 'macos' || platform === 'darwin') return { glyph: '💻', color: '#64748b' }
+  if (platform === 'windows') return { glyph: '🪟', color: '#06b6d4' }
+  return { glyph: '📟', color: '#94a3b8' }
+}
+
+// 相对时间（中文）—— 粗略即可，精确到天。
+function timeAgo(iso: string): string {
+  const ts = Date.parse(iso)
+  if (!Number.isFinite(ts)) return '-'
+  const diffSec = (Date.now() - ts) / 1000
+  if (diffSec < 60) return '刚刚'
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`
+  if (diffSec < 86400 * 30) return `${Math.floor(diffSec / 86400)} 天前`
+  if (diffSec < 86400 * 365) return `${Math.floor(diffSec / 86400 / 30)} 个月前`
+  return `${Math.floor(diffSec / 86400 / 365)} 年前`
+}
 
 type OpsDevicesPanelProps = {
   rows: AdminDevice[]
@@ -107,66 +125,102 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
       </div>
 
       <Card className="bc-panel">
-        <CardContent className="p-0">
+        <CardContent className="p-4">
           {visibleRows.length === 0 ? (
             <div className="py-10 text-center text-sm text-muted-foreground">{t('table.empty')}</div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="bc-table-head">{t('ops.devices.user')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.table.device')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.table.platform')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.model')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.os')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.lastSeen')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.createdAt')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.table.sessions')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.ip')}</TableHead>
-                    <TableHead className="bc-table-head">{t('ops.devices.id')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visibleRows.map((row) => (
-                    <TableRow key={row.id} className="odd:bg-muted/20">
-                      <TableCell>{row.user_email}</TableCell>
-                      <TableCell>
-                        <div className="min-w-[160px]">
-                          <p className="font-medium">{row.name || '-'}</p>
-                          <p className="text-xs text-muted-foreground">{row.device_model || '-'}</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {visibleRows.map((row) => {
+                const { glyph, color } = deviceIcon(row)
+                return (
+                  <div
+                    key={row.id}
+                    className="relative overflow-hidden rounded-xl border border-border/60 bg-card p-4 transition-shadow hover:shadow-md"
+                    style={{ borderLeftColor: color, borderLeftWidth: 3 }}
+                  >
+                    <div
+                      className="pointer-events-none absolute -right-10 -top-10 h-24 w-24 rounded-full blur-3xl"
+                      style={{ background: color, opacity: 0.1 }}
+                      aria-hidden
+                    />
+                    <div className="relative space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xl"
+                          style={{ background: `${color}20` }}
+                        >
+                          {glyph}
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex min-w-[140px] items-center gap-2">
-                          <span>{row.platform || '-'}</span>
-                          <span className="text-xs text-muted-foreground">{row.app_version || '-'}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold">
+                            {row.name || (row.device_model || row.platform || '未知设备')}
+                          </div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {row.user_email || row.user_id}
+                          </div>
                         </div>
-                      </TableCell>
-                      <TableCell>{row.device_model || '-'}</TableCell>
-                      <TableCell>{row.os_version || '-'}</TableCell>
-                      <TableCell>{formatIsoDateTime(row.last_seen_at)}</TableCell>
-                      <TableCell>{formatIsoDateTime(row.created_at)}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={row.is_online ? 'default' : 'secondary'}>
-                            {row.is_online ? t('ops.devices.online') : t('ops.devices.offline')}
-                          </Badge>
-                          {!showAllSessions && row.session_count > 1 ? (
-                            <Badge variant="secondary">
+                        <Badge
+                          variant={row.is_online ? 'default' : 'secondary'}
+                          className="shrink-0 text-[10px]"
+                        >
+                          {row.is_online ? t('ops.devices.online') : t('ops.devices.offline')}
+                        </Badge>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div className="rounded-md bg-muted/30 px-2 py-1">
+                          <div className="text-muted-foreground">平台</div>
+                          <div className="font-medium">{row.platform || '-'}</div>
+                        </div>
+                        <div className="rounded-md bg-muted/30 px-2 py-1">
+                          <div className="text-muted-foreground">版本</div>
+                          <div className="font-medium">{row.app_version || '-'}</div>
+                        </div>
+                        <div className="rounded-md bg-muted/30 px-2 py-1">
+                          <div className="text-muted-foreground">设备</div>
+                          <div className="truncate font-medium">{row.device_model || '-'}</div>
+                        </div>
+                        <div className="rounded-md bg-muted/30 px-2 py-1">
+                          <div className="text-muted-foreground">系统</div>
+                          <div className="truncate font-medium">{row.os_version || '-'}</div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 text-[11px] text-muted-foreground">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>最近活跃</span>
+                          <span
+                            className="font-medium text-foreground"
+                            title={formatIsoDateTime(row.last_seen_at)}
+                          >
+                            {timeAgo(row.last_seen_at)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span>首次登录</span>
+                          <span title={formatIsoDateTime(row.created_at)}>
+                            {timeAgo(row.created_at)}
+                          </span>
+                        </div>
+                        {row.last_ip ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span>IP</span>
+                            <span className="font-mono text-[10px]">{row.last_ip}</span>
+                          </div>
+                        ) : null}
+                        {!showAllSessions && row.session_count > 1 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span>会话数</span>
+                            <Badge variant="secondary" className="text-[10px]">
                               {t('ops.devices.sessionCount', { count: row.session_count })}
                             </Badge>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell>{row.last_ip || '-'}</TableCell>
-                      <TableCell>
-                        <span className="font-mono text-[11px]">{row.id}</span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           )}
         </CardContent>

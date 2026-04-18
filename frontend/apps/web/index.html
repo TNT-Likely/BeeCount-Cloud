@@ -1,9 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/png" href="/branding/favicon-216.png" />
+    <!-- PWA 基础：manifest + iOS Safari 的兼容 meta。sw 在 main.tsx 里注册。 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#F59E0B" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="蜜蜂记账" />
+    <link rel="apple-touch-icon" href="/branding/favicon-216.png" />
     <title>蜜蜂记账 · Web</title>
   </head>
   <body>

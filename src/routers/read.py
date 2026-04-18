@@ -38,6 +38,7 @@ from ..schemas import (
     WorkspaceAnalyticsSeriesItemOut,
     WorkspaceAnalyticsSummaryOut,
     WorkspaceCategoryOut,
+    WorkspaceLedgerCountsOut,
     WorkspaceTagOut,
     WorkspaceTransactionOut,
     WorkspaceTransactionPageOut,
@@ -1011,6 +1012,49 @@ def list_workspace_accounts(
         snapshot = _get_latest_snapshot(db, ledger_id=led.id)
         led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
         change_id = _get_latest_change_id(db, ledger_id=led.id)
+
+        # 一次遍历 items，按 accountId 汇总；支持 transfer 的 fromAccountId /
+        # toAccountId 两端（一进一出，不计入 income/expense，只影响 balance）。
+        items = snapshot.get("items") or []
+        per_acct: dict[str, dict[str, float | int]] = {}
+        for item in items:
+            amt = _safe_float(item.get("amount")) or 0.0
+            tx_type = (
+                item.get("txType") or item.get("tx_type") or item.get("type") or ""
+            )
+            acct_id = item.get("accountId") or item.get("account_id")
+            from_id = item.get("fromAccountId") or item.get("from_account_id")
+            to_id = item.get("toAccountId") or item.get("to_account_id")
+            if tx_type == "income" and acct_id:
+                bucket = per_acct.setdefault(
+                    str(acct_id), {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
+                )
+                bucket["count"] = int(bucket["count"]) + 1
+                bucket["income"] = float(bucket["income"]) + amt
+                bucket["balance"] = float(bucket["balance"]) + amt
+            elif tx_type == "expense" and acct_id:
+                bucket = per_acct.setdefault(
+                    str(acct_id), {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
+                )
+                bucket["count"] = int(bucket["count"]) + 1
+                bucket["expense"] = float(bucket["expense"]) + amt
+                bucket["balance"] = float(bucket["balance"]) - amt
+            elif tx_type == "transfer":
+                if from_id:
+                    bucket = per_acct.setdefault(
+                        str(from_id),
+                        {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0},
+                    )
+                    bucket["count"] = int(bucket["count"]) + 1
+                    bucket["balance"] = float(bucket["balance"]) - amt
+                if to_id:
+                    bucket = per_acct.setdefault(
+                        str(to_id),
+                        {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0},
+                    )
+                    bucket["count"] = int(bucket["count"]) + 1
+                    bucket["balance"] = float(bucket["balance"]) + amt
+
         for acct in _snapshot_accounts(snapshot):
             name = (acct.get("name") or "").strip()
             if not name:
@@ -1018,6 +1062,12 @@ def list_workspace_accounts(
             if q and q.lower() not in name.lower():
                 continue
             sync_id = acct.get("syncId") or acct.get("sync_id") or ""
+            init_bal = _safe_float(acct.get("initialBalance")) or 0.0
+            stats = per_acct.get(str(sync_id)) if sync_id else None
+            income_total = float(stats.get("income", 0.0)) if stats else 0.0
+            expense_total = float(stats.get("expense", 0.0)) if stats else 0.0
+            tx_count = int(stats.get("count", 0)) if stats else 0
+            movement = float(stats.get("balance", 0.0)) if stats else 0.0
             account_rows.append(
                 (
                     sync_id.lower() if sync_id else name.lower(),
@@ -1026,12 +1076,16 @@ def list_workspace_accounts(
                         name=name,
                         account_type=acct.get("type"),
                         currency=acct.get("currency"),
-                        initial_balance=_safe_float(acct.get("initialBalance")),
+                        initial_balance=init_bal,
                         last_change_id=change_id,
                         ledger_id=led.external_id,
                         ledger_name=led_name,
                         created_by_user_id=None,
                         created_by_email=None,
+                        tx_count=tx_count,
+                        income_total=income_total,
+                        expense_total=expense_total,
+                        balance=init_bal + movement,
                     ),
                 )
             )
@@ -1322,6 +1376,62 @@ def list_workspace_tags(
     return all_tags[offset : offset + limit]
 
 
+@router.get("/workspace/ledger-counts", response_model=WorkspaceLedgerCountsOut)
+def workspace_ledger_counts(
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceLedgerCountsOut:
+    """账本级全量记账统计：对齐 mobile `getCountsForLedger` (SQL:
+    `COUNT(*) + julianday(now) - julianday(MIN(happened_at))`)。不限时间范围。
+    首页 Hero 用来展示"记账笔数 / 记账天数"，与 analytics 的 scope=year 脱钩。"""
+    is_admin = _is_admin(current_user)
+    ledger_conditions: list[Any] = []
+    if ledger_id:
+        ledger_conditions.append(Ledger.external_id == ledger_id)
+    if is_admin:
+        if user_id:
+            ledger_conditions.append(Ledger.user_id == user_id)
+    else:
+        ledger_conditions.append(Ledger.user_id == current_user.id)
+
+    ledgers = db.execute(
+        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
+    ).scalars().all()
+
+    tx_count = 0
+    day_set: set[str] = set()
+    first_at: datetime | None = None
+    for led in ledgers:
+        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
+        for item in _snapshot_transactions(snapshot):
+            ts = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
+            if ts is None:
+                continue
+            tx_count += 1
+            day_set.add(ts.strftime("%Y-%m-%d"))
+            if first_at is None or ts < first_at:
+                first_at = ts
+
+    # "记账天数" = 从首次记账那天到今天（含当天）。对齐 mobile
+    # `julianday(now) - julianday(MIN(happened_at)) + 1` 语义。以 UTC 为基准。
+    days_since_first_tx = 0
+    if first_at is not None:
+        now_utc = datetime.now(timezone.utc)
+        first_day = first_at.astimezone(timezone.utc).date()
+        today_utc = now_utc.date()
+        days_since_first_tx = (today_utc - first_day).days + 1
+
+    return WorkspaceLedgerCountsOut(
+        tx_count=tx_count,
+        days_since_first_tx=days_since_first_tx,
+        distinct_days=len(day_set),
+        first_tx_at=first_at,
+    )
+
+
 @router.get("/workspace/analytics", response_model=WorkspaceAnalyticsOut)
 def workspace_analytics(
     scope: AnalyticsScope = Query(default="month"),
@@ -1359,6 +1469,10 @@ def workspace_analytics(
     expense_total = 0.0
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, dict[str, float]] = {}
+    # 记账天数按 distinct date；首页 hero 用来展示"已持续记账 X 天"。
+    distinct_days_set: set[str] = set()
+    first_tx_at: datetime | None = None
+    last_tx_at: datetime | None = None
 
     for item in all_items:
         happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
@@ -1369,10 +1483,19 @@ def workspace_analytics(
         if end_at is not None and happened_at >= end_at:
             continue
 
-        tx_type_val = item.get("txType") or item.get("tx_type") or ""
+        # 对齐 snapshot_mutator：item 里这个字段叫 "type"，不是 "txType"。少写
+        # 这个 fallback 会让 analytics 拿不到任何 income/expense → 本月 0 / Top 5 空。
+        tx_type_val = (
+            item.get("txType") or item.get("tx_type") or item.get("type") or ""
+        )
         amount = float(item.get("amount") or 0.0)
 
         transaction_count += 1
+        distinct_days_set.add(happened_at.strftime("%Y-%m-%d"))
+        if first_tx_at is None or happened_at < first_tx_at:
+            first_tx_at = happened_at
+        if last_tx_at is None or happened_at > last_tx_at:
+            last_tx_at = happened_at
         bucket = _bucket_key(scope, happened_at)
         slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
         if tx_type_val == "income":
@@ -1423,6 +1546,9 @@ def workspace_analytics(
             income_total=income_total,
             expense_total=expense_total,
             balance=income_total - expense_total,
+            distinct_days=len(distinct_days_set),
+            first_tx_at=first_tx_at,
+            last_tx_at=last_tx_at,
         ),
         series=series,
         category_ranks=category_ranks,

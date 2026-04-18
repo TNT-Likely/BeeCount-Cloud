@@ -4,6 +4,7 @@ export type AppSection =
   | 'accounts'
   | 'categories'
   | 'tags'
+  | 'settings-profile'
   | 'settings-health'
   | 'settings-devices'
   | 'admin-users'
@@ -35,15 +36,12 @@ export const NAV_GROUPS: NavGroup[] = [
     key: 'settings',
     titleKey: 'nav.group.settings',
     items: [
+      { key: 'settings-profile', labelKey: 'nav.profile' },
       { key: 'settings-health', labelKey: 'nav.health' },
       { key: 'settings-devices', labelKey: 'nav.devices' }
     ]
-  },
-  {
-    key: 'admin',
-    titleKey: 'nav.group.admin',
-    items: [{ key: 'admin-users', labelKey: 'nav.users' }]
   }
+  // admin-users 不进顶部导航，只在头像 hover 下拉菜单里对 admin 用户展示。
 ]
 
 export function groupKeyBySection(section: AppSection): string {

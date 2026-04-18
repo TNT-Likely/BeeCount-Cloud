@@ -11,6 +11,7 @@ import type {
   WorkspaceAccount,
   WorkspaceAnalytics,
   WorkspaceCategory,
+  WorkspaceLedgerCounts,
   WorkspaceTag,
   WorkspaceTransaction,
   WorkspaceTransactionPage
@@ -149,6 +150,20 @@ export async function fetchWorkspaceTags(
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceTag[]>(`/read/workspace/tags${suffix}`, token)
+}
+
+export async function fetchWorkspaceLedgerCounts(
+  token: string,
+  options?: { ledgerId?: string; userId?: string }
+): Promise<WorkspaceLedgerCounts> {
+  const query = new URLSearchParams()
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.userId) query.set('user_id', options.userId)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<WorkspaceLedgerCounts>(
+    `/read/workspace/ledger-counts${suffix}`,
+    token
+  )
 }
 
 export async function fetchWorkspaceAnalytics(

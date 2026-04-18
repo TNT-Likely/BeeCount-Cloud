@@ -21,19 +21,12 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
   useT
 } from '@beecount/ui'
 
 import type { AttachmentRef, ReadAccount, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 
-import { ListTableShell } from '../components/ListTableShell'
-import { formatAmountCny, formatIsoDateTime } from '../format'
+import { TransactionList } from '../components/TransactionList'
 import type { TxForm } from '../forms'
 
 type TransactionsPanelProps = {
@@ -297,146 +290,22 @@ export function TransactionsPanel({
 
   return (
     <>
-      {/* 同账户/分类/标签：两端模型未对齐前，web 端不提供新建交易。
-          Reload 按钮也撤掉 —— WS + polling 已经覆盖刷新，手动 reload 是多余出口。 */}
-      <ListTableShell title={t('transactions.title')}>
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.time')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.type')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.amount')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.category')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.account')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.note')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('tags.title')}
-                </TableHead>
-                <TableHead className="bc-table-head">
-                  {t('transactions.table.attachments')}
-                </TableHead>
-                {showLedgerColumn ? (
-                  <TableHead className="bc-table-head">
-                    {t('transactions.table.ledger')}
-                  </TableHead>
-                ) : null}
-                {showCreatorColumn ? (
-                  <TableHead className="bc-table-head">
-                    {t('transactions.table.user')}
-                  </TableHead>
-                ) : null}
-                <TableHead className="bc-table-head sticky right-0 z-20 min-w-[132px] bg-card">
-                  {t('transactions.table.ops')}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={colCount} className="py-12 text-center text-sm text-muted-foreground">
-                    {t('table.empty')}
-                  </TableCell>
-                </TableRow>
-              ) : null}
-              {rows.map((row) => {
-                const txAttachments = Array.isArray(row.attachments) ? row.attachments : []
-                return (
-                  <TableRow
-                    key={row.id}
-                    className="odd:bg-muted/20 [&>td:last-child]:sticky [&>td:last-child]:right-0 [&>td:last-child]:z-10 [&>td:last-child]:min-w-[132px] [&>td:last-child]:bg-background odd:[&>td:last-child]:bg-muted/20"
-                  >
-                    <TableCell>{formatIsoDateTime(row.happened_at)}</TableCell>
-                    <TableCell>{t(`enum.txType.${row.tx_type}`)}</TableCell>
-                    <TableCell>{formatAmountCny(row.amount)}</TableCell>
-                    <TableCell>{row.category_name || '-'}</TableCell>
-                    <TableCell>{row.account_name || row.from_account_name || '-'}</TableCell>
-                    <TableCell className="max-w-[300px] truncate">{row.note || '-'}</TableCell>
-                    <TableCell>
-                      {row.tags_list && row.tags_list.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {row.tags_list.map((tagName) => {
-                            const color = tagColorByName.get(tagName.trim().toLowerCase())
-                            return (
-                              <span
-                                key={tagName}
-                                className="inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium"
-                                style={
-                                  color
-                                    ? {
-                                        color,
-                                        borderColor: `${color}66`,
-                                        background: `${color}1a`
-                                      }
-                                    : undefined
-                                }
-                              >
-                                {tagName}
-                              </span>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <AttachmentCarouselCell
-                        attachments={txAttachments}
-                        metadataOnlyLabel={t('transactions.attachment.metadataOnly')}
-                        nextLabel={t('transactions.attachment.next')}
-                        notPreviewableLabel={t('transactions.attachment.notPreviewable')}
-                        onPreviewAttachment={onPreviewAttachment}
-                        partialLabel={t('transactions.attachment.partial')}
-                        prevLabel={t('transactions.attachment.prev')}
-                        resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
-                      />
-                    </TableCell>
-                    {showLedgerColumn ? <TableCell>{row.ledger_name || '-'}</TableCell> : null}
-                    {showCreatorColumn ? (
-                      <TableCell>{row.created_by_email || row.created_by_user_id || '-'}</TableCell>
-                    ) : null}
-                    <TableCell>
-                      <div className="flex items-center gap-3 whitespace-nowrap">
-                        <button
-                          className={textActionClass}
-                          disabled={!canWrite}
-                          type="button"
-                          onClick={() => {
-                            onEdit(row)
-                            setOpen(true)
-                          }}
-                        >
-                          {t('common.edit')}
-                        </button>
-                        <button
-                          className={textDangerActionClass}
-                          disabled={!canWrite}
-                          type="button"
-                          onClick={() => onDelete(row)}
-                        >
-                          {t('common.delete')}
-                        </button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-        </div>
+      {/* 去掉 ListTableShell 的"交易管理" header，改用紧凑的 TransactionList
+          —— 表格信息列太多，首页/交易页都不需要账本 + 创建人那两列。 */}
+      <div className="rounded-xl border border-border/50 bg-card">
+        <TransactionList
+          items={rows}
+          tags={tags}
+          variant="default"
+          canManage={canWrite}
+          onEdit={(row) => {
+            onEdit(row)
+            setOpen(true)
+          }}
+          onDelete={onDelete}
+          onPreviewAttachment={onPreviewAttachment}
+          resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
+        />
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 px-3 py-3">
           <p className="text-xs text-muted-foreground">
             {t('pagination.summary', { start: rangeStart, end: rangeEnd, total })}
@@ -478,7 +347,7 @@ export function TransactionsPanel({
             </Button>
           </div>
         </div>
-      </ListTableShell>
+      </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
@@ -526,9 +395,15 @@ export function TransactionsPanel({
             <div className="space-y-1">
               <Label>{t('transactions.table.time')}</Label>
               <Input
-                placeholder={t('transactions.placeholder.happenedAt')}
-                value={form.happened_at}
-                onChange={(e) => onFormChange({ ...form, happened_at: e.target.value })}
+                type="datetime-local"
+                step={60}
+                value={isoToDatetimeLocal(form.happened_at)}
+                onChange={(e) =>
+                  onFormChange({
+                    ...form,
+                    happened_at: datetimeLocalToIso(e.target.value, form.happened_at)
+                  })
+                }
               />
             </div>
             <div className="space-y-1">
@@ -704,4 +579,29 @@ export function TransactionsPanel({
       </Dialog>
     </>
   )
+}
+
+/**
+ * 把后端 ISO 时间（可能带 Z / 毫秒 / 时区 offset）转成 `<input type="datetime-local">`
+ * 期望的 `YYYY-MM-DDTHH:mm` 字符串。用本地时区展示，避免用户看到的时间跟记录
+ * 时间错位一个时区。
+ */
+function isoToDatetimeLocal(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * datetime-local 返回的本地时间字符串反序列化成后端想要的 ISO。保留原 value
+ * 的秒与时区（避免用户只改了分钟却把秒抹 0 + 跨时区）。
+ */
+function datetimeLocalToIso(local: string, fallback: string): string {
+  if (!local) return fallback
+  // `new Date('2026-04-17T23:32')` 会按本地时区解析；toISOString() 再转 UTC。
+  const d = new Date(local)
+  if (Number.isNaN(d.getTime())) return fallback
+  return d.toISOString()
 }

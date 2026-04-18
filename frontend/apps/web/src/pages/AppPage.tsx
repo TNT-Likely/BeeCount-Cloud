@@ -4,8 +4,13 @@ import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
 
 import { useSyncSocket } from '../hooks/useSyncSocket'
 import { drainPull, startPoller } from '../state/sync-client'
-import { OverviewHero } from '../components/dashboard/OverviewHero'
-import { OverviewKeyMetrics } from '../components/dashboard/OverviewKeyMetrics'
+import { MobileBottomNav } from '../components/MobileBottomNav'
+import { HomeHero } from '../components/dashboard/HomeHero'
+import { HomeHabitStats } from '../components/dashboard/HomeHabitStats'
+import { HomeYearHeatmap } from '../components/dashboard/HomeYearHeatmap'
+import { HomeMonthCategoryDonut } from '../components/dashboard/HomeMonthCategoryDonut'
+import { HomeTopTags } from '../components/dashboard/HomeTopTags'
+import { HomeTopAccounts } from '../components/dashboard/HomeTopAccounts'
 import { AssetCompositionDonut } from '../components/dashboard/AssetCompositionDonut'
 import { MonthlyTrendBars } from '../components/dashboard/MonthlyTrendBars'
 import { TopCategoriesList } from '../components/dashboard/TopCategoriesList'
@@ -83,7 +88,11 @@ import {
   fetchReadLedgerDetail,
   fetchReadLedgers,
   fetchWorkspaceAnalytics,
+  fetchWorkspaceLedgerCounts,
+  type WorkspaceAccount,
   type WorkspaceAnalytics,
+  type WorkspaceLedgerCounts,
+  type WorkspaceTransaction,
   fetchProfileMe,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
@@ -106,6 +115,7 @@ import {
   NAV_GROUPS,
   OpsDevicesPanel,
   TagsPanel,
+  TransactionList,
   TransactionsPanel,
   accountDefaults,
   canManageLedger,
@@ -276,6 +286,31 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [tags, setTags] = useState<WorkspaceTag[]>([])
   const [analyticsData, setAnalyticsData] = useState<WorkspaceAnalytics | null>(null)
   const [analyticsIncomeRanks, setAnalyticsIncomeRanks] = useState<WorkspaceAnalytics['category_ranks']>([])
+  // 首页 Hero 支持 月/年/汇总 三个视角切换：预先一次性把三个 scope 拉回来，
+  // 切换视角只在前端改 state，不再发请求。
+  const [currentMonthSummary, setCurrentMonthSummary] =
+    useState<WorkspaceAnalytics['summary'] | null>(null)
+  const [currentMonthSeries, setCurrentMonthSeries] = useState<
+    WorkspaceAnalytics['series']
+  >([])
+  const [currentYearSummary, setCurrentYearSummary] =
+    useState<WorkspaceAnalytics['summary'] | null>(null)
+  const [currentYearSeries, setCurrentYearSeries] = useState<
+    WorkspaceAnalytics['series']
+  >([])
+  const [allTimeSummary, setAllTimeSummary] =
+    useState<WorkspaceAnalytics['summary'] | null>(null)
+  const [allTimeSeries, setAllTimeSeries] = useState<
+    WorkspaceAnalytics['series']
+  >([])
+  // 账本级 counts（对齐 mobile `getCountsForLedger`）——首页 Hero "记账笔数 /
+  // 记账天数" 的权威来源，跟 analytics scope 没关系。
+  const [ledgerCounts, setLedgerCounts] = useState<WorkspaceLedgerCounts | null>(null)
+  // 本月支出分类排行（scope=month&metric=expense 的 category_ranks），给
+  // HomeMonthCategoryDonut 用。
+  const [currentMonthCategoryRanks, setCurrentMonthCategoryRanks] = useState<
+    WorkspaceAnalytics['category_ranks']
+  >([])
   const [profileMe, setProfileMe] = useState<ProfileMe | null>(null)
   const [profileDisplayName, setProfileDisplayName] = useState('')
   const [adminUsers, setAdminUsers] = useState<UserAdmin[]>([])
@@ -288,6 +323,21 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
+  // 标签详情弹窗：点击标签卡片时打开，内部用 TransactionList 无限滚动加载
+  // 该标签关联的交易。
+  const [tagDetail, setTagDetail] = useState<ReadTag | null>(null)
+  const [tagDetailTransactions, setTagDetailTransactions] = useState<WorkspaceTransaction[]>([])
+  const [tagDetailTotal, setTagDetailTotal] = useState(0)
+  const [tagDetailLoading, setTagDetailLoading] = useState(false)
+  const [tagDetailOffset, setTagDetailOffset] = useState(0)
+  const TAG_DETAIL_PAGE_SIZE = 20
+  // 账户详情弹窗：点击账户卡片（资产页）时打开。
+  const [accountDetail, setAccountDetail] = useState<ReadAccount | null>(null)
+  const [accountDetailTransactions, setAccountDetailTransactions] = useState<WorkspaceTransaction[]>([])
+  const [accountDetailTotal, setAccountDetailTotal] = useState(0)
+  const [accountDetailLoading, setAccountDetailLoading] = useState(false)
+  const [accountDetailOffset, setAccountDetailOffset] = useState(0)
+  const ACCOUNT_DETAIL_PAGE_SIZE = 20
 
   const [listUserFilter, setListUserFilter] = useState('__all__')
   const [listQuery, setListQuery] = useState('')
@@ -398,8 +448,17 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     () => visibleNavGroups.find((group) => group.key === 'bookkeeping')?.items || [],
     [visibleNavGroups]
   )
+  // "..." 菜单里只留 admin 组（用户管理）；settings 那组迁到右上角头像下拉。
   const headerMoreGroups = useMemo(
-    () => visibleNavGroups.filter((group) => group.key !== 'bookkeeping'),
+    () =>
+      visibleNavGroups.filter(
+        (group) => group.key !== 'bookkeeping' && group.key !== 'settings'
+      ),
+    [visibleNavGroups]
+  )
+  // 头像下拉里展示的设置组（个人资料 / 健康 / 设备）。
+  const avatarMenuItems = useMemo(
+    () => visibleNavGroups.find((group) => group.key === 'settings')?.items || [],
     [visibleNavGroups]
   )
   const moreMenuActive = useMemo(
@@ -481,16 +540,25 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       return
     }
 
-    // Overview 页：需要 accounts（资产构成饼图） + 最近交易（最近列表）。
-    // 不等待图表 analytics 拉数（有单独 effect），这里只收集表数据。
+    // Overview / 首页：交易按当前账本筛，账户 / 标签是用户级（所有账本共享同
+    // 一套），不跟账本 scope 绑定。
     if (section === 'overview') {
-      const [txPageResult, accountRows] = await Promise.all([
-        fetchWorkspaceTransactions(token, { limit: 10 }),
-        fetchWorkspaceAccounts(token, { limit: 500 })
+      const [txPageResult, accountRows, tagRows] = await Promise.all([
+        fetchWorkspaceTransactions(token, {
+          ledgerId: ledgerId || undefined,
+          limit: 10
+        }),
+        fetchWorkspaceAccounts(token, {
+          limit: 500
+        }),
+        fetchWorkspaceTags(token, {
+          limit: 500
+        })
       ])
       setTransactions(txPageResult.items)
       setTxTotal(txPageResult.total)
       setAccounts(accountRows)
+      setTags(tagRows)
       return
     }
 
@@ -604,6 +672,11 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       ])
       setAdminHealth(health)
       setAdminOverview(overview)
+      return
+    }
+
+    if (section === 'settings-profile') {
+      await loadProfile()
       return
     }
 
@@ -1004,6 +1077,51 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       await Promise.all([refreshCurrent(), loadProfile()])
     } catch (err) {
       setErrorNotice(renderError(err))
+    }
+  }
+
+  /** 拉一页标签详情的交易。后端 q 参数会同时 fuzzy 匹配 tags 字段（见 read.py
+   *  list_workspace_transactions 的 searchable 拼接），标签名足够独特时
+   *  够用；若出现重名再补专用 tag 过滤。 */
+  const loadTagDetailPage = async (tagName: string, offset: number) => {
+    setTagDetailLoading(true)
+    try {
+      const page = await fetchWorkspaceTransactions(token, {
+        q: tagName,
+        limit: TAG_DETAIL_PAGE_SIZE,
+        offset
+      })
+      setTagDetailTransactions((prev) =>
+        offset === 0 ? page.items : [...prev, ...page.items]
+      )
+      setTagDetailTotal(page.total)
+      setTagDetailOffset(offset + page.items.length)
+    } catch (err) {
+      setErrorNotice(renderError(err))
+    } finally {
+      setTagDetailLoading(false)
+    }
+  }
+
+  /** 拉一页账户详情的交易。后端的 `account_name` 专门做精确账户过滤，比
+   *  `q` 关键词靠谱（避免账户名 "现金" 恰好也是某条备注的 substring）。 */
+  const loadAccountDetailPage = async (accountName: string, offset: number) => {
+    setAccountDetailLoading(true)
+    try {
+      const page = await fetchWorkspaceTransactions(token, {
+        accountName,
+        limit: ACCOUNT_DETAIL_PAGE_SIZE,
+        offset
+      })
+      setAccountDetailTransactions((prev) =>
+        offset === 0 ? page.items : [...prev, ...page.items]
+      )
+      setAccountDetailTotal(page.total)
+      setAccountDetailOffset(offset + page.items.length)
+    } catch (err) {
+      setErrorNotice(renderError(err))
+    } finally {
+      setAccountDetailLoading(false)
     }
   }
 
@@ -1612,7 +1730,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         // 用 scope=year 覆盖整年数据，避免当月为空时 Top 分类/趋势图空白；
         // ledgerId 传 active 账本以缩小范围，用户在 header 切账本时同步刷新。
         // 支出/收入 Top 各一轮查询（backend 按 metric 过滤 category_ranks）。
-        const [yearlyExpense, yearlyIncome] = await Promise.all([
+        // 本月 / 上月各一次 scope=month（period=YYYY-MM），避免跨时区分桶误差。
+        const now = new Date()
+        const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+        const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+        const prevPeriod = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
+        // 用 allSettled 而不是 all：单个请求失败时其它请求的数据依然 set。
+        // 三视角预拉：month / year / all，加上 year 的 income metric（Top 5 收入）。
+        const results = await Promise.allSettled([
           fetchWorkspaceAnalytics(token, {
             scope: 'year',
             metric: 'expense',
@@ -1622,11 +1747,53 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             scope: 'year',
             metric: 'income',
             ledgerId: activeLedgerId || undefined
+          }),
+          fetchWorkspaceAnalytics(token, {
+            scope: 'month',
+            metric: 'expense',
+            period: currentPeriod,
+            ledgerId: activeLedgerId || undefined
+          }),
+          fetchWorkspaceAnalytics(token, {
+            scope: 'all',
+            metric: 'expense',
+            ledgerId: activeLedgerId || undefined
+          }),
+          fetchWorkspaceLedgerCounts(token, {
+            ledgerId: activeLedgerId || undefined
           })
         ])
-        if (!cancelled) {
-          setAnalyticsData(yearlyExpense)
-          setAnalyticsIncomeRanks(yearlyIncome.category_ranks || [])
+        if (cancelled) return
+        const [rYearExpense, rYearIncome, rMonthly, rAll, rCounts] = results
+        if (rYearExpense.status === 'fulfilled') {
+          setAnalyticsData(rYearExpense.value)
+          setCurrentYearSummary(rYearExpense.value.summary)
+          setCurrentYearSeries(rYearExpense.value.series || [])
+        }
+        if (rYearIncome.status === 'fulfilled') {
+          setAnalyticsIncomeRanks(rYearIncome.value.category_ranks || [])
+        }
+        if (rMonthly.status === 'fulfilled') {
+          setCurrentMonthSummary(rMonthly.value.summary)
+          setCurrentMonthSeries(rMonthly.value.series || [])
+          setCurrentMonthCategoryRanks(rMonthly.value.category_ranks || [])
+        }
+        if (rAll.status === 'fulfilled') {
+          setAllTimeSummary(rAll.value.summary)
+          setAllTimeSeries(rAll.value.series || [])
+        }
+        if (rCounts.status === 'fulfilled') {
+          setLedgerCounts(rCounts.value)
+        } else {
+          if (rYearExpense.status === 'fulfilled') {
+            const s = rYearExpense.value.summary
+            setLedgerCounts({
+              tx_count: s?.transaction_count ?? 0,
+              days_since_first_tx: s?.distinct_days ?? 0,
+              distinct_days: s?.distinct_days ?? 0,
+              first_tx_at: s?.first_tx_at ?? null
+            })
+          }
         }
       } catch (err) {
         // 静默降级：dashboard 空态已覆盖。
@@ -1643,6 +1810,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   useEffect(() => {
     setAnalyticsRefreshTick((v) => v + 1)
   }, [ledgers.length, transactions.length])
+
 
   // 每个 tag 的统计：笔数 / 支出 / 收入。服务端一次性按全账本全期汇总好直接
   // 放在 WorkspaceTag 上（tx_count / expense_total / income_total），不再
@@ -1672,7 +1840,17 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               <div className="flex h-14 items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
                   <img alt="蜜蜂记账" className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
-                  <p className="text-[15px] font-bold text-foreground">蜜蜂记账</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <p className="text-[15px] font-bold text-foreground">蜜蜂记账</p>
+                    {/* 版本号从 package.json 注入，发版时更新 apps/web/package.json
+                        的 version 字段即可；字号很小、弱化展示，不抢视觉焦点。 */}
+                    <span
+                      className="font-mono text-[10px] leading-none text-muted-foreground/70"
+                      title={`web v${__APP_VERSION__}`}
+                    >
+                      v{__APP_VERSION__}
+                    </span>
+                  </div>
                   {/* 账本切换器：常驻 header 左侧，全局控制 activeLedger。
                       需要账本上下文的分区（交易/账户/分类/标签/纵览）全部以它为准。 */}
                   {ledgers.length > 0 ? (
@@ -1735,80 +1913,169 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       </button>
                     )
                   })}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+                  {/* 只有当 headerMoreGroups 非空时才展示 "更多"。标签 / 设置
+                      / admin-users 之前都搬去头像下拉 + 底部 tab 了，desktop
+                      nav 里大多数时候这个 dropdown 为空，得把按钮本身也藏掉
+                      —— 否则点开是空菜单，视觉垃圾。 */}
+                  {headerMoreGroups.length > 0 ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
+                            moreMenuActive
+                              ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] text-foreground ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
+                              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                          }`}
+                          aria-label={t('shell.more')}
+                          type="button"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-60 rounded-xl border-border/60 bg-card/95 p-1.5">
+                        {headerMoreGroups.map((group, groupIndex) => (
+                          <div key={group.key}>
+                            {groupIndex > 0 ? <DropdownMenuSeparator /> : null}
+                            <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+                              {t(group.titleKey)}
+                            </DropdownMenuLabel>
+                            {group.items.map((item) => {
+                              const active = route.section === item.key
+                              return (
+                                <DropdownMenuItem
+                                  key={item.key}
+                                  className={`rounded-lg px-2.5 py-2 text-[12px] ${
+                                    active
+                                      ? 'bg-primary/10 text-primary'
+                                      : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                  }`}
+                                  onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
+                                >
+                                  {t(item.labelKey)}
+                                </DropdownMenuItem>
+                              )
+                            })}
+                          </div>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
+                </nav>
+
+                <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
+                  <LanguageToggle />
+                  <ThemeToggle />
+                  {/* 头像 hover 悬浮下拉：Radix 原生只支持 click，这里用 pure
+                      CSS group-hover + focus-within 组合，hover 进 avatar 包
+                      裹区就出面板，离开 400ms 后关（菜单面板顶部有空 buffer
+                      防止光标从头像移到菜单时闪烁关闭）。键盘 tab 聚焦也能出。
+                      分组：个人（资料 / 健康）+ 运维（设备）+ 操作（退出登录）。
+                      退出按钮从右上角彻底移走了。 */}
+                  {profileMe?.email ? (
+                    <div className="group relative" tabIndex={-1}>
                       <button
-                        className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
-                          moreMenuActive
-                            ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] text-foreground ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                            : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                        }`}
-                        aria-label={t('shell.more')}
                         type="button"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                        title={profileMe.display_name || profileMe.email}
                       >
-                        <MoreHorizontal className="h-4 w-4" />
+                        {profileMe.avatar_url ? (
+                          <img
+                            src={profileMe.avatar_url}
+                            alt=""
+                            className="h-8 w-8 rounded-full border border-border/40 object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-muted text-[11px] font-semibold text-muted-foreground">
+                            {profileMe.email.slice(0, 1).toUpperCase()}
+                          </div>
+                        )}
                       </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-60 rounded-xl border-border/60 bg-card/95 p-1.5">
-                      {headerMoreGroups.map((group, groupIndex) => (
-                        <div key={group.key}>
-                          {groupIndex > 0 ? <DropdownMenuSeparator /> : null}
-                          <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-                            {t(group.titleKey)}
-                          </DropdownMenuLabel>
-                          {group.items.map((item) => {
+                      {/* 悬浮面板 —— 默认透明不接收指针，hover/focus 状态打开 */}
+                      <div
+                        className="invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+                      >
+                        <div className="rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
+                          {/* 头部：用户身份 */}
+                          <div className="px-2 py-2">
+                            <div className="truncate text-[13px] font-semibold text-foreground">
+                              {profileMe.display_name || '蜜蜂用户'}
+                            </div>
+                            <div className="truncate text-[11px] font-normal text-muted-foreground">
+                              {profileMe.email}
+                            </div>
+                          </div>
+                          <div className="mx-1 h-px bg-border/60" />
+                          {/* 分组：按 avatarMenuItems 原来的顺序直出 —— 个人资料 /
+                              健康 / 设备。目前三个 item 混在一组足够，等未来项
+                              多了再拆子 section。 */}
+                          <div className="px-1 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                            账户
+                          </div>
+                          {avatarMenuItems.map((item) => {
                             const active = route.section === item.key
                             return (
-                              <DropdownMenuItem
+                              <button
                                 key={item.key}
-                                className={`rounded-lg px-2.5 py-2 text-[12px] ${
+                                type="button"
+                                className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                                   active
                                     ? 'bg-primary/10 text-primary'
                                     : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
                                 }`}
-                                onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
+                                onClick={() =>
+                                  onNavigate({
+                                    kind: 'app',
+                                    ledgerId: '',
+                                    section: item.key
+                                  })
+                                }
                               >
                                 {t(item.labelKey)}
-                              </DropdownMenuItem>
+                              </button>
                             )
                           })}
+                          {/* admin-users 从顶部 nav 搬进来，只对管理员显示。 */}
+                          {isAdminUser ? (
+                            <>
+                              <div className="mx-1 my-1 h-px bg-border/60" />
+                              <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                                管理
+                              </div>
+                              <button
+                                type="button"
+                                className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
+                                  route.section === 'admin-users'
+                                    ? 'bg-primary/10 text-primary'
+                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                }`}
+                                onClick={() =>
+                                  onNavigate({
+                                    kind: 'app',
+                                    ledgerId: '',
+                                    section: 'admin-users'
+                                  })
+                                }
+                              >
+                                {t('nav.users')}
+                              </button>
+                            </>
+                          ) : null}
+                          <div className="mx-1 my-1 h-px bg-border/60" />
+                          <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                            操作
+                          </div>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-destructive hover:bg-destructive/10"
+                            onClick={onLogout}
+                          >
+                            <LogOut className="h-3.5 w-3.5" />
+                            {t('shell.logout')}
+                          </button>
                         </div>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </nav>
-
-                <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
-                  {/* 登录邮箱 + 头像；点头像打开菜单看完整邮箱/profile。 */}
-                  {/* 只展示头像（hover 时 title 提示邮箱），不再用文字占横向空间 */}
-                  {profileMe?.email ? (
-                    <Tooltip content={profileMe.display_name || profileMe.email}>
-                      {profileMe.avatar_url ? (
-                        <img
-                          src={profileMe.avatar_url}
-                          alt=""
-                          className="h-8 w-8 shrink-0 rounded-full border border-border/40 object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/40 bg-muted text-[11px] font-semibold text-muted-foreground">
-                          {profileMe.email.slice(0, 1).toUpperCase()}
-                        </div>
-                      )}
-                    </Tooltip>
+                      </div>
+                    </div>
                   ) : null}
-                  <LanguageToggle />
-                  <ThemeToggle />
-                  <Tooltip content={t('shell.logout')}>
-                    <Button
-                      aria-label={t('shell.logout')}
-                      className="h-9 w-9 bg-transparent"
-                      size="icon"
-                      variant="ghost"
-                      onClick={onLogout}
-                    >
-                      <LogOut className="h-4 w-4" />
-                    </Button>
-                  </Tooltip>
                 </div>
               </div>
 
@@ -1832,85 +2099,56 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 </div>
               ) : null}
 
-              <div className="border-t border-border/50 py-2 md:hidden">
-                <div className="flex items-center gap-2">
-                  <div className="scrollbar flex-1 overflow-x-auto">
-                    <div className="inline-flex min-w-max items-center gap-1 pr-1">
-                      {headerCoreItems.map((item) => {
-                        const active = route.section === item.key
-                        return (
-                          <button
-                            key={item.key}
-                            className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
-                              active
-                                ? 'bg-primary/12 text-primary ring-1 ring-primary/20'
-                                : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
-                            }`}
-                            type="button"
-                            onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
-                          >
-                            {t(item.labelKey)}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button aria-label={t('shell.more')} className="h-8 w-8" size="icon" variant="outline">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56 rounded-xl border-border/60 bg-card/95 p-1.5">
-                      {headerMoreGroups.map((group, groupIndex) => (
-                        <div key={group.key}>
-                          {groupIndex > 0 ? <DropdownMenuSeparator /> : null}
-                          <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-                            {t(group.titleKey)}
-                          </DropdownMenuLabel>
-                          {group.items.map((item) => {
-                            const active = route.section === item.key
-                            return (
-                              <DropdownMenuItem
-                                key={item.key}
-                                className={`rounded-lg px-2.5 py-2 text-[12px] ${
-                                  active
-                                    ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
-                                }`}
-                                onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
-                              >
-                                {t(item.labelKey)}
-                              </DropdownMenuItem>
-                            )
-                          })}
-                        </div>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  {ledgers.length === 0 ? (
-                    <Button
-                      className="h-8 px-3 text-xs"
-                      size="sm"
-                      onClick={() => {
-                        onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
-                        setCreateLedgerDialogOpen(true)
-                      }}
-                    >
-                      {t('shell.createLedger')}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
+              {/* 移动端顶部不再塞导航，导航走底部 tab bar（见 <MobileBottomNav />） */}
             </header>
           </div>
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-4 pb-20 md:pb-0">
           {route.section === 'overview' ? (
             <div className="space-y-4">
-              <OverviewHero ledgers={ledgers} monthSeries={analyticsData?.series} />
-              <OverviewKeyMetrics summary={analyticsData?.summary} />
+              <HomeHero
+                ledgers={ledgers}
+                currentLedgerId={activeLedgerId}
+                monthSummary={currentMonthSummary || undefined}
+                monthSeries={currentMonthSeries}
+                yearSummary={currentYearSummary || undefined}
+                yearSeries={currentYearSeries}
+                allSummary={allTimeSummary || undefined}
+                allSeries={allTimeSeries}
+                ledgerCounts={ledgerCounts || undefined}
+              />
+
+              <HomeHabitStats
+                monthSummary={currentMonthSummary || undefined}
+                ledgerCounts={ledgerCounts || undefined}
+                currency={
+                  ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
+                }
+              />
+
+              {/* 扩展分析：Web 端独有的加强仪表，不属于 mobile 首页对标范围。 */}
+              <div className="flex items-center gap-2 pt-2">
+                <span className="h-px flex-1 bg-border/60" aria-hidden />
+                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  扩展分析
+                </span>
+                <span className="h-px flex-1 bg-border/60" aria-hidden />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+                <HomeMonthCategoryDonut
+                  ranks={currentMonthCategoryRanks}
+                  currency={
+                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
+                  }
+                />
+                <HomeYearHeatmap
+                  yearSeries={currentYearSeries}
+                  currency={
+                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
+                  }
+                />
+              </div>
               <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
                 <AssetCompositionDonut accounts={accounts} />
                 <MonthlyTrendBars data={analyticsData?.series || []} />
@@ -1935,56 +2173,57 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   }}
                 />
               </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <HomeTopTags
+                  tags={tags}
+                  currency={
+                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
+                  }
+                  onClickTag={(name) => {
+                    setListQuery(name)
+                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
+                  }}
+                />
+                <HomeTopAccounts
+                  accounts={accounts as WorkspaceAccount[]}
+                  currency={
+                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
+                  }
+                />
+              </div>
             </div>
           ) : null}
 
           {route.section === 'transactions' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardContent className="pt-4">
-                  <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                    {isAdminUser ? (
-                      <Select value={listUserFilter} onValueChange={setListUserFilter}>
-                        <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                          <SelectValue placeholder={t('shell.userFilter')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
-                          {adminUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.email}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                    {showTxFilter ? (
-                      <div className="relative">
-                        <Tooltip content={t('shell.filter.title')}>
-                          <Button
-                            aria-label={t('shell.filter.title')}
-                            className="h-9 w-9 bg-muted"
-                            size="icon"
-                            variant="outline"
-                            onClick={onOpenTxFilter}
-                          >
-                            <SlidersHorizontal className="h-4 w-4" />
-                          </Button>
-                        </Tooltip>
-                        {txFilterActiveCount > 0 ? (
-                          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
-                        ) : null}
-                      </div>
+            <div className="space-y-3">
+              {/* 交易搜索简化：keyword + 可选 filter 按钮，去掉 Card 包裹与
+                  admin 用户选择（admin 场景走单独页，普通用户不需要暴露）。 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  className="h-9 w-[260px] bg-muted lg:w-[360px]"
+                  placeholder={t('shell.placeholder.keyword')}
+                  value={listQuery}
+                  onChange={(event) => setListQuery(event.target.value)}
+                />
+                {showTxFilter ? (
+                  <div className="relative">
+                    <Tooltip content={t('shell.filter.title')}>
+                      <Button
+                        aria-label={t('shell.filter.title')}
+                        className="h-9 w-9 bg-muted"
+                        size="icon"
+                        variant="outline"
+                        onClick={onOpenTxFilter}
+                      >
+                        <SlidersHorizontal className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                    {txFilterActiveCount > 0 ? (
+                      <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
                     ) : null}
                   </div>
-                </CardContent>
-              </Card>
+                ) : null}
+              </div>
               <TransactionsPanel
                 form={txForm}
                 rows={transactions}
@@ -2004,8 +2243,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 }}
                 canWrite={Boolean(canWriteTx)}
                 dictionariesLoading={txDictionaryLoading}
-                showCreatorColumn={isAdminUser}
-                showLedgerColumn
                 onFormChange={setTxForm}
                 onSave={onSaveTransaction}
                 onReset={() => {
@@ -2058,178 +2295,102 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           ) : null}
 
           {route.section === 'accounts' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardContent className="pt-4">
-                  <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                    {isAdminUser ? (
-                      <Select value={listUserFilter} onValueChange={setListUserFilter}>
-                        <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                          <SelectValue placeholder={t('shell.userFilter')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
-                          {adminUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.email}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
-              <AccountsPanel
-                form={accountForm}
-                rows={accounts}
-                canManage
-                showCreatorColumn={isAdminUser}
-                onFormChange={setAccountForm}
-                onSave={onSaveAccount}
-                onReset={() => setAccountForm(accountDefaults())}
-                onEdit={(row) => {
-                  setAccountForm({
-                    editingId: row.id,
-                    editingOwnerUserId: row.created_by_user_id || '',
-                    name: row.name,
-                    account_type: row.account_type || '',
-                    currency: row.currency || '',
-                    initial_balance: String(row.initial_balance ?? 0)
-                  })
-                }}
-              />
-            </div>
+            <AccountsPanel
+              form={accountForm}
+              rows={accounts}
+              canManage
+              onFormChange={setAccountForm}
+              onSave={onSaveAccount}
+              onReset={() => setAccountForm(accountDefaults())}
+              onEdit={(row) => {
+                setAccountForm({
+                  editingId: row.id,
+                  editingOwnerUserId: row.created_by_user_id || '',
+                  name: row.name,
+                  account_type: row.account_type || '',
+                  currency: row.currency || '',
+                  initial_balance: String(row.initial_balance ?? 0)
+                })
+              }}
+              onClickAccount={(row) => {
+                setAccountDetail(row)
+                setAccountDetailTransactions([])
+                setAccountDetailTotal(0)
+                setAccountDetailOffset(0)
+                void loadAccountDetailPage(row.name, 0)
+              }}
+            />
           ) : null}
 
           {route.section === 'categories' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardContent className="pt-4">
-                  <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                    {isAdminUser ? (
-                      <Select value={listUserFilter} onValueChange={setListUserFilter}>
-                        <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                          <SelectValue placeholder={t('shell.userFilter')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
-                          {adminUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.email}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
-              <CategoriesPanel
-                form={categoryForm}
-                rows={categories}
-                iconPreviewUrlByFileId={categoryIconPreviewByFileId}
-                canManage
-                showCreatorColumn={isAdminUser}
-                onFormChange={setCategoryForm}
-                onSave={onSaveCategory}
-                onReset={() => setCategoryForm(categoryDefaults())}
-                onEdit={(row) => {
-                  setCategoryForm({
-                    editingId: row.id,
-                    editingOwnerUserId: row.created_by_user_id || '',
-                    name: row.name,
-                    kind: row.kind,
-                    level: String(row.level ?? ''),
-                    sort_order: String(row.sort_order ?? ''),
-                    icon: row.icon || '',
-                    icon_type: row.icon_type || 'material',
-                    custom_icon_path: row.custom_icon_path || '',
-                    icon_cloud_file_id: row.icon_cloud_file_id || '',
-                    icon_cloud_sha256: row.icon_cloud_sha256 || '',
-                    parent_name: row.parent_name || ''
+            <CategoriesPanel
+              form={categoryForm}
+              rows={categories}
+              iconPreviewUrlByFileId={categoryIconPreviewByFileId}
+              canManage
+              onFormChange={setCategoryForm}
+              onSave={onSaveCategory}
+              onReset={() => setCategoryForm(categoryDefaults())}
+              onEdit={(row) => {
+                setCategoryForm({
+                  editingId: row.id,
+                  editingOwnerUserId: row.created_by_user_id || '',
+                  name: row.name,
+                  kind: row.kind,
+                  level: String(row.level ?? ''),
+                  sort_order: String(row.sort_order ?? ''),
+                  icon: row.icon || '',
+                  icon_type: row.icon_type || 'material',
+                  custom_icon_path: row.custom_icon_path || '',
+                  icon_cloud_file_id: row.icon_cloud_file_id || '',
+                  icon_cloud_sha256: row.icon_cloud_sha256 || '',
+                  parent_name: row.parent_name || ''
+                })
+              }}
+              onUploadIcon={async (file) => {
+                if (!activeLedgerId) {
+                  setErrorNotice(t('accounts.error.ledgerRequired'))
+                  return null
+                }
+                try {
+                  const out = await uploadAttachment(token, {
+                    ledger_id: activeLedgerId,
+                    file
                   })
-                }}
-                onUploadIcon={async (file) => {
-                  if (!activeLedgerId) {
-                    setErrorNotice(t('accounts.error.ledgerRequired'))
-                    return null
-                  }
-                  try {
-                    const out = await uploadAttachment(token, {
-                      ledger_id: activeLedgerId,
-                      file
-                    })
-                    return { fileId: out.file_id, sha256: out.sha256 }
-                  } catch (err) {
-                    setErrorNotice(renderError(err))
-                    return null
-                  }
-                }}
-              />
-            </div>
+                  return { fileId: out.file_id, sha256: out.sha256 }
+                } catch (err) {
+                  setErrorNotice(renderError(err))
+                  return null
+                }
+              }}
+            />
           ) : null}
 
           {route.section === 'tags' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardContent className="pt-4">
-                  <div className="bc-toolbar flex flex-wrap items-center gap-3">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                    {isAdminUser ? (
-                      <Select value={listUserFilter} onValueChange={setListUserFilter}>
-                        <SelectTrigger className="h-9 w-[240px] bg-muted shadow-sm">
-                          <SelectValue placeholder={t('shell.userFilter')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__all__">{t('shell.allUsers')}</SelectItem>
-                          {adminUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.email}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
-              <TagsPanel
-                form={tagForm}
-                rows={tags}
-                canManage
-                showCreatorColumn={isAdminUser}
-                statsById={tagStatsById}
-                onFormChange={setTagForm}
-                onSave={onSaveTag}
-                onReset={() => setTagForm(tagDefaults())}
-                onEdit={(row) => {
-                  setTagForm({
-                    editingId: row.id,
-                    editingOwnerUserId: row.created_by_user_id || '',
-                    name: row.name,
-                    color: row.color || '#F59E0B'
-                  })
-                }}
-              />
-            </div>
+            <TagsPanel
+              form={tagForm}
+              rows={tags}
+              canManage
+              statsById={tagStatsById}
+              onFormChange={setTagForm}
+              onSave={onSaveTag}
+              onReset={() => setTagForm(tagDefaults())}
+              onEdit={(row) => {
+                setTagForm({
+                  editingId: row.id,
+                  editingOwnerUserId: row.created_by_user_id || '',
+                  name: row.name,
+                  color: row.color || '#F59E0B'
+                })
+              }}
+              onClickTag={(row) => {
+                setTagDetail(row)
+                setTagDetailTransactions([])
+                setTagDetailTotal(0)
+                setTagDetailOffset(0)
+                void loadTagDetailPage(row.name, 0)
+              }}
+            />
           ) : null}
 
           {route.section === 'settings-devices' ? (
@@ -2274,54 +2435,58 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             </div>
           ) : null}
 
+          {route.section === 'settings-profile' ? (
+            <div className="space-y-4">
+              <Card className="bc-panel overflow-hidden">
+                <div className="relative">
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/20 via-primary/5 to-transparent" />
+                  <CardContent className="relative space-y-5 p-6">
+                    <div className="flex flex-wrap items-center gap-4">
+                      {profileMe?.avatar_url ? (
+                        <img
+                          alt={profileDisplayLabel}
+                          className="h-16 w-16 rounded-full border-2 border-primary/30 object-cover shadow-sm"
+                          src={profileMe.avatar_url}
+                        />
+                      ) : (
+                        <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-primary/30 bg-muted text-base font-semibold text-muted-foreground">
+                          {profileInitial}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-lg font-semibold">{profileDisplayLabel}</p>
+                        <p className="truncate text-xs text-muted-foreground">{profileMe?.email || '-'}</p>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                      <div className="space-y-1">
+                        <Label>{t('profile.displayName')}</Label>
+                        <Input
+                          maxLength={32}
+                          placeholder={t('profile.displayNamePlaceholder')}
+                          value={profileDisplayName}
+                          onChange={(event) => setProfileDisplayName(event.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          className="h-9"
+                          onClick={onSaveProfileDisplayName}
+                          disabled={!profileDisplayName.trim() || profileDisplayName.trim() === (profileMe?.display_name || '').trim()}
+                        >
+                          {t('profile.save')}
+                        </Button>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t('profile.avatarManagedByApp')}</p>
+                  </CardContent>
+                </div>
+              </Card>
+            </div>
+          ) : null}
+
           {route.section === 'settings-health' ? (
             <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('profile.title')}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    {profileMe?.avatar_url ? (
-                      <img
-                        alt={profileDisplayLabel}
-                        className="h-12 w-12 rounded-full border border-border/60 object-cover"
-                        src={profileMe.avatar_url}
-                      />
-                    ) : (
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border/60 bg-muted text-sm font-semibold text-muted-foreground">
-                        {profileInitial}
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{profileDisplayLabel}</p>
-                      <p className="truncate text-xs text-muted-foreground">{profileMe?.email || '-'}</p>
-                    </div>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                    <div className="space-y-1">
-                      <Label>{t('profile.displayName')}</Label>
-                      <Input
-                        maxLength={32}
-                        placeholder={t('profile.displayNamePlaceholder')}
-                        value={profileDisplayName}
-                        onChange={(event) => setProfileDisplayName(event.target.value)}
-                      />
-                    </div>
-                    <div className="flex items-end">
-                      <Button
-                        className="h-9"
-                        onClick={onSaveProfileDisplayName}
-                        disabled={!profileDisplayName.trim() || profileDisplayName.trim() === (profileMe?.display_name || '').trim()}
-                      >
-                        {t('profile.save')}
-                      </Button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{t('profile.avatarManagedByApp')}</p>
-                </CardContent>
-              </Card>
-
               <Card className="bc-panel">
                 <CardHeader className="flex flex-row items-center justify-between gap-3">
                   <CardTitle>{t('ops.health.title')}</CardTitle>
@@ -2442,7 +2607,201 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             )
           ) : null}
         </div>
+
+        {/* 移动端底部 tab bar（参考 PanWatch），桌面端不渲染。 */}
+        <MobileBottomNav
+          activeSection={route.section}
+          isAdmin={isAdminUser}
+          onNavigate={(section) =>
+            onNavigate({ kind: 'app', ledgerId: '', section })
+          }
+          onLogout={onLogout}
+        />
       </AppLayout>
+
+      <Dialog
+        open={Boolean(tagDetail)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTagDetail(null)
+            setTagDetailTransactions([])
+            setTagDetailTotal(0)
+            setTagDetailOffset(0)
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-6 py-4">
+            <DialogTitle className="flex items-center gap-2">
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-md text-xs font-bold text-white"
+                style={{ background: tagDetail?.color || '#94a3b8' }}
+              >
+                #
+              </span>
+              <span className="truncate">{tagDetail?.name || ''}</span>
+            </DialogTitle>
+          </DialogHeader>
+          {tagDetail ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              {/* 统计摘要 */}
+              {(() => {
+                const stats = tagStatsById[tagDetail.id]
+                if (!stats) return null
+                return (
+                  <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        交易笔数
+                      </div>
+                      <div className="mt-0.5 font-mono text-xl font-bold tabular-nums">
+                        {stats.count}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        累计支出
+                      </div>
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                        {stats.expense.toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        累计收入
+                      </div>
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {stats.income.toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <TransactionList
+                  items={tagDetailTransactions}
+                  tags={tags}
+                  variant="compact"
+                  loading={tagDetailLoading}
+                  hasMore={tagDetailTransactions.length < tagDetailTotal}
+                  onLoadMore={() => {
+                    if (!tagDetailLoading && tagDetail) {
+                      void loadTagDetailPage(tagDetail.name, tagDetailOffset)
+                    }
+                  }}
+                  onPreviewAttachment={onPreviewTxAttachment}
+                  resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
+                  emptyTitle="该标签下还没有交易"
+                  emptyDescription="新建一笔带此标签的交易就会出现在这里。"
+                />
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(accountDetail)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAccountDetail(null)
+            setAccountDetailTransactions([])
+            setAccountDetailTotal(0)
+            setAccountDetailOffset(0)
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-6 py-4">
+            <DialogTitle className="truncate">
+              {accountDetail?.name || ''}
+            </DialogTitle>
+          </DialogHeader>
+          {accountDetail ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              {/* 统计摘要（优先用 server 返回的 balance/income/expense，无则跳过） */}
+              {(() => {
+                const a = accountDetail as ReadAccount & {
+                  tx_count?: number | null
+                  income_total?: number | null
+                  expense_total?: number | null
+                  balance?: number | null
+                }
+                const hasServerStats = typeof a.balance === 'number'
+                return (
+                  <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        当前余额
+                      </div>
+                      <div className={`mt-0.5 font-mono text-base font-bold tabular-nums ${
+                        (hasServerStats ? a.balance! : a.initial_balance ?? 0) >= 0
+                          ? 'text-foreground'
+                          : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {(hasServerStats
+                          ? a.balance!
+                          : a.initial_balance ?? 0
+                        ).toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        累计收入
+                      </div>
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {(a.income_total ?? 0).toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        累计支出
+                      </div>
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                        {(a.expense_total ?? 0).toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <TransactionList
+                  items={accountDetailTransactions}
+                  tags={tags}
+                  variant="compact"
+                  loading={accountDetailLoading}
+                  hasMore={accountDetailTransactions.length < accountDetailTotal}
+                  onLoadMore={() => {
+                    if (!accountDetailLoading && accountDetail) {
+                      void loadAccountDetailPage(accountDetail.name, accountDetailOffset)
+                    }
+                  }}
+                  onPreviewAttachment={onPreviewTxAttachment}
+                  resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
+                  emptyTitle="该账户下还没有交易"
+                />
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={txFilterOpen} onOpenChange={setTxFilterOpen}>
         <DialogContent className="max-w-md">

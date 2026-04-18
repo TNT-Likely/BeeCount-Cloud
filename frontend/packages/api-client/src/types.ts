@@ -160,6 +160,10 @@ export type WorkspaceAccount = ReadAccount & {
   ledger_name: string | null
   created_by_user_id: string | null
   created_by_email: string | null
+  tx_count?: number | null
+  income_total?: number | null
+  expense_total?: number | null
+  balance?: number | null
 }
 
 export type WorkspaceCategory = ReadCategory & {
@@ -183,11 +187,23 @@ export type WorkspaceTag = ReadTag & {
 export type AnalyticsScope = 'month' | 'year' | 'all'
 export type AnalyticsMetric = 'expense' | 'income' | 'balance'
 
+export type WorkspaceLedgerCounts = {
+  tx_count: number
+  /** 首次记账到今天（含当天）。对齐 mobile `getCountsForLedger` 的 dayCount。 */
+  days_since_first_tx: number
+  /** 有数据的日期数（distinct DATE）。备用字段，首页不用。 */
+  distinct_days: number
+  first_tx_at?: string | null
+}
+
 export type WorkspaceAnalyticsSummary = {
   transaction_count: number
   income_total: number
   expense_total: number
   balance: number
+  distinct_days?: number
+  first_tx_at?: string | null
+  last_tx_at?: string | null
 }
 
 export type WorkspaceAnalyticsSeriesItem = {

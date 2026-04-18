@@ -36,7 +36,7 @@ const en = {
   'nav.group.bookkeeping': 'Bookkeeping',
   'nav.group.settings': 'Settings',
   'nav.group.admin': 'Admin',
-  'nav.overview': 'Overview',
+  'nav.overview': 'Home',
   'nav.analytics': 'Analytics',
   'nav.transactions': 'Transactions',
   'nav.accounts': 'Accounts',

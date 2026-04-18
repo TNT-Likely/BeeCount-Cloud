@@ -365,7 +365,13 @@ class WorkspaceTransactionPageOut(BaseModel):
 
 
 class WorkspaceAccountOut(ReadAccountOut):
-    pass
+    # 跨 workspace 对该账户聚合后的统计，列表接口一次性给，无需前端再聚合。
+    # balance 包含 initialBalance + (income - expense)；income/expense 只统计本
+    # 账户作为 accountId 的收支条目（不含 transfer 的对手方）。
+    tx_count: int | None = None
+    income_total: float | None = None
+    expense_total: float | None = None
+    balance: float | None = None
 
 
 class WorkspaceCategoryOut(ReadCategoryOut):
@@ -384,11 +390,29 @@ AnalyticsScope = Literal["month", "year", "all"]
 AnalyticsMetric = Literal["expense", "income", "balance"]
 
 
+class WorkspaceLedgerCountsOut(BaseModel):
+    """单账本全量记账统计，对齐 mobile `getCountsForLedger`：笔数 + 首次记账到
+    今天的天数（`julianday(now) - julianday(MIN(happened_at)) + 1`）+ 有数据的天数
+    （distinct DATE，备用）。首页"记账笔数 / 记账天数"读这里，不依赖 analytics scope。"""
+
+    tx_count: int
+    # "记账天数"：从首次记账那天算到今天（含当天），对应 mobile 的 dayCount。
+    days_since_first_tx: int
+    # 有数据的天数：只计入有 tx 的日期数，保留给别处使用。
+    distinct_days: int
+    first_tx_at: datetime | None = None
+
+
 class WorkspaceAnalyticsSummaryOut(BaseModel):
     transaction_count: int
     income_total: float
     expense_total: float
     balance: float
+    # 记账天数：distinct(DATE(happened_at))。前端首页用来做"已记账 X 天"卡片。
+    distinct_days: int = 0
+    # 首次记账时间：min(happened_at)。配合 distinct_days 算"持续记账时长"。
+    first_tx_at: datetime | None = None
+    last_tx_at: datetime | None = None
 
 
 class WorkspaceAnalyticsSeriesItemOut(BaseModel):
