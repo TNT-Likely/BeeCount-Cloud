@@ -1,36 +1,23 @@
 services:
   beecount-cloud:
     image: sunxiao0721/beecount-cloud:latest
-    # 本地构建(贡献者开发用)取消下面注释、注释掉 image 行:
+    # 贡献者本地开发:注释掉 image、启用 build
     # build:
     #   context: .
     #   dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      # SQLite 默认:数据文件落在 volume 的 /data/beecount.db。
-      # 切换 PostgreSQL 使用 docker-compose.postgres.yml 叠加。
-      DATABASE_URL: sqlite:////data/beecount.db
-      # 生产部署务必改成 32+ bytes 的强随机值,否则服务启动会拒绝运行。
+      # 必须改成 32+ bytes 随机串,否则服务启动会拒绝运行。
       JWT_SECRET: change-me-in-production-at-least-32-bytes
-      # CORS 白名单,逗号分隔。前后端同域部署时只填自身即可。
+      # 非同域部署时改成对外可访问的地址(逗号分隔多个)。
       CORS_ORIGINS: http://localhost:8080
-      WEB_STATIC_DIR: /app/static
-      # 所有持久化数据统一放 /data(对应 beecount_data volume),备份 / 附件
-      # /头像都走同一份 volume,一次快照就能全量备份。
-      BACKUP_STORAGE_DIR: /data/backups
-      ATTACHMENT_STORAGE_DIR: /data/attachments
-      ALLOW_APP_RW_SCOPES: "true"
-      TZ: Asia/Shanghai
+      # 其他变量(DATABASE_URL / BACKUP_STORAGE_DIR / ATTACHMENT_STORAGE_DIR /
+      # ALLOW_APP_RW_SCOPES)都有镜像内置的生产默认值,按需覆盖即可。
     ports:
       - "8080:8080"
     volumes:
+      # 一个 volume 装全部数据:SQLite DB + 附件 + 备份归档 + 头像。
       - beecount_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsSL http://127.0.0.1:8080/ready || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
 volumes:
   beecount_data:

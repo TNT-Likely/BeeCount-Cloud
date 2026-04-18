@@ -68,26 +68,15 @@ services:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
     environment:
-      DATABASE_URL: sqlite:////data/beecount.db
-      # CHANGE THIS — must be 32+ random bytes in production
+      # Required — must be 32+ random bytes
       JWT_SECRET: change-me-in-production-at-least-32-bytes
+      # If not same-origin, set to your public URL(s), comma-separated
       CORS_ORIGINS: http://localhost:8080
-      # All data (DB / attachments / backups / avatars) lives under /data
-      # so a single volume snapshot captures everything.
-      BACKUP_STORAGE_DIR: /data/backups
-      ATTACHMENT_STORAGE_DIR: /data/attachments
-      ALLOW_APP_RW_SCOPES: "true"
-      TZ: Asia/Shanghai
     ports:
       - "8080:8080"
     volumes:
+      # One volume holds everything: DB + attachments + backups + avatars
       - beecount_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsSL http://127.0.0.1:8080/ready || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
 volumes:
   beecount_data:
@@ -129,7 +118,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 
 ## ⚙️ Configuration
 
-Most users only need to set `JWT_SECRET` and `CORS_ORIGINS`. Full reference:
+Most users only need to set `JWT_SECRET` and `CORS_ORIGINS` — the rest have production-friendly defaults baked into the image (`/data/*` paths + `ALLOW_APP_RW_SCOPES=true`). Full reference:
 
 | Variable | Default | Description |
 |----------|---------|-------------|

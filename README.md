@@ -68,25 +68,15 @@ services:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
     environment:
-      DATABASE_URL: sqlite:////data/beecount.db
-      # 生产部署务必改成 32+ bytes 的强随机值
+      # 必填:32+ bytes 随机串
       JWT_SECRET: change-me-in-production-at-least-32-bytes
+      # 非同域部署时改成对外可访问地址(逗号分隔多个)
       CORS_ORIGINS: http://localhost:8080
-      # 所有数据(DB / 附件 / 备份 / 头像)统一放 /data,一次 volume 快照全量备份
-      BACKUP_STORAGE_DIR: /data/backups
-      ATTACHMENT_STORAGE_DIR: /data/attachments
-      ALLOW_APP_RW_SCOPES: "true"
-      TZ: Asia/Shanghai
     ports:
       - "8080:8080"
     volumes:
+      # 一个 volume 装全部数据:DB + 附件 + 备份 + 头像
       - beecount_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsSL http://127.0.0.1:8080/ready || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
 volumes:
   beecount_data:
@@ -128,7 +118,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 
 ## ⚙️ 配置项
 
-大多数用户只需要改 `JWT_SECRET` 和 `CORS_ORIGINS`。完整参考:
+大多数用户只需要改 `JWT_SECRET` 和 `CORS_ORIGINS` —— 其余在镜像里已经有面向生产的默认值(`/data/*` 路径 + `ALLOW_APP_RW_SCOPES=true`)。完整参考:
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|

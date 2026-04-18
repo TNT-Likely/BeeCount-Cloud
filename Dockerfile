@@ -51,9 +51,16 @@ COPY scripts /app/scripts
 # 静态资源（前端构建产物）
 COPY --from=frontend-builder /workspace/frontend/apps/web/dist /app/static
 
-# 数据目录（持久化附件 / sqlite 开发库）
-RUN mkdir -p /app/data /app/logs
-ENV DATA_DIR=/app/data
+# 数据目录:所有持久化数据(DB / 附件 / 备份 / 头像)统一放 /data,
+# 容器部署直接挂一个 volume 到 /data 就能全量备份。本地开发走 config.py
+# 的相对路径默认值(./data/*),两种场景互不干扰。
+RUN mkdir -p /data /app/logs
+ENV DATA_DIR=/data \
+    DATABASE_URL=sqlite:////data/beecount.db \
+    BACKUP_STORAGE_DIR=/data/backups \
+    ATTACHMENT_STORAGE_DIR=/data/attachments \
+    WEB_STATIC_DIR=/app/static \
+    ALLOW_APP_RW_SCOPES=true
 
 # 记下版本号便于排查
 RUN echo "${VERSION}" > /app/VERSION
