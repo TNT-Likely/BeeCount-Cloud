@@ -42,6 +42,7 @@ const en = {
   'nav.accounts': 'Accounts',
   'nav.categories': 'Categories',
   'nav.tags': 'Tags',
+  'nav.appearance': 'Appearance',
   'nav.health': 'Health',
   'nav.devices': 'Devices',
   'nav.users': 'Users',

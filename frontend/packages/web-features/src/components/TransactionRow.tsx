@@ -47,13 +47,13 @@ export function TransactionRow({
     switch (row.tx_type) {
       case 'income':
         return (
-          <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+          <span className="inline-flex items-center rounded-full bg-income/15 px-2 py-0.5 text-[10px] font-semibold text-income">
             {t('enum.txType.income')}
           </span>
         )
       case 'expense':
         return (
-          <span className="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+          <span className="inline-flex items-center rounded-full bg-expense/15 px-2 py-0.5 text-[10px] font-semibold text-expense">
             {t('enum.txType.expense')}
           </span>
         )
@@ -128,9 +128,9 @@ export function TransactionRow({
             ) : null}
             <span className={`font-mono tabular-nums font-bold ${
               amountTone === 'positive'
-                ? 'text-emerald-600 dark:text-emerald-400'
+                ? 'text-income'
                 : amountTone === 'negative'
-                  ? 'text-rose-600 dark:text-rose-400'
+                  ? 'text-expense'
                   : 'text-foreground'
             } ${isCompact ? 'text-sm' : 'text-base'}`}>
               {sign}

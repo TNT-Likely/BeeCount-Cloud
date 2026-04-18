@@ -39,9 +39,9 @@ export function OverviewRecentTransactions({ transactions, onClickTransaction }:
                 tx.tx_type === 'expense' ? '-' : tx.tx_type === 'income' ? '+' : ''
               const amountColor =
                 tx.tx_type === 'expense'
-                  ? 'text-rose-600 dark:text-rose-400'
+                  ? 'text-expense'
                   : tx.tx_type === 'income'
-                    ? 'text-emerald-600 dark:text-emerald-400'
+                    ? 'text-income'
                     : 'text-foreground'
               return (
                 <li

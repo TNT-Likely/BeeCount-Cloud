@@ -46,6 +46,15 @@ class UserProfile(Base):
     display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     avatar_file_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     avatar_version: Mapped[int] = mapped_column(Integer, default=0)
+    # 收支颜色方案：对齐 mobile `incomeExpenseColorSchemeProvider`
+    # - True  = 红色收入 / 绿色支出（mobile app 旧默认）
+    # - False = 红色支出 / 绿色收入（传统中式会计习惯）
+    # Nullable 兜底老用户 / 老数据，None 视为 True。
+    income_is_red: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    # 主题色：mobile 推给 server，web 当作"初始偏好"。Web 用户本地改过主题色
+    # 后会写 localStorage，本地值永远优先；没改过的 web 客户端跟 mobile 同步。
+    # 格式：hex `#RRGGBB`。长度给 7 预留 # + 6 位。
+    theme_primary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

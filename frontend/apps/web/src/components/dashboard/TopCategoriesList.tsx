@@ -24,8 +24,8 @@ export function TopCategoriesList({ ranks, variant = 'expense', title, onClickCa
 
   const isExpense = variant === 'expense'
   const barClass = isExpense
-    ? 'bg-gradient-to-r from-rose-400 to-rose-600 group-hover:from-rose-500 group-hover:to-rose-700'
-    : 'bg-gradient-to-r from-emerald-400 to-emerald-600 group-hover:from-emerald-500 group-hover:to-emerald-700'
+    ? 'bg-gradient-to-r from-expense/70 to-expense group-hover:from-expense group-hover:to-expense/90'
+    : 'bg-gradient-to-r from-income/70 to-income group-hover:from-income group-hover:to-income/90'
   const defaultTitle = isExpense ? '支出 Top 5' : '收入 Top 5'
   const emptyLabel = isExpense ? '暂无支出数据' : '暂无收入数据'
 

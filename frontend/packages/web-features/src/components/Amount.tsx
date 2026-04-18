@@ -29,10 +29,14 @@ const SIZE_CLASS: Record<AmountSize, string> = {
   '4xl': 'text-4xl sm:text-5xl'
 }
 
+// positive = 收入，negative = 支出。两者的底层颜色由 tailwind theme 的
+// `income` / `expense` token 决定，token 读 CSS var，CSS var 由 <html
+// data-income-color="red|green"> 切换。换句话说：一旦 mobile 切了颜色
+// 方案，这里不用动，全站 Amount 自动跟随。
 const TONE_CLASS: Record<AmountTone, string> = {
   default: 'text-foreground',
-  positive: 'text-emerald-600 dark:text-emerald-400',
-  negative: 'text-rose-600 dark:text-rose-400',
+  positive: 'text-income',
+  negative: 'text-expense',
   muted: 'text-muted-foreground'
 }
 

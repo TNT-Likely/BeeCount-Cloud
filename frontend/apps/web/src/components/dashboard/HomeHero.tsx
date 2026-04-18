@@ -148,7 +148,7 @@ export function HomeHero({
 
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <HeroStat
-              icon={<ArrowDownLeft className="h-3.5 w-3.5 text-emerald-500" />}
+              icon={<ArrowDownLeft className="h-3.5 w-3.5 text-income" />}
               label={`${scopeLabel}收入`}
             >
               <Amount
@@ -162,7 +162,7 @@ export function HomeHero({
               />
             </HeroStat>
             <HeroStat
-              icon={<ArrowUpRight className="h-3.5 w-3.5 text-rose-500" />}
+              icon={<ArrowUpRight className="h-3.5 w-3.5 text-expense" />}
               label={`${scopeLabel}支出`}
             >
               <Amount

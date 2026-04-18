@@ -10,8 +10,10 @@ interface Props {
 }
 
 /**
- * 预设色板（9 格）+ 可选自定义色。每个 preset 是一个小圆，选中的带 check 图标。
- * 放在头像下拉或 settings-profile 页面里都合适。
+ * 预设色板 + 可选自定义色。
+ *
+ * 单向同步语义：mobile 改色 → server → web 无条件应用；web 本地改色只是
+ * 临时切换，下一次 mobile 推送 / loadProfile 会覆盖；web 不会反向推给 mobile。
  */
 export function PrimaryColorPicker({ allowCustom = true, className }: Props) {
   const { color, setColor } = usePrimaryColor()

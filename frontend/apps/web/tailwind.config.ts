@@ -43,7 +43,11 @@ const config: Config = {
         popover: {
           DEFAULT: 'hsl(var(--popover))',
           foreground: 'hsl(var(--popover-foreground))'
-        }
+        },
+        // 收支语义色：跟 mobile `incomeExpenseColorSchemeProvider` 同步，
+        // 通过 <html data-income-color="red|green"> 切换底层 CSS var。
+        income: 'rgb(var(--income-rgb) / <alpha-value>)',
+        expense: 'rgb(var(--expense-rgb) / <alpha-value>)'
       },
       borderRadius: {
         lg: 'var(--radius)',

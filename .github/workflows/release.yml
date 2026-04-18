@@ -53,7 +53,7 @@ jobs:
 
       - name: Run backend tests
         env:
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: 'sqlite:///:memory:'
           SECRET_KEY: test-secret
         run: pytest tests/ -x -q
 

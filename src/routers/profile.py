@@ -52,7 +52,10 @@ _READ_SCOPE_DEP = require_any_scopes(
     SCOPE_OPS_WRITE,
 )
 _AVATAR_SCOPE_DEP = require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_WRITE, SCOPE_OPS_WRITE)
-_PATCH_SCOPE_DEP = require_any_scopes(SCOPE_WEB_WRITE, SCOPE_OPS_WRITE)
+# PATCH /profile/me 需要让 mobile（app.write）也能调：mobile 要推收支颜色 /
+# 主题色到 server。如果只开 web/ops，mobile 的推送全部返回 Insufficient scope。
+# 跟 avatar upload 的 scope 集合保持一致。
+_PATCH_SCOPE_DEP = require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_WRITE, SCOPE_OPS_WRITE)
 
 _AVATAR_MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 _ALLOWED_IMAGE_MIME_TYPES = {
@@ -115,6 +118,8 @@ def get_my_profile(
     display_name = profile.display_name if profile is not None else None
     avatar_file_id = profile.avatar_file_id if profile is not None else None
     avatar_version = profile.avatar_version if profile is not None else 0
+    income_is_red = profile.income_is_red if profile is not None else None
+    theme_primary_color = profile.theme_primary_color if profile is not None else None
     return UserProfileOut(
         user_id=current_user.id,
         email=current_user.email,
@@ -123,6 +128,8 @@ def get_my_profile(
         if avatar_file_id
         else None,
         avatar_version=avatar_version,
+        income_is_red=income_is_red,
+        theme_primary_color=theme_primary_color,
     )
 
 
@@ -135,22 +142,34 @@ async def patch_my_profile(
     db: Session = Depends(get_db),
 ) -> UserProfileOut:
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    now = datetime.now(timezone.utc)
     if profile is None:
         profile = UserProfile(
             user_id=current_user.id,
             display_name=req.display_name,
-            updated_at=datetime.now(timezone.utc),
+            income_is_red=req.income_is_red,
+            theme_primary_color=req.theme_primary_color,
+            updated_at=now,
         )
         db.add(profile)
     else:
-        profile.display_name = req.display_name
-        profile.updated_at = datetime.now(timezone.utc)
+        # 只更新显式提供的字段，None 表示不改。这样 mobile 切单项配色时
+        # 不会把其它字段清掉；反之亦然。
+        if req.display_name is not None:
+            profile.display_name = req.display_name
+        if req.income_is_red is not None:
+            profile.income_is_red = req.income_is_red
+        if req.theme_primary_color is not None:
+            profile.theme_primary_color = req.theme_primary_color
+        profile.updated_at = now
     db.commit()
     db.refresh(profile)
     logger.info(
-        "avatar_sync: profile patched user=%s display_name=%s avatar_version=%s",
+        "profile_patch: user=%s display_name=%s income_is_red=%s theme=%s avatar_version=%s",
         current_user.id,
         profile.display_name,
+        profile.income_is_red,
+        profile.theme_primary_color,
         profile.avatar_version,
     )
     await _broadcast_profile_change(
@@ -159,6 +178,8 @@ async def patch_my_profile(
         payload={
             "avatar_version": profile.avatar_version,
             "display_name": profile.display_name,
+            "income_is_red": profile.income_is_red,
+            "theme_primary_color": profile.theme_primary_color,
         },
     )
     return UserProfileOut(
@@ -172,6 +193,8 @@ async def patch_my_profile(
         if profile.avatar_file_id
         else None,
         avatar_version=profile.avatar_version,
+        income_is_red=profile.income_is_red,
+        theme_primary_color=profile.theme_primary_color,
     )
 
 
@@ -242,6 +265,8 @@ async def upload_my_avatar(
         payload={
             "avatar_version": profile.avatar_version,
             "display_name": profile.display_name,
+            "income_is_red": profile.income_is_red,
+            "theme_primary_color": profile.theme_primary_color,
         },
     )
     return UserProfileAvatarUploadOut(

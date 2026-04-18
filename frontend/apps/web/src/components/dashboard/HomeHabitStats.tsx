@@ -40,18 +40,18 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
   return (
     <div className="grid gap-3 md:grid-cols-3">
       {/* 卡 1：储蓄率 */}
-      <div className="group relative overflow-hidden rounded-xl border border-emerald-500/30 bg-card p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+      <div className="group relative overflow-hidden rounded-xl border border-income/30 bg-card p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
         <div
-          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-emerald-500/20 via-emerald-400/5 to-transparent"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-income/20 via-income/5 to-transparent"
           aria-hidden
         />
         <div
-          className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-emerald-400/20 blur-2xl"
+          className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-income/20 blur-2xl"
           aria-hidden
         />
         <div className="relative flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-income/20 text-income">
               <PiggyBank className="h-4 w-4" />
             </span>
             本月储蓄率
@@ -64,8 +64,8 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
             <span
               className={
                 savingRate >= 0
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-rose-600 dark:text-rose-400'
+                  ? 'text-income'
+                  : 'text-expense'
               }
             >
               {savingRate.toFixed(1)}%
@@ -79,8 +79,8 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
               <div
                 className={
                   savingRate >= 0
-                    ? 'h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400'
-                    : 'h-full rounded-full bg-gradient-to-r from-rose-500 to-rose-400'
+                    ? 'h-full rounded-full bg-gradient-to-r from-income to-income/70'
+                    : 'h-full rounded-full bg-gradient-to-r from-expense to-expense/70'
                 }
                 style={{
                   width: `${Math.min(100, Math.abs(savingRate))}%`
@@ -99,18 +99,18 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
       </div>
 
       {/* 卡 2：本月日均支出 */}
-      <div className="group relative overflow-hidden rounded-xl border border-rose-500/30 bg-card p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+      <div className="group relative overflow-hidden rounded-xl border border-expense/30 bg-card p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
         <div
-          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-rose-500/20 via-rose-400/5 to-transparent"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-expense/20 via-expense/5 to-transparent"
           aria-hidden
         />
         <div
-          className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-rose-400/20 blur-2xl"
+          className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-expense/20 blur-2xl"
           aria-hidden
         />
         <div className="relative flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-rose-500/20 text-rose-600 dark:text-rose-400">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-expense/20 text-expense">
               <Flame className="h-4 w-4" />
             </span>
             本月日均支出

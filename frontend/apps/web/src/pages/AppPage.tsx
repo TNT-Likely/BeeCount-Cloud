@@ -43,6 +43,7 @@ import {
   Label,
   LanguageToggle,
   PrimaryColorPicker,
+  usePrimaryColor,
   Select,
   SelectContent,
   SelectItem,
@@ -270,6 +271,8 @@ function isPreviewableImage(mimeType: string | null, fileName: string | null | u
 
 export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const t = useT()
+  // mobile 推过来的主题色偏好：本地没 override 时跟随 server。
+  const { applyServerColor: applyServerPrimaryColor } = usePrimaryColor()
   const previewRequestSeqRef = useRef(0)
   const txFilterRestoreInProgressRef = useRef(false)
   const txAttachmentPreviewUrlByFileIdRef = useRef<Record<string, string>>({})
@@ -344,7 +347,37 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [listQuery, setListQuery] = useState('')
   const [adminUserStatusFilter, setAdminUserStatusFilter] = useState<'enabled' | 'disabled' | 'all'>('enabled')
   const [devicesWindowDays, setDevicesWindowDays] = useState<'30' | 'all'>('30')
-  const [activeLedgerId, setActiveLedgerId] = useState('')
+  // header 账本选择器的值持久化到 localStorage，key 里带 userId 避免多账号
+  // 登入时互相干扰。`jwtUserId(token)` 需在这里直接解析，因 sessionUserId
+  // useMemo 声明在下面，且 useState 初值只跑一次，不用在意重算。
+  const ACTIVE_LEDGER_KEY = useMemo(
+    () => `beecount.active-ledger.${jwtUserId(token) || 'anon'}`,
+    [token]
+  )
+  const [activeLedgerId, setActiveLedgerIdRaw] = useState<string>(() => {
+    if (typeof window === 'undefined') return ''
+    try {
+      const initialKey = `beecount.active-ledger.${jwtUserId(token) || 'anon'}`
+      return window.localStorage.getItem(initialKey) || ''
+    } catch {
+      return ''
+    }
+  })
+  const setActiveLedgerId = (next: string | ((prev: string) => string)) => {
+    setActiveLedgerIdRaw((prev) => {
+      const value = typeof next === 'function' ? next(prev) : next
+      try {
+        if (value) {
+          window.localStorage.setItem(ACTIVE_LEDGER_KEY, value)
+        } else {
+          window.localStorage.removeItem(ACTIVE_LEDGER_KEY)
+        }
+      } catch {
+        // 忽略 storage quota / 隐私模式错误
+      }
+      return value
+    })
+  }
 
   const [txWriteLedgerId, setTxWriteLedgerId] = useState('')
 
@@ -523,12 +556,30 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const loadProfile = async () => {
     const row = await fetchProfileMe(token)
     console.info(
-      '[avatar_sync] profile loaded',
+      '[profile] loaded',
       'avatar_url=', row.avatar_url,
-      'avatar_version=', row.avatar_version
+      'avatar_version=', row.avatar_version,
+      'income_is_red=', row.income_is_red,
+      'theme_primary_color=', row.theme_primary_color
     )
     setProfileMe(row)
     setProfileDisplayName(row.display_name || '')
+    // 收支颜色方案：mobile 写入后 server 广播下来，web 这边只读应用。
+    // null 视为 true（mobile 默认红色收入）。
+    applyIncomeColorScheme(row.income_is_red ?? true)
+    // 主题色：PrimaryColorProvider 的 applyServerColor 自带 "本地有 override
+    // 就 skip" 的短路逻辑，这里直接调。
+    applyServerPrimaryColor(row.theme_primary_color)
+  }
+
+  /**
+   * 把收支颜色方案写到 <html data-income-color>，styles.css 对应 CSS var
+   * 自动切换。不走 localStorage，因为这个值来自 server，刷新时 loadProfile
+   * 会再拉一次 —— 避免 mobile 切换后 web 本地缓存不同步。
+   */
+  const applyIncomeColorScheme = (incomeIsRed: boolean) => {
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.incomeColor = incomeIsRed ? 'red' : 'green'
   }
 
   /**
@@ -845,9 +896,21 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     token,
     buildUrl: wsBuildUrl,
     onEvent: (payload: unknown) => {
-      const p = payload as { type?: string; avatar_version?: number } | null
-      console.info('[avatar_sync] ws event', p)
+      const p = payload as {
+        type?: string
+        avatar_version?: number
+        income_is_red?: boolean | null
+        theme_primary_color?: string | null
+      } | null
+      console.info('[profile] ws event', p)
       if (p?.type === 'profile_change') {
+        // 优先用 WS payload 里的字段（比等 loadProfile 完成快）
+        if (p.income_is_red !== undefined && p.income_is_red !== null) {
+          applyIncomeColorScheme(p.income_is_red)
+        }
+        if (p.theme_primary_color) {
+          applyServerPrimaryColor(p.theme_primary_color)
+        }
         // profile_change 只需重拉 profile，不必 refetch 交易 / 账户。
         void loadProfile()
         return
@@ -2095,15 +2158,8 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                               </button>
                             </>
                           ) : null}
-                          {/* 主题色选择器：直接塞进 hover 下拉，让 primary 色
-                              修改的触发路径跟深浅主题 toggle 同一个位置。 */}
-                          <div className="mx-1 my-1 h-px bg-border/60" />
-                          <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            主题色
-                          </div>
-                          <div className="px-2 pb-2">
-                            <PrimaryColorPicker />
-                          </div>
+                          {/* 主题色 / 收支颜色 从这里移到独立的"外观"设置页，
+                              头像下拉只留账户 + 登出的快捷入口。 */}
                           <div className="mx-1 my-1 h-px bg-border/60" />
                           <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                             操作
@@ -2529,6 +2585,59 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             </div>
           ) : null}
 
+          {route.section === 'settings-appearance' ? (
+            <div className="space-y-4">
+              <Card className="bc-panel">
+                <CardHeader>
+                  <CardTitle>主题色</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    选一个 primary 色，整站按钮 / 边框 / 高亮跟着换。
+                    Web 本地改的色只保存在当前浏览器（localStorage），<span className="font-medium">不会同步回移动端</span>。
+                    移动端修改主题色会自动下发到 web；本地改过后以本地为准，移动端后续变更不覆盖。
+                  </p>
+                  <PrimaryColorPicker />
+                </CardContent>
+              </Card>
+
+              <Card className="bc-panel">
+                <CardHeader>
+                  <CardTitle>收支颜色方案</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
+                          style={{ background: 'rgb(var(--income-rgb))' }}
+                          aria-label="收入色示例"
+                        />
+                        <span className="text-sm">收入</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
+                          style={{ background: 'rgb(var(--expense-rgb))' }}
+                          aria-label="支出色示例"
+                        />
+                        <span className="text-sm">支出</span>
+                      </div>
+                    </div>
+                    <span className="rounded-full border border-border/60 bg-card px-3 py-1 text-xs font-medium">
+                      {(profileMe?.income_is_red ?? true) ? '红色收入 / 绿色支出' : '红色支出 / 绿色收入'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    收支颜色方案跟随移动端"我的 → 外观设置"里的选择。Web
+                    端仅展示，暂不支持修改；修改后 2 秒内 web 自动同步。
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
           {route.section === 'settings-health' ? (
             <div className="space-y-4">
               <Card className="bc-panel">
@@ -2706,7 +2815,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                         累计支出
                       </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
                         {stats.expense.toLocaleString('zh-CN', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
@@ -2717,7 +2826,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                         累计收入
                       </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
                         {stats.income.toLocaleString('zh-CN', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
@@ -2788,7 +2897,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       <div className={`mt-0.5 font-mono text-base font-bold tabular-nums ${
                         (hasServerStats ? a.balance! : a.initial_balance ?? 0) >= 0
                           ? 'text-foreground'
-                          : 'text-rose-600 dark:text-rose-400'
+                          : 'text-expense'
                       }`}>
                         {(hasServerStats
                           ? a.balance!
@@ -2803,7 +2912,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                         累计收入
                       </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
                         {(a.income_total ?? 0).toLocaleString('zh-CN', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
@@ -2814,7 +2923,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                         累计支出
                       </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
                         {(a.expense_total ?? 0).toLocaleString('zh-CN', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2

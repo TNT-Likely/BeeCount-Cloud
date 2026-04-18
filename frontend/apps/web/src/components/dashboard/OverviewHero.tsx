@@ -80,18 +80,18 @@ export function OverviewHero({
             <span className="text-xs text-muted-foreground">{currency}</span>
             <span
               className={`text-4xl font-black tracking-tight sm:text-5xl ${
-                totalBalance >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                totalBalance >= 0 ? 'text-income' : 'text-expense'
               }`}
             >
               {fmt(totalBalance)}
             </span>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
-            <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+            <span className="inline-flex items-center gap-1 text-income">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               {periodLabel}收入 {currency} {fmt(periodIncome)}
             </span>
-            <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400">
+            <span className="inline-flex items-center gap-1 text-expense">
               <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
               {periodLabel}支出 {currency} {fmt(periodExpense)}
             </span>

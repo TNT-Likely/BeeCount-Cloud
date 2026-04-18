@@ -5,6 +5,7 @@ export type AppSection =
   | 'categories'
   | 'tags'
   | 'settings-profile'
+  | 'settings-appearance'
   | 'settings-health'
   | 'settings-devices'
   | 'admin-users'
@@ -37,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
     titleKey: 'nav.group.settings',
     items: [
       { key: 'settings-profile', labelKey: 'nav.profile' },
+      { key: 'settings-appearance', labelKey: 'nav.appearance' },
       { key: 'settings-health', labelKey: 'nav.health' },
       { key: 'settings-devices', labelKey: 'nav.devices' }
     ]

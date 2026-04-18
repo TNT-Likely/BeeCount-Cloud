@@ -1,7 +1,12 @@
+import re
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+# 6 位 hex，开头必须有 #；字母大小写都接受，validator 会归一化成大写。
+_HEX6_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 MemberRole = Literal["owner", "editor", "viewer"]
 SyncAction = Literal["upsert", "delete"]
@@ -67,19 +72,42 @@ class UserProfileOut(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
     avatar_version: int = 0
+    # 对齐 mobile `incomeExpenseColorSchemeProvider`。Nullable = 未设置过，web
+    # 视为默认（红色收入）。
+    income_is_red: bool | None = None
+    # 主题色 hex（#RRGGBB），mobile 设置后推上来；web 把它当作"初始偏好"，
+    # 用户在 web 本地改色会写 localStorage 优先生效。
+    theme_primary_color: str | None = None
 
 
 class UserProfilePatchRequest(BaseModel):
-    display_name: str
+    # 所有字段都可选：mobile 改配色时只送 `income_is_red`，web 改昵称时只送
+    # `display_name`。handler 只更新非 None 字段。
+    display_name: str | None = None
+    income_is_red: bool | None = None
+    theme_primary_color: str | None = None
 
     @field_validator("display_name")
     @classmethod
-    def validate_display_name(cls, value: str) -> str:
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
             raise ValueError("Display name cannot be empty")
         if len(normalized) > 32:
             raise ValueError("Display name too long")
+        return normalized
+
+    @field_validator("theme_primary_color")
+    @classmethod
+    def validate_theme_primary_color(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        # 只接受 #RRGGBB 格式；太宽松会被当任意文本写入
+        if not _HEX6_PATTERN.match(normalized):
+            raise ValueError("theme_primary_color must be #RRGGBB hex")
         return normalized
 
 

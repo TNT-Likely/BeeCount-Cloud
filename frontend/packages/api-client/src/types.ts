@@ -13,6 +13,15 @@ export type ProfileMe = {
   display_name?: string | null
   avatar_url?: string | null
   avatar_version: number
+  /** mobile `incomeExpenseColorSchemeProvider` 同步过来的配色偏好：
+   *  true  = 红色收入 / 绿色支出（mobile 默认）
+   *  false = 红色支出 / 绿色收入
+   *  null  = 未设置过，web 视为 true */
+  income_is_red?: boolean | null
+  /** mobile 推过来的主题色（`#RRGGBB`）。web 端用作"初始偏好"：
+   *  - 用户在 web 本地改过主题色（localStorage 有值）→ 本地优先，忽略 server
+   *  - 否则 apply server 值到 CSS var（不写 localStorage，保持 server 作权威） */
+  theme_primary_color?: string | null
 }
 
 export type WriteCommitMeta = {

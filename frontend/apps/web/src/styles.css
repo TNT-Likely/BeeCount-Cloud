@@ -50,6 +50,20 @@
     --shadow: 215 70% 2%;
   }
 
+  /* 收支颜色方案：跟随 mobile incomeExpenseColorSchemeProvider。默认 red =
+     income (mobile 默认 true)。AppPage 在 loadProfile / WS profile_change
+     收到字段后设置 <html data-income-color="red|green">。
+     默认（未设置 data 属性）走 "red" 分支，跟 mobile 默认一致。 */
+  :root,
+  html[data-income-color="red"] {
+    --income-rgb: 239 68 68;   /* rose-500  */
+    --expense-rgb: 16 185 129; /* emerald-500 */
+  }
+  html[data-income-color="green"] {
+    --income-rgb: 16 185 129;
+    --expense-rgb: 239 68 68;
+  }
+
   * {
     @apply border-border;
   }

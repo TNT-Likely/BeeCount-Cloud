@@ -43,6 +43,7 @@ const zhCN = {
   'nav.categories': '分类',
   'nav.tags': '标签',
   'nav.profile': '个人资料',
+  'nav.appearance': '外观',
   'nav.health': '健康',
   'nav.devices': '设备',
   'nav.users': '用户管理',

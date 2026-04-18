@@ -89,10 +89,10 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                 {/* hover 时详情 tooltip（纯 CSS，避免额外依赖） */}
                 <div className="pointer-events-none absolute -top-1 left-1/2 z-10 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
                   <div className="font-semibold">{row.monthLabel}</div>
-                  <div className="text-emerald-600 dark:text-emerald-400">
+                  <div className="text-income">
                     收入 {row.income.toFixed(2)}
                   </div>
-                  <div className="text-rose-600 dark:text-rose-400">
+                  <div className="text-expense">
                     支出 {row.expense.toFixed(2)}
                   </div>
                   <div>
@@ -100,8 +100,8 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                     <span
                       className={
                         row.balance >= 0
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-rose-600 dark:text-rose-400'
+                          ? 'text-income'
+                          : 'text-expense'
                       }
                     >
                       {row.balance.toFixed(2)}

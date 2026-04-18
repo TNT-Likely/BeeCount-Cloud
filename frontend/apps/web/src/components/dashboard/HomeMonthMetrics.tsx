@@ -38,32 +38,40 @@ export function HomeMonthMetrics({
     positiveWhenUp: boolean
     icon: React.ReactNode
     accent: string
+    /** 图标框的底色 + 文字色，Tailwind JIT 不能拼 `bg-${accent}-500/20` 这种
+     *  动态字符串（income/expense 语义 token 也没 -500 变体），这里直接存成
+     *  静态 class。 */
+    iconClass: string
     bg: string
     ring: string
     isCount?: boolean
   }
   const cards: Card[] = [
     {
+      // 收入卡：底色 / 边框 / 环 / 图标 全走 income semantic token，随 mobile 配色切换
       key: 'income',
       label: '本月收入',
       value: monthIncome,
       prev: prevMonthIncome,
       positiveWhenUp: true,
       icon: <ArrowDownLeft className="h-4 w-4" />,
-      accent: 'emerald',
-      bg: 'from-emerald-500/20 via-emerald-400/5 to-transparent',
-      ring: 'ring-emerald-500/30'
+      accent: 'income',
+      iconClass: 'bg-income/20 text-income',
+      bg: 'from-income/20 via-income/5 to-transparent',
+      ring: 'ring-income/30'
     },
     {
+      // 支出卡：全套 expense 语义
       key: 'expense',
       label: '本月支出',
       value: monthExpense,
       prev: prevMonthExpense,
       positiveWhenUp: false,
       icon: <ArrowUpRight className="h-4 w-4" />,
-      accent: 'rose',
-      bg: 'from-rose-500/20 via-rose-400/5 to-transparent',
-      ring: 'ring-rose-500/30'
+      accent: 'expense',
+      iconClass: 'bg-expense/20 text-expense',
+      bg: 'from-expense/20 via-expense/5 to-transparent',
+      ring: 'ring-expense/30'
     },
     {
       key: 'balance',
@@ -73,6 +81,7 @@ export function HomeMonthMetrics({
       positiveWhenUp: true,
       icon: <TrendingUp className="h-4 w-4" />,
       accent: 'sky',
+      iconClass: 'bg-sky-500/20 text-sky-600 dark:text-sky-400',
       bg: 'from-sky-500/20 via-sky-400/5 to-transparent',
       ring: 'ring-sky-500/30'
     },
@@ -84,6 +93,7 @@ export function HomeMonthMetrics({
       positiveWhenUp: true,
       icon: <TrendingDown className="h-4 w-4" />,
       accent: 'amber',
+      iconClass: 'bg-amber-500/20 text-amber-600 dark:text-amber-400',
       bg: 'from-amber-500/20 via-amber-400/5 to-transparent',
       ring: 'ring-amber-500/30',
       isCount: true
@@ -113,7 +123,7 @@ export function HomeMonthMetrics({
 
             <div className="relative flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
-                <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md bg-${card.accent}-500/20 text-${card.accent}-600 dark:text-${card.accent}-400`}>
+                <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${card.iconClass}`}>
                   {card.icon}
                 </span>
                 {card.label}
@@ -122,8 +132,8 @@ export function HomeMonthMetrics({
                 <span
                   className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
                     trendPositive
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                      : 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                      ? 'bg-income/15 text-income'
+                      : 'bg-expense/15 text-expense'
                   }`}
                 >
                   {pct >= 0 ? '+' : ''}

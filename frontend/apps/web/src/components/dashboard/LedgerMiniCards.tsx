@@ -72,15 +72,15 @@ export function LedgerMiniCards({ ledgers, activeLedgerId, onSelectLedger, onDel
                 ) : null}
               </div>
               <div className={`mt-3 text-2xl font-bold tracking-tight ${
-                net >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                net >= 0 ? 'text-income' : 'text-expense'
               }`}>
                 {net.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div className="rounded bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:text-emerald-400">
+                <div className="rounded bg-income/10 px-2 py-1 text-income">
                   ↑ {ledger.income_total.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
                 </div>
-                <div className="rounded bg-rose-500/10 px-2 py-1 text-rose-700 dark:text-rose-400">
+                <div className="rounded bg-expense/10 px-2 py-1 text-expense">
                   ↓ {ledger.expense_total.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
                 </div>
               </div>

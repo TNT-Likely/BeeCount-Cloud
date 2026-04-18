@@ -86,6 +86,14 @@ export function initialPrimaryColor(): string {
   return DEFAULT_PRIMARY_COLOR
 }
 
+/** 用户是否在 web 本地显式改过主题色。PrimaryColorProvider 用来决定 server
+ *  下发的偏好该不该覆盖当前色：有 override 就尊重本地；没有就跟 server 走。 */
+export function hasLocalPrimaryColorOverride(): boolean {
+  if (typeof window === 'undefined') return false
+  const raw = window.localStorage.getItem(PRIMARY_COLOR_STORAGE_KEY)
+  return typeof raw === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw)
+}
+
 export function persistPrimaryColor(hex: string): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(PRIMARY_COLOR_STORAGE_KEY, hex)

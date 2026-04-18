@@ -24,17 +24,17 @@ export function OverviewKeyMetrics({ summary }: Props) {
       key: 'income',
       label: '今年收入',
       value: fmt(income),
-      icon: <ArrowDown className="h-4 w-4 text-emerald-500" />,
-      glow: 'from-emerald-400/30 via-emerald-400/5 to-transparent',
-      border: 'border-emerald-400/30'
+      icon: <ArrowDown className="h-4 w-4 text-income" />,
+      glow: 'from-income/30 via-income/5 to-transparent',
+      border: 'border-income/30'
     },
     {
       key: 'expense',
       label: '今年支出',
       value: fmt(expense),
-      icon: <ArrowUp className="h-4 w-4 text-rose-500" />,
-      glow: 'from-rose-400/30 via-rose-400/5 to-transparent',
-      border: 'border-rose-400/30'
+      icon: <ArrowUp className="h-4 w-4 text-expense" />,
+      glow: 'from-expense/30 via-expense/5 to-transparent',
+      border: 'border-expense/30'
     },
     {
       key: 'balance',
@@ -43,7 +43,7 @@ export function OverviewKeyMetrics({ summary }: Props) {
       icon: <Wallet className="h-4 w-4 text-sky-500" />,
       glow: 'from-sky-400/30 via-sky-400/5 to-transparent',
       border: 'border-sky-400/30',
-      highlight: balance >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+      highlight: balance >= 0 ? 'text-income' : 'text-expense'
     },
     {
       key: 'count',
