@@ -55,7 +55,8 @@ COPY --from=frontend-builder /workspace/frontend/apps/web/dist /app/static
 # 容器部署直接挂一个 volume 到 /data 就能全量备份。本地开发走 config.py
 # 的相对路径默认值(./data/*),两种场景互不干扰。
 RUN mkdir -p /data /app/logs
-ENV DATA_DIR=/data \
+ENV APP_ENV=production \
+    DATA_DIR=/data \
     DATABASE_URL=sqlite:////data/beecount.db \
     BACKUP_STORAGE_DIR=/data/backups \
     ATTACHMENT_STORAGE_DIR=/data/attachments \

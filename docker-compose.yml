@@ -6,18 +6,16 @@ services:
     #   context: .
     #   dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      # 必须改成 32+ bytes 随机串,否则服务启动会拒绝运行。
-      JWT_SECRET: change-me-in-production-at-least-32-bytes
-      # 非同域部署时改成对外可访问的地址(逗号分隔多个)。
-      CORS_ORIGINS: http://localhost:8080
-      # 其他变量(DATABASE_URL / BACKUP_STORAGE_DIR / ATTACHMENT_STORAGE_DIR /
-      # ALLOW_APP_RW_SCOPES)都有镜像内置的生产默认值,按需覆盖即可。
     ports:
       - "8080:8080"
     volumes:
-      # 一个 volume 装全部数据:SQLite DB + 附件 + 备份归档 + 头像。
+      # 一个 volume 装全部数据:SQLite DB + 附件 + 备份归档 + 头像 + JWT 密钥。
+      # 首次启动会在 /data/.jwt_secret 自动生成 32 bytes 强密钥,用户零配置。
       - beecount_data:/data
+    # 跨域访问(web 和 api 不同域)或想用自己的 JWT 密钥时,按需设置 environment:
+    # environment:
+    #   JWT_SECRET: <自己的 32+ bytes 随机串>
+    #   CORS_ORIGINS: https://web.example.com,https://api.example.com
 
 volumes:
   beecount_data:

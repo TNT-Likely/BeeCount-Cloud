@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import text
 
+from .bootstrap import ensure_jwt_secret
 from .config import get_settings
 from .database import SessionLocal
 from .error_handling import register_exception_handlers
@@ -19,6 +20,11 @@ from .websocket_manager import WSConnectionManager
 # 放在 import 块之后,设置读取之前 —— 这样启动阶段的 log 也能被捕获。
 install_ring_buffer(capacity=1000)
 logging.getLogger().setLevel(logging.INFO)
+
+# JWT 密钥引导:用户没提供强密钥时,自动从 volume 持久化文件读 / 或首次生成。
+# 必须在 get_settings() 之前调用 —— pydantic-settings 是 lru_cache 的,
+# 第一次读取后 env 的变更不再被反应。
+ensure_jwt_secret()
 
 settings = get_settings()
 if settings.app_env != "development":

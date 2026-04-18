@@ -67,20 +67,19 @@ services:
   beecount-cloud:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
-    environment:
-      # Required — must be 32+ random bytes
-      JWT_SECRET: change-me-in-production-at-least-32-bytes
-      # If not same-origin, set to your public URL(s), comma-separated
-      CORS_ORIGINS: http://localhost:8080
     ports:
       - "8080:8080"
     volumes:
-      # One volume holds everything: DB + attachments + backups + avatars
+      # One volume holds everything: DB / attachments / backups / avatars / JWT secret.
+      # First boot auto-generates a 32-byte secret to /data/.jwt_secret — zero config.
       - beecount_data:/data
 
 volumes:
   beecount_data:
 ```
+
+> Cross-domain deploy (web and API on different domains)? Add `CORS_ORIGINS: https://web.example.com` under `environment:`.
+> Want to manage your own JWT secret? Add `JWT_SECRET: <32+ bytes>`.
 
 ### 2) Start
 
@@ -118,18 +117,18 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 
 ## ⚙️ Configuration
 
-Most users only need to set `JWT_SECRET` and `CORS_ORIGINS` — the rest have production-friendly defaults baked into the image (`/data/*` paths + `ALLOW_APP_RW_SCOPES=true`). Full reference:
+**Zero config** out of the box — the image bakes in production defaults and auto-generates the JWT secret on first boot. You only need to override these for edge cases:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:////data/beecount.db` | SQLite path or PostgreSQL URL |
-| `JWT_SECRET` | *(required)* | JWT signing key, must be 32+ bytes |
-| `CORS_ORIGINS` | `http://localhost:8080` | Comma-separated allow-list |
-| `ALLOW_APP_RW_SCOPES` | `true` | Leave `true` for mobile app sync |
-| `BACKUP_STORAGE_DIR` | `/data/backups` | Backup artifact directory |
-| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | Transaction attachments (avatars stored under `<attachments>/profile-avatars/`) |
-| `REGISTRATION_ENABLED` | `false` | Allow new user signup (admins can always create users from the console) |
-| `TZ` | `Asia/Shanghai` | Container timezone |
+| Variable | Image default | When to override |
+|----------|---------------|------------------|
+| `JWT_SECRET` | auto-generated 32-byte secret at `/data/.jwt_secret` | You want to manage your own key / reuse across environments |
+| `CORS_ORIGINS` | `http://localhost:8080,5173,3000` | Web and API on different domains (e.g. `https://web.example.com`) |
+| `DATABASE_URL` | `sqlite:////data/beecount.db` | Switch to PostgreSQL |
+| `BACKUP_STORAGE_DIR` | `/data/backups` | Mount a separate volume |
+| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | Same (avatars auto-live under `<attachments>/profile-avatars/`) |
+| `ALLOW_APP_RW_SCOPES` | `true` | Keep `true` for mobile sync |
+| `REGISTRATION_ENABLED` | `false` | Allow public signup (default off; admins can create users from the console) |
+| `TZ` | `Asia/Shanghai` | Non-CST deployment |
 
 ---
 

@@ -67,20 +67,19 @@ services:
   beecount-cloud:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
-    environment:
-      # 必填:32+ bytes 随机串
-      JWT_SECRET: change-me-in-production-at-least-32-bytes
-      # 非同域部署时改成对外可访问地址(逗号分隔多个)
-      CORS_ORIGINS: http://localhost:8080
     ports:
       - "8080:8080"
     volumes:
-      # 一个 volume 装全部数据:DB + 附件 + 备份 + 头像
+      # 一个 volume 装全部数据:DB / 附件 / 备份 / 头像 / JWT 密钥。
+      # 首次启动自动生成 32 bytes 密钥到 /data/.jwt_secret,零配置。
       - beecount_data:/data
 
 volumes:
   beecount_data:
 ```
+
+> 跨域部署(web 和 api 不同域)时在 `environment` 里加 `CORS_ORIGINS: https://web.example.com`;
+> 想手动控制 JWT 密钥时加 `JWT_SECRET: <32+ bytes>` 即可。
 
 ### 2) 启动
 
@@ -118,18 +117,19 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 
 ## ⚙️ 配置项
 
-大多数用户只需要改 `JWT_SECRET` 和 `CORS_ORIGINS` —— 其余在镜像里已经有面向生产的默认值(`/data/*` 路径 + `ALLOW_APP_RW_SCOPES=true`)。完整参考:
+**零配置**即可运行 —— 镜像内置了面向生产的默认值,首次启动还会自动生成 JWT 密钥。
+只有特殊场景才需要覆盖:
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `DATABASE_URL` | `sqlite:////data/beecount.db` | SQLite 路径或 PostgreSQL URL |
-| `JWT_SECRET` | *(必填)* | JWT 签名密钥,必须 32+ bytes |
-| `CORS_ORIGINS` | `http://localhost:8080` | 逗号分隔的白名单 |
-| `ALLOW_APP_RW_SCOPES` | `true` | App 同步必须保持 `true` |
-| `BACKUP_STORAGE_DIR` | `/data/backups` | 备份归档目录 |
-| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | 交易附件(头像存在 `<附件>/profile-avatars/`) |
-| `REGISTRATION_ENABLED` | `false` | 是否允许新用户注册(管理员可在控制台直接建用户) |
-| `TZ` | `Asia/Shanghai` | 容器时区 |
+| 变量 | 镜像默认 | 何时要改 |
+|------|---------|---------|
+| `JWT_SECRET` | 首次启动自动生成 32 bytes 并落到 `/data/.jwt_secret` | 想用自己的密钥 / 统一跨环境密钥时 |
+| `CORS_ORIGINS` | `http://localhost:8080,5173,3000` | web 与 api 跨域部署(例:`https://web.example.com`) |
+| `DATABASE_URL` | `sqlite:////data/beecount.db` | 换 PostgreSQL |
+| `BACKUP_STORAGE_DIR` | `/data/backups` | 挂载其他 volume 分目录 |
+| `ATTACHMENT_STORAGE_DIR` | `/data/attachments` | 同上(头像自动放 `<附件>/profile-avatars/`) |
+| `ALLOW_APP_RW_SCOPES` | `true` | App 同步需要保持 `true`,一般不动 |
+| `REGISTRATION_ENABLED` | `false` | 允许公开注册(默认关闭,管理员可在控制台建用户) |
+| `TZ` | `Asia/Shanghai` | 非东八区部署 |
 
 ---
 
