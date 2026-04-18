@@ -271,8 +271,33 @@ class UserAdminListOut(BaseModel):
 
 
 class UserAdminPatchRequest(BaseModel):
-    is_admin: bool | None = None
+    # 允许改邮箱 / 启用状态。角色(is_admin)不在这里 —— 建用户时定好后
+    # 就不能在 UI 改,想变更只能走 `make grant-admin EMAIL=` 之类的运维路径。
+    # 密码改走独立端点 POST /admin/users/{id}/password,需要管理员自己的
+    # 当前密码二次验证,避免 PATCH 这种"顺手改一下"造成密码误改。
+    email: str | None = None
     is_enabled: bool | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if "@" not in normalized or "." not in normalized.split("@")[-1]:
+            raise ValueError("Invalid email format")
+        return normalized
+
+
+class UserAdminPasswordChangeRequest(BaseModel):
+    """修改目标用户密码。admin_password 是**当前操作 admin 自己的**密码,
+    用于二次验证 —— 防止 session 被挟持或 UI 误操作把别人密码改掉。
+    new_password 至少 6 位,跟 register / create-user 对齐。"""
+
+    admin_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=6)
 
 
 class UserAdminCreateRequest(BaseModel):

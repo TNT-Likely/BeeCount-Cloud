@@ -50,9 +50,10 @@ from ..schemas import (
     UserAdminCreateRequest,
     UserAdminListOut,
     UserAdminOut,
+    UserAdminPasswordChangeRequest,
     UserAdminPatchRequest,
 )
-from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password
+from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password, verify_password
 
 logger = logging.getLogger(__name__)
 
@@ -226,12 +227,33 @@ def patch_user(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if req.is_admin is not None:
-        user.is_admin = req.is_admin
-    if req.is_enabled is not None:
-        if user.id == admin_user.id and req.is_enabled is False:
-            raise HTTPException(status_code=400, detail="Cannot disable current admin user")
+    changes: dict[str, Any] = {}
+
+    if req.email is not None and req.email != user.email:
+        # 唯一性校验;数据库也有 UNIQUE 约束兜底但 400 比 IntegrityError 友好。
+        clash = db.scalar(
+            select(User).where(User.email == req.email, User.id != user.id)
+        )
+        if clash is not None:
+            raise HTTPException(status_code=409, detail="Email already in use")
+        user.email = req.email
+        changes["email"] = req.email
+
+    if req.is_enabled is not None and req.is_enabled != user.is_enabled:
+        # admin 账号不可被禁用:单用户自部署里,禁掉 admin 等于锁死自己的
+        # /admin/* 控制台。想"不再当 admin"请走 `make grant-admin` 的反向
+        # 运维命令 / CLI,不从 UI 走。
+        if req.is_enabled is False and user.is_admin:
+            raise HTTPException(
+                status_code=400, detail="Cannot disable an admin user"
+            )
         user.is_enabled = req.is_enabled
+        changes["isEnabled"] = req.is_enabled
+
+    if not changes:
+        # 无有效变更:直接返回,不写 AuditLog,避免噪音条目。
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+        return _to_user_admin_out(user, profile)
 
     db.add(user)
     db.add(
@@ -239,15 +261,71 @@ def patch_user(
             user_id=admin_user.id,
             ledger_id=None,
             action="admin_user_patch",
+            metadata_json={"targetUserId": user.id, **changes},
+        )
+    )
+    db.commit()
+    db.refresh(user)
+    logger.info(
+        "admin.user.patch actor=%s target=%s changes=%s",
+        admin_user.id,
+        user.id,
+        sorted(changes.keys()),
+    )
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+    return _to_user_admin_out(user, profile)
+
+
+@router.post("/users/{user_id}/password", response_model=UserAdminOut)
+def change_user_password(
+    user_id: str,
+    req: UserAdminPasswordChangeRequest,
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    admin_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> UserAdminOut:
+    # 1) 先校验**当前 admin 自己**的密码 —— 二次验证,防止被劫持的 session 改
+    #    别人密码 / UI 误点造成不可逆损失。admin_user 一定是 enabled(通过了
+    #    require_admin_user dep),不用再查 is_enabled。
+    if not verify_password(req.admin_password, admin_user.password_hash):
+        raise HTTPException(status_code=401, detail="Admin password mismatch")
+
+    user = db.scalar(select(User).where(User.id == user_id))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2) 更新目标用户密码,并 revoke 所有 refresh token,所有设备强制重登。
+    user.password_hash = hash_password(req.new_password)
+    revoked = 0
+    for token_row in db.scalars(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user.id,
+            RefreshToken.revoked_at.is_(None),
+        )
+    ).all():
+        token_row.revoked_at = _utcnow()
+        revoked += 1
+
+    db.add(user)
+    db.add(
+        AuditLog(
+            user_id=admin_user.id,
+            ledger_id=None,
+            action="admin_user_password_change",
             metadata_json={
                 "targetUserId": user.id,
-                "isAdmin": user.is_admin,
-                "isEnabled": user.is_enabled,
+                "revokedRefreshTokens": revoked,
             },
         )
     )
     db.commit()
     db.refresh(user)
+    logger.info(
+        "admin.user.password_change actor=%s target=%s revoked=%d",
+        admin_user.id,
+        user.id,
+        revoked,
+    )
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
     return _to_user_admin_out(user, profile)
 
@@ -264,6 +342,10 @@ def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if user.id == admin_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete current admin user")
+    if user.is_admin:
+        # admin 账号不可被禁用 → 软删除会把 is_enabled 置 false,等同禁用,
+        # 因此 admin 也不能从 UI 删。跟 patch 的约束对齐。
+        raise HTTPException(status_code=400, detail="Cannot delete an admin user")
 
     if user.is_admin and user.is_enabled:
         remaining_enabled_admins = int(

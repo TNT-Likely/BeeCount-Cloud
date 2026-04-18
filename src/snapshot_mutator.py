@@ -134,7 +134,10 @@ def _actor_user_id(payload: dict) -> str | None:
 
 
 def _actor_is_admin(payload: dict) -> bool:
-    return bool(payload.get("__actor_is_admin"))
+    # 单用户隔离:admin 不再拥有"跨用户改别人账本"的权限,这个 helper 保留
+    # 只是为了老代码调用点不报错,恒返回 False。
+    _ = payload
+    return False
 
 
 def _assert_actor_can_modify(item: dict, payload: dict) -> None:

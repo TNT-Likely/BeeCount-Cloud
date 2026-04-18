@@ -118,7 +118,9 @@ async def upload_attachment(
 
     safe_name = _safe_file_name(file.filename or "attachment.bin")
     storage_name = f"{uuid4().hex}_{safe_name}"
-    storage_dir = _attachment_root() / ledger.external_id / sha256[:2]
+    # 路径加 user_id 前缀隔离多用户:同一 external_id 的账本(比如两个用户
+    # 各自的 "default")不再共用一个目录,删号 / 迁移也能按用户打包。
+    storage_dir = _attachment_root() / ledger.user_id / ledger.external_id / sha256[:2]
     storage_dir.mkdir(parents=True, exist_ok=True)
     storage_path = storage_dir / storage_name
     storage_path.write_bytes(data)

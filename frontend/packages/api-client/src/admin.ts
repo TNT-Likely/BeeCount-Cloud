@@ -62,9 +62,25 @@ export async function fetchAdminUsers(
 export async function patchAdminUser(
   token: string,
   userId: string,
-  payload: { is_admin?: boolean; is_enabled?: boolean }
+  payload: {
+    email?: string
+    is_enabled?: boolean
+  }
 ): Promise<UserAdmin> {
   const user = await authedPatch<UserAdmin>(`/admin/users/${encodeURIComponent(userId)}`, token, payload)
+  return mapUserAdminAvatar(user)
+}
+
+export async function changeAdminUserPassword(
+  token: string,
+  userId: string,
+  payload: { admin_password: string; new_password: string }
+): Promise<UserAdmin> {
+  const user = await authedPost<UserAdmin>(
+    `/admin/users/${encodeURIComponent(userId)}/password`,
+    token,
+    payload
+  )
   return mapUserAdminAvatar(user)
 }
 

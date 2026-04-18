@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
 
 import { useSyncSocket } from '../hooks/useSyncSocket'
+import { jwtUserId } from '../state/jwt'
 import { drainPull, startPoller } from '../state/sync-client'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
@@ -58,6 +59,7 @@ import {
 import {
   ApiError,
   batchAttachmentExists,
+  changeAdminUserPassword,
   deleteAdminUser,
   downloadAttachment,
   uploadAttachment,
@@ -376,19 +378,6 @@ function wsUrl(token: string): string {
   return `${protocol}://${host}/ws?token=${encodeURIComponent(token)}`
 }
 
-function jwtUserId(token: string): string {
-  try {
-    const [, payload] = token.split('.')
-    if (!payload) return ''
-    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`
-    const raw = atob(padded)
-    const parsed = JSON.parse(raw) as { sub?: string }
-    return typeof parsed.sub === 'string' ? parsed.sub : ''
-  } catch {
-    return ''
-  }
-}
 
 function normalizeAttachmentRef(raw: unknown, fallbackOrder: number): AttachmentRef | null {
   if (!raw || typeof raw !== 'object') return null
@@ -1944,7 +1933,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
 
   const onPatchAdminUser = async (
     userId: string,
-    payload: { is_admin?: boolean; is_enabled?: boolean }
+    payload: { email?: string; is_enabled?: boolean }
   ): Promise<boolean> => {
     try {
       await patchAdminUser(token, userId, payload)
@@ -1952,6 +1941,24 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         await refreshSectionData('', 'admin-users')
       }
       setSuccessNotice(t('notice.userUpdated'))
+      return true
+    } catch (err) {
+      setErrorNotice(renderError(err))
+      return false
+    }
+  }
+
+  const onChangeAdminUserPassword = async (
+    userId: string,
+    adminPassword: string,
+    newPassword: string
+  ): Promise<boolean> => {
+    try {
+      await changeAdminUserPassword(token, userId, {
+        admin_password: adminPassword,
+        new_password: newPassword
+      })
+      setSuccessNotice(t('notice.userPasswordUpdated'))
       return true
     } catch (err) {
       setErrorNotice(renderError(err))
@@ -3105,6 +3112,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   rows={adminUsers}
                   onReload={onRefresh}
                   onPatch={onPatchAdminUser}
+                  onChangePassword={onChangeAdminUserPassword}
                   onDelete={onDeleteAdminUser}
                   statusFilter={adminUserStatusFilter}
                   onStatusFilterChange={setAdminUserStatusFilter}

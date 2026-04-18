@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget"}
+_INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger"}
 _ENTITY_TYPE_TO_SNAPSHOT_KEY = {
     "transaction": "items",
     "account": "accounts",
@@ -38,6 +38,8 @@ _ENTITY_TYPE_TO_SNAPSHOT_KEY = {
     "tag": "tags",
     "budget": "budgets",
 }
+# 'ledger' 特殊:不是 snapshot 里的 array,而是 snapshot 的 top-level
+# ledgerName / currency 字段。同时也要同步写回 Ledger 表自身,web read 直接拿。
 
 
 def _materialize_individual_changes(
@@ -121,6 +123,33 @@ def _materialize_individual_changes(
 
     # 3. Apply each change to the snapshot
     for change in individual_changes:
+        if change.entity_type == "ledger":
+            # 账本元数据改动:不落到任何 array,直接更新 snapshot 顶层 +
+            # Ledger 表自身。删除 action 不会走这路径(账本删除走
+            # ledger_snapshot delete),这里只处理 upsert。
+            if change.action == "delete":
+                continue
+            payload_raw = change.payload_json
+            if isinstance(payload_raw, str):
+                try:
+                    payload_raw = json.loads(payload_raw)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(payload_raw, dict):
+                continue
+            new_name = payload_raw.get("ledgerName")
+            new_currency = payload_raw.get("currency")
+            if isinstance(new_name, str) and new_name.strip():
+                snapshot["ledgerName"] = new_name.strip()
+            if isinstance(new_currency, str) and new_currency.strip():
+                snapshot["currency"] = new_currency.strip()
+            # 同步写 Ledger 表,让 /read/ledgers 直接读到新名字,不必依赖 snapshot parse
+            ledger_row = db.scalar(select(Ledger).where(Ledger.id == ledger_id))
+            if ledger_row is not None:
+                if isinstance(new_name, str) and new_name.strip():
+                    ledger_row.name = new_name.strip()
+            continue
+
         key = _ENTITY_TYPE_TO_SNAPSHOT_KEY.get(change.entity_type)
         if key is None:
             continue

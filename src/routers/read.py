@@ -58,7 +58,14 @@ _READ_SCOPE_DEP = (
 
 
 def _is_admin(current_user: User) -> bool:
-    return bool(current_user.is_admin)
+    """单用户隔离模型下,read 路由永远按 current_user 过滤 —— admin 角色只
+    作用于 /admin/* 管理面板(用户列表、备份、日志等),不给读账本/交易/分类/
+    标签/账户开"看所有用户数据"的后门。之前 admin 用户注册成第一个账号会
+    自动被提升为 admin(见 alembic 0007_admin_bootstrap),结果 User B 登录
+    就看到 User A 所有账本 —— 单用户自部署场景下这是 bug,不是 feature。
+    """
+    _ = current_user
+    return False
 
 
 def _require_ledger(
@@ -431,15 +438,82 @@ def get_ledger_stats(
     snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
     tx_items = _snapshot_transactions(snapshot)
     budget_items = (snapshot or {}).get("budgets") or []
+    account_items = (snapshot or {}).get("accounts") or []
+    category_items = (snapshot or {}).get("categories") or []
+    tag_items = (snapshot or {}).get("tags") or []
+
+    # 附件口径:数 `attachment_files` 全表 —— 含交易附件 + 分类自定义图标
+    # (都走 /attachments/upload 进同一张表)。mobile 本地把 transactionAttachments
+    # 加上"有 custom icon 的分类数"来对齐。
     attachment_count = db.scalar(
         select(func.count(AttachmentFile.id)).where(
             AttachmentFile.ledger_id == ledger.id
         )
     ) or 0
+
+    # 全局口径:跨当前用户所有账本的总数。用于给 mobile 云同步页的"全部账本"
+    # 那一组展示。
+    #
+    # - tx / budget:账本级,每个 ledger snapshot 的 items/budgets 累加
+    # - attachment:账本级,从 attachment_files 按 user 过滤 COUNT
+    # - account / category / tag:用户级,理论上每个 snapshot 都包含全量,但
+    #   snapshot 间可能有 materialize 时序差。这里按 **syncId 去重的并集**来算
+    #   全局数,保证跟 mobile 本地"全量 count"对齐(`db.select(db.tags).get()`)。
+    user_ledger_ids_subq = (
+        select(Ledger.id).where(Ledger.user_id == current_user.id).scalar_subquery()
+    )
+    all_ledgers = db.scalars(
+        select(Ledger).where(Ledger.user_id == current_user.id)
+    ).all()
+    tx_total = 0
+    budget_total = 0
+    account_sync_ids: set[str] = set()
+    category_sync_ids: set[str] = set()
+    tag_sync_ids: set[str] = set()
+    for lg in all_ledgers:
+        sn = _get_latest_snapshot(db, ledger_id=lg.id) or {}
+        tx_arr = _snapshot_transactions(sn)
+        if isinstance(tx_arr, list):
+            tx_total += len(tx_arr)
+        budget_arr = sn.get("budgets") or []
+        if isinstance(budget_arr, list):
+            budget_total += len(budget_arr)
+        for arr, bucket in (
+            (sn.get("accounts"), account_sync_ids),
+            (sn.get("categories"), category_sync_ids),
+            (sn.get("tags"), tag_sync_ids),
+        ):
+            if isinstance(arr, list):
+                for item in arr:
+                    if isinstance(item, dict):
+                        sid = item.get("syncId")
+                        if isinstance(sid, str) and sid.strip():
+                            bucket.add(sid.strip())
+    attachment_total = int(
+        db.scalar(
+            select(func.count(AttachmentFile.id)).where(
+                AttachmentFile.ledger_id.in_(user_ledger_ids_subq)
+            )
+        )
+        or 0
+    )
+
     return {
         "transaction_count": len(tx_items) if isinstance(tx_items, list) else 0,
+        "transaction_total": tx_total,
         "attachment_count": int(attachment_count),
+        "attachment_total": attachment_total,
         "budget_count": len(budget_items) if isinstance(budget_items, list) else 0,
+        "budget_total": budget_total,
+        # account/category/tag:per-ledger 是当前 snapshot 的长度,total 是全用户
+        # 去重并集。两者不一致就是 "新建实体还没 materialize 到这个账本 snapshot"
+        # 的时序差。
+        "account_count": len(account_items) if isinstance(account_items, list) else 0,
+        "account_total": len(account_sync_ids),
+        "category_count": len(category_items) if isinstance(category_items, list) else 0,
+        "category_total": len(category_sync_ids),
+        "tag_count": len(tag_items) if isinstance(tag_items, list) else 0,
+        "tag_total": len(tag_sync_ids),
     }
 
 
