@@ -370,17 +370,21 @@ def test_projection_count_matches_snapshot_after_mixed_writes():
         ])
 
         lid = _get_ledger_internal_id(sf, "lg_mix")
-        snap = _get_latest_snapshot(sf, lid)
+        # 方案 B 后 snapshot 从 projection 懒构建,跟 projection 必然一致
         with sf() as db:
+            from src import snapshot_builder
+            ledger = db.scalar(select(Ledger).where(Ledger.id == lid))
+            snap = snapshot_builder.build(db, ledger)
             proj_count = db.scalar(select(
                 __import__("sqlalchemy").func.count()
             ).select_from(ReadTxProjection).where(ReadTxProjection.ledger_id == lid))
-            snap_tx_ids = {e["syncId"] for e in (snap.get("items") or []) if e.get("syncId")}
+            built_tx_ids = {e["syncId"] for e in (snap.get("items") or []) if e.get("syncId")}
             proj_tx_ids = {r.sync_id for r in db.scalars(
                 select(ReadTxProjection).where(ReadTxProjection.ledger_id == lid)
             ).all()}
-            assert proj_tx_ids == snap_tx_ids, f"divergent: proj={proj_tx_ids} snap={snap_tx_ids}"
-            assert proj_count == len(snap_tx_ids)
+            assert proj_tx_ids == built_tx_ids
+            assert proj_tx_ids == {"tx1", "tx3"}, f"expected tx1+tx3 after tx2 delete, got {proj_tx_ids}"
+            assert proj_count == 2
     finally:
         app.dependency_overrides.clear()
 

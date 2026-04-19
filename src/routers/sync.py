@@ -15,7 +15,18 @@ from ..ledger_access import (
     list_accessible_ledgers,
 )
 from ..metrics import metrics
-from ..models import AuditLog, Device, Ledger, SyncChange, SyncCursor, User
+from ..models import (
+    AuditLog,
+    Device,
+    Ledger,
+    ReadAccountProjection,
+    ReadCategoryProjection,
+    ReadTagProjection,
+    ReadTxProjection,
+    SyncChange,
+    SyncCursor,
+    User,
+)
 from ..schemas import (
     SyncChangeOut,
     SyncFullResponse,
@@ -25,7 +36,7 @@ from ..schemas import (
     SyncPushResponse,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
-from .. import projection, snapshot_cache
+from .. import projection, snapshot_builder, snapshot_cache
 
 logger = logging.getLogger(__name__)
 
@@ -43,277 +54,127 @@ _ENTITY_TYPE_TO_SNAPSHOT_KEY = {
 # ledgerName / currency 字段。同时也要同步写回 Ledger 表自身,web read 直接拿。
 
 
-def _materialize_individual_changes(
+def _apply_change_to_projection(
     db: Session,
     *,
     ledger_id: str,
-    device_id: str,
-    user_id: str,
+    ledger_owner_id: str,
+    change: SyncChange,
 ) -> None:
-    """Merge individual entity changes into the latest ledger_snapshot.
+    """把一条 SyncChange 投到 projection 上(单事务内)。方案 B 后这是 push 路径
+    保持 projection 和 sync_changes 一致的唯一挂点 —— 不再写 snapshot 行。
 
-    This ensures that incremental pushes from Mobile become visible to the Web
-    which reads from the latest snapshot.
+    关键点:
+    - upsert:先 SELECT 旧 projection 行对比 name,变了就先走 rename_cascade_*
+      (单条 SQL UPDATE 替换 N 次 per-row upsert),再 upsert 当前实体。
+    - ledger entity:更新 Ledger.name / currency(read 路径直接查这两列)。
     """
-    # 0. Serialize materialization per ledger to prevent two concurrent pushes
-    #    from each reading the same snapshot and writing competing new ones.
-    lock_ledger_for_materialize(db, ledger_id)
-
-    # 1. Find latest snapshot
-    snapshot_row = db.scalar(
-        select(SyncChange)
-        .where(
-            SyncChange.ledger_id == ledger_id,
-            SyncChange.entity_type == "ledger_snapshot",
-        )
-        .order_by(SyncChange.change_id.desc())
-        .limit(1)
-    )
-
-    snapshot_change_id = 0
-    snapshot: dict[str, Any] = {}
-    if snapshot_row is not None:
-        snapshot_change_id = snapshot_row.change_id
-        payload = snapshot_row.payload_json
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if isinstance(payload, dict):
-            content = payload.get("content")
-            if isinstance(content, str) and content.strip():
-                try:
-                    snapshot = json.loads(content)
-                except json.JSONDecodeError:
-                    snapshot = {}
-        if not isinstance(snapshot, dict):
-            snapshot = {}
-    else:
-        # No snapshot exists yet — populate basic metadata from Ledger table
+    if change.entity_type == "ledger":
+        if change.action == "delete":
+            return
+        payload_raw = change.payload_json
+        if isinstance(payload_raw, str):
+            try:
+                payload_raw = json.loads(payload_raw)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(payload_raw, dict):
+            return
+        new_name = payload_raw.get("ledgerName")
+        new_currency = payload_raw.get("currency")
         ledger_row = db.scalar(select(Ledger).where(Ledger.id == ledger_id))
-        if ledger_row:
-            snapshot["ledgerName"] = ledger_row.name or ledger_row.external_id
-            snapshot["currency"] = "CNY"
-
-    logger.info(
-        "_materialize_individual_changes: ledger=%s snapshot_change_id=%d",
-        ledger_id, snapshot_change_id,
-    )
-
-    # 2. Get individual changes after the snapshot
-    individual_changes = db.execute(
-        select(SyncChange)
-        .where(
-            SyncChange.ledger_id == ledger_id,
-            SyncChange.change_id > snapshot_change_id,
-            SyncChange.entity_type.in_(_INDIVIDUAL_ENTITY_TYPES),
-        )
-        .order_by(SyncChange.change_id.asc())
-    ).scalars().all()
-
-    if not individual_changes:
-        logger.info("_materialize_individual_changes: no individual changes to apply for ledger=%s", ledger_id)
+        if ledger_row is not None:
+            if isinstance(new_name, str) and new_name.strip():
+                ledger_row.name = new_name.strip()
+            if isinstance(new_currency, str) and new_currency.strip():
+                ledger_row.currency = new_currency.strip()[:16]
         return
 
-    # Log per-entity-type counts
-    type_counts: dict[str, int] = {}
-    for ch in individual_changes:
-        type_counts[ch.entity_type] = type_counts.get(ch.entity_type, 0) + 1
-    logger.info(
-        "_materialize_individual_changes: found %d individual changes %s for ledger=%s",
-        len(individual_changes), type_counts, ledger_id,
-    )
+    sync_id = change.entity_sync_id
+    if change.action == "delete":
+        if change.entity_type == "transaction":
+            projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
+        elif change.entity_type == "account":
+            projection.delete_account(db, ledger_id=ledger_id, sync_id=sync_id)
+        elif change.entity_type == "category":
+            projection.delete_category(db, ledger_id=ledger_id, sync_id=sync_id)
+        elif change.entity_type == "tag":
+            projection.delete_tag(db, ledger_id=ledger_id, sync_id=sync_id)
+        elif change.entity_type == "budget":
+            projection.delete_budget(db, ledger_id=ledger_id, sync_id=sync_id)
+        return
 
-    # Projection 表用 ledger owner 作为 user_id 列。这里一次性取,避免循环里反复查。
-    ledger_owner_id = db.scalar(select(Ledger.user_id).where(Ledger.id == ledger_id)) or user_id
+    # upsert:先 parse payload
+    payload = change.payload_json
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return
+    if not isinstance(payload, dict):
+        return
+    payload.setdefault("syncId", sync_id)
 
-    # 3. Apply each change to the snapshot
-    for change in individual_changes:
-        if change.entity_type == "ledger":
-            # 账本元数据改动:不落到任何 array,直接更新 snapshot 顶层 +
-            # Ledger 表自身。删除 action 不会走这路径(账本删除走
-            # ledger_snapshot delete),这里只处理 upsert。
-            if change.action == "delete":
-                continue
-            payload_raw = change.payload_json
-            if isinstance(payload_raw, str):
-                try:
-                    payload_raw = json.loads(payload_raw)
-                except json.JSONDecodeError:
-                    continue
-            if not isinstance(payload_raw, dict):
-                continue
-            new_name = payload_raw.get("ledgerName")
-            new_currency = payload_raw.get("currency")
-            if isinstance(new_name, str) and new_name.strip():
-                snapshot["ledgerName"] = new_name.strip()
-            if isinstance(new_currency, str) and new_currency.strip():
-                snapshot["currency"] = new_currency.strip()
-            # 同步写 Ledger 表,让 /read/ledgers 直接读到新名字,不必依赖 snapshot parse
-            ledger_row = db.scalar(select(Ledger).where(Ledger.id == ledger_id))
-            if ledger_row is not None:
-                if isinstance(new_name, str) and new_name.strip():
-                    ledger_row.name = new_name.strip()
-            continue
-
-        key = _ENTITY_TYPE_TO_SNAPSHOT_KEY.get(change.entity_type)
-        if key is None:
-            continue
-        arr: list[dict[str, Any]] = snapshot.get(key) or []  # type: ignore[assignment]
-        sync_id = change.entity_sync_id
-
-        if change.action == "delete":
-            arr = [e for e in arr if e.get("syncId") != sync_id]
-            # Projection 同步删除 —— 跟 snapshot 在一个事务里,commit 后 web read 立刻看到
-            if change.entity_type == "transaction":
-                projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
-            elif change.entity_type == "account":
-                projection.delete_account(db, ledger_id=ledger_id, sync_id=sync_id)
+    # Rename cascade 探测:account/category/tag 的 name 变了,先一条 SQL UPDATE 刷 tx projection
+    if change.entity_type in {"account", "category", "tag"}:
+        new_name = str(payload.get("name") or "").strip()
+        if new_name:
+            if change.entity_type == "account":
+                prev_row = db.scalar(
+                    select(ReadAccountProjection).where(
+                        ReadAccountProjection.ledger_id == ledger_id,
+                        ReadAccountProjection.sync_id == sync_id,
+                    )
+                )
+                old_name = (prev_row.name or "").strip() if prev_row is not None else ""
+                if old_name and old_name != new_name:
+                    projection.rename_cascade_account(
+                        db, ledger_id=ledger_id, account_sync_id=sync_id, new_name=new_name,
+                    )
             elif change.entity_type == "category":
-                projection.delete_category(db, ledger_id=ledger_id, sync_id=sync_id)
+                prev_row = db.scalar(
+                    select(ReadCategoryProjection).where(
+                        ReadCategoryProjection.ledger_id == ledger_id,
+                        ReadCategoryProjection.sync_id == sync_id,
+                    )
+                )
+                old_name = (prev_row.name or "").strip() if prev_row is not None else ""
+                if old_name and old_name != new_name:
+                    projection.rename_cascade_category(
+                        db, ledger_id=ledger_id, category_sync_id=sync_id,
+                        new_name=new_name,
+                        new_kind=str(payload.get("kind") or "").strip() or None,
+                    )
             elif change.entity_type == "tag":
-                projection.delete_tag(db, ledger_id=ledger_id, sync_id=sync_id)
-            elif change.entity_type == "budget":
-                projection.delete_budget(db, ledger_id=ledger_id, sync_id=sync_id)
-        else:
-            # upsert
-            payload = change.payload_json
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            if not isinstance(payload, dict):
-                continue
-            # Ensure syncId is set
-            payload.setdefault("syncId", sync_id)
-            found = False
-            old_entity: dict[str, Any] | None = None
-            for i, e in enumerate(arr):
-                if e.get("syncId") == sync_id:
-                    old_entity = e
-                    # 合并而不是整体替换：mobile 的增量 push 只带发生变化的核心
-                    # 字段（如 name / icon），不会每次都带上 iconCloudFileId /
-                    # iconCloudSha256 这种"得先上传文件才知道"的字段。直接替换
-                    # 会把 snapshot 里已有的云端图标引用弄丢。合并时 payload 里
-                    # 未出现的键沿用旧值，显式 null 也视为保留（无法区分"缺失"
-                    # vs "null"），只覆盖明确带有非空值的字段。
-                    merged = {**e, **{k: v for k, v in payload.items() if v is not None}}
-                    # 强制采用 payload 的 syncId（保证一致），并确保核心字段若
-                    # payload 显式传空字符串则仍覆盖（name 改空的边缘情况）。
-                    if "name" in payload and isinstance(payload.get("name"), str):
-                        merged["name"] = payload["name"]
-                    arr[i] = merged
-                    found = True
-                    break
-            if not found:
-                arr.append(payload)
-
-            # Projection upsert —— 用 merged 后的 final entity(snapshot 里那份),
-            # 保证 projection 和 snapshot 字段集合一致(不丢 mobile 没带的 denorm 字段)
-            final_entity = next((e for e in arr if e.get("syncId") == sync_id), payload)
-            if change.entity_type == "transaction":
-                projection.upsert_tx(
-                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                    source_change_id=change.change_id, payload=final_entity,
+                prev_row = db.scalar(
+                    select(ReadTagProjection).where(
+                        ReadTagProjection.ledger_id == ledger_id,
+                        ReadTagProjection.sync_id == sync_id,
+                    )
                 )
-            elif change.entity_type == "account":
-                projection.upsert_account(
-                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                    source_change_id=change.change_id, payload=final_entity,
-                )
-            elif change.entity_type == "category":
-                projection.upsert_category(
-                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                    source_change_id=change.change_id, payload=final_entity,
-                )
-            elif change.entity_type == "tag":
-                projection.upsert_tag(
-                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                    source_change_id=change.change_id, payload=final_entity,
-                )
-            elif change.entity_type == "budget":
-                projection.upsert_budget(
-                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                    source_change_id=change.change_id, payload=final_entity,
-                )
+                old_name = (prev_row.name or "").strip() if prev_row is not None else ""
+                if old_name and old_name != new_name:
+                    projection.rename_cascade_tag(
+                        db, ledger_id=ledger_id, tag_sync_id=sync_id,
+                        old_name=old_name, new_name=new_name,
+                    )
 
-            # 重命名级联：当 account / category / tag 的 name 变了，snapshot.items
-            # 里以前引用旧 name 的 tx 也要跟着改。否则 web 查 tx 列表返回的
-            # categoryName / accountName / tags 字符串就是老名字，表现为
-            # "mobile 改了名，web 上 tx 里的标签/分类还是老名字（看起来是缓存）"。
-            if old_entity is not None and change.entity_type in {"account", "category", "tag"}:
-                old_name = str(old_entity.get("name") or "").strip()
-                new_name = str(payload.get("name") or "").strip()
-                if old_name and new_name and old_name != new_name:
-                    items_arr = snapshot.get("items") or []
-                    if change.entity_type == "category":
-                        old_kind = str(old_entity.get("kind") or "").strip()
-                        for tx in items_arr:
-                            if tx.get("categoryName") == old_name and (
-                                not old_kind or tx.get("categoryKind") == old_kind
-                            ):
-                                tx["categoryName"] = new_name
-                        # projection 对应级联:by category_sync_id 精确定位,比 snapshot 的按 name 更准
-                        projection.rename_cascade_category(
-                            db, ledger_id=ledger_id, category_sync_id=sync_id,
-                            new_name=new_name,
-                            new_kind=str(payload.get("kind") or "").strip() or None,
-                        )
-                    elif change.entity_type == "account":
-                        for tx in items_arr:
-                            if tx.get("accountName") == old_name:
-                                tx["accountName"] = new_name
-                            if tx.get("fromAccountName") == old_name:
-                                tx["fromAccountName"] = new_name
-                            if tx.get("toAccountName") == old_name:
-                                tx["toAccountName"] = new_name
-                        projection.rename_cascade_account(
-                            db, ledger_id=ledger_id, account_sync_id=sync_id,
-                            new_name=new_name,
-                        )
-                    elif change.entity_type == "tag":
-                        for tx in items_arr:
-                            raw_tags = tx.get("tags")
-                            if not raw_tags or not isinstance(raw_tags, str):
-                                continue
-                            parts = [
-                                new_name if part.strip() == old_name else part
-                                for part in raw_tags.split(",")
-                            ]
-                            tx["tags"] = ",".join(p for p in parts if p.strip())
-                        projection.rename_cascade_tag(
-                            db, ledger_id=ledger_id, tag_sync_id=sync_id,
-                            old_name=old_name, new_name=new_name,
-                        )
-
-        snapshot[key] = arr
-
-    logger.info(
-        "_materialize_individual_changes: after apply — items=%d accounts=%d categories=%d tags=%d for ledger=%s",
-        len(snapshot.get("items") or []),
-        len(snapshot.get("accounts") or []),
-        len(snapshot.get("categories") or []),
-        len(snapshot.get("tags") or []),
-        ledger_id,
-    )
-
-    # 4. Write updated snapshot as a new SyncChange
-    now = datetime.now(timezone.utc)
-    db.add(SyncChange(
-        user_id=db.scalar(select(Ledger.user_id).where(Ledger.id == ledger_id)) or user_id,
-        ledger_id=ledger_id,
-        entity_type="ledger_snapshot",
-        entity_sync_id=db.scalar(select(Ledger.external_id).where(Ledger.id == ledger_id)) or "",
-        action="upsert",
-        payload_json={
-            "content": json.dumps(snapshot, ensure_ascii=False),
-            "metadata": {"source": "materialize_individual"},
-        },
-        updated_at=now,
-        updated_by_device_id=device_id,
-        updated_by_user_id=user_id,
-    ))
-    db.flush()
-    # 写完新快照立即让进程内 snapshot 缓存失效 —— 下一次 /read/* 会重新 parse。
-    # 同进程 miss 一次即可,跨 uvicorn worker 的旧缓存也会被 change_id 对账拦下
-    # (见 snapshot_cache.get 的 change_id 比较)。
-    snapshot_cache.invalidate(ledger_id)
+    # Entity 自身 upsert
+    if change.entity_type == "transaction":
+        projection.upsert_tx(db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                              source_change_id=change.change_id, payload=payload)
+    elif change.entity_type == "account":
+        projection.upsert_account(db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                                    source_change_id=change.change_id, payload=payload)
+    elif change.entity_type == "category":
+        projection.upsert_category(db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                                     source_change_id=change.change_id, payload=payload)
+    elif change.entity_type == "tag":
+        projection.upsert_tag(db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                                source_change_id=change.change_id, payload=payload)
+    elif change.entity_type == "budget":
+        projection.upsert_budget(db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                                   source_change_id=change.change_id, payload=payload)
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -358,7 +219,6 @@ async def push_changes(
     conflict_samples: list[dict[str, Any]] = []
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
-    ledgers_with_individual_changes: set[str] = set()  # ledger internal ids
 
     for change in req.changes:
         row = get_accessible_ledger_by_external_id(
@@ -475,11 +335,20 @@ async def push_changes(
         db.add(row_change)
         db.flush()
 
+        # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
+        if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
+            # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
+            lock_ledger_for_materialize(db, ledger.id)
+            _apply_change_to_projection(
+                db,
+                ledger_id=ledger.id,
+                ledger_owner_id=ledger.user_id,
+                change=row_change,
+            )
+
         accepted += 1
         max_cursor = max(max_cursor, row_change.change_id)
         touched_ledgers[ledger.external_id] = ledger.id
-        if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
-            ledgers_with_individual_changes.add(ledger.id)
         logger.info(
             "sync.push.accept entity=%s action=%s ledger=%s sync_id=%s change_id=%d device=%s user=%s",
             change.entity_type,
@@ -493,22 +362,6 @@ async def push_changes(
     if max_cursor == 0:
         accessible = list_accessible_ledgers(db, user_id=current_user.id)
         max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
-
-    # Materialize individual entity changes into snapshot so Web can see them
-    for ledger_ext_id, ledger_id in touched_ledgers.items():
-        if ledger_id not in ledgers_with_individual_changes:
-            continue
-        _materialize_individual_changes(
-            db,
-            ledger_id=ledger_id,
-            device_id=req.device_id,
-            user_id=current_user.id,
-        )
-    if touched_ledgers:
-        db.flush()
-        # Update max_cursor to include the new snapshot changes
-        new_max = _max_cursor_for_ledgers(db, list(touched_ledgers.values()))
-        max_cursor = max(max_cursor, new_max)
 
     db.commit()
 
@@ -665,6 +518,11 @@ def full_snapshot(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SyncFullResponse:
+    """给 mobile 的首次/全量同步。方案 B 后从 projection 懒构建(按 change_id 缓存)。
+
+    mobile 协议兼容:返回 payload_json 还是 `{content: json_str, metadata: {...}}`,
+    content 是序列化 snapshot —— mobile 零改动。
+    """
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
     latest_cursor = _max_cursor_for_ledgers(db, ledger_ids)
@@ -677,29 +535,48 @@ def full_snapshot(
     if row is None:
         return SyncFullResponse(ledger_id=ledger_id, snapshot=None, latest_cursor=latest_cursor)
     ledger, _ = row
-    latest_change = db.scalar(
-        select(SyncChange)
+
+    # Tombstone 检查:若最后一次 ledger_snapshot 是 delete(account 被软删),返回 None
+    last_tombstone = db.scalar(
+        select(SyncChange.action)
         .where(
             SyncChange.ledger_id == ledger.id,
             SyncChange.entity_type == "ledger_snapshot",
+            SyncChange.action == "delete",
         )
         .order_by(SyncChange.change_id.desc())
+        .limit(1)
     )
-    if not latest_change or latest_change.action == "delete":
+    if last_tombstone == "delete":
         return SyncFullResponse(ledger_id=ledger_id, snapshot=None, latest_cursor=latest_cursor)
 
+    # Ledger 没任何 change → 空账本,返回 None
+    ledger_change_id = snapshot_builder.latest_change_id(db, ledger.id)
+    if ledger_change_id == 0:
+        return SyncFullResponse(ledger_id=ledger_id, snapshot=None, latest_cursor=latest_cursor)
+
+    # 按 change_id 缓存 —— 同一版本下所有请求复用。build 一次 ~15ms,之后 miss→hit。
+    cached = snapshot_cache.get(ledger.id, ledger_change_id)
+    if cached is None:
+        cached = snapshot_builder.build(db, ledger)
+        snapshot_cache.put(ledger.id, ledger_change_id, cached)
+
+    payload_json = {
+        "content": json.dumps(cached, ensure_ascii=False),
+        "metadata": {"source": "lazy_rebuild"},
+    }
     return SyncFullResponse(
         ledger_id=ledger_id,
         latest_cursor=latest_cursor,
         snapshot=SyncChangeOut(
-            change_id=latest_change.change_id,
+            change_id=ledger_change_id,
             ledger_id=ledger_id,
-            entity_type=latest_change.entity_type,
-            entity_sync_id=latest_change.entity_sync_id,
-            action=cast("Any", latest_change.action),
-            payload=latest_change.payload_json,
-            updated_at=latest_change.updated_at,
-            updated_by_device_id=latest_change.updated_by_device_id,
+            entity_type="ledger_snapshot",
+            entity_sync_id=ledger.external_id,
+            action=cast("Any", "upsert"),
+            payload=payload_json,
+            updated_at=datetime.now(timezone.utc),
+            updated_by_device_id=None,
         ),
     )
 
@@ -710,39 +587,51 @@ def list_ledgers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[SyncLedgerOut]:
+    """方案 B 后:用户可见账本元数据。size 估算从 tx 行数外推(不再 byte 精确)。"""
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     out: list[SyncLedgerOut] = []
     for ledger in accessible:
-        latest_change = db.scalar(
-            select(SyncChange)
+        # 软删除检测:最后一次 ledger_snapshot delete tombstone
+        last_tombstone = db.scalar(
+            select(SyncChange.action)
             .where(
                 SyncChange.ledger_id == ledger.id,
                 SyncChange.entity_type == "ledger_snapshot",
+                SyncChange.action == "delete",
             )
             .order_by(SyncChange.change_id.desc())
+            .limit(1)
         )
-        if not latest_change or latest_change.action == "delete":
+        if last_tombstone == "delete":
             continue
 
-        metadata: dict[str, Any] = {}
-        size = 0
-        updated_at = latest_change.updated_at
-        payload = latest_change.payload_json
-        if isinstance(payload, dict):
-            content = payload.get("content")
-            if isinstance(content, str):
-                size = len(content.encode("utf-8"))
-            meta = payload.get("metadata")
-            if isinstance(meta, dict):
-                metadata = meta
+        latest_change_id = snapshot_builder.latest_change_id(db, ledger.id)
+        if latest_change_id == 0:
+            continue
+
+        # latest_updated_at:最后一次任意 change 的时间
+        latest_updated = db.scalar(
+            select(SyncChange.updated_at)
+            .where(SyncChange.ledger_id == ledger.id)
+            .order_by(SyncChange.change_id.desc())
+            .limit(1)
+        )
+
+        # size 估算:每条 tx 按 ~300 字节算,配合基础元数据
+        tx_count = db.scalar(
+            select(func.count())
+            .select_from(ReadTxProjection)
+            .where(ReadTxProjection.ledger_id == ledger.id)
+        ) or 0
+        size = 512 + tx_count * 300  # 足够粗略的估算
 
         out.append(
             SyncLedgerOut(
                 ledger_id=ledger.external_id,
                 path=ledger.external_id,
-                updated_at=updated_at,
+                updated_at=latest_updated or datetime.now(timezone.utc),
                 size=size,
-                metadata=metadata,
+                metadata={"source": "lazy_rebuild"},
                 role=cast("Any", "owner"),
             )
         )

@@ -111,6 +111,9 @@ class Ledger(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     external_id: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 原先走 snapshot.currency,现在单独存列 —— read 路径不用再 parse snapshot。
+    # 默认 CNY 对齐 mobile/web 默认币种。
+    currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")

@@ -238,7 +238,7 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
-    _sort_transactions(target)
+    # 跳过 _sort_transactions(方案 B):snapshot 不写回,排序徒劳
     target["count"] = len(_ensure_list(target, "items"))
     return target, tx_id
 
@@ -313,7 +313,8 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item.pop("attachments", None)
     _mark_entity_actor(item, payload, create=False)
 
-    _sort_transactions(target)
+    # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
+    # projection 读路径走 SQL ORDER BY,顺序由 index 保证。
     target["count"] = len(items)
     return target
 
@@ -324,7 +325,8 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     idx, item = _find_by_sync_id(items, tx_id, expected_prefix="tx")
     _assert_actor_can_modify(item, payload or {})
     items.pop(idx)
-    _sort_transactions(target)
+    # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
+    # projection 读路径走 SQL ORDER BY,顺序由 index 保证。
     target["count"] = len(items)
     return target
 

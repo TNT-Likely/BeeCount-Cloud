@@ -25,6 +25,7 @@ from ..ledger_access import (
 from ..models import (
     AuditLog,
     Ledger,
+    ReadTxProjection,
     SyncChange,
     SyncPushIdempotency,
     User,
@@ -44,7 +45,7 @@ from ..schemas import (
     WriteTransactionUpdateRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
-from .. import projection, snapshot_cache
+from .. import projection, snapshot_builder, snapshot_cache
 from ..snapshot_mutator import (
     create_account,
     create_category,
@@ -176,26 +177,50 @@ def _diff_entity_list(
     prev_list: list[dict[str, Any]],
     next_list: list[dict[str, Any]],
     entity_type: str,
-    snapshot_change_id: int,
+    emitted_ids: list[int],
     cascade_covered: bool = False,
-) -> int:
-    """Create individual SyncChange rows for entities that changed between two snapshots.
+) -> None:
+    """Emit per-entity SyncChange rows + 同事务 projection 写入。
 
-    `cascade_covered=True`: 对 transaction,若 diff 仅在 cascade 字段上(即纯粹是
-    account/category/tag 改名 propagate 过来的),跳过 per-row projection upsert
-    —— rename_cascade_* SQL UPDATE 已经把这些 tx 的 denormalized name 列刷了。
+    性能关键点:**cascade-only tx 改动走 bulk insert**(一次 executemany 把 N 条
+    SyncChange 塞进去),不 per-row flush。rename_cascade_* SQL 已经刷了 projection,
+    所以这些 tx 只需要一条 SyncChange 行给 mobile pull 用,不需要 change_id 回读。
+
+    10k tx 的标签改名:从 10k 次 INSERT + flush (~800ms) 降到 1 条 executemany (~50ms)。
     """
     prev_map = {e["syncId"]: e for e in prev_list if "syncId" in e}
     next_map = {e["syncId"]: e for e in next_list if "syncId" in e}
-    count = 0
     upsert_fn = _PROJECTION_UPSERTERS.get(entity_type)
     delete_fn = _PROJECTION_DELETERS.get(entity_type)
 
-    # Upserted entities (new or changed)
+    # bulk 队列:(entity_type, "upsert"/"delete", sync_id, payload_json)
+    # 只收 cascade-only tx —— 它们不需要 source_change_id 回读
+    bulk_upsert_rows: list[dict[str, Any]] = []
+
     for sync_id, entity in next_map.items():
         prev_entity = prev_map.get(sync_id)
         if prev_entity is None or entity != prev_entity:
-            db.add(SyncChange(
+            is_cascade_only = (
+                entity_type == "transaction"
+                and cascade_covered
+                and prev_entity is not None
+                and _tx_diff_only_cascade(prev_entity, entity)
+            )
+            if is_cascade_only:
+                bulk_upsert_rows.append({
+                    "user_id": ledger.user_id,
+                    "ledger_id": ledger.id,
+                    "entity_type": entity_type,
+                    "entity_sync_id": sync_id,
+                    "action": "upsert",
+                    "payload_json": entity,
+                    "updated_at": now,
+                    "updated_by_device_id": device_id,
+                    "updated_by_user_id": current_user.id,
+                })
+                continue
+            # 普通路径:insert + flush 取 change_id,再走 projection upsert
+            change_row = SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
                 entity_type=entity_type,
@@ -205,30 +230,22 @@ def _diff_entity_list(
                 updated_at=now,
                 updated_by_device_id=device_id,
                 updated_by_user_id=current_user.id,
-            ))
-            count += 1
-            # Projection 同步写入 —— 同事务,commit 后立刻可查。
-            # tx 纯 cascade diff 跳过 —— rename_cascade_* 批量处理了。
+            )
+            db.add(change_row)
+            db.flush()
+            emitted_ids.append(change_row.change_id)
             if upsert_fn is not None:
-                skip = (
-                    entity_type == "transaction"
-                    and cascade_covered
-                    and prev_entity is not None
-                    and _tx_diff_only_cascade(prev_entity, entity)
+                upsert_fn(
+                    db,
+                    ledger_id=ledger.id,
+                    user_id=ledger.user_id,
+                    source_change_id=change_row.change_id,
+                    payload=entity,
                 )
-                if not skip:
-                    upsert_fn(
-                        db,
-                        ledger_id=ledger.id,
-                        user_id=ledger.user_id,
-                        source_change_id=snapshot_change_id,
-                        payload=entity,
-                    )
 
-    # Deleted entities
     for sync_id in prev_map:
         if sync_id not in next_map:
-            db.add(SyncChange(
+            change_row = SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
                 entity_type=entity_type,
@@ -238,12 +255,23 @@ def _diff_entity_list(
                 updated_at=now,
                 updated_by_device_id=device_id,
                 updated_by_user_id=current_user.id,
-            ))
-            count += 1
+            )
+            db.add(change_row)
+            db.flush()
+            emitted_ids.append(change_row.change_id)
             if delete_fn is not None:
                 delete_fn(db, ledger_id=ledger.id, sync_id=sync_id)
 
-    return count
+    # Bulk flush cascade-only rows
+    if bulk_upsert_rows:
+        from sqlalchemy import insert as sa_insert
+        db.execute(sa_insert(SyncChange), bulk_upsert_rows)
+        # 取新插入的最大 change_id 作 emitted_ids(给 response.new_change_id)
+        new_max = db.scalar(
+            select(func.max(SyncChange.change_id)).where(SyncChange.ledger_id == ledger.id)
+        )
+        if new_max:
+            emitted_ids.append(int(new_max))
 
 
 def _emit_entity_diffs(
@@ -255,8 +283,7 @@ def _emit_entity_diffs(
     prev: dict[str, Any] | None,
     next_snapshot: dict[str, Any],
     now: datetime,
-    snapshot_change_id: int,
-) -> None:
+) -> list[int]:
     """Diff prev/next snapshots and emit individual SyncChange rows for each changed entity.
 
     顺序很重要：先 account / category / tag（被引用方），最后 transaction（引用
@@ -278,16 +305,16 @@ def _emit_entity_diffs(
     tag_renames = _collect_renames(prev.get("tags") or [], next_snapshot.get("tags") or [])
     any_rename = bool(account_renames or category_renames or tag_renames)
 
-    count = 0
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("accounts") or [], next_snapshot.get("accounts") or [],
-                               "account", snapshot_change_id)
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("categories") or [], next_snapshot.get("categories") or [],
-                               "category", snapshot_change_id)
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("tags") or [], next_snapshot.get("tags") or [],
-                               "tag", snapshot_change_id)
+    emitted_ids: list[int] = []
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("accounts") or [], next_snapshot.get("accounts") or [],
+                      "account", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("categories") or [], next_snapshot.get("categories") or [],
+                      "category", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("tags") or [], next_snapshot.get("tags") or [],
+                      "tag", emitted_ids)
 
     # Rename cascade via SQL batch,放在 tx diff 之前 —— 保证 tx diff 跳过的
     # cascade 行已经被刷新过。
@@ -306,15 +333,14 @@ def _emit_entity_diffs(
             old_name=old, new_name=new,
         )
 
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("items") or [], next_snapshot.get("items") or [],
-                               "transaction", snapshot_change_id,
-                               cascade_covered=any_rename)
-    # budgets 也得 diff —— web 修改预算走 ensure_snapshot_v2 的 snapshot.budgets 数组
-    count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("budgets") or [], next_snapshot.get("budgets") or [],
-                               "budget", snapshot_change_id)
-    logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", count, ledger.external_id)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("items") or [], next_snapshot.get("items") or [],
+                      "transaction", emitted_ids, cascade_covered=any_rename)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("budgets") or [], next_snapshot.get("budgets") or [],
+                      "budget", emitted_ids)
+    logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", len(emitted_ids), ledger.external_id)
+    return emitted_ids
 
 
 def _load_ledger_for_write(
@@ -410,6 +436,214 @@ def _load_idempotent_response(
     return WriteCommitMeta.model_validate(payload)
 
 
+async def _commit_write_fast_tx(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    ledger: Ledger,
+    base_change_id: int,
+    request_payload: dict,
+    idempotency_key: str | None,
+    device_id: str,
+    audit_action: str,
+    tx_id: str,
+    mutate_payload: dict,
+    action: str,  # "upsert" | "delete"
+) -> WriteCommitMeta:
+    """Fast path:单 tx update/delete,跳过全 snapshot build。只 SELECT 目标 tx
+    (1 条 query by PK)→ 合并 payload → 写 SyncChange + projection。~10-15ms。
+    """
+    lock_ledger_for_materialize(db, ledger.id)
+    now = _utcnow()
+
+    # 1. 读目标 tx from projection
+    tx_row = db.scalar(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.sync_id == tx_id,
+        )
+    )
+    if tx_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+
+    # 2. 把 projection row → dict(mutator 认的 snapshot item 格式)
+    prev_item = _projection_row_to_tx_dict(tx_row)
+
+    # 3. actor 权限检查(复用现有逻辑)
+    from ..snapshot_mutator import _assert_actor_can_modify  # 延迟 import 避免循环
+    try:
+        _assert_actor_can_modify(prev_item, mutate_payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    if action == "delete":
+        change_row = SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            entity_type="transaction",
+            entity_sync_id=tx_id,
+            action="delete",
+            payload_json={},
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
+        db.add(change_row)
+        db.flush()
+        projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
+    else:
+        # Upsert:merge payload 到 prev_item
+        from ..snapshot_mutator import update_transaction
+        # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
+        minimal_snap = {"items": [prev_item], "count": 1}
+        minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
+        new_item = minimal_snap["items"][0]
+
+        change_row = SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            entity_type="transaction",
+            entity_sync_id=tx_id,
+            action="upsert",
+            payload_json=new_item,
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
+        db.add(change_row)
+        db.flush()
+        projection.upsert_tx(
+            db,
+            ledger_id=ledger.id,
+            user_id=ledger.user_id,
+            source_change_id=change_row.change_id,
+            payload=new_item,
+        )
+
+    new_change_id = change_row.change_id
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            ledger_id=ledger.id,
+            action=audit_action,
+            metadata_json={
+                "ledgerId": ledger.external_id,
+                "baseChangeId": base_change_id,
+                "newChangeId": new_change_id,
+                "entityId": tx_id,
+            },
+        )
+    )
+
+    response = WriteCommitMeta(
+        ledger_id=ledger.external_id,
+        base_change_id=base_change_id,
+        new_change_id=new_change_id,
+        server_timestamp=now,
+        idempotency_replayed=False,
+        entity_id=tx_id,
+    )
+
+    request_hash = _hash_request(request.method, request.url.path, request_payload)
+    if idempotency_key:
+        db.add(
+            SyncPushIdempotency(
+                user_id=current_user.id,
+                device_id=device_id,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                response_json=response.model_dump(mode="json"),
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if idempotency_key:
+            replay = _load_idempotent_response(
+                db,
+                user_id=current_user.id,
+                device_id=device_id,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                return replay
+        raise exc
+
+    await request.app.state.ws_manager.broadcast_to_user(
+        ledger.user_id,
+        {
+            "type": "sync_change",
+            "ledgerId": ledger.external_id,
+            "serverCursor": response.new_change_id,
+            "serverTimestamp": response.server_timestamp.isoformat(),
+        },
+    )
+    logger.info(
+        "write.commit.fast action=%s ledger=%s entity=%s change_id=%d device=%s user=%s",
+        audit_action, ledger.external_id, tx_id, response.new_change_id, device_id, current_user.id,
+    )
+    return response
+
+
+def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
+    """projection row → snapshot item dict,跟 snapshot_builder.build 的格式一致。"""
+    from ..snapshot_builder import _to_iso_utc
+    item: dict[str, Any] = {
+        "syncId": row.sync_id,
+        "type": row.tx_type,
+        "amount": row.amount,
+        "happenedAt": _to_iso_utc(row.happened_at),
+    }
+    if row.note is not None:
+        item["note"] = row.note
+    if row.category_sync_id:
+        item["categoryId"] = row.category_sync_id
+    if row.category_name:
+        item["categoryName"] = row.category_name
+    if row.category_kind:
+        item["categoryKind"] = row.category_kind
+    if row.account_sync_id:
+        item["accountId"] = row.account_sync_id
+    if row.account_name:
+        item["accountName"] = row.account_name
+    if row.from_account_sync_id:
+        item["fromAccountId"] = row.from_account_sync_id
+    if row.from_account_name:
+        item["fromAccountName"] = row.from_account_name
+    if row.to_account_sync_id:
+        item["toAccountId"] = row.to_account_sync_id
+    if row.to_account_name:
+        item["toAccountName"] = row.to_account_name
+    if row.tags_csv:
+        item["tags"] = row.tags_csv
+    if row.tag_sync_ids_json:
+        try:
+            tag_ids = json.loads(row.tag_sync_ids_json)
+            if isinstance(tag_ids, list) and tag_ids:
+                item["tagIds"] = tag_ids
+        except json.JSONDecodeError:
+            pass
+    if row.attachments_json:
+        try:
+            atts = json.loads(row.attachments_json)
+            if isinstance(atts, list) and atts:
+                item["attachments"] = atts
+        except json.JSONDecodeError:
+            pass
+    if row.tx_index:
+        item["txIndex"] = row.tx_index
+    if row.created_by_user_id:
+        item["createdByUserId"] = row.created_by_user_id
+    return item
+
+
 async def _commit_write(
     *,
     request: Request,
@@ -423,35 +657,28 @@ async def _commit_write(
     audit_action: str,
     mutate: Callable[[dict], tuple[dict, str | None]],
 ) -> WriteCommitMeta:
-    # Serialize concurrent writers on the same ledger so the subsequent
-    # snapshot write doesn't race with /sync/push's materializer.
+    # Serialize concurrent writers on the same ledger。方案 B 后不再写 snapshot,
+    # 但依然锁 —— 防止 rename cascade 的 SQL UPDATE 和 tx upsert 交叉跑。
     lock_ledger_for_materialize(db, ledger.id)
-    latest = _latest_snapshot_change(db, ledger.id)
-    latest_change_id = latest.change_id if latest is not None else 0
 
-    # Legacy strict base_change_id comparison — guarded by a feature flag.
-    # Default OFF: during a mobile fullPush the server-side materializer bumps
-    # latest_change_id faster than any web retry can catch up, producing
-    # endless 409s. Instead we always mutate against the LATEST snapshot and
-    # let per-entity LWW (`_emit_entity_diffs` → incoming vs existing
-    # updated_at tuples) resolve the rare real conflict.
-    if settings.strict_base_change_id and base_change_id != latest_change_id:
-        latest_ts = latest.updated_at.isoformat() if latest is not None else None
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": "Write conflict",
-                "latest_change_id": latest_change_id,
-                "latest_server_timestamp": latest_ts,
-            },
-        )
+    # strict_base_change_id 语义转换:原先比 latest ledger_snapshot.change_id,
+    # 方案 B 后 snapshot 不再写,改比 ledger 上任意 entity 的最新 change_id
+    # (更严格 —— 连 tx 级修改都会触发 409)。默认关闭的 feature flag,生产用不到。
+    if settings.strict_base_change_id:
+        latest_any_change_id = snapshot_builder.latest_change_id(db, ledger.id)
+        if base_change_id != latest_any_change_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Write conflict",
+                    "latest_change_id": latest_any_change_id,
+                },
+            )
 
-    snapshot = _parse_snapshot(latest)
-    # Keep an independent copy of prev snapshot for diffing。mutate() 会修改
-    # items[i]/accounts[i]/... 里字段(e.g. `item["amount"] = ...`),也会
-    # 替换数组元素(e.g. `items[i] = merged`)。但没有 mutator 会深挖到嵌套
-    # list/dict 里 append 原对象的东西。所以一层 shallow dict-per-entity 拷贝
-    # 足够隔离 prev。10k tx 的 json round-trip ~18ms,shallow 拷贝 ~1ms。
+    # 从 projection 按需构建当前状态给 mutator 吃。这个 snapshot dict 不写回 DB ——
+    # 只是 mutator 内部用来查当前实体、做 duplicate/actor 校验。
+    snapshot = snapshot_builder.build(db, ledger)
+    # Shallow-per-entity copy for diffing(mutator 会原地改 items[i] 等)
     prev_snapshot = {**snapshot}
     for _k in ("items", "accounts", "categories", "tags", "budgets"):
         arr = snapshot.get(_k)
@@ -467,27 +694,9 @@ async def _commit_write(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     now = _utcnow()
-    row_change = SyncChange(
-        user_id=ledger.user_id,
-        ledger_id=ledger.id,
-        entity_type="ledger_snapshot",
-        entity_sync_id=ledger.external_id,
-        action="upsert",
-        payload_json={
-            "content": json.dumps(next_snapshot, ensure_ascii=False),
-            "metadata": {"source": "web_write"},
-        },
-        updated_at=now,
-        updated_by_device_id=device_id,
-        updated_by_user_id=current_user.id,
-    )
-    db.add(row_change)
-    db.flush()
-    snapshot_cache.invalidate(ledger.id)
-
-    # Emit individual entity SyncChanges so Mobile can see Web changes.
-    # 同时在同事务内写 read_*_projection —— web /read/* 直接查 projection 不再 parse snapshot。
-    _emit_entity_diffs(
+    # 不再写 ledger_snapshot 行。emit 个体 SyncChange + 同事务 projection 写入,
+    # new_change_id 用 emit 出来的最后一条 SyncChange 的 change_id。
+    emitted_change_ids = _emit_entity_diffs(
         db,
         ledger=ledger,
         current_user=current_user,
@@ -495,7 +704,10 @@ async def _commit_write(
         prev=prev_snapshot,
         next_snapshot=next_snapshot,
         now=now,
-        snapshot_change_id=row_change.change_id,
+    )
+    # 无变化 → 用当前 max change_id(幂等/只是触发写但没真修改的场景)
+    new_change_id = max(emitted_change_ids) if emitted_change_ids else (
+        snapshot_builder.latest_change_id(db, ledger.id)
     )
 
     db.add(
@@ -506,7 +718,7 @@ async def _commit_write(
             metadata_json={
                 "ledgerId": ledger.external_id,
                 "baseChangeId": base_change_id,
-                "newChangeId": row_change.change_id,
+                "newChangeId": new_change_id,
                 "entityId": entity_id,
             },
         )
@@ -515,8 +727,8 @@ async def _commit_write(
     response = WriteCommitMeta(
         ledger_id=ledger.external_id,
         base_change_id=base_change_id,
-        new_change_id=row_change.change_id,
-        server_timestamp=row_change.updated_at,
+        new_change_id=new_change_id,
+        server_timestamp=now,
         idempotency_replayed=False,
         entity_id=entity_id,
     )
@@ -667,38 +879,26 @@ async def create_ledger(
         user_id=current_user.id,
         external_id=external_id,
         name=name,
+        currency=currency,
     )
     db.add(ledger)
     db.flush()
 
-    snapshot = ensure_snapshot_v2(
-        {
-            "ledgerName": name,
-            "currency": currency,
-            "items": [],
-            "accounts": [],
-            "categories": [],
-            "tags": [],
-            "count": 0,
-        }
-    )
+    # 方案 B:不写 ledger_snapshot 行。emit 一个 ledger entity SyncChange 个体事件,
+    # mobile /sync/pull 能收到这个 ledger 被创建的事件。
     row_change = SyncChange(
         user_id=current_user.id,
         ledger_id=ledger.id,
-        entity_type="ledger_snapshot",
+        entity_type="ledger",
         entity_sync_id=external_id,
         action="upsert",
-        payload_json={
-            "content": json.dumps(snapshot, ensure_ascii=False),
-            "metadata": {"source": "web_write"},
-        },
+        payload_json={"ledgerName": name, "currency": currency},
         updated_at=now,
         updated_by_device_id="web-console",
         updated_by_user_id=current_user.id,
     )
     db.add(row_change)
     db.flush()
-    snapshot_cache.invalidate(ledger.id)
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -775,6 +975,8 @@ async def update_ledger_meta(
 
     if "ledger_name" in payload:
         ledger.name = payload["ledger_name"]
+    if "currency" in payload:
+        ledger.currency = payload["currency"]
 
     def mutate(snapshot: dict) -> tuple[dict, str]:
         next_snapshot = ensure_snapshot_v2(snapshot)
@@ -959,18 +1161,19 @@ async def update_tx(
     # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,
     # 不再经 UserAccount 投影表。
     mutate_payload = _payload_with_actor(payload, current_user)
-    resolved_payload = payload
-    return await _commit_write(
+    return await _commit_write_fast_tx(
         request=request,
         db=db,
         current_user=current_user,
         ledger=ledger,
         base_change_id=req.base_change_id,
-        request_payload=resolved_payload,
+        request_payload=payload,
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_tx_update",
-        mutate=lambda snapshot: (update_transaction(snapshot, tx_id, mutate_payload), tx_id),
+        tx_id=tx_id,
+        mutate_payload=mutate_payload,
+        action="upsert",
     )
 
 
@@ -1011,7 +1214,7 @@ async def delete_tx(
         current_user=current_user,
         entity_sync_id=tx_id,
     )
-    return await _commit_write(
+    return await _commit_write_fast_tx(
         request=request,
         db=db,
         current_user=current_user,
@@ -1021,7 +1224,9 @@ async def delete_tx(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_tx_delete",
-        mutate=lambda snapshot: (delete_transaction(snapshot, tx_id, mutate_payload), tx_id),
+        tx_id=tx_id,
+        mutate_payload=mutate_payload,
+        action="delete",
     )
 
 

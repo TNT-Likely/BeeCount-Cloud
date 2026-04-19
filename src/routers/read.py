@@ -228,14 +228,73 @@ def _snapshot_ledger_info(
 
 
 def _resolve_ledger_name(db: Session, *, ledger: Ledger) -> str:
-    """优先从 snapshot.ledgerName 拿显示名(mobile 早期没往 Ledger.name 写,
-    列表/下拉会出 UUID 样的 external_id)。snapshot_cache 命中后约 1ms。"""
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    if isinstance(snapshot, dict):
-        raw = snapshot.get("ledgerName")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-    return ledger.name or ledger.external_id
+    """Ledger.name 是权威源。边缘 case(老数据 name 为 NULL,0020 迁移错过,
+    或 mobile 没 push ledger entity 过):回退到 sync_changes,并自愈写回 Ledger.name。
+    自愈写入用独立 commit —— 读 endpoint 默认不提交,我们显式提交以持久化。
+    """
+    if ledger.name and ledger.name.strip():
+        return ledger.name.strip()
+
+    resolved: str | None = None
+
+    # Fallback 1:最近一条 ledger entity SyncChange 的 ledgerName
+    recent_ledger = db.scalar(
+        select(SyncChange.payload_json).where(
+            SyncChange.ledger_id == ledger.id,
+            SyncChange.entity_type == "ledger",
+            SyncChange.action == "upsert",
+        ).order_by(SyncChange.change_id.desc()).limit(1)
+    )
+    if recent_ledger is not None:
+        payload = recent_ledger
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = None
+        if isinstance(payload, dict):
+            name = (payload.get("ledgerName") or "").strip()
+            if name:
+                resolved = name
+
+    # Fallback 2:历史 ledger_snapshot 的 content.ledgerName(Plan B 前的数据)
+    if resolved is None:
+        recent_snap = db.scalar(
+            select(SyncChange.payload_json).where(
+                SyncChange.ledger_id == ledger.id,
+                SyncChange.entity_type == "ledger_snapshot",
+                SyncChange.action == "upsert",
+            ).order_by(SyncChange.change_id.desc()).limit(1)
+        )
+        if recent_snap is not None:
+            payload = recent_snap
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = None
+            if isinstance(payload, dict):
+                content = payload.get("content")
+                if isinstance(content, str) and content.strip():
+                    try:
+                        snap = json.loads(content)
+                        if isinstance(snap, dict):
+                            name = (snap.get("ledgerName") or "").strip()
+                            if name:
+                                resolved = name
+                    except json.JSONDecodeError:
+                        pass
+
+    if resolved is None:
+        return ledger.external_id
+
+    # 自愈持久化:显式 commit 让下次 read 直接命中 Ledger.name 快路径
+    try:
+        ledger.name = resolved[:255]
+        db.commit()
+    except Exception:  # noqa: BLE001 — 自愈失败不影响读本次返回
+        db.rollback()
+    return resolved
 
 
 def _load_owner_identity(db: Session, *, ledger: Ledger) -> tuple[str, str | None, str | None, str | None, int]:
@@ -373,8 +432,7 @@ def list_ledgers(
             continue
         # currency 暂不做 projection 化 —— 顶层元数据非热点,snapshot_cache 命中
         # 后 ~1ms,偶发 cold miss 50ms 可接受;list_ledgers 本身调用频率低。
-        snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-        _, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
+        currency = ledger.currency or "CNY"
         ledger_name = _resolve_ledger_name(db, ledger=ledger)
         tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
         now = datetime.now(timezone.utc)
@@ -501,8 +559,7 @@ def get_ledger(
         ledger_external_id=ledger_external_id,
         is_admin=_is_admin(current_user),
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    _, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
+    currency = ledger.currency or "CNY"
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
