@@ -501,7 +501,7 @@ function BankCardTile({
             event.stopPropagation()
             onEdit()
           }}
-          className="rounded bg-black/35 px-1.5 py-0.5 text-[10px] text-white backdrop-blur hover:bg-black/50"
+          className="rounded bg-black/35 px-1.5 py-0.5 text-[10px] text-white backdrop-blur hover:bg-primary/80"
         >
           {t('common.edit')}
         </button>

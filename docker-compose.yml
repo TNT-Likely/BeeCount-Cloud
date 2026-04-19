@@ -1,18 +1,11 @@
 services:
   beecount-cloud:
     image: sunxiao0721/beecount-cloud:latest
-    # 贡献者本地开发:注释掉 image、启用 build
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8869:8080"
     volumes:
-      # 一个 volume 装全部数据:SQLite DB + 附件 + 备份归档 + 头像 + JWT 密钥。
-      # 首次启动会在 /data/.jwt_secret 自动生成 32 bytes 强密钥,用户零配置。
-      - beecount_data:/data
-    # 想自己管理 JWT 密钥时:environment 里加 JWT_SECRET: <32+ bytes 随机串>
+      - ./data:/data
 
 volumes:
   beecount_data:

@@ -63,18 +63,21 @@ export function hexToHsl(hex: string): { h: number; s: number; l: number } {
 }
 
 /**
- * 把 hex 应用到 `--primary` / `--ring` CSS 变量上。`--primary-foreground`
- * 继续由 light/dark mode 各自的 CSS 决定（亮/暗底的文本对比色不随 primary
- * 变）。这里 inline style 写在 <html>，优先级高于 styles.css 里的 `:root` /
- * `.dark` 定义，亮暗两个主题都会被统一覆盖。
+ * 把 hex 应用到 CSS 变量。primary/ring 直接用 primary 的 HSL;accent 的色相
+ * 跟 primary 走但饱和度/亮度按 light/dark 模式各自对应(用 `--accent-light`
+ * /`--accent-dark` 暴露,styles.css 里 :root/.dark 分别 pick 合适的那个)。
+ * 这样 hover(很多组件用 `bg-accent/..`)会跟随主题色变,不会卡在默认蜜蜂金。
  */
 export function applyPrimaryColor(hex: string): void {
   if (typeof document === 'undefined') return
   const { h, s, l } = hexToHsl(hex)
-  const value = `${h} ${s}% ${l}%`
+  const primaryValue = `${h} ${s}% ${l}%`
   const root = document.documentElement
-  root.style.setProperty('--primary', value)
-  root.style.setProperty('--ring', value)
+  root.style.setProperty('--primary', primaryValue)
+  root.style.setProperty('--ring', primaryValue)
+  // Accent: 保留 primary 的 hue,固定 s/l 做"浅/深底色"
+  root.style.setProperty('--accent-light', `${h} 80% 90%`)
+  root.style.setProperty('--accent-dark', `${h} 85% 22%`)
 }
 
 /** 初次加载时从 localStorage 读；没有则用默认色。不写 style.setProperty

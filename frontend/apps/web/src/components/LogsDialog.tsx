@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCcw, X } from 'lucide-react'
+import { RefreshCcw } from 'lucide-react'
 
 import type { AdminLogEntry, AdminLogList } from '@beecount/api-client'
 import { fetchAdminLogs } from '@beecount/api-client'
@@ -133,7 +133,7 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b border-border/60 px-5 py-3">
-          <DialogTitle className="flex items-center justify-between gap-3">
+          <DialogTitle className="flex items-center justify-between gap-3 pr-8">
             <span>{t('logs.title')}</span>
             <span className="text-[11px] font-normal text-muted-foreground">
               {data
@@ -242,15 +242,6 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
 
         <div className="flex items-center justify-between border-t border-border/60 bg-muted/20 px-5 py-2 text-[11px] text-muted-foreground">
           <span>{t('logs.footer.hint')}</span>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onOpenChange(false)}
-            className="h-7 gap-1 px-2 text-xs"
-          >
-            <X className="h-3.5 w-3.5" />
-            {t('logs.close')}
-          </Button>
         </div>
       </DialogContent>
     </Dialog>

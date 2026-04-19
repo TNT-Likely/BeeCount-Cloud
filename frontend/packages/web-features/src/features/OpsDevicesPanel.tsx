@@ -3,8 +3,6 @@ import { useMemo, useState } from 'react'
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
   useT
 } from '@beecount/ui'
 
@@ -128,13 +126,11 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
         </div>
       </div>
 
-      <Card className="bc-panel">
-        <CardContent className="p-4">
-          {visibleRows.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">{t('table.empty')}</div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {visibleRows.map((row) => {
+      {visibleRows.length === 0 ? (
+        <div className="py-10 text-center text-sm text-muted-foreground">{t('table.empty')}</div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {visibleRows.map((row) => {
                 const { glyph, color } = deviceIcon(row)
                 return (
                   <div
@@ -225,10 +221,8 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
                   </div>
                 )
               })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        </div>
+      )}
     </div>
   )
 }

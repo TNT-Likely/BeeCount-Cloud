@@ -48,6 +48,7 @@ const zhCN = {
   'nav.group.settings': '设置',
   'nav.group.admin': '管理',
   'shell.appName': '蜜蜂记账',
+  'shell.goHome': '回到首页',
   'shell.docTitle': '蜜蜂记账 · Web',
   'shell.userDefault': '蜜蜂用户',
   'shell.selectLedgerFirst': '请先在顶部选一个账本。',

@@ -60,6 +60,7 @@ const en = {
   'nav.users': 'Users',
   'nav.group.tools': 'Tools',
   'shell.appName': 'BeeCount',
+  'shell.goHome': 'Back to home',
   'shell.docTitle': 'BeeCount · Web',
   'shell.userDefault': 'BeeCount User',
   'shell.selectLedgerFirst': 'Please select a ledger from the top first.',

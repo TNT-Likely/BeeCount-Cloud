@@ -59,6 +59,7 @@ const zhTW = {
   'nav.users': '使用者管理',
   'nav.group.tools': '工具',
   'shell.appName': '蜜蜂記帳',
+  'shell.goHome': '回首頁',
   'shell.docTitle': '蜜蜂記帳 · Web',
   'shell.userDefault': '蜜蜂使用者',
   'shell.selectLedgerFirst': '請先在頂部選一個帳本。',

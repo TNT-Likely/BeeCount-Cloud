@@ -16,7 +16,9 @@
     --secondary-foreground: 216 23% 18%;
     --muted: 220 20% 94%;
     --muted-foreground: 220 9% 45%;
-    --accent: 38 80% 90%;
+    /* accent 跟随 primary 色相:primary-color-script.ts 会动态设
+       --accent-light;这里用 fallback 兜底(JS 还没跑到的首帧)。 */
+    --accent: var(--accent-light, 38 80% 90%);
     --accent-foreground: 216 23% 18%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
@@ -40,7 +42,7 @@
     --secondary-foreground: 210 40% 98%;
     --muted: 218 16% 14%;
     --muted-foreground: 217 10% 65%;
-    --accent: 40 85% 22%;
+    --accent: var(--accent-dark, 40 85% 22%);
     --accent-foreground: 43 96% 86%;
     --destructive: 0 74% 58%;
     --destructive-foreground: 210 40% 98%;

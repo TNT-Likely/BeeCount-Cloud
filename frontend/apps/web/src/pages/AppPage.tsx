@@ -2173,20 +2173,29 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             <header className="card px-3 md:px-5">
               <div className="flex h-14 items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
-                  <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
-                  {/* BeeCount Cloud 版本。web bundle 的 package.json version
-                      跟 server src/version.py 保持同步(发版时一起改),直接
-                      从 __APP_VERSION__ vite define 注入,不走接口。
-                      移动端空间紧张,版本号换到第二行;桌面端保留 baseline 同行。 */}
-                  <div className="flex flex-col leading-tight md:flex-row md:items-baseline md:gap-1.5">
-                    <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
-                    <span
-                      className="font-mono text-[10px] text-muted-foreground/70"
-                      title={`BeeCount Cloud v${__APP_VERSION__}`}
-                    >
-                      v{__APP_VERSION__}
-                    </span>
-                  </div>
+                  {/* logo + 名称 + 版本号整块点击回首页(overview)。button 语义 +
+                      无背景无边框,保持原视觉不变。 */}
+                  <button
+                    type="button"
+                    onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: 'overview' })}
+                    className="flex items-center gap-2.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={t('shell.goHome')}
+                  >
+                    <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
+                    {/* BeeCount Cloud 版本。web bundle 的 package.json version
+                        跟 server src/version.py 保持同步(发版时一起改),直接
+                        从 __APP_VERSION__ vite define 注入,不走接口。
+                        移动端空间紧张,版本号换到第二行;桌面端保留 baseline 同行。 */}
+                    <div className="flex flex-col leading-tight md:flex-row md:items-baseline md:gap-1.5">
+                      <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
+                      <span
+                        className="font-mono text-[10px] text-muted-foreground/70"
+                        title={`BeeCount Cloud v${__APP_VERSION__}`}
+                      >
+                        v{__APP_VERSION__}
+                      </span>
+                    </div>
+                  </button>
                   {/* 账本切换器：常驻 header 左侧，全局控制 activeLedger。
                       需要账本上下文的分区（交易/账户/分类/标签/纵览）全部以它为准。 */}
                   {ledgers.length > 0 ? (

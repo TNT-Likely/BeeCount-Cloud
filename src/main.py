@@ -20,13 +20,18 @@ from .database import SessionLocal
 from .error_handling import register_exception_handlers
 from .logging_ring import install_ring_buffer
 from .metrics import metrics
-from .observability import install_request_middleware
+from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
 from .websocket_manager import WSConnectionManager
 
-# 把所有应用日志同时送进内存 ring buffer,web 管理员页面从 /admin/logs 拉出来。
-# 放在 import 块之后,设置读取之前 —— 这样启动阶段的 log 也能被捕获。
+# 日志配置提前 —— stdout handler 必须在 ensure_admin() 之前就绪,
+# 否则 bootstrap 打印的"自动创建管理员账号"banner 只进 ring buffer,
+# Docker `docker compose logs` 看不到(用户只能翻 /data/.initial_admin_password)。
+configure_logging()
+# 再把 ring buffer handler 叠加上去(admin /admin/logs 接口用)。
+# basicConfig 幂等 —— 只有首次调用时它才 addHandler;第二次看到已有 handler 就跳过,
+# 所以 ring buffer 这条 handler 会独立加,两个 handler 并存。
 install_ring_buffer(capacity=1000)
 logging.getLogger().setLevel(logging.INFO)
 
