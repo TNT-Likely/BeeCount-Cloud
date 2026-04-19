@@ -51,7 +51,7 @@ from ..schemas import (
     UserAdminPatchRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password, verify_password
-from .. import snapshot_cache
+from .. import projection, snapshot_cache
 
 logger = logging.getLogger(__name__)
 
@@ -890,6 +890,24 @@ async def restore_backup(
     db.add(sync_row)
     db.flush()
     snapshot_cache.invalidate(backup.ledger_id)
+    # Projection 整表重建 —— backup 回滚到老版本,不能跑增量 diff,最稳是清零再回填
+    restored_snapshot: dict[str, Any] | None = None
+    content = payload.get("content") if isinstance(payload, dict) else None
+    if isinstance(content, str) and content.strip():
+        try:
+            maybe_snap = json.loads(content)
+            if isinstance(maybe_snap, dict):
+                restored_snapshot = maybe_snap
+        except json.JSONDecodeError:
+            restored_snapshot = None
+    if restored_snapshot is not None:
+        projection.rebuild_from_snapshot(
+            db,
+            ledger_id=backup.ledger_id,
+            user_id=ledger.user_id,
+            snapshot=restored_snapshot,
+            source_change_id=sync_row.change_id,
+        )
     db.add(
         AuditLog(
             user_id=current_user.id,

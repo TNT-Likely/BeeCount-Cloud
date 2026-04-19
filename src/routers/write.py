@@ -44,7 +44,7 @@ from ..schemas import (
     WriteTransactionUpdateRequest,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
-from .. import snapshot_cache
+from .. import projection, snapshot_cache
 from ..snapshot_mutator import (
     create_account,
     create_category,
@@ -104,6 +104,69 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_PROJECTION_UPSERTERS: dict[str, Any] = {
+    "account": projection.upsert_account,
+    "category": projection.upsert_category,
+    "tag": projection.upsert_tag,
+    "transaction": projection.upsert_tx,
+    "budget": projection.upsert_budget,
+}
+_PROJECTION_DELETERS: dict[str, Any] = {
+    "account": projection.delete_account,
+    "category": projection.delete_category,
+    "tag": projection.delete_tag,
+    "transaction": projection.delete_tx,
+    "budget": projection.delete_budget,
+}
+
+# tx 里的 denormalized 字段 —— 当 account/category/tag rename 时,
+# snapshot_mutator 会 cascade 到 items[] 里的这些字段。projection 那头
+# 我们用 rename_cascade_* SQL UPDATE 处理,**不走** per-row upsert,
+# 避免 10k tx 的 rename 场景跑 10k 次 ON CONFLICT DO UPDATE。
+_TX_CASCADE_FIELDS = frozenset({
+    "accountName", "fromAccountName", "toAccountName",
+    "categoryName",
+    "tags",
+})
+
+
+def _tx_diff_only_cascade(prev: dict[str, Any], nxt: dict[str, Any]) -> bool:
+    """prev/next 两个 tx dict 是否**只**在 cascade 字段上有差异。
+    是 = 整行 projection upsert 可跳过,rename_cascade_* SQL 批量搞定。"""
+    keys = set(prev.keys()) | set(nxt.keys())
+    changed_any_cascade = False
+    for k in keys:
+        pv = prev.get(k)
+        nv = nxt.get(k)
+        if pv == nv:
+            continue
+        if k in _TX_CASCADE_FIELDS:
+            changed_any_cascade = True
+            continue
+        return False
+    return changed_any_cascade
+
+
+def _collect_renames(
+    prev_list: list[dict[str, Any]],
+    next_list: list[dict[str, Any]],
+) -> list[tuple[str, str, str, str | None]]:
+    """返回 (sync_id, old_name, new_name, new_kind_optional) 列表。
+    只取 name 真正改了的(既非新增也非删除),用来批量走 rename_cascade_*。"""
+    prev_map = {e["syncId"]: e for e in prev_list if e.get("syncId")}
+    out: list[tuple[str, str, str, str | None]] = []
+    for e in next_list:
+        sync_id = e.get("syncId")
+        if not sync_id or sync_id not in prev_map:
+            continue
+        prev = prev_map[sync_id]
+        old = (prev.get("name") or "").strip()
+        new = (e.get("name") or "").strip()
+        if old and new and old != new:
+            out.append((sync_id, old, new, (e.get("kind") or "").strip() or None))
+    return out
+
+
 def _diff_entity_list(
     db: Session,
     ledger: Ledger,
@@ -113,15 +176,25 @@ def _diff_entity_list(
     prev_list: list[dict[str, Any]],
     next_list: list[dict[str, Any]],
     entity_type: str,
+    snapshot_change_id: int,
+    cascade_covered: bool = False,
 ) -> int:
-    """Create individual SyncChange rows for entities that changed between two snapshots."""
+    """Create individual SyncChange rows for entities that changed between two snapshots.
+
+    `cascade_covered=True`: 对 transaction,若 diff 仅在 cascade 字段上(即纯粹是
+    account/category/tag 改名 propagate 过来的),跳过 per-row projection upsert
+    —— rename_cascade_* SQL UPDATE 已经把这些 tx 的 denormalized name 列刷了。
+    """
     prev_map = {e["syncId"]: e for e in prev_list if "syncId" in e}
     next_map = {e["syncId"]: e for e in next_list if "syncId" in e}
     count = 0
+    upsert_fn = _PROJECTION_UPSERTERS.get(entity_type)
+    delete_fn = _PROJECTION_DELETERS.get(entity_type)
 
     # Upserted entities (new or changed)
     for sync_id, entity in next_map.items():
-        if sync_id not in prev_map or entity != prev_map[sync_id]:
+        prev_entity = prev_map.get(sync_id)
+        if prev_entity is None or entity != prev_entity:
             db.add(SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
@@ -134,6 +207,23 @@ def _diff_entity_list(
                 updated_by_user_id=current_user.id,
             ))
             count += 1
+            # Projection 同步写入 —— 同事务,commit 后立刻可查。
+            # tx 纯 cascade diff 跳过 —— rename_cascade_* 批量处理了。
+            if upsert_fn is not None:
+                skip = (
+                    entity_type == "transaction"
+                    and cascade_covered
+                    and prev_entity is not None
+                    and _tx_diff_only_cascade(prev_entity, entity)
+                )
+                if not skip:
+                    upsert_fn(
+                        db,
+                        ledger_id=ledger.id,
+                        user_id=ledger.user_id,
+                        source_change_id=snapshot_change_id,
+                        payload=entity,
+                    )
 
     # Deleted entities
     for sync_id in prev_map:
@@ -150,6 +240,8 @@ def _diff_entity_list(
                 updated_by_user_id=current_user.id,
             ))
             count += 1
+            if delete_fn is not None:
+                delete_fn(db, ledger_id=ledger.id, sync_id=sync_id)
 
     return count
 
@@ -163,6 +255,7 @@ def _emit_entity_diffs(
     prev: dict[str, Any] | None,
     next_snapshot: dict[str, Any],
     now: datetime,
+    snapshot_change_id: int,
 ) -> None:
     """Diff prev/next snapshots and emit individual SyncChange rows for each changed entity.
 
@@ -171,17 +264,56 @@ def _emit_entity_diffs(
     比它引用的 category change 还小，`_resolveCategoryId` 在 category 更新前就
     查老名字 → 查不到 → tx.categoryId = null。典型表现：web 改分类名后 mobile
     上的相关交易分类变空。
+
+    Projection 优化:若本次修改里 account/category/tag 有 rename,先发一次
+    rename_cascade_* (SQL UPDATE,O(1) 条语句,不受 tx 数影响),然后 tx diff 时
+    对"仅 cascade 字段改变"的 tx 行跳过 per-row projection upsert。
+    10k tx 的 category rename 从 10k 次 ON CONFLICT 降到 1 条 UPDATE + N 个
+    SyncChange 插入。
     """
     prev = prev or {}
+
+    account_renames = _collect_renames(prev.get("accounts") or [], next_snapshot.get("accounts") or [])
+    category_renames = _collect_renames(prev.get("categories") or [], next_snapshot.get("categories") or [])
+    tag_renames = _collect_renames(prev.get("tags") or [], next_snapshot.get("tags") or [])
+    any_rename = bool(account_renames or category_renames or tag_renames)
+
     count = 0
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("accounts") or [], next_snapshot.get("accounts") or [], "account")
+                               prev.get("accounts") or [], next_snapshot.get("accounts") or [],
+                               "account", snapshot_change_id)
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("categories") or [], next_snapshot.get("categories") or [], "category")
+                               prev.get("categories") or [], next_snapshot.get("categories") or [],
+                               "category", snapshot_change_id)
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("tags") or [], next_snapshot.get("tags") or [], "tag")
+                               prev.get("tags") or [], next_snapshot.get("tags") or [],
+                               "tag", snapshot_change_id)
+
+    # Rename cascade via SQL batch,放在 tx diff 之前 —— 保证 tx diff 跳过的
+    # cascade 行已经被刷新过。
+    for sync_id, _old, new_name, _kind in account_renames:
+        projection.rename_cascade_account(
+            db, ledger_id=ledger.id, account_sync_id=sync_id, new_name=new_name,
+        )
+    for sync_id, _old, new_name, new_kind in category_renames:
+        projection.rename_cascade_category(
+            db, ledger_id=ledger.id, category_sync_id=sync_id,
+            new_name=new_name, new_kind=new_kind,
+        )
+    for sync_id, old, new, _ in tag_renames:
+        projection.rename_cascade_tag(
+            db, ledger_id=ledger.id, tag_sync_id=sync_id,
+            old_name=old, new_name=new,
+        )
+
     count += _diff_entity_list(db, ledger, current_user, device_id, now,
-                               prev.get("items") or [], next_snapshot.get("items") or [], "transaction")
+                               prev.get("items") or [], next_snapshot.get("items") or [],
+                               "transaction", snapshot_change_id,
+                               cascade_covered=any_rename)
+    # budgets 也得 diff —— web 修改预算走 ensure_snapshot_v2 的 snapshot.budgets 数组
+    count += _diff_entity_list(db, ledger, current_user, device_id, now,
+                               prev.get("budgets") or [], next_snapshot.get("budgets") or [],
+                               "budget", snapshot_change_id)
     logger.info("_emit_entity_diffs: emitted %d entity changes for ledger %s", count, ledger.external_id)
 
 
@@ -315,9 +447,16 @@ async def _commit_write(
         )
 
     snapshot = _parse_snapshot(latest)
-    # Keep an independent copy of prev snapshot for diffing —
-    # mutate() may modify snapshot in-place via ensure_snapshot_v2 internals.
-    prev_snapshot = json.loads(json.dumps(snapshot))
+    # Keep an independent copy of prev snapshot for diffing。mutate() 会修改
+    # items[i]/accounts[i]/... 里字段(e.g. `item["amount"] = ...`),也会
+    # 替换数组元素(e.g. `items[i] = merged`)。但没有 mutator 会深挖到嵌套
+    # list/dict 里 append 原对象的东西。所以一层 shallow dict-per-entity 拷贝
+    # 足够隔离 prev。10k tx 的 json round-trip ~18ms,shallow 拷贝 ~1ms。
+    prev_snapshot = {**snapshot}
+    for _k in ("items", "accounts", "categories", "tags", "budgets"):
+        arr = snapshot.get(_k)
+        if isinstance(arr, list):
+            prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
     try:
         next_snapshot, entity_id = mutate(snapshot)
     except KeyError:
@@ -346,7 +485,8 @@ async def _commit_write(
     db.flush()
     snapshot_cache.invalidate(ledger.id)
 
-    # Emit individual entity SyncChanges so Mobile can see Web changes
+    # Emit individual entity SyncChanges so Mobile can see Web changes.
+    # 同时在同事务内写 read_*_projection —— web /read/* 直接查 projection 不再 parse snapshot。
     _emit_entity_diffs(
         db,
         ledger=ledger,
@@ -355,6 +495,7 @@ async def _commit_write(
         prev=prev_snapshot,
         next_snapshot=next_snapshot,
         now=now,
+        snapshot_change_id=row_change.change_id,
     )
 
     db.add(
@@ -697,6 +838,8 @@ async def delete_ledger(
     db.add(tombstone)
     db.flush()
     snapshot_cache.invalidate(ledger.id)
+    # 软删除:Ledger 行不动(留着外键历史),但 projection 清零,让 /read/* 立刻看不到
+    projection._truncate_ledger(db, ledger.id)
     db.add(
         AuditLog(
             user_id=current_user.id,

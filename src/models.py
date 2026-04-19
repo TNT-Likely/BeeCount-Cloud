@@ -247,3 +247,163 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+# ============================================================================
+# Read projection tables (CQRS Q-side)
+# ============================================================================
+#
+# snapshot 是权威源(mobile sync 继续吃它)。这几张投影表是 web `/read/*` 路径
+# 专用的索引化视图,每次 materialize / diff emit 时**同事务**写入。web 读永远
+# 走 SELECT + index,不再 parse 3MB JSON。
+#
+# 复合 PK `(ledger_id, sync_id)`:mobile 理论上不会跨账本复用 syncId,但 schema
+# 层防御;单 ledger_id 就是 ON DELETE CASCADE 的自然作用域。
+#
+# `source_change_id` 记录"这行是哪次 materialize 写的",纯诊断用 —— projection
+# 跟 snapshot 不一致时,对这列能反查到哪次 push 出问题。
+
+
+class ReadTxProjection(Base):
+    __tablename__ = "read_tx_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    tx_type: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 外键引用都存 sync_id,rename 时只改 *_name 列,id 不动。
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    from_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    from_account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    to_account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # tags_csv:逗号分隔的 name 串,ILIKE 搜索用;tag_sync_ids_json:sync_id 列表。
+    tags_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tx_index: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_tx_ledger_time",
+    ReadTxProjection.ledger_id,
+    ReadTxProjection.happened_at.desc(),
+    ReadTxProjection.tx_index.desc(),
+)
+Index(
+    "ix_read_tx_ledger_category",
+    ReadTxProjection.ledger_id,
+    ReadTxProjection.category_sync_id,
+)
+Index(
+    "ix_read_tx_ledger_account",
+    ReadTxProjection.ledger_id,
+    ReadTxProjection.account_sync_id,
+)
+# workspace/transactions 跨账本查询 —— 只按 user_id 过滤
+Index(
+    "ix_read_tx_user_time",
+    ReadTxProjection.user_id,
+    ReadTxProjection.happened_at.desc(),
+)
+
+
+class ReadAccountProjection(Base):
+    __tablename__ = "read_account_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class ReadCategoryProjection(Base):
+    __tablename__ = "read_category_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    icon_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    custom_icon_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    icon_cloud_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    icon_cloud_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_cat_ledger_kind",
+    ReadCategoryProjection.ledger_id,
+    ReadCategoryProjection.kind,
+)
+
+
+class ReadTagProjection(Base):
+    __tablename__ = "read_tag_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class ReadBudgetProjection(Base):
+    __tablename__ = "read_budget_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    budget_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    period: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    start_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_budget_ledger_cat",
+    ReadBudgetProjection.ledger_id,
+    ReadBudgetProjection.category_sync_id,
+)

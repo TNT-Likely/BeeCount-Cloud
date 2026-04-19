@@ -15,6 +15,11 @@ from ..ledger_access import (
 from ..models import (
     AttachmentFile,
     Ledger,
+    ReadAccountProjection,
+    ReadBudgetProjection,
+    ReadCategoryProjection,
+    ReadTagProjection,
+    ReadTxProjection,
     SyncChange,
     User,
     UserProfile,
@@ -222,11 +227,15 @@ def _snapshot_ledger_info(
     return name, currency
 
 
-def _snapshot_transactions(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Return the items array from a snapshot, or empty list."""
-    if snapshot is None:
-        return []
-    return snapshot.get("items") or []
+def _resolve_ledger_name(db: Session, *, ledger: Ledger) -> str:
+    """优先从 snapshot.ledgerName 拿显示名(mobile 早期没往 Ledger.name 写,
+    列表/下拉会出 UUID 样的 external_id)。snapshot_cache 命中后约 1ms。"""
+    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
+    if isinstance(snapshot, dict):
+        raw = snapshot.get("ledgerName")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ledger.name or ledger.external_id
 
 
 def _load_owner_identity(db: Session, *, ledger: Ledger) -> tuple[str, str | None, str | None, str | None, int]:
@@ -251,55 +260,6 @@ def _load_owner_identity(db: Session, *, ledger: Ledger) -> tuple[str, str | Non
     ), int(row[4] or 0)
 
 
-def _snapshot_accounts(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if snapshot is None:
-        return []
-    return snapshot.get("accounts") or []
-
-
-def _snapshot_categories(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if snapshot is None:
-        return []
-    return snapshot.get("categories") or []
-
-
-def _snapshot_budgets(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if snapshot is None:
-        return []
-    return snapshot.get("budgets") or []
-
-
-def _snapshot_tags(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if snapshot is None:
-        return []
-    return snapshot.get("tags") or []
-
-
-def _safe_float(val: Any) -> float | None:
-    """Safely convert a value to float, returning None on failure."""
-    if val is None:
-        return None
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return None
-
-
-def _compute_totals(items: list[dict[str, Any]]) -> tuple[int, float, float]:
-    """Return (transaction_count, income_total, expense_total) from snapshot items."""
-    count = len(items)
-    income_total = 0.0
-    expense_total = 0.0
-    for item in items:
-        amount = float(item.get("amount") or 0.0)
-        tx_type = item.get("txType") or item.get("tx_type") or item.get("type") or ""
-        if tx_type == "income":
-            income_total += amount
-        elif tx_type == "expense":
-            expense_total += amount
-    return count, income_total, expense_total
-
-
 def _tags_list(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -312,33 +272,34 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _parse_datetime(value: Any) -> datetime | None:
-    """Best-effort parse of a datetime from a snapshot item field."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return _to_utc(value)
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
-        except (OSError, ValueError, OverflowError):
-            return None
-    if isinstance(value, str):
-        # Try full ISO 8601 first (handles microseconds + timezone offsets like
-        # "2026-04-17T02:49:19.858771+00:00" which strptime cannot match).
-        # Accept both "Z" suffix and "+HH:MM" offsets by normalizing.
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
-            return _to_utc(dt)
-        except ValueError:
-            pass
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt = datetime.strptime(value, fmt)
-                return _to_utc(dt)
-            except ValueError:
-                continue
-    return None
+def _projection_totals(
+    db: Session, ledger_internal_id: str
+) -> tuple[int, float, float, datetime | None]:
+    """从 read_tx_projection 聚合出 (count, income_total, expense_total, latest)。
+    SQLite / PostgreSQL 通用:用 SQLAlchemy 的 `case` 做条件 sum。"""
+    from sqlalchemy import case as sa_case
+
+    row = db.execute(
+        select(
+            func.count(ReadTxProjection.sync_id),
+            func.coalesce(func.sum(
+                sa_case((ReadTxProjection.tx_type == "income", ReadTxProjection.amount),
+                        else_=0.0)
+            ), 0.0),
+            func.coalesce(func.sum(
+                sa_case((ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                        else_=0.0)
+            ), 0.0),
+            func.max(ReadTxProjection.happened_at),
+        ).where(ReadTxProjection.ledger_id == ledger_internal_id)
+    ).one()
+    tx_count, income_total, expense_total, latest_raw = row
+    return (
+        int(tx_count or 0),
+        float(income_total or 0),
+        float(expense_total or 0),
+        _to_utc(latest_raw) if latest_raw else None,
+    )
 
 
 def _bucket_key(scope: AnalyticsScope, happened_at: datetime) -> str:
@@ -410,10 +371,12 @@ def list_ledgers(
         # Hide soft-deleted ledgers.
         if _is_ledger_deleted(db, ledger_id=ledger.id):
             continue
+        # currency 暂不做 projection 化 —— 顶层元数据非热点,snapshot_cache 命中
+        # 后 ~1ms,偶发 cold miss 50ms 可接受;list_ledgers 本身调用频率低。
         snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-        ledger_name, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
-        items = _snapshot_transactions(snapshot)
-        tx_count, income_total, expense_total = _compute_totals(items)
+        _, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
+        ledger_name = _resolve_ledger_name(db, ledger=ledger)
+        tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
         now = datetime.now(timezone.utc)
         role = cast("Any", "owner" if ledger.user_id == current_user.id else "viewer")
         out.append(
@@ -456,60 +419,50 @@ def get_ledger_stats(
         ledger_external_id=ledger_external_id,
         is_admin=_is_admin(current_user),
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    tx_items = _snapshot_transactions(snapshot)
-    budget_items = (snapshot or {}).get("budgets") or []
-    account_items = (snapshot or {}).get("accounts") or []
-    category_items = (snapshot or {}).get("categories") or []
-    tag_items = (snapshot or {}).get("tags") or []
 
-    # 附件口径:数 `attachment_files` 全表 —— 含交易附件 + 分类自定义图标
-    # (都走 /attachments/upload 进同一张表)。mobile 本地把 transactionAttachments
-    # 加上"有 custom icon 的分类数"来对齐。
+    # per-ledger count:单 SQL COUNT,不再 parse snapshot
+    def _count(model) -> int:
+        return int(db.scalar(
+            select(func.count()).select_from(model).where(model.ledger_id == ledger.id)
+        ) or 0)
+
+    tx_count = _count(ReadTxProjection)
+    budget_count = _count(ReadBudgetProjection)
+    account_count = _count(ReadAccountProjection)
+    category_count = _count(ReadCategoryProjection)
+    tag_count = _count(ReadTagProjection)
+
     attachment_count = db.scalar(
         select(func.count(AttachmentFile.id)).where(
             AttachmentFile.ledger_id == ledger.id
         )
     ) or 0
 
-    # 全局口径:跨当前用户所有账本的总数。用于给 mobile 云同步页的"全部账本"
-    # 那一组展示。
-    #
-    # - tx / budget:账本级,每个 ledger snapshot 的 items/budgets 累加
-    # - attachment:账本级,从 attachment_files 按 user 过滤 COUNT
-    # - account / category / tag:用户级,理论上每个 snapshot 都包含全量,但
-    #   snapshot 间可能有 materialize 时序差。这里按 **syncId 去重的并集**来算
-    #   全局数,保证跟 mobile 本地"全量 count"对齐(`db.select(db.tags).get()`)。
+    # 全局口径:跨当前用户所有账本。projection 的 user_id 列已经 denormalized,
+    # 一次 SQL COUNT + COUNT DISTINCT 就出全量。比原来循环 parse 每个 snapshot
+    # 快 N 倍。
     user_ledger_ids_subq = (
         select(Ledger.id).where(Ledger.user_id == current_user.id).scalar_subquery()
     )
-    all_ledgers = db.scalars(
-        select(Ledger).where(Ledger.user_id == current_user.id)
-    ).all()
-    tx_total = 0
-    budget_total = 0
-    account_sync_ids: set[str] = set()
-    category_sync_ids: set[str] = set()
-    tag_sync_ids: set[str] = set()
-    for lg in all_ledgers:
-        sn = _get_latest_snapshot(db, ledger_id=lg.id) or {}
-        tx_arr = _snapshot_transactions(sn)
-        if isinstance(tx_arr, list):
-            tx_total += len(tx_arr)
-        budget_arr = sn.get("budgets") or []
-        if isinstance(budget_arr, list):
-            budget_total += len(budget_arr)
-        for arr, bucket in (
-            (sn.get("accounts"), account_sync_ids),
-            (sn.get("categories"), category_sync_ids),
-            (sn.get("tags"), tag_sync_ids),
-        ):
-            if isinstance(arr, list):
-                for item in arr:
-                    if isinstance(item, dict):
-                        sid = item.get("syncId")
-                        if isinstance(sid, str) and sid.strip():
-                            bucket.add(sid.strip())
+
+    def _count_total(model) -> int:
+        return int(db.scalar(
+            select(func.count()).select_from(model)
+            .where(model.user_id == current_user.id)
+        ) or 0)
+
+    def _count_distinct_sync(model) -> int:
+        return int(db.scalar(
+            select(func.count(func.distinct(model.sync_id)))
+            .where(model.user_id == current_user.id)
+        ) or 0)
+
+    tx_total = _count_total(ReadTxProjection)
+    budget_total = _count_total(ReadBudgetProjection)
+    account_total = _count_distinct_sync(ReadAccountProjection)
+    category_total = _count_distinct_sync(ReadCategoryProjection)
+    tag_total = _count_distinct_sync(ReadTagProjection)
+
     attachment_total = int(
         db.scalar(
             select(func.count(AttachmentFile.id)).where(
@@ -520,21 +473,18 @@ def get_ledger_stats(
     )
 
     return {
-        "transaction_count": len(tx_items) if isinstance(tx_items, list) else 0,
+        "transaction_count": tx_count,
         "transaction_total": tx_total,
         "attachment_count": int(attachment_count),
         "attachment_total": attachment_total,
-        "budget_count": len(budget_items) if isinstance(budget_items, list) else 0,
+        "budget_count": budget_count,
         "budget_total": budget_total,
-        # account/category/tag:per-ledger 是当前 snapshot 的长度,total 是全用户
-        # 去重并集。两者不一致就是 "新建实体还没 materialize 到这个账本 snapshot"
-        # 的时序差。
-        "account_count": len(account_items) if isinstance(account_items, list) else 0,
-        "account_total": len(account_sync_ids),
-        "category_count": len(category_items) if isinstance(category_items, list) else 0,
-        "category_total": len(category_sync_ids),
-        "tag_count": len(tag_items) if isinstance(tag_items, list) else 0,
-        "tag_total": len(tag_sync_ids),
+        "account_count": account_count,
+        "account_total": account_total,
+        "category_count": category_count,
+        "category_total": category_total,
+        "tag_count": tag_count,
+        "tag_total": tag_total,
     }
 
 
@@ -552,9 +502,9 @@ def get_ledger(
         is_admin=_is_admin(current_user),
     )
     snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
-    items = _snapshot_transactions(snapshot)
-    tx_count, income_total, expense_total = _compute_totals(items)
+    _, currency = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
     now = datetime.now(timezone.utc)
     return ReadLedgerDetailOut(
@@ -587,6 +537,9 @@ def list_transactions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ReadTransactionOut]:
+    # CQRS 读路径:不再 parse snapshot,直接查 read_tx_projection + index。
+    # account/category/tag 的 name 已在写入时 denormalized 到 projection 列,
+    # rename 时同事务级联更新(见 projection.rename_cascade_*)。
     is_admin = _is_admin(current_user)
     ledger, _ = _require_ledger(
         db,
@@ -594,152 +547,74 @@ def list_transactions(
         ledger_external_id=ledger_external_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    items = _snapshot_transactions(snapshot)
     owner_id, owner_email, owner_display, owner_avatar, owner_avatar_ver = (
         _load_owner_identity(db, ledger=ledger)
     )
-    # id→name 表：tx 的 account/category/tag 名字优先按 id 反查，id 查不到
-    # 时再 fallback 到 item 里存的老字符串。详见 list_workspace_transactions
-    # 同段注释。
-    acc_map: dict[str, str] = {
-        str(a.get("syncId")): (a.get("name") or "").strip()
-        for a in _snapshot_accounts(snapshot)
-        if a.get("syncId")
-    }
-    cat_map: dict[str, tuple[str, str]] = {
-        str(c.get("syncId")): (
-            (c.get("name") or "").strip(),
-            (c.get("kind") or "").strip(),
-        )
-        for c in _snapshot_categories(snapshot)
-        if c.get("syncId")
-    }
-    tag_map: dict[str, tuple[str, str | None]] = {
-        str(t.get("syncId")): (
-            (t.get("name") or "").strip(),
-            t.get("color"),
-        )
-        for t in _snapshot_tags(snapshot)
-        if t.get("syncId")
-    }
 
-    # Apply filters in Python
-    filtered: list[dict[str, Any]] = []
-    for item in items:
-        item_tx_type = item.get("txType") or item.get("tx_type") or item.get("type") or ""
-        if tx_type and item_tx_type != tx_type:
-            continue
-        happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-        if happened_at is None:
-            continue
-        if start_at and happened_at < _to_utc(start_at):
-            continue
-        if end_at and happened_at > _to_utc(end_at):
-            continue
-        if q:
-            q_lower = q.lower()
-            searchable = " ".join(
-                str(item.get(k) or "")
-                for k in ("note", "categoryName", "category_name", "accountName", "account_name",
-                           "fromAccountName", "from_account_name", "toAccountName", "to_account_name",
-                           "tags")
-            ).lower()
-            if q_lower not in searchable:
-                continue
-        filtered.append(item)
-
-    # Sort by happened_at descending, then tx_index descending
-    def _sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
-        dt = _parse_datetime(item.get("happenedAt") or item.get("happened_at")) or datetime.min.replace(tzinfo=timezone.utc)
-        idx = int(item.get("txIndex") or item.get("tx_index") or 0)
-        return (dt, idx)
-
-    filtered.sort(key=_sort_key, reverse=True)
-
-    # Paginate
-    page = filtered[offset : offset + limit]
+    query = select(ReadTxProjection).where(ReadTxProjection.ledger_id == ledger.id)
+    if tx_type:
+        query = query.where(ReadTxProjection.tx_type == tx_type)
+    if start_at:
+        query = query.where(ReadTxProjection.happened_at >= _to_utc(start_at))
+    if end_at:
+        query = query.where(ReadTxProjection.happened_at <= _to_utc(end_at))
+    if q:
+        pattern = f"%{q}%"
+        query = query.where(or_(
+            ReadTxProjection.note.ilike(pattern),
+            ReadTxProjection.category_name.ilike(pattern),
+            ReadTxProjection.account_name.ilike(pattern),
+            ReadTxProjection.from_account_name.ilike(pattern),
+            ReadTxProjection.to_account_name.ilike(pattern),
+            ReadTxProjection.tags_csv.ilike(pattern),
+        ))
+    query = query.order_by(
+        ReadTxProjection.happened_at.desc(),
+        ReadTxProjection.tx_index.desc(),
+    ).offset(offset).limit(limit)
+    rows = db.scalars(query).all()
 
     results: list[ReadTransactionOut] = []
-    for item in page:
-        happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-        if happened_at is None:
-            happened_at = datetime.now(timezone.utc)
-        raw_attachments = item.get("attachments")
-        sync_id = item.get("syncId") or item.get("sync_id") or item.get("id") or ""
-
-        acc_id = item.get("accountId") or item.get("account_id")
-        account_name_live = acc_map.get(str(acc_id)) if acc_id else None
-        account_name = account_name_live or item.get("accountName") or item.get("account_name")
-
-        from_acc_id = item.get("fromAccountId") or item.get("from_account_id")
-        from_account_name_live = acc_map.get(str(from_acc_id)) if from_acc_id else None
-        from_account_name = (
-            from_account_name_live
-            or item.get("fromAccountName")
-            or item.get("from_account_name")
-        )
-
-        to_acc_id = item.get("toAccountId") or item.get("to_account_id")
-        to_account_name_live = acc_map.get(str(to_acc_id)) if to_acc_id else None
-        to_account_name = (
-            to_account_name_live
-            or item.get("toAccountName")
-            or item.get("to_account_name")
-        )
-
-        cat_id = item.get("categoryId") or item.get("category_id")
-        cat_entry = cat_map.get(str(cat_id)) if cat_id else None
-        category_name = (
-            cat_entry[0] if cat_entry else (item.get("categoryName") or item.get("category_name"))
-        )
-        category_kind = (
-            cat_entry[1] if cat_entry else (item.get("categoryKind") or item.get("category_kind"))
-        )
-
-        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
-        if isinstance(raw_tag_ids, list) and raw_tag_ids:
-            tags_list_live: list[str] = []
-            for tid in raw_tag_ids:
-                entry = tag_map.get(str(tid))
-                if entry and entry[0]:
-                    tags_list_live.append(entry[0])
-            if tags_list_live:
-                tags_str = ",".join(tags_list_live)
-            else:
-                raw_tags = item.get("tags") or ""
-                tags_str = (
-                    ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
-                )
-        else:
-            raw_tags = item.get("tags") or ""
-            tags_str = (
-                ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
-            )
-
+    for row in rows:
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                maybe = json.loads(row.tag_sync_ids_json)
+                if isinstance(maybe, list):
+                    tag_ids = [str(t) for t in maybe]
+            except json.JSONDecodeError:
+                tag_ids = []
+        attachments: list[dict[str, Any]] | None = None
+        if row.attachments_json:
+            try:
+                maybe_att = json.loads(row.attachments_json)
+                if isinstance(maybe_att, list):
+                    attachments = maybe_att
+            except json.JSONDecodeError:
+                attachments = None
         results.append(
             ReadTransactionOut(
-                id=sync_id,
-                tx_index=int(item.get("txIndex") or item.get("tx_index") or 0),
-                tx_type=item.get("txType") or item.get("tx_type") or item.get("type") or "",
-                amount=float(item.get("amount") or 0.0),
-                happened_at=happened_at,
-                note=item.get("note"),
-                category_name=category_name,
-                category_kind=category_kind,
-                account_name=account_name,
-                from_account_name=from_account_name,
-                to_account_name=to_account_name,
-                category_id=cat_id,
-                account_id=acc_id,
-                from_account_id=from_acc_id,
-                to_account_id=to_acc_id,
-                tags=tags_str or None,
-                tags_list=_tags_list(tags_str),
-                tag_ids=raw_tag_ids if isinstance(raw_tag_ids, list) else [],
-                attachments=raw_attachments if isinstance(raw_attachments, list) else None,
+                id=row.sync_id,
+                tx_index=row.tx_index,
+                tx_type=row.tx_type,
+                amount=row.amount,
+                happened_at=_to_utc(row.happened_at),
+                note=row.note,
+                category_name=row.category_name,
+                category_kind=row.category_kind,
+                account_name=row.account_name,
+                from_account_name=row.from_account_name,
+                to_account_name=row.to_account_name,
+                category_id=row.category_sync_id,
+                account_id=row.account_sync_id,
+                from_account_id=row.from_account_sync_id,
+                to_account_id=row.to_account_sync_id,
+                tags=row.tags_csv or None,
+                tags_list=_tags_list(row.tags_csv),
+                tag_ids=tag_ids,
+                attachments=attachments,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -767,25 +642,27 @@ def list_accounts(
         ledger_external_id=ledger_external_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-
-    accounts = _snapshot_accounts(snapshot)
+    rows = db.scalars(
+        select(ReadAccountProjection)
+        .where(ReadAccountProjection.ledger_id == ledger.id)
+        .order_by(ReadAccountProjection.name.asc())
+    ).all()
     return [
         ReadAccountOut(
-            id=acct.get("syncId") or acct.get("id") or "",
-            name=acct.get("name") or "",
-            account_type=acct.get("type") or "",
-            currency=acct.get("currency") or "",
-            initial_balance=float(acct.get("initialBalance") or 0.0),
+            id=row.sync_id,
+            name=row.name or "",
+            account_type=row.account_type or "",
+            currency=row.currency or "",
+            initial_balance=float(row.initial_balance or 0.0),
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,
             created_by_user_id=None,
             created_by_email=None,
         )
-        for acct in accounts
+        for row in rows
     ]
 
 
@@ -803,31 +680,37 @@ def list_categories(
         ledger_external_id=ledger_external_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-
-    categories = _snapshot_categories(snapshot)
+    rows = db.scalars(
+        select(ReadCategoryProjection)
+        .where(ReadCategoryProjection.ledger_id == ledger.id)
+        .order_by(
+            ReadCategoryProjection.kind.asc(),
+            ReadCategoryProjection.sort_order.asc(),
+            ReadCategoryProjection.name.asc(),
+        )
+    ).all()
     return [
         ReadCategoryOut(
-            id=cat.get("syncId") or cat.get("id") or "",
-            name=cat.get("name") or "",
-            kind=cat.get("kind") or "",
-            level=int(cat.get("level") or 0),
-            sort_order=int(cat.get("sortOrder") or 0),
-            icon=cat.get("icon"),
-            icon_type=cat.get("iconType"),
-            custom_icon_path=cat.get("customIconPath"),
-            icon_cloud_file_id=cat.get("iconCloudFileId"),
-            icon_cloud_sha256=cat.get("iconCloudSha256"),
-            parent_name=cat.get("parentName"),
+            id=row.sync_id,
+            name=row.name or "",
+            kind=row.kind or "",
+            level=int(row.level or 0),
+            sort_order=int(row.sort_order or 0),
+            icon=row.icon,
+            icon_type=row.icon_type,
+            custom_icon_path=row.custom_icon_path,
+            icon_cloud_file_id=row.icon_cloud_file_id,
+            icon_cloud_sha256=row.icon_cloud_sha256,
+            parent_name=row.parent_name,
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,
             created_by_user_id=None,
             created_by_email=None,
         )
-        for cat in categories
+        for row in rows
     ]
 
 
@@ -848,52 +731,47 @@ def list_budgets(
         ledger_external_id=ledger_external_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
 
-    # 构建 category syncId → name 查找表,避免每条预算都扫一遍 categories 数组
-    cat_map: dict[str, str] = {
-        str(c.get("syncId")): (c.get("name") or "").strip()
-        for c in _snapshot_categories(snapshot)
-        if c.get("syncId")
-    }
+    # category name 来自 projection 的 category_name 列 JOIN(SQLAlchemy ORM
+    # 做 LEFT JOIN + aliased,确保 category 被删除时也能 fallback None)
+    cat_rows = db.execute(
+        select(
+            ReadCategoryProjection.sync_id,
+            ReadCategoryProjection.name,
+        ).where(ReadCategoryProjection.ledger_id == ledger.id)
+    ).all()
+    cat_name_by_sync: dict[str, str] = {r.sync_id: (r.name or "").strip() for r in cat_rows}
 
-    # 展示前做两步脏数据过滤(这批脏数据来自早期同步链路 bug,已经在新版修了,
-    # 老数据还在 snapshot 里。后续清 server / 让 A 重推一次就会彻底没了):
-    #   1) 分类预算但 categoryId 为空 —— 孤儿,category 已删 / 创建时没带上
-    #   2) (type, categoryId) 维度去重 —— 同一维度只保留一条,挑 syncId
-    #      字典序最大的(snapshot items 的顺序等价于 server 先后,最大 sync
-    #      相当于"最后一次 push 的"大概率对的)
-    raw = _snapshot_budgets(snapshot)
-    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    # 展示前做两步脏数据过滤(来自早期同步 bug 遗留):
+    #   1) 分类预算但 category_sync_id 为空 —— 孤儿
+    #   2) (type, category_sync_id) 维度去重 —— 按 sync_id 字典序最大的留
+    raw = db.scalars(
+        select(ReadBudgetProjection).where(ReadBudgetProjection.ledger_id == ledger.id)
+    ).all()
+    dedup: dict[tuple[str, str], ReadBudgetProjection] = {}
     for b in raw:
-        sync_id = str(b.get("syncId") or "").strip()
-        if not sync_id:
+        btype = b.budget_type or "total"
+        if btype == "category" and not b.category_sync_id:
             continue
-        btype = str(b.get("type") or "total")
-        category_sync_id = b.get("categoryId")
-        if btype == "category" and not category_sync_id:
-            continue
-        key = (btype, str(category_sync_id or ""))
+        key = (btype, b.category_sync_id or "")
         current = dedup.get(key)
-        if current is None or str(current.get("syncId") or "") < sync_id:
+        if current is None or current.sync_id < b.sync_id:
             dedup[key] = b
 
     results: list[ReadBudgetOut] = []
     for b in dedup.values():
-        sync_id = str(b.get("syncId") or "")
-        category_sync_id = b.get("categoryId")
         results.append(
             ReadBudgetOut(
-                id=sync_id,
-                type=str(b.get("type") or "total"),
-                category_id=category_sync_id if category_sync_id else None,
-                category_name=cat_map.get(str(category_sync_id)) if category_sync_id else None,
-                amount=float(b.get("amount") or 0),
-                period=str(b.get("period") or "monthly"),
-                start_day=int(b.get("startDay") or 1),
-                enabled=bool(b.get("enabled", True)),
+                id=b.sync_id,
+                type=b.budget_type or "total",
+                category_id=b.category_sync_id,
+                category_name=cat_name_by_sync.get(b.category_sync_id) if b.category_sync_id else None,
+                amount=float(b.amount or 0),
+                period=b.period or "monthly",
+                start_day=int(b.start_day or 1),
+                enabled=bool(b.enabled),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -916,23 +794,25 @@ def list_tags(
         ledger_external_id=ledger_external_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    ledger_name, _ = _snapshot_ledger_info(snapshot, ledger=ledger)
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-
-    tags = _snapshot_tags(snapshot)
+    rows = db.scalars(
+        select(ReadTagProjection)
+        .where(ReadTagProjection.ledger_id == ledger.id)
+        .order_by(ReadTagProjection.name.asc())
+    ).all()
     return [
         ReadTagOut(
-            id=tag.get("syncId") or tag.get("id") or "",
-            name=tag.get("name") or "",
-            color=tag.get("color"),
+            id=row.sync_id,
+            name=row.name or "",
+            color=row.color,
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,
             created_by_user_id=None,
             created_by_email=None,
         )
-        for tag in tags
+        for row in rows
     ]
 
 
@@ -950,16 +830,7 @@ def get_summary(
         ledger_external_id=ledger_id,
         is_admin=is_admin,
     )
-    snapshot = _get_latest_snapshot(db, ledger_id=ledger.id)
-    items = _snapshot_transactions(snapshot)
-    tx_count, income_total, expense_total = _compute_totals(items)
-
-    latest_happened_at: datetime | None = None
-    for item in items:
-        dt = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-        if dt is not None:
-            if latest_happened_at is None or dt > latest_happened_at:
-                latest_happened_at = dt
+    tx_count, income_total, expense_total, latest_happened_at = _projection_totals(db, ledger.id)
 
     return ReadSummaryOut(
         ledger_id=ledger_id,
@@ -986,6 +857,7 @@ def list_workspace_transactions(
 ) -> WorkspaceTransactionPageOut:
     is_admin = _is_admin(current_user)
 
+    # 账本筛选 → 内部 id 列表,projection 用 internal id 对账
     ledger_conditions: list[Any] = []
     if ledger_id:
         ledger_conditions.append(Ledger.external_id == ledger_id)
@@ -994,181 +866,99 @@ def list_workspace_transactions(
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
         ledger_conditions.append(Ledger.user_id == current_user.id)
-
-    ledgers = db.execute(
+    ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
+    ).scalars().all())
+    if not ledgers:
+        return WorkspaceTransactionPageOut(items=[], total=0, limit=limit, offset=offset)
 
-    # 每个账本一张 "syncId → 当前 name" 表，给下面 out_items 组装时按 id 反查用。
-    # 为什么要按 id 反查：snapshot.items[i] 里存的 accountName / categoryName /
-    # tags (comma-names) 是 tx 写入那一刻的名字，标签/分类/账户之后改名的话，
-    # 这些字段就"过期"了。名字改写靠 update_* mutator 的 cascade 或 materialize
-    # 的 cascade 来兜，但任何路径漏了一次 cascade 就会永久陈旧。read 时按 id
-    # 反查最新名字能彻底绕开 cascade 失败 —— id 没变，snapshot 里实体最新名字
-    # 就是最新名字。id 查不到时再 fallback 到 item 里存的 name 兼容老数据。
-    per_ledger_maps: dict[
-        str,
-        tuple[
-            dict[str, str],  # account syncId → name
-            dict[str, tuple[str, str]],  # category syncId → (name, kind)
-            dict[str, tuple[str, str | None]],  # tag syncId → (name, color)
-        ],
-    ] = {}
-    all_items: list[tuple[dict[str, Any], str, str, int]] = []
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
-        change_id = _get_latest_change_id(db, ledger_id=led.id)
-        acc_map = {
-            str(a.get("syncId")): (a.get("name") or "").strip()
-            for a in _snapshot_accounts(snapshot)
-            if a.get("syncId")
-        }
-        cat_map = {
-            str(c.get("syncId")): (
-                (c.get("name") or "").strip(),
-                (c.get("kind") or "").strip(),
-            )
-            for c in _snapshot_categories(snapshot)
-            if c.get("syncId")
-        }
-        tag_map = {
-            str(t.get("syncId")): (
-                (t.get("name") or "").strip(),
-                t.get("color"),
-            )
-            for t in _snapshot_tags(snapshot)
-            if t.get("syncId")
-        }
-        per_ledger_maps[led.external_id] = (acc_map, cat_map, tag_map)
-        for item in _snapshot_transactions(snapshot):
-            all_items.append((item, led.external_id, led_name, change_id))
-    # Owner map: 单用户单账本模型下每条交易的创建人 = 账本 owner。
-    owner_map = _owner_map_for_ledgers(db, list(ledgers))
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta: dict[str, tuple[str, str]] = {
+        l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers
+    }
+    # 各账本的最新 change_id —— 客户端比对用
+    change_id_by_ledger: dict[str, int] = {}
+    for l in ledgers:
+        change_id_by_ledger[l.id] = _get_latest_change_id(db, ledger_id=l.id)
 
-    filtered: list[tuple[dict[str, Any], str, str, int]] = []
-    for item, led_ext_id, led_name, change_id in all_items:
-        item_tx_type = item.get("txType") or item.get("tx_type") or item.get("type") or ""
-        if tx_type and item_tx_type != tx_type:
-            continue
-        if account_name:
-            account_like = account_name.lower()
-            acct_fields = " ".join(
-                str(item.get(k) or "")
-                for k in ("accountName", "account_name", "fromAccountName",
-                           "from_account_name", "toAccountName", "to_account_name")
-            ).lower()
-            if account_like not in acct_fields:
-                continue
-        if q:
-            q_lower = q.lower()
-            searchable = " ".join(
-                str(item.get(k) or "")
-                for k in ("note", "categoryName", "category_name", "accountName", "account_name",
-                           "fromAccountName", "from_account_name", "toAccountName", "to_account_name",
-                           "tags")
-            ).lower()
-            if q_lower not in searchable:
-                continue
-        filtered.append((item, led_ext_id, led_name, change_id))
+    owner_map = _owner_map_for_ledgers(db, ledgers)
 
-    total = len(filtered)
+    # 组装 projection query:filter + sort + paginate 全交给 SQL + index
+    query = select(ReadTxProjection).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+    if tx_type:
+        query = query.where(ReadTxProjection.tx_type == tx_type)
+    if account_name:
+        pattern = f"%{account_name}%"
+        query = query.where(or_(
+            ReadTxProjection.account_name.ilike(pattern),
+            ReadTxProjection.from_account_name.ilike(pattern),
+            ReadTxProjection.to_account_name.ilike(pattern),
+        ))
+    if q:
+        pattern = f"%{q}%"
+        query = query.where(or_(
+            ReadTxProjection.note.ilike(pattern),
+            ReadTxProjection.category_name.ilike(pattern),
+            ReadTxProjection.account_name.ilike(pattern),
+            ReadTxProjection.from_account_name.ilike(pattern),
+            ReadTxProjection.to_account_name.ilike(pattern),
+            ReadTxProjection.tags_csv.ilike(pattern),
+        ))
 
-    def _sort_key(entry: tuple[dict[str, Any], str, str, int]) -> tuple[datetime, int]:
-        item = entry[0]
-        dt = _parse_datetime(item.get("happenedAt") or item.get("happened_at")) or datetime.min.replace(tzinfo=timezone.utc)
-        idx = int(item.get("txIndex") or item.get("tx_index") or 0)
-        return (dt, idx)
+    total = int(db.scalar(
+        select(func.count()).select_from(query.subquery())
+    ) or 0)
 
-    filtered.sort(key=_sort_key, reverse=True)
-    page = filtered[offset : offset + limit]
+    query = query.order_by(
+        ReadTxProjection.happened_at.desc(),
+        ReadTxProjection.tx_index.desc(),
+    ).offset(offset).limit(limit)
+    rows = db.scalars(query).all()
 
     out_items: list[WorkspaceTransactionOut] = []
-    for item, led_ext_id, led_name, change_id in page:
-        happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-        if happened_at is None:
-            happened_at = datetime.now(timezone.utc)
-        raw_attachments = item.get("attachments")
-        sync_id = item.get("syncId") or item.get("sync_id") or item.get("id") or ""
+    for row in rows:
+        led_ext_id, led_name = ledger_meta.get(row.ledger_id, ("", ""))
+        change_id = change_id_by_ledger.get(row.ledger_id, 0)
         owner_info = owner_map.get(led_ext_id) or (None, None)
 
-        acc_map, cat_map, tag_map = per_ledger_maps.get(led_ext_id, ({}, {}, {}))
-
-        # 账户：id 查到就用最新 name，查不到 fallback 到 item 里存的名字。
-        acc_id = item.get("accountId") or item.get("account_id")
-        account_name_live = acc_map.get(str(acc_id)) if acc_id else None
-        account_name = account_name_live or item.get("accountName") or item.get("account_name")
-
-        from_acc_id = item.get("fromAccountId") or item.get("from_account_id")
-        from_account_name_live = acc_map.get(str(from_acc_id)) if from_acc_id else None
-        from_account_name = (
-            from_account_name_live
-            or item.get("fromAccountName")
-            or item.get("from_account_name")
-        )
-
-        to_acc_id = item.get("toAccountId") or item.get("to_account_id")
-        to_account_name_live = acc_map.get(str(to_acc_id)) if to_acc_id else None
-        to_account_name = (
-            to_account_name_live
-            or item.get("toAccountName")
-            or item.get("to_account_name")
-        )
-
-        # 分类：同上
-        cat_id = item.get("categoryId") or item.get("category_id")
-        cat_entry = cat_map.get(str(cat_id)) if cat_id else None
-        category_name = (
-            cat_entry[0] if cat_entry else (item.get("categoryName") or item.get("category_name"))
-        )
-        category_kind = (
-            cat_entry[1] if cat_entry else (item.get("categoryKind") or item.get("category_kind"))
-        )
-
-        # 标签：优先按 tagIds 顺序解析实时名字；没 ids 就 fallback 到 item.tags
-        # comma-string。id 存在但查不到（tag 被删）忽略该项。
-        raw_tag_ids = item.get("tagIds") or item.get("tag_ids") or []
-        if isinstance(raw_tag_ids, list) and raw_tag_ids:
-            tags_list_live: list[str] = []
-            for tid in raw_tag_ids:
-                entry = tag_map.get(str(tid))
-                if entry and entry[0]:
-                    tags_list_live.append(entry[0])
-            if tags_list_live:
-                tags_str = ",".join(tags_list_live)
-            else:
-                # 所有 id 都查不到：退回到 item.tags 历史字符串。
-                raw_tags = item.get("tags") or ""
-                tags_str = (
-                    ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
-                )
-        else:
-            raw_tags = item.get("tags") or ""
-            tags_str = (
-                ", ".join(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
-            )
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                maybe = json.loads(row.tag_sync_ids_json)
+                if isinstance(maybe, list):
+                    tag_ids = [str(t) for t in maybe]
+            except json.JSONDecodeError:
+                tag_ids = []
+        attachments: list[dict[str, Any]] | None = None
+        if row.attachments_json:
+            try:
+                maybe_att = json.loads(row.attachments_json)
+                if isinstance(maybe_att, list):
+                    attachments = maybe_att
+            except json.JSONDecodeError:
+                attachments = None
 
         out_items.append(
             WorkspaceTransactionOut(
-                id=sync_id,
-                tx_index=int(item.get("txIndex") or item.get("tx_index") or 0),
-                tx_type=item.get("txType") or item.get("tx_type") or item.get("type") or "",
-                amount=float(item.get("amount") or 0.0),
-                happened_at=happened_at,
-                note=item.get("note"),
-                category_name=category_name,
-                category_kind=category_kind,
-                account_name=account_name,
-                from_account_name=from_account_name,
-                to_account_name=to_account_name,
-                category_id=cat_id,
-                account_id=acc_id,
-                from_account_id=from_acc_id,
-                to_account_id=to_acc_id,
-                tags=tags_str or None,
-                tags_list=_tags_list(tags_str),
-                tag_ids=raw_tag_ids if isinstance(raw_tag_ids, list) else [],
-                attachments=raw_attachments if isinstance(raw_attachments, list) else None,
+                id=row.sync_id,
+                tx_index=row.tx_index,
+                tx_type=row.tx_type,
+                amount=row.amount,
+                happened_at=_to_utc(row.happened_at),
+                note=row.note,
+                category_name=row.category_name,
+                category_kind=row.category_kind,
+                account_name=row.account_name,
+                from_account_name=row.from_account_name,
+                to_account_name=row.to_account_name,
+                category_id=row.category_sync_id,
+                account_id=row.account_sync_id,
+                from_account_id=row.from_account_sync_id,
+                to_account_id=row.to_account_sync_id,
+                tags=row.tags_csv or None,
+                tags_list=_tags_list(row.tags_csv),
+                tag_ids=tag_ids,
+                attachments=attachments,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -1214,91 +1004,119 @@ def list_workspace_accounts(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all()
 
-    # 见 list_workspace_tags 的注释：先收集所有 ledger 的账户快照，再按
-    # syncId/name 取 last_change_id 最大的那份。否则 web 刚在 L1 改了账户，
-    # 另一账本的陈旧副本会被 dedup 保留，用户看到"改了没生效"。
+    ledgers = list(ledgers)
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
+    change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
+
+    # 一次 SQL GROUP BY 出所有账户的 tx 聚合(count/income/expense/transfer 进出)。
+    # 每条 tx 可能同时计入 from/to/main account,按 (ledger_id, account) 聚合。
+    from sqlalchemy import case as sa_case
+
+    # Main account stats: income + expense
+    main_stats = db.execute(
+        select(
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.account_sync_id,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(sa_case(
+                (ReadTxProjection.tx_type == "income", ReadTxProjection.amount),
+                else_=0.0)), 0.0).label("income"),
+            func.coalesce(func.sum(sa_case(
+                (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                else_=0.0)), 0.0).label("expense"),
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.account_sync_id.is_not(None),
+            ReadTxProjection.tx_type.in_(["income", "expense"]),
+        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.account_sync_id)
+    ).all()
+
+    # Transfer adjustments: from_account = minus, to_account = plus
+    transfer_from = db.execute(
+        select(
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.from_account_sync_id,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "transfer",
+            ReadTxProjection.from_account_sync_id.is_not(None),
+        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.from_account_sync_id)
+    ).all()
+    transfer_to = db.execute(
+        select(
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.to_account_sync_id,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "transfer",
+            ReadTxProjection.to_account_sync_id.is_not(None),
+        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.to_account_sync_id)
+    ).all()
+
+    # 合并成 per-ledger + per-account 的 dict
+    stats: dict[tuple[str, str], dict[str, float | int]] = {}
+    for lid, acc, cnt, inc, exp in main_stats:
+        stats[(lid, acc)] = {"count": int(cnt), "income": float(inc),
+                             "expense": float(exp), "balance": float(inc) - float(exp)}
+    for lid, acc, cnt, amt in transfer_from:
+        bucket = stats.setdefault((lid, acc),
+                                   {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
+        bucket["count"] = int(bucket["count"]) + int(cnt)
+        bucket["balance"] = float(bucket["balance"]) - float(amt)
+    for lid, acc, cnt, amt in transfer_to:
+        bucket = stats.setdefault((lid, acc),
+                                   {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
+        bucket["count"] = int(bucket["count"]) + int(cnt)
+        bucket["balance"] = float(bucket["balance"]) + float(amt)
+
+    # 账户从 projection 列出
+    account_query = select(ReadAccountProjection).where(
+        ReadAccountProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if q:
+        account_query = account_query.where(ReadAccountProjection.name.ilike(f"%{q}%"))
     account_rows: list[tuple[str, WorkspaceAccountOut]] = []
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
-        change_id = _get_latest_change_id(db, ledger_id=led.id)
-
-        # 一次遍历 items，按 accountId 汇总；支持 transfer 的 fromAccountId /
-        # toAccountId 两端（一进一出，不计入 income/expense，只影响 balance）。
-        items = snapshot.get("items") or []
-        per_acct: dict[str, dict[str, float | int]] = {}
-        for item in items:
-            amt = _safe_float(item.get("amount")) or 0.0
-            tx_type = (
-                item.get("txType") or item.get("tx_type") or item.get("type") or ""
+    for acct in db.scalars(account_query).all():
+        name = (acct.name or "").strip()
+        if not name:
+            continue
+        sync_id = acct.sync_id
+        init_bal = float(acct.initial_balance or 0.0)
+        led_ext_id, led_name = ledger_meta.get(acct.ledger_id, ("", ""))
+        change_id = change_id_by_ledger.get(acct.ledger_id, 0)
+        bucket = stats.get((acct.ledger_id, sync_id))
+        income_total = float(bucket.get("income", 0.0)) if bucket else 0.0
+        expense_total = float(bucket.get("expense", 0.0)) if bucket else 0.0
+        tx_count = int(bucket.get("count", 0)) if bucket else 0
+        movement = float(bucket.get("balance", 0.0)) if bucket else 0.0
+        account_rows.append(
+            (
+                sync_id.lower() if sync_id else name.lower(),
+                WorkspaceAccountOut(
+                    id=sync_id,
+                    name=name,
+                    account_type=acct.account_type,
+                    currency=acct.currency,
+                    initial_balance=init_bal,
+                    last_change_id=change_id,
+                    ledger_id=led_ext_id,
+                    ledger_name=led_name,
+                    created_by_user_id=None,
+                    created_by_email=None,
+                    tx_count=tx_count,
+                    income_total=income_total,
+                    expense_total=expense_total,
+                    balance=init_bal + movement,
+                ),
             )
-            acct_id = item.get("accountId") or item.get("account_id")
-            from_id = item.get("fromAccountId") or item.get("from_account_id")
-            to_id = item.get("toAccountId") or item.get("to_account_id")
-            if tx_type == "income" and acct_id:
-                bucket = per_acct.setdefault(
-                    str(acct_id), {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
-                )
-                bucket["count"] = int(bucket["count"]) + 1
-                bucket["income"] = float(bucket["income"]) + amt
-                bucket["balance"] = float(bucket["balance"]) + amt
-            elif tx_type == "expense" and acct_id:
-                bucket = per_acct.setdefault(
-                    str(acct_id), {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
-                )
-                bucket["count"] = int(bucket["count"]) + 1
-                bucket["expense"] = float(bucket["expense"]) + amt
-                bucket["balance"] = float(bucket["balance"]) - amt
-            elif tx_type == "transfer":
-                if from_id:
-                    bucket = per_acct.setdefault(
-                        str(from_id),
-                        {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0},
-                    )
-                    bucket["count"] = int(bucket["count"]) + 1
-                    bucket["balance"] = float(bucket["balance"]) - amt
-                if to_id:
-                    bucket = per_acct.setdefault(
-                        str(to_id),
-                        {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0},
-                    )
-                    bucket["count"] = int(bucket["count"]) + 1
-                    bucket["balance"] = float(bucket["balance"]) + amt
-
-        for acct in _snapshot_accounts(snapshot):
-            name = (acct.get("name") or "").strip()
-            if not name:
-                continue
-            if q and q.lower() not in name.lower():
-                continue
-            sync_id = acct.get("syncId") or acct.get("sync_id") or ""
-            init_bal = _safe_float(acct.get("initialBalance")) or 0.0
-            stats = per_acct.get(str(sync_id)) if sync_id else None
-            income_total = float(stats.get("income", 0.0)) if stats else 0.0
-            expense_total = float(stats.get("expense", 0.0)) if stats else 0.0
-            tx_count = int(stats.get("count", 0)) if stats else 0
-            movement = float(stats.get("balance", 0.0)) if stats else 0.0
-            account_rows.append(
-                (
-                    sync_id.lower() if sync_id else name.lower(),
-                    WorkspaceAccountOut(
-                        id=sync_id,
-                        name=name,
-                        account_type=acct.get("type"),
-                        currency=acct.get("currency"),
-                        initial_balance=init_bal,
-                        last_change_id=change_id,
-                        ledger_id=led.external_id,
-                        ledger_name=led_name,
-                        created_by_user_id=None,
-                        created_by_email=None,
-                        tx_count=tx_count,
-                        income_total=income_total,
-                        expense_total=expense_total,
-                        balance=init_bal + movement,
-                    ),
-                )
-            )
+        )
     best_by_key: dict[str, WorkspaceAccountOut] = {}
     for key, entry in account_rows:
         existing = best_by_key.get(key)
@@ -1360,46 +1178,52 @@ def list_workspace_categories(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all()
 
-    # 见 list_workspace_tags 的注释：同名同 kind 的分类可能在多个 ledger
-    # snapshot 里都有，其中一份是最新的（web 刚改过）而其他是旧副本。按
-    # last_change_id 取最大者，避免用户看到"改了没生效"。
+    ledgers = list(ledgers)
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
+    change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
+
+    cat_query = select(ReadCategoryProjection).where(
+        ReadCategoryProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if q:
+        cat_query = cat_query.where(ReadCategoryProjection.name.ilike(f"%{q}%"))
+
     cat_rows: list[tuple[str, WorkspaceCategoryOut]] = []
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
-        change_id = _get_latest_change_id(db, ledger_id=led.id)
-        for cat in _snapshot_categories(snapshot):
-            name = (cat.get("name") or "").strip()
-            if not name:
-                continue
-            if q and q.lower() not in name.lower():
-                continue
-            kind = cat.get("kind") or cat.get("categoryKind") or "expense"
-            sync_id = cat.get("syncId") or cat.get("sync_id") or ""
-            key = sync_id.lower() if sync_id else f"{kind}:{name.lower()}"
-            cat_rows.append(
-                (
-                    key,
-                    WorkspaceCategoryOut(
-                        id=sync_id,
-                        name=name,
-                        kind=kind,
-                        level=int(cat.get("level") or 1),
-                        sort_order=int(cat.get("sortOrder") or cat.get("sort_order") or 0),
-                        icon=cat.get("icon"),
-                        icon_type=cat.get("iconType") or cat.get("icon_type"),
-                        custom_icon_path=cat.get("customIconPath") or cat.get("custom_icon_path"),
-                        icon_cloud_file_id=cat.get("iconCloudFileId") or cat.get("icon_cloud_file_id"),
-                        icon_cloud_sha256=cat.get("iconCloudSha256") or cat.get("icon_cloud_sha256"),
-                        parent_name=cat.get("parentName") or cat.get("parent_name"),
-                        last_change_id=change_id,
-                        ledger_id=led.external_id,
-                        ledger_name=led_name,
-                        created_by_user_id=None,
-                        created_by_email=None,
-                    ),
-                )
+    for cat in db.scalars(cat_query).all():
+        name = (cat.name or "").strip()
+        if not name:
+            continue
+        kind = cat.kind or "expense"
+        sync_id = cat.sync_id
+        led_ext_id, led_name = ledger_meta.get(cat.ledger_id, ("", ""))
+        change_id = change_id_by_ledger.get(cat.ledger_id, 0)
+        key = sync_id.lower() if sync_id else f"{kind}:{name.lower()}"
+        cat_rows.append(
+            (
+                key,
+                WorkspaceCategoryOut(
+                    id=sync_id,
+                    name=name,
+                    kind=kind,
+                    level=int(cat.level or 1),
+                    sort_order=int(cat.sort_order or 0),
+                    icon=cat.icon,
+                    icon_type=cat.icon_type,
+                    custom_icon_path=cat.custom_icon_path,
+                    icon_cloud_file_id=cat.icon_cloud_file_id,
+                    icon_cloud_sha256=cat.icon_cloud_sha256,
+                    parent_name=cat.parent_name,
+                    last_change_id=change_id,
+                    ledger_id=led_ext_id,
+                    ledger_name=led_name,
+                    created_by_user_id=None,
+                    created_by_email=None,
+                ),
             )
+        )
     best_by_key: dict[str, WorkspaceCategoryOut] = {}
     for key, entry in cat_rows:
         existing = best_by_key.get(key)
@@ -1459,40 +1283,43 @@ def list_workspace_tags(
     ).scalars().all()
 
     all_tags: list[WorkspaceTagOut] = []
-    seen_keys: set[str] = set()  # name_lower for dedup
 
-    # Collect all tag entries from every ledger snapshot first, tracking which
-    # ledger + which change_id each came from. Then for each (syncId or name)
-    # pick the entry with the highest per-tag SyncChange row — i.e. the most
-    # recently-updated copy. This prevents "web changed tag color in L1 but
-    # the list still shows L2's old copy because L2 came first in the dedup".
+    ledgers = list(ledgers)
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
+    change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
+
+    tag_query = select(ReadTagProjection).where(
+        ReadTagProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if q:
+        tag_query = tag_query.where(ReadTagProjection.name.ilike(f"%{q}%"))
+
     tag_rows: list[tuple[str, WorkspaceTagOut]] = []
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        led_name, _ = _snapshot_ledger_info(snapshot, ledger=led)
-        change_id = _get_latest_change_id(db, ledger_id=led.id)
-        for tag in _snapshot_tags(snapshot):
-            name = (tag.get("name") or "").strip()
-            if not name:
-                continue
-            if q and q.lower() not in name.lower():
-                continue
-            sync_id = tag.get("syncId") or tag.get("sync_id") or ""
-            tag_rows.append(
-                (
-                    sync_id.lower() if sync_id else name.lower(),
-                    WorkspaceTagOut(
-                        id=sync_id,
-                        name=name,
-                        color=tag.get("color"),
-                        last_change_id=change_id,
-                        ledger_id=led.external_id,
-                        ledger_name=led_name,
-                        created_by_user_id=None,
-                        created_by_email=None,
-                    ),
-                )
+    for tag in db.scalars(tag_query).all():
+        name = (tag.name or "").strip()
+        if not name:
+            continue
+        sync_id = tag.sync_id
+        led_ext_id, led_name = ledger_meta.get(tag.ledger_id, ("", ""))
+        change_id = change_id_by_ledger.get(tag.ledger_id, 0)
+        tag_rows.append(
+            (
+                sync_id.lower() if sync_id else name.lower(),
+                WorkspaceTagOut(
+                    id=sync_id,
+                    name=name,
+                    color=tag.color,
+                    last_change_id=change_id,
+                    ledger_id=led_ext_id,
+                    ledger_name=led_name,
+                    created_by_user_id=None,
+                    created_by_email=None,
+                ),
             )
+        )
 
     # Prefer highest last_change_id per dedup key; then also track name-level
     # dedup so the final list doesn't repeat the same name twice under two
@@ -1527,9 +1354,9 @@ def list_workspace_tags(
             e.created_by_user_id = uid
             e.created_by_email = email
 
-    # 按 tag 聚合跨所有账本的全部交易 —— 用 tx.tagIds（当前真实引用）优先匹配，
-    # 查不到再回退到 tx.tags（comma-name）按 name 匹配。这样 web 的标签页统计
-    # 笔数/支出/收入不再依赖前端抓到的分页 transactions，而是全量汇总。
+    # 按 tag 聚合全量 tx:用 projection 扫一次(SQL select + index scan),
+    # Python 侧按 tag_sync_ids_json / tags_csv 做匹配。projection scan 比
+    # 原来 N 次 snapshot parse 快几个量级。
     tag_id_to_stats: dict[str, dict[str, float]] = {
         e.id: {"count": 0.0, "expense": 0.0, "income": 0.0}
         for e in all_tags
@@ -1540,41 +1367,39 @@ def list_workspace_tags(
         for e in all_tags
         if e.name and e.id
     }
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        for tx in _snapshot_transactions(snapshot):
-            tx_type_val = (
-                tx.get("txType") or tx.get("tx_type") or tx.get("type") or ""
-            )
-            amount = float(tx.get("amount") or 0.0)
-            # 先按 tagIds 解析
-            matched_ids: set[str] = set()
-            raw_tag_ids = tx.get("tagIds") or tx.get("tag_ids")
-            if isinstance(raw_tag_ids, list):
-                for tid in raw_tag_ids:
-                    tid_s = str(tid).strip()
-                    if tid_s and tid_s in tag_id_to_stats:
-                        matched_ids.add(tid_s)
-            # 没命中就按 name 解析（老 tx 没有 tagIds，或 id 被删了）
-            if not matched_ids:
-                raw_tags = tx.get("tags")
-                if isinstance(raw_tags, str) and raw_tags.strip():
-                    for part in raw_tags.split(","):
-                        key = part.strip().lower()
-                        if key and key in tag_name_to_id:
-                            matched_ids.add(tag_name_to_id[key])
-                elif isinstance(raw_tags, list):
-                    for part in raw_tags:
-                        key = str(part).strip().lower()
-                        if key and key in tag_name_to_id:
-                            matched_ids.add(tag_name_to_id[key])
-            for tid in matched_ids:
-                slot = tag_id_to_stats[tid]
-                slot["count"] += 1.0
-                if tx_type_val == "expense":
-                    slot["expense"] += amount
-                elif tx_type_val == "income":
-                    slot["income"] += amount
+    tx_rows = db.execute(
+        select(
+            ReadTxProjection.tx_type,
+            ReadTxProjection.amount,
+            ReadTxProjection.tag_sync_ids_json,
+            ReadTxProjection.tags_csv,
+        ).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+    ).all()
+    for tx_type_val, amount, tag_ids_json, tags_csv in tx_rows:
+        matched_ids: set[str] = set()
+        if tag_ids_json:
+            try:
+                raw_tag_ids = json.loads(tag_ids_json)
+                if isinstance(raw_tag_ids, list):
+                    for tid in raw_tag_ids:
+                        tid_s = str(tid).strip()
+                        if tid_s and tid_s in tag_id_to_stats:
+                            matched_ids.add(tid_s)
+            except json.JSONDecodeError:
+                pass
+        if not matched_ids and tags_csv:
+            for part in str(tags_csv).split(","):
+                key = part.strip().lower()
+                if key and key in tag_name_to_id:
+                    matched_ids.add(tag_name_to_id[key])
+        amt = float(amount or 0.0)
+        for tid in matched_ids:
+            slot = tag_id_to_stats[tid]
+            slot["count"] += 1.0
+            if tx_type_val == "expense":
+                slot["expense"] += amt
+            elif tx_type_val == "income":
+                slot["income"] += amt
     for e in all_tags:
         if e.id and e.id in tag_id_to_stats:
             s = tag_id_to_stats[e.id]
@@ -1607,26 +1432,35 @@ def workspace_ledger_counts(
     else:
         ledger_conditions.append(Ledger.user_id == current_user.id)
 
-    ledgers = db.execute(
+    ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
+    ).scalars().all())
+    ledger_internal_ids = [l.id for l in ledgers]
+    if not ledger_internal_ids:
+        return WorkspaceLedgerCountsOut(
+            tx_count=0, days_since_first_tx=0, distinct_days=0, first_tx_at=None,
+        )
 
-    tx_count = 0
+    # COUNT + MIN 一次 SQL 完事
+    row = db.execute(
+        select(
+            func.count(),
+            func.min(ReadTxProjection.happened_at),
+        ).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+    ).one()
+    tx_count = int(row[0] or 0)
+    first_at = _to_utc(row[1]) if row[1] else None
+
+    # distinct days:需要扫 happened_at 列一次(投不出 SQL 抽象,直接 Python)
     day_set: set[str] = set()
-    first_at: datetime | None = None
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        for item in _snapshot_transactions(snapshot):
-            ts = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-            if ts is None:
-                continue
-            tx_count += 1
-            day_set.add(ts.strftime("%Y-%m-%d"))
-            if first_at is None or ts < first_at:
-                first_at = ts
+    if tx_count > 0:
+        for (ts,) in db.execute(
+            select(ReadTxProjection.happened_at)
+            .where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+        ).all():
+            if ts:
+                day_set.add(_to_utc(ts).strftime("%Y-%m-%d"))
 
-    # "记账天数" = 从首次记账那天到今天（含当天）。对齐 mobile
-    # `julianday(now) - julianday(MIN(happened_at)) + 1` 语义。以 UTC 为基准。
     days_since_first_tx = 0
     if first_at is not None:
         now_utc = datetime.now(timezone.utc)
@@ -1665,66 +1499,61 @@ def workspace_analytics(
     else:
         ledger_conditions.append(Ledger.user_id == current_user.id)
 
-    ledgers = db.execute(
+    ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
-
-    all_items: list[dict[str, Any]] = []
-    for led in ledgers:
-        snapshot = _get_latest_snapshot(db, ledger_id=led.id)
-        all_items.extend(_snapshot_transactions(snapshot))
+    ).scalars().all())
+    ledger_internal_ids = [l.id for l in ledgers]
 
     transaction_count = 0
     income_total = 0.0
     expense_total = 0.0
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, dict[str, float]] = {}
-    # 记账天数按 distinct date；首页 hero 用来展示"已持续记账 X 天"。
     distinct_days_set: set[str] = set()
     first_tx_at: datetime | None = None
     last_tx_at: datetime | None = None
 
-    for item in all_items:
-        happened_at = _parse_datetime(item.get("happenedAt") or item.get("happened_at"))
-        if happened_at is None:
-            continue
-        if start_at is not None and happened_at < start_at:
-            continue
-        if end_at is not None and happened_at >= end_at:
-            continue
+    if ledger_internal_ids:
+        tx_query = select(
+            ReadTxProjection.tx_type,
+            ReadTxProjection.amount,
+            ReadTxProjection.happened_at,
+            ReadTxProjection.category_name,
+        ).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+        if start_at is not None:
+            tx_query = tx_query.where(ReadTxProjection.happened_at >= start_at)
+        if end_at is not None:
+            tx_query = tx_query.where(ReadTxProjection.happened_at < end_at)
 
-        # 对齐 snapshot_mutator：item 里这个字段叫 "type"，不是 "txType"。少写
-        # 这个 fallback 会让 analytics 拿不到任何 income/expense → 本月 0 / Top 5 空。
-        tx_type_val = (
-            item.get("txType") or item.get("tx_type") or item.get("type") or ""
-        )
-        amount = float(item.get("amount") or 0.0)
-
-        transaction_count += 1
-        distinct_days_set.add(happened_at.strftime("%Y-%m-%d"))
-        if first_tx_at is None or happened_at < first_tx_at:
-            first_tx_at = happened_at
-        if last_tx_at is None or happened_at > last_tx_at:
-            last_tx_at = happened_at
-        bucket = _bucket_key(scope, happened_at)
-        slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
-        if tx_type_val == "income":
-            income_total += amount
-            slot["income"] += amount
-        elif tx_type_val == "expense":
-            expense_total += amount
-            slot["expense"] += amount
-        else:
-            continue
-
-        category_name_raw = item.get("categoryName") or item.get("category_name") or ""
-        category = category_name_raw.strip() if isinstance(category_name_raw, str) and category_name_raw.strip() else "Uncategorized"
-        category_slot = category_map.setdefault(category, {"income": 0.0, "expense": 0.0, "count": 0.0})
-        category_slot["count"] += 1.0
-        if tx_type_val == "income":
-            category_slot["income"] += amount
-        elif tx_type_val == "expense":
-            category_slot["expense"] += amount
+        for tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
+            if happened_at_raw is None:
+                continue
+            happened_at = _to_utc(happened_at_raw)
+            amt = float(amount or 0.0)
+            transaction_count += 1
+            distinct_days_set.add(happened_at.strftime("%Y-%m-%d"))
+            if first_tx_at is None or happened_at < first_tx_at:
+                first_tx_at = happened_at
+            if last_tx_at is None or happened_at > last_tx_at:
+                last_tx_at = happened_at
+            bucket = _bucket_key(scope, happened_at)
+            slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
+            if tx_type_val == "income":
+                income_total += amt
+                slot["income"] += amt
+            elif tx_type_val == "expense":
+                expense_total += amt
+                slot["expense"] += amt
+            else:
+                continue
+            category = (cat_name or "").strip() or "Uncategorized"
+            category_slot = category_map.setdefault(
+                category, {"income": 0.0, "expense": 0.0, "count": 0.0})
+            category_slot["count"] += 1.0
+            if tx_type_val == "income":
+                category_slot["income"] += amt
+            elif tx_type_val == "expense":
+                category_slot["expense"] += amt
 
     series = [
         WorkspaceAnalyticsSeriesItemOut(

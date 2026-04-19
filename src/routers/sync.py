@@ -25,7 +25,7 @@ from ..schemas import (
     SyncPushResponse,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
-from .. import snapshot_cache
+from .. import projection, snapshot_cache
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,9 @@ def _materialize_individual_changes(
         len(individual_changes), type_counts, ledger_id,
     )
 
+    # Projection 表用 ledger owner 作为 user_id 列。这里一次性取,避免循环里反复查。
+    ledger_owner_id = db.scalar(select(Ledger.user_id).where(Ledger.id == ledger_id)) or user_id
+
     # 3. Apply each change to the snapshot
     for change in individual_changes:
         if change.entity_type == "ledger":
@@ -159,6 +162,17 @@ def _materialize_individual_changes(
 
         if change.action == "delete":
             arr = [e for e in arr if e.get("syncId") != sync_id]
+            # Projection 同步删除 —— 跟 snapshot 在一个事务里,commit 后 web read 立刻看到
+            if change.entity_type == "transaction":
+                projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
+            elif change.entity_type == "account":
+                projection.delete_account(db, ledger_id=ledger_id, sync_id=sync_id)
+            elif change.entity_type == "category":
+                projection.delete_category(db, ledger_id=ledger_id, sync_id=sync_id)
+            elif change.entity_type == "tag":
+                projection.delete_tag(db, ledger_id=ledger_id, sync_id=sync_id)
+            elif change.entity_type == "budget":
+                projection.delete_budget(db, ledger_id=ledger_id, sync_id=sync_id)
         else:
             # upsert
             payload = change.payload_json
@@ -190,6 +204,35 @@ def _materialize_individual_changes(
             if not found:
                 arr.append(payload)
 
+            # Projection upsert —— 用 merged 后的 final entity(snapshot 里那份),
+            # 保证 projection 和 snapshot 字段集合一致(不丢 mobile 没带的 denorm 字段)
+            final_entity = next((e for e in arr if e.get("syncId") == sync_id), payload)
+            if change.entity_type == "transaction":
+                projection.upsert_tx(
+                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                    source_change_id=change.change_id, payload=final_entity,
+                )
+            elif change.entity_type == "account":
+                projection.upsert_account(
+                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                    source_change_id=change.change_id, payload=final_entity,
+                )
+            elif change.entity_type == "category":
+                projection.upsert_category(
+                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                    source_change_id=change.change_id, payload=final_entity,
+                )
+            elif change.entity_type == "tag":
+                projection.upsert_tag(
+                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                    source_change_id=change.change_id, payload=final_entity,
+                )
+            elif change.entity_type == "budget":
+                projection.upsert_budget(
+                    db, ledger_id=ledger_id, user_id=ledger_owner_id,
+                    source_change_id=change.change_id, payload=final_entity,
+                )
+
             # 重命名级联：当 account / category / tag 的 name 变了，snapshot.items
             # 里以前引用旧 name 的 tx 也要跟着改。否则 web 查 tx 列表返回的
             # categoryName / accountName / tags 字符串就是老名字，表现为
@@ -206,6 +249,12 @@ def _materialize_individual_changes(
                                 not old_kind or tx.get("categoryKind") == old_kind
                             ):
                                 tx["categoryName"] = new_name
+                        # projection 对应级联:by category_sync_id 精确定位,比 snapshot 的按 name 更准
+                        projection.rename_cascade_category(
+                            db, ledger_id=ledger_id, category_sync_id=sync_id,
+                            new_name=new_name,
+                            new_kind=str(payload.get("kind") or "").strip() or None,
+                        )
                     elif change.entity_type == "account":
                         for tx in items_arr:
                             if tx.get("accountName") == old_name:
@@ -214,6 +263,10 @@ def _materialize_individual_changes(
                                 tx["fromAccountName"] = new_name
                             if tx.get("toAccountName") == old_name:
                                 tx["toAccountName"] = new_name
+                        projection.rename_cascade_account(
+                            db, ledger_id=ledger_id, account_sync_id=sync_id,
+                            new_name=new_name,
+                        )
                     elif change.entity_type == "tag":
                         for tx in items_arr:
                             raw_tags = tx.get("tags")
@@ -224,6 +277,10 @@ def _materialize_individual_changes(
                                 for part in raw_tags.split(",")
                             ]
                             tx["tags"] = ",".join(p for p in parts if p.strip())
+                        projection.rename_cascade_tag(
+                            db, ledger_id=ledger_id, tag_sync_id=sync_id,
+                            old_name=old_name, new_name=new_name,
+                        )
 
         snapshot[key] = arr
 
