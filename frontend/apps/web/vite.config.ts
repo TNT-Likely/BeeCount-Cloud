@@ -5,14 +5,19 @@ import { defineConfig } from 'vite'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// 从 package.json 读版本号注入到客户端。build / dev 都会拿到。
+// 版本号读取优先级:
+//   1. `VITE_APP_VERSION` 环境变量(CI / Docker 构建时注入)
+//   2. Fallback:package.json 里的 version 字段(本地 dev 显示)
+// 这样发版 tag 0.2.0 时,Docker build-arg VERSION=0.2.0 → ENV VITE_APP_VERSION
+// → vite define → 客户端 bundle 里 `__APP_VERSION__` 就是 "0.2.0"。
 const pkg = JSON.parse(
   readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')
 ) as { version: string }
+const appVersion = process.env.VITE_APP_VERSION || pkg.version
 
 export default defineConfig({
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version)
+    __APP_VERSION__: JSON.stringify(appVersion)
   },
   resolve: {
     alias: {

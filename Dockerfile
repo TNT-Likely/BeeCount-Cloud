@@ -17,7 +17,9 @@ RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
 COPY frontend /workspace/frontend
 ARG VITE_API_BASE_URL=/api/v1
+ARG VERSION=dev
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_APP_VERSION=$VERSION
 RUN pnpm -C apps/web build
 
 
@@ -61,7 +63,8 @@ ENV APP_ENV=production \
     BACKUP_STORAGE_DIR=/data/backups \
     ATTACHMENT_STORAGE_DIR=/data/attachments \
     WEB_STATIC_DIR=/app/static \
-    ALLOW_APP_RW_SCOPES=true
+    ALLOW_APP_RW_SCOPES=true \
+    APP_VERSION=${VERSION}
 
 # 记下版本号便于排查
 RUN echo "${VERSION}" > /app/VERSION
