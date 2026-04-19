@@ -610,9 +610,9 @@ const zhCN = {
   'enum.userStatus.enabled': '启用',
   'enum.userStatus.disabled': '禁用',
 
-  'login.error.invalid': '账号或密码错误。首次本地使用请先执行 `make seed-demo`。',
+  'login.error.invalid': '账号或密码错误。',
   'error.default': '操作失败，请稍后重试。',
-  'error.AUTH_INVALID_CREDENTIALS': '账号或密码错误。首次本地使用请先执行 `make seed-demo`。',
+  'error.AUTH_INVALID_CREDENTIALS': '账号或密码错误。',
   'error.INTERNAL_ERROR':
     '服务器内部错误。请执行 `make migrate` 并确认 DATABASE_URL=sqlite:///./beecount.db。',
   'error.WRITE_CONFLICT':

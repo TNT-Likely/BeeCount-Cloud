@@ -582,9 +582,9 @@ const zhTW = {
   'enum.userStatus.enabled': '啟用',
   'enum.userStatus.disabled': '停用',
 
-  'login.error.invalid': '帳號或密碼錯誤。首次本地使用請先執行 `make seed-demo`。',
+  'login.error.invalid': '帳號或密碼錯誤。',
   'error.default': '操作失敗，請稍後重試。',
-  'error.AUTH_INVALID_CREDENTIALS': '帳號或密碼錯誤。首次本地使用請先執行 `make seed-demo`。',
+  'error.AUTH_INVALID_CREDENTIALS': '帳號或密碼錯誤。',
   'error.INTERNAL_ERROR':
     '伺服器內部錯誤。請執行 `make migrate` 並確認 DATABASE_URL=sqlite:///./beecount.db。',
   'error.WRITE_CONFLICT':

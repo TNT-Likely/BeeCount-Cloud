@@ -21,6 +21,7 @@ from .error_handling import register_exception_handlers
 from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import install_request_middleware
+from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
 from .websocket_manager import WSConnectionManager
 
@@ -33,6 +34,11 @@ logging.getLogger().setLevel(logging.INFO)
 # 让下面的 `settings = get_settings()` 读到 ensure_jwt_secret 注入的新值。
 get_settings.cache_clear()
 settings = get_settings()
+
+# 数据库为空时自动建一个 admin —— Docker 部署没 Makefile,不能 `make seed-demo`,
+# 这是零配置体验的最后一环。ensure_admin 内部是幂等的,第二次启动看到已有
+# user 就跳过。
+ensure_admin()
 if settings.app_env != "development":
     if settings.is_default_jwt_secret or settings.is_weak_jwt_secret:
         raise RuntimeError("JWT_SECRET must be changed to a strong 32+ bytes value")

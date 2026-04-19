@@ -584,10 +584,9 @@ const en = {
   'enum.userStatus.enabled': 'enabled',
   'enum.userStatus.disabled': 'disabled',
 
-  'login.error.invalid': 'Email or password is incorrect. For first-time local setup, run `make seed-demo`.',
+  'login.error.invalid': 'Email or password is incorrect.',
   'error.default': 'Operation failed. Please retry.',
-  'error.AUTH_INVALID_CREDENTIALS':
-    'Email or password is incorrect. For first-time local setup, run `make seed-demo`.',
+  'error.AUTH_INVALID_CREDENTIALS': 'Email or password is incorrect.',
   'error.INTERNAL_ERROR':
     'Internal server error. Run `make migrate` and verify DATABASE_URL=sqlite:///./beecount.db.',
   'error.WRITE_CONFLICT':
