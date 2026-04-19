@@ -110,7 +110,7 @@ export function TransactionRow({
                       event.stopPropagation()
                       onEdit(row)
                     }}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-primary"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
                   >
                     {t('common.edit')}
                   </button>

@@ -17,7 +17,22 @@ import { AssetCompositionDonut } from '../components/dashboard/AssetCompositionD
 import { MonthlyTrendBars } from '../components/dashboard/MonthlyTrendBars'
 import { TopCategoriesList } from '../components/dashboard/TopCategoriesList'
 
-import { LogOut, MoreHorizontal, ScrollText, SlidersHorizontal } from 'lucide-react'
+import {
+  Activity,
+  BookOpen,
+  Database,
+  FolderTree,
+  LogOut,
+  MoreHorizontal,
+  Receipt,
+  RefreshCcw,
+  ScrollText,
+  SlidersHorizontal,
+  Tag,
+  Users,
+  Wallet,
+  Wifi,
+} from 'lucide-react'
 
 import {
   Alert,
@@ -419,6 +434,66 @@ function isPreviewableImage(mimeType: string | null, fileName: string | null | u
   const normalizedName = (fileName || '').trim().toLowerCase()
   const extension = normalizedName.includes('.') ? normalizedName.split('.').pop() || '' : ''
   return IMAGE_EXTENSIONS.has(extension)
+}
+
+/** 系统状态条里的 meta 小卡:图标 + 标签 + 值,横向 3 列铺。 */
+function HealthMetaTile({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5">
+      <div className="flex h-8 w-8 items-center justify-center rounded-md bg-background text-muted-foreground">
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+        <p className="truncate text-sm font-medium" title={value}>
+          {value}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** 使用概览里的统计卡:左上角彩色 icon 块 + 标签 + 大数字 + 可选的辅助行。
+ *  accentClass 决定左上图标块的渐变 + icon 色(不同指标换色,信息密度够)。 */
+function OverviewStatCard({
+  icon,
+  label,
+  value,
+  sub,
+  accentClass,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: number
+  sub?: string
+  accentClass: string
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card p-4 transition-shadow hover:shadow-md">
+      <div
+        className={`absolute -right-8 -top-8 h-24 w-24 rounded-full bg-gradient-to-br ${accentClass} opacity-50 blur-2xl`}
+        aria-hidden
+      />
+      <div className="relative flex items-start gap-3">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ${accentClass}`}>
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className="mt-0.5 text-2xl font-bold tabular-nums">{value.toLocaleString()}</p>
+          {sub ? <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p> : null}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
@@ -2250,7 +2325,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                           className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
                             active
                               ? 'text-foreground'
-                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                              : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                           }`}
                         >
                           {t(item.labelKey)}
@@ -2269,7 +2344,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                           className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
                             moreMenuActive
                               ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] text-foreground ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                              : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                           }`}
                           aria-label={t('shell.more')}
                           type="button"
@@ -2292,7 +2367,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                   className={`rounded-lg px-2.5 py-2 text-[12px] ${
                                     active
                                       ? 'bg-primary/10 text-primary'
-                                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
+                                      : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                                   }`}
                                   onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
                                 >
@@ -2314,7 +2389,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       title={t('logs.open')}
                       aria-label={t('logs.open')}
                       onClick={() => setLogsOpen(true)}
-                      className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
+                      className="flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
                     >
                       <ScrollText className="h-4 w-4" />
                     </button>
@@ -2378,7 +2453,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                             className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                               route.section === 'budgets'
                                 ? 'bg-primary/10 text-primary'
-                                : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
+                                : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                             }`}
                             onClick={() =>
                               onNavigate({
@@ -2406,7 +2481,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                 className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                                   active
                                     ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
+                                    : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                                 }`}
                                 onClick={() =>
                                   onNavigate({
@@ -2432,7 +2507,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                 className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                                   route.section === 'admin-users'
                                     ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
+                                    : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                                 }`}
                                 onClick={() =>
                                   onNavigate({
@@ -3024,80 +3099,125 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           ) : null}
 
           {route.section === 'settings-health' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardHeader className="flex flex-row items-center justify-between gap-3">
-                  <CardTitle>{t('ops.health.title')}</CardTitle>
-                  <Button size="sm" variant="outline" onClick={onRefresh}>
-                    {t('ops.health.button.refresh')}
-                  </Button>
-                </CardHeader>
-                <CardContent>
-                  {adminHealth ? (
-                    <div className="grid gap-3 text-sm md:grid-cols-2">
-                      <div className="rounded-md border border-border px-3 py-2">
-                        <p className="text-xs text-muted-foreground">status</p>
-                        <p className="font-medium">{adminHealth.status || '-'}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-3 py-2">
-                        <p className="text-xs text-muted-foreground">db</p>
-                        <p className="font-medium">{adminHealth.db || '-'}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-3 py-2">
-                        <p className="text-xs text-muted-foreground">online_ws_users</p>
-                        <p className="font-medium">{adminHealth.online_ws_users}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-3 py-2">
-                        <p className="text-xs text-muted-foreground">time</p>
-                        <p className="font-medium">{formatIsoDateTime(adminHealth.time)}</p>
+            <div className="space-y-6">
+              {/* 系统状态 hero: 大指示灯 + 关键 meta(DB / 在线用户 / 时间) */}
+              <Card className="bc-panel overflow-hidden">
+                <CardContent className="p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      {(() => {
+                        const healthy = adminHealth?.status === 'ok'
+                        return (
+                          <div className="relative flex h-14 w-14 items-center justify-center">
+                            <span
+                              className={`absolute inset-0 animate-ping rounded-full ${
+                                healthy ? 'bg-emerald-500/30' : 'bg-rose-500/30'
+                              }`}
+                            />
+                            <span
+                              className={`relative flex h-12 w-12 items-center justify-center rounded-full ${
+                                healthy
+                                  ? 'bg-emerald-500/15 text-emerald-500'
+                                  : 'bg-rose-500/15 text-rose-500'
+                              }`}
+                            >
+                              <Activity className="h-6 w-6" />
+                            </span>
+                          </div>
+                        )
+                      })()}
+                      <div>
+                        <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                          {t('ops.health.title')}
+                        </p>
+                        <p className="text-2xl font-semibold">
+                          {adminHealth?.status === 'ok'
+                            ? t('ops.health.statusRunning')
+                            : adminHealth?.status || '—'}
+                        </p>
                       </div>
                     </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">{t('table.empty')}</p>
-                  )}
+                    <Button size="sm" variant="outline" onClick={onRefresh}>
+                      <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+                      {t('ops.health.button.refresh')}
+                    </Button>
+                  </div>
+
+                  {adminHealth ? (
+                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                      <HealthMetaTile
+                        icon={<Database className="h-4 w-4" />}
+                        label={t('ops.health.meta.db')}
+                        value={adminHealth.db || '—'}
+                      />
+                      <HealthMetaTile
+                        icon={<Wifi className="h-4 w-4" />}
+                        label={t('ops.health.meta.online')}
+                        value={String(adminHealth.online_ws_users)}
+                      />
+                      <HealthMetaTile
+                        icon={<Activity className="h-4 w-4" />}
+                        label={t('ops.health.meta.time')}
+                        value={formatIsoDateTime(adminHealth.time)}
+                      />
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
 
-              {isAdminUser ? (
+              {/* 使用概览 —— admin 才看得到全量统计 */}
+              {isAdminUser && adminOverview ? (
+                <div>
+                  <div className="mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-medium">{t('ops.health.overviewTitle')}</h3>
+                    <span className="text-xs text-muted-foreground">{t('ops.health.overviewHint')}</span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <OverviewStatCard
+                      icon={<Users className="h-5 w-5" />}
+                      accentClass="from-blue-500/15 to-blue-500/5 text-blue-500"
+                      label={t('ops.health.stat.users')}
+                      value={adminOverview.users_total}
+                      sub={t('ops.health.stat.usersEnabled', { n: adminOverview.users_enabled_total })}
+                    />
+                    <OverviewStatCard
+                      icon={<BookOpen className="h-5 w-5" />}
+                      accentClass="from-violet-500/15 to-violet-500/5 text-violet-500"
+                      label={t('ops.health.stat.ledgers')}
+                      value={adminOverview.ledgers_total}
+                    />
+                    <OverviewStatCard
+                      icon={<Receipt className="h-5 w-5" />}
+                      accentClass="from-emerald-500/15 to-emerald-500/5 text-emerald-500"
+                      label={t('ops.health.stat.transactions')}
+                      value={adminOverview.transactions_total}
+                    />
+                    <OverviewStatCard
+                      icon={<Wallet className="h-5 w-5" />}
+                      accentClass="from-amber-500/15 to-amber-500/5 text-amber-500"
+                      label={t('ops.health.stat.accounts')}
+                      value={adminOverview.accounts_total}
+                    />
+                    <OverviewStatCard
+                      icon={<FolderTree className="h-5 w-5" />}
+                      accentClass="from-cyan-500/15 to-cyan-500/5 text-cyan-500"
+                      label={t('ops.health.stat.categories')}
+                      value={adminOverview.categories_total}
+                    />
+                    <OverviewStatCard
+                      icon={<Tag className="h-5 w-5" />}
+                      accentClass="from-pink-500/15 to-pink-500/5 text-pink-500"
+                      label={t('ops.health.stat.tags')}
+                      value={adminOverview.tags_total}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {isAdminUser && !adminOverview ? (
                 <Card className="bc-panel">
-                  <CardHeader>
-                    <CardTitle>{t('tab.summary')}</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {adminOverview ? (
-                      <div className="grid gap-3 text-sm md:grid-cols-2 lg:grid-cols-3">
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">users_total</p>
-                          <p className="font-medium">{adminOverview.users_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">users_enabled_total</p>
-                          <p className="font-medium">{adminOverview.users_enabled_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">ledgers_total</p>
-                          <p className="font-medium">{adminOverview.ledgers_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">transactions_total</p>
-                          <p className="font-medium">{adminOverview.transactions_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">accounts_total</p>
-                          <p className="font-medium">{adminOverview.accounts_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">categories_total</p>
-                          <p className="font-medium">{adminOverview.categories_total}</p>
-                        </div>
-                        <div className="rounded-md border border-border px-3 py-2">
-                          <p className="text-xs text-muted-foreground">tags_total</p>
-                          <p className="font-medium">{adminOverview.tags_total}</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">{t('table.empty')}</p>
-                    )}
+                  <CardContent className="py-6">
+                    <p className="text-center text-sm text-muted-foreground">{t('table.empty')}</p>
                   </CardContent>
                 </Card>
               ) : null}

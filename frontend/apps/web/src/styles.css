@@ -43,8 +43,9 @@
     --muted: 218 16% 14%;
     --muted-foreground: 217 10% 65%;
     --accent: var(--accent-dark, 40 85% 22%);
-    /* accent 现在 light/dark 统一走浅色(见 primary-color-script),foreground
-       也用深色文字保证可读(和 light mode 一致)。 */
+    /* accent 亮/暗统一用浅色底(见 primary-color-script),foreground 深色文字。
+       另:当前代码里已不再用 `text-accent-foreground`(交互 hover 统一走 bg-primary/15
+       text-primary),这个变量只给将来未预见的使用场景作兜底。 */
     --accent-foreground: 216 23% 18%;
     --destructive: 0 74% 58%;
     --destructive-foreground: 210 40% 98%;

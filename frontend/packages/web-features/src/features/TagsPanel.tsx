@@ -108,7 +108,7 @@ export function TagsPanel({
                     </div>
                     <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
-                        className="rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-primary"
+                        className="rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
                         disabled={!canManage}
                         type="button"
                         onClick={(event) => {
