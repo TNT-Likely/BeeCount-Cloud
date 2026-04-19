@@ -2250,7 +2250,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                           className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
                             active
                               ? 'text-foreground'
-                              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                           }`}
                         >
                           {t(item.labelKey)}
@@ -2269,7 +2269,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                           className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
                             moreMenuActive
                               ? 'bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--secondary)/0.12))] text-foreground ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
-                              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                           }`}
                           aria-label={t('shell.more')}
                           type="button"
@@ -2292,7 +2292,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                   className={`rounded-lg px-2.5 py-2 text-[12px] ${
                                     active
                                       ? 'bg-primary/10 text-primary'
-                                      : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                                   }`}
                                   onClick={() => onNavigate({ kind: 'app', ledgerId: '', section: item.key })}
                                 >
@@ -2314,7 +2314,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       title={t('logs.open')}
                       aria-label={t('logs.open')}
                       onClick={() => setLogsOpen(true)}
-                      className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                      className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
                     >
                       <ScrollText className="h-4 w-4" />
                     </button>
@@ -2378,7 +2378,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                             className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                               route.section === 'budgets'
                                 ? 'bg-primary/10 text-primary'
-                                : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                             }`}
                             onClick={() =>
                               onNavigate({
@@ -2406,7 +2406,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                 className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                                   active
                                     ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                                 }`}
                                 onClick={() =>
                                   onNavigate({
@@ -2432,7 +2432,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                                 className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
                                   route.section === 'admin-users'
                                     ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                                 }`}
                                 onClick={() =>
                                   onNavigate({

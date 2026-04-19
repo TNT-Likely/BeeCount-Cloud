@@ -75,9 +75,12 @@ export function applyPrimaryColor(hex: string): void {
   const root = document.documentElement
   root.style.setProperty('--primary', primaryValue)
   root.style.setProperty('--ring', primaryValue)
-  // Accent: 保留 primary 的 hue,固定 s/l 做"浅/深底色"
-  root.style.setProperty('--accent-light', `${h} 80% 90%`)
-  root.style.setProperty('--accent-dark', `${h} 85% 22%`)
+  // Accent: light/dark 都用同一组 hue + 固定 s/l。实验下来浅色方案(80% 90%)
+  // 在深底板上也好看 —— 按钮/hover 浮起来一层薄薄的主题色,跨所有色相稳定,
+  // 不再需要为"蓝紫在 hsl 低亮度显脏"这种色空间特性单独调参。
+  const accentValue = `${h} 80% 90%`
+  root.style.setProperty('--accent-light', accentValue)
+  root.style.setProperty('--accent-dark', accentValue)
 }
 
 /** 初次加载时从 localStorage 读；没有则用默认色。不写 style.setProperty

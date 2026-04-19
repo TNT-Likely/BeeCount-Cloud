@@ -114,7 +114,7 @@ export function MobileBottomNav({
               className={`rounded-lg px-2.5 py-2 text-[12px] ${
                 activeSection === 'budgets'
                   ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                  : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
               }`}
               onClick={() => onNavigate('budgets')}
             >
@@ -136,7 +136,7 @@ export function MobileBottomNav({
                 className={`rounded-lg px-2.5 py-2 text-[12px] ${
                   activeSection === item.key
                     ? 'bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                    : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                 }`}
                 onClick={() => onNavigate(item.key)}
               >
@@ -154,7 +154,7 @@ export function MobileBottomNav({
                   className={`rounded-lg px-2.5 py-2 text-[12px] ${
                     activeSection === 'admin-users'
                       ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                      : 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'
                   }`}
                   onClick={() => onNavigate('admin-users')}
                 >

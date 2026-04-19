@@ -43,7 +43,9 @@
     --muted: 218 16% 14%;
     --muted-foreground: 217 10% 65%;
     --accent: var(--accent-dark, 40 85% 22%);
-    --accent-foreground: 43 96% 86%;
+    /* accent 现在 light/dark 统一走浅色(见 primary-color-script),foreground
+       也用深色文字保证可读(和 light mode 一致)。 */
+    --accent-foreground: 216 23% 18%;
     --destructive: 0 74% 58%;
     --destructive-foreground: 210 40% 98%;
     --border: 217 17% 23%;
