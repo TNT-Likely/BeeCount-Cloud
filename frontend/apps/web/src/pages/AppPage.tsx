@@ -9,39 +9,24 @@ import { AvatarDropdown } from '../components/AvatarDropdown'
 import { ChangelogDialog } from '../components/ChangelogDialog'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
+import { AccountDetailDialog } from '../components/dialogs/AccountDetailDialog'
+import { TagDetailDialog } from '../components/dialogs/TagDetailDialog'
+import { AdminUsersSection } from '../components/sections/AdminUsersSection'
 import { BudgetsSection } from '../components/sections/BudgetsSection'
 import { LedgersSection } from '../components/sections/LedgersSection'
-import { HomeHero } from '../components/dashboard/HomeHero'
-import { HomeHabitStats } from '../components/dashboard/HomeHabitStats'
-import { HomeYearHeatmap } from '../components/dashboard/HomeYearHeatmap'
-import { HomeMonthCategoryDonut } from '../components/dashboard/HomeMonthCategoryDonut'
-import { HomeTopTags } from '../components/dashboard/HomeTopTags'
-import { HomeTopAccounts } from '../components/dashboard/HomeTopAccounts'
-import { AssetCompositionDonut } from '../components/dashboard/AssetCompositionDonut'
-import { MonthlyTrendBars } from '../components/dashboard/MonthlyTrendBars'
-import { TopCategoriesList } from '../components/dashboard/TopCategoriesList'
+import { OverviewSection } from '../components/sections/OverviewSection'
+import { SettingsHealthSection } from '../components/sections/SettingsHealthSection'
+import { SettingsProfileAppearanceSection } from '../components/sections/SettingsProfileAppearanceSection'
+import { AuthProvider } from '../context/AuthContext'
+import { LedgersProvider } from '../context/LedgersContext'
 
 import {
-  Activity,
-  BookOpen,
-  Database,
-  FolderTree,
   MoreHorizontal,
-  Receipt,
-  RefreshCcw,
   ScrollText,
   SlidersHorizontal,
-  Tag,
-  Users,
-  Wallet,
-  Wifi,
 } from 'lucide-react'
 
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-  Badge,
   useToast,
   Button,
   Card,
@@ -62,7 +47,6 @@ import {
   Input,
   Label,
   LanguageToggle,
-  PrimaryColorPicker,
   usePrimaryColor,
   Select,
   SelectContent,
@@ -134,19 +118,16 @@ import {
 
 import {
   AccountsPanel,
-  AdminUsersPanel,
   CategoriesPanel,
   ConfirmDialog,
   NAV_GROUPS,
   OpsDevicesPanel,
   TagsPanel,
-  TransactionList,
   TransactionsPanel,
   accountDefaults,
   canManageLedger,
   canWriteTransactions,
   categoryDefaults,
-  formatIsoDateTime,
   tagDefaults,
   txDefaults,
   type AccountForm,
@@ -439,66 +420,6 @@ function isPreviewableImage(mimeType: string | null, fileName: string | null | u
   return IMAGE_EXTENSIONS.has(extension)
 }
 
-/** 系统状态条里的 meta 小卡:图标 + 标签 + 值,横向 3 列铺。 */
-function HealthMetaTile({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode
-  label: string
-  value: string
-}) {
-  return (
-    <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5">
-      <div className="flex h-8 w-8 items-center justify-center rounded-md bg-background text-muted-foreground">
-        {icon}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
-        <p className="truncate text-sm font-medium" title={value}>
-          {value}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-/** 使用概览里的统计卡:左上角彩色 icon 块 + 标签 + 大数字 + 可选的辅助行。
- *  accentClass 决定左上图标块的渐变 + icon 色(不同指标换色,信息密度够)。 */
-function OverviewStatCard({
-  icon,
-  label,
-  value,
-  sub,
-  accentClass,
-}: {
-  icon: React.ReactNode
-  label: string
-  value: number
-  sub?: string
-  accentClass: string
-}) {
-  return (
-    <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card p-4 transition-shadow hover:shadow-md">
-      <div
-        className={`absolute -right-8 -top-8 h-24 w-24 rounded-full bg-gradient-to-br ${accentClass} opacity-50 blur-2xl`}
-        aria-hidden
-      />
-      <div className="relative flex items-start gap-3">
-        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ${accentClass}`}>
-          {icon}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="mt-0.5 text-2xl font-bold tabular-nums">{value.toLocaleString()}</p>
-          {sub ? <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p> : null}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const t = useT()
   // mobile 推过来的主题色偏好：本地没 override 时跟随 server。
@@ -653,15 +574,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     () => txFilterStorageKey(sessionUserId || 'anonymous', activeLedgerId || '__all__'),
     [sessionUserId, activeLedgerId]
   )
-  const profileDisplayLabel = useMemo(
-    () => profileMe?.display_name?.trim() || profileMe?.email || sessionUserId || '-',
-    [profileMe, sessionUserId]
-  )
-  const profileInitial = useMemo(
-    () => profileDisplayLabel.trim().charAt(0).toUpperCase() || '?',
-    [profileDisplayLabel]
-  )
-
   const txWritableLedgers = useMemo(
     () => ledgers.filter((ledger) => canWriteTransactions(ledger.role)),
     [ledgers]
@@ -2206,7 +2118,18 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const showTxFilter = route.section === 'transactions'
 
   return (
-    <>
+    <AuthProvider
+      token={token}
+      profileMe={profileMe}
+      sessionUserId={sessionUserId}
+      isAdmin={isAdminUser}
+      logout={onLogout}
+    >
+      <LedgersProvider
+        ledgers={ledgers}
+        activeLedgerId={activeLedgerId}
+        setActiveLedgerId={setActiveLedgerId}
+      >
       <AppLayout
         header={
           <div className="sticky top-0 z-50 px-4 pb-2 pt-3 md:px-6 md:pt-4">
@@ -2406,92 +2329,24 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       >
         <div className="space-y-4 pb-20 md:pb-0">
           {route.section === 'overview' ? (
-            <div className="space-y-4">
-              <HomeHero
-                ledgers={ledgers}
-                currentLedgerId={activeLedgerId}
-                monthSummary={currentMonthSummary || undefined}
-                monthSeries={currentMonthSeries}
-                yearSummary={currentYearSummary || undefined}
-                yearSeries={currentYearSeries}
-                allSummary={allTimeSummary || undefined}
-                allSeries={allTimeSeries}
-                ledgerCounts={ledgerCounts || undefined}
-              />
-
-              <HomeHabitStats
-                monthSummary={currentMonthSummary || undefined}
-                ledgerCounts={ledgerCounts || undefined}
-                currency={
-                  ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
-                }
-              />
-
-              {/* 扩展分析：Web 端独有的加强仪表，不属于 mobile 首页对标范围。 */}
-              <div className="flex items-center gap-2 pt-2">
-                <span className="h-px flex-1 bg-border/60" aria-hidden />
-                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                  {t('analytics.ext.title')}
-                </span>
-                <span className="h-px flex-1 bg-border/60" aria-hidden />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-                <HomeMonthCategoryDonut
-                  ranks={currentMonthCategoryRanks}
-                  currency={
-                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
-                  }
-                />
-                <HomeYearHeatmap
-                  yearSeries={currentYearSeries}
-                  currency={
-                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
-                  }
-                />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
-                <AssetCompositionDonut accounts={accounts as WorkspaceAccount[]} />
-                <MonthlyTrendBars data={analyticsData?.series || []} />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <TopCategoriesList
-                  ranks={analyticsData?.category_ranks || []}
-                  variant="expense"
-                  title={t('analytics.expenseTop5')}
-                  onClickCategory={(name) => {
-                    setListQuery(name)
-                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
-                  }}
-                />
-                <TopCategoriesList
-                  ranks={analyticsIncomeRanks}
-                  variant="income"
-                  title={t('analytics.incomeTop5')}
-                  onClickCategory={(name) => {
-                    setListQuery(name)
-                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
-                  }}
-                />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <HomeTopTags
-                  tags={tags}
-                  currency={
-                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
-                  }
-                  onClickTag={(name) => {
-                    setListQuery(name)
-                    onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
-                  }}
-                />
-                <HomeTopAccounts
-                  accounts={accounts as WorkspaceAccount[]}
-                  currency={
-                    ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency || 'CNY'
-                  }
-                />
-              </div>
-            </div>
+            <OverviewSection
+              accounts={accounts as WorkspaceAccount[]}
+              tags={tags}
+              currentMonthSummary={currentMonthSummary}
+              currentMonthSeries={currentMonthSeries}
+              currentMonthCategoryRanks={currentMonthCategoryRanks}
+              currentYearSummary={currentYearSummary}
+              currentYearSeries={currentYearSeries}
+              allTimeSummary={allTimeSummary}
+              allTimeSeries={allTimeSeries}
+              analyticsData={analyticsData}
+              analyticsIncomeRanks={analyticsIncomeRanks}
+              ledgerCounts={ledgerCounts}
+              onJumpToTransactionsWithQuery={(q) => {
+                setListQuery(q)
+                onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
+              }}
+            />
           ) : null}
 
           {route.section === 'transactions' ? (
@@ -2697,19 +2552,12 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
             <BudgetsSection
               budgets={budgets}
               categories={categories as WorkspaceCategory[]}
-              activeLedgerId={activeLedgerId}
-              currency={
-                ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency ||
-                'CNY'
-              }
               categoryIconPreviewByFileId={categoryIconPreviewByFileId}
             />
           ) : null}
 
           {route.section === 'ledgers' ? (
             <LedgersSection
-              ledgers={ledgers}
-              activeLedgerId={activeLedgerId}
               onSelect={(ledgerId) => {
                 setActiveLedgerId(ledgerId)
                 onNavigate({ kind: 'app', ledgerId: '', section: 'overview' })
@@ -2780,289 +2628,38 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
               只保留 `settings-profile` 项实现。 */}
           {route.section === 'settings-profile' ||
           route.section === 'settings-appearance' ? (
-            <div className="space-y-4">
-              {/* 账号卡片:头像 + display_name 编辑 */}
-              <Card className="bc-panel overflow-hidden">
-                <div className="relative">
-                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/20 via-primary/5 to-transparent" />
-                  <CardContent className="relative space-y-5 p-6">
-                    <div className="flex flex-wrap items-center gap-4">
-                      {profileMe?.avatar_url ? (
-                        <img
-                          alt={profileDisplayLabel}
-                          className="h-16 w-16 rounded-full border-2 border-primary/30 object-cover shadow-sm"
-                          src={profileMe.avatar_url}
-                        />
-                      ) : (
-                        <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-primary/30 bg-muted text-base font-semibold text-muted-foreground">
-                          {profileInitial}
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-lg font-semibold">{profileDisplayLabel}</p>
-                        <p className="truncate text-xs text-muted-foreground">{profileMe?.email || '-'}</p>
-                      </div>
-                    </div>
-                    {/* 显示名称 / 头像编辑已移除:跟主题色 / 收支配色一样,
-                        统一在移动端"我的"里修改,web 只读展示。避免两端
-                        都能改导致 LWW 抖动。 */}
-                    <p className="text-xs text-muted-foreground">{t('profile.avatarManagedByApp')}</p>
-                  </CardContent>
-                </div>
-              </Card>
-
-              {/* 主题色(web 本地生效) */}
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('profile.theme.title')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="mb-3 text-xs text-muted-foreground">{t('profile.theme.desc')}</p>
-                  <PrimaryColorPicker />
-                </CardContent>
-              </Card>
-
-              {/* 从 mobile 同步下来的偏好(只读展示) */}
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('profile.sync.title')}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-xs text-muted-foreground">{t('profile.sync.desc')}</p>
-
-                  {/* 收支颜色方案 */}
-                  <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
-                          style={{ background: 'rgb(var(--income-rgb))' }}
-                          aria-label={t('enum.txType.income')}
-                        />
-                        <span className="text-sm">{t('enum.txType.income')}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-block h-4 w-4 rounded-full ring-2 ring-background"
-                          style={{ background: 'rgb(var(--expense-rgb))' }}
-                          aria-label={t('enum.txType.expense')}
-                        />
-                        <span className="text-sm">{t('enum.txType.expense')}</span>
-                      </div>
-                    </div>
-                    <span className="rounded-full border border-border/60 bg-card px-3 py-1 text-xs font-medium">
-                      {(profileMe?.income_is_red ?? true)
-                        ? t('profile.sync.incomeScheme.red')
-                        : t('profile.sync.incomeScheme.green')}
-                    </span>
-                  </div>
-
-                  {/* 外观 JSON:月显示格式 / 紧凑金额 / 交易时间 */}
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('profile.sync.headerDecoration')}
-                      </p>
-                      <p className="mt-1 text-sm font-medium">
-                        {profileMe?.appearance?.header_decoration_style || t('common.dash')}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('profile.sync.compactAmount')}
-                      </p>
-                      <p className="mt-1 text-sm font-medium">
-                        {profileMe?.appearance?.compact_amount === true
-                          ? t('common.on')
-                          : profileMe?.appearance?.compact_amount === false
-                            ? t('common.off')
-                            : t('common.dash')}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('profile.sync.showTime')}
-                      </p>
-                      <p className="mt-1 text-sm font-medium">
-                        {profileMe?.appearance?.show_transaction_time === true
-                          ? t('common.on')
-                          : profileMe?.appearance?.show_transaction_time === false
-                            ? t('common.off')
-                            : t('common.dash')}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+            <SettingsProfileAppearanceSection />
           ) : null}
 
           {route.section === 'settings-health' ? (
-            <div className="space-y-6">
-              {/* 系统状态 hero: 大指示灯 + 关键 meta(DB / 在线用户 / 时间) */}
-              <Card className="bc-panel overflow-hidden">
-                <CardContent className="p-6">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-4">
-                      {(() => {
-                        const healthy = adminHealth?.status === 'ok'
-                        return (
-                          <div className="relative flex h-14 w-14 items-center justify-center">
-                            <span
-                              className={`absolute inset-0 animate-ping rounded-full ${
-                                healthy ? 'bg-emerald-500/30' : 'bg-rose-500/30'
-                              }`}
-                            />
-                            <span
-                              className={`relative flex h-12 w-12 items-center justify-center rounded-full ${
-                                healthy
-                                  ? 'bg-emerald-500/15 text-emerald-500'
-                                  : 'bg-rose-500/15 text-rose-500'
-                              }`}
-                            >
-                              <Activity className="h-6 w-6" />
-                            </span>
-                          </div>
-                        )
-                      })()}
-                      <div>
-                        <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                          {t('ops.health.title')}
-                        </p>
-                        <p className="text-2xl font-semibold">
-                          {adminHealth?.status === 'ok'
-                            ? t('ops.health.statusRunning')
-                            : adminHealth?.status || '—'}
-                        </p>
-                      </div>
-                    </div>
-                    <Button size="sm" variant="outline" onClick={onRefresh}>
-                      <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-                      {t('ops.health.button.refresh')}
-                    </Button>
-                  </div>
-
-                  {adminHealth ? (
-                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                      <HealthMetaTile
-                        icon={<Database className="h-4 w-4" />}
-                        label={t('ops.health.meta.db')}
-                        value={adminHealth.db || '—'}
-                      />
-                      <HealthMetaTile
-                        icon={<Wifi className="h-4 w-4" />}
-                        label={t('ops.health.meta.online')}
-                        value={String(adminHealth.online_ws_users)}
-                      />
-                      <HealthMetaTile
-                        icon={<Activity className="h-4 w-4" />}
-                        label={t('ops.health.meta.time')}
-                        value={formatIsoDateTime(adminHealth.time)}
-                      />
-                    </div>
-                  ) : null}
-                </CardContent>
-              </Card>
-
-              {/* 使用概览 —— admin 才看得到全量统计 */}
-              {isAdminUser && adminOverview ? (
-                <div>
-                  <div className="mb-3 flex items-center gap-2">
-                    <h3 className="text-sm font-medium">{t('ops.health.overviewTitle')}</h3>
-                    <span className="text-xs text-muted-foreground">{t('ops.health.overviewHint')}</span>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <OverviewStatCard
-                      icon={<Users className="h-5 w-5" />}
-                      accentClass="from-blue-500/15 to-blue-500/5 text-blue-500"
-                      label={t('ops.health.stat.users')}
-                      value={adminOverview.users_total}
-                      sub={t('ops.health.stat.usersEnabled', { n: adminOverview.users_enabled_total })}
-                    />
-                    <OverviewStatCard
-                      icon={<BookOpen className="h-5 w-5" />}
-                      accentClass="from-violet-500/15 to-violet-500/5 text-violet-500"
-                      label={t('ops.health.stat.ledgers')}
-                      value={adminOverview.ledgers_total}
-                    />
-                    <OverviewStatCard
-                      icon={<Receipt className="h-5 w-5" />}
-                      accentClass="from-emerald-500/15 to-emerald-500/5 text-emerald-500"
-                      label={t('ops.health.stat.transactions')}
-                      value={adminOverview.transactions_total}
-                    />
-                    <OverviewStatCard
-                      icon={<Wallet className="h-5 w-5" />}
-                      accentClass="from-amber-500/15 to-amber-500/5 text-amber-500"
-                      label={t('ops.health.stat.accounts')}
-                      value={adminOverview.accounts_total}
-                    />
-                    <OverviewStatCard
-                      icon={<FolderTree className="h-5 w-5" />}
-                      accentClass="from-cyan-500/15 to-cyan-500/5 text-cyan-500"
-                      label={t('ops.health.stat.categories')}
-                      value={adminOverview.categories_total}
-                    />
-                    <OverviewStatCard
-                      icon={<Tag className="h-5 w-5" />}
-                      accentClass="from-pink-500/15 to-pink-500/5 text-pink-500"
-                      label={t('ops.health.stat.tags')}
-                      value={adminOverview.tags_total}
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              {isAdminUser && !adminOverview ? (
-                <Card className="bc-panel">
-                  <CardContent className="py-6">
-                    <p className="text-center text-sm text-muted-foreground">{t('table.empty')}</p>
-                  </CardContent>
-                </Card>
-              ) : null}
-            </div>
+            <SettingsHealthSection
+              adminHealth={adminHealth}
+              adminOverview={adminOverview}
+              onRefresh={onRefresh}
+            />
           ) : null}
 
           {route.section === 'admin-users' ? (
-            isAdminUser ? (
-              <div className="space-y-4">
-                <Card className="bc-panel">
-                  <CardContent className="pt-4">
-                    <Input
-                      className="h-9 w-[220px] bg-muted lg:w-[320px]"
-                      placeholder={t('shell.placeholder.keyword')}
-                      value={listQuery}
-                      onChange={(event) => setListQuery(event.target.value)}
-                    />
-                  </CardContent>
-                </Card>
-                <AdminUsersPanel
-                  rows={adminUsers}
-                  onReload={onRefresh}
-                  onPatch={onPatchAdminUser}
-                  onChangePassword={onChangeAdminUserPassword}
-                  onDelete={onDeleteAdminUser}
-                  statusFilter={adminUserStatusFilter}
-                  onStatusFilterChange={setAdminUserStatusFilter}
-                  createEmail={adminCreateEmail}
-                  createPassword={adminCreatePassword}
-                  createIsAdmin={adminCreateIsAdmin}
-                  createIsEnabled={adminCreateIsEnabled}
-                  onCreateEmailChange={setAdminCreateEmail}
-                  onCreatePasswordChange={setAdminCreatePassword}
-                  onCreateIsAdminChange={setAdminCreateIsAdmin}
-                  onCreateIsEnabledChange={setAdminCreateIsEnabled}
-                  onCreate={onCreateAdminUser}
-                />
-              </div>
-            ) : (
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('admin.users.title')}</CardTitle>
-                </CardHeader>
-                <CardContent className="text-sm text-muted-foreground">{t('admin.users.noPermission')}</CardContent>
-              </Card>
-            )
+            <AdminUsersSection
+              adminUsers={adminUsers}
+              listQuery={listQuery}
+              onListQueryChange={setListQuery}
+              onRefresh={onRefresh}
+              onPatch={onPatchAdminUser}
+              onChangePassword={onChangeAdminUserPassword}
+              onDelete={onDeleteAdminUser}
+              statusFilter={adminUserStatusFilter}
+              onStatusFilterChange={setAdminUserStatusFilter}
+              createEmail={adminCreateEmail}
+              createPassword={adminCreatePassword}
+              createIsAdmin={adminCreateIsAdmin}
+              createIsEnabled={adminCreateIsEnabled}
+              onCreateEmailChange={setAdminCreateEmail}
+              onCreatePasswordChange={setAdminCreatePassword}
+              onCreateIsAdminChange={setAdminCreateIsAdmin}
+              onCreateIsEnabledChange={setAdminCreateIsEnabled}
+              onCreate={onCreateAdminUser}
+            />
           ) : null}
         </div>
 
@@ -3078,189 +2675,42 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         />
       </AppLayout>
 
-      <Dialog
-        open={Boolean(tagDetail)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setTagDetail(null)
-            setTagDetailTransactions([])
-            setTagDetailTotal(0)
-            setTagDetailOffset(0)
-          }
+      <TagDetailDialog
+        tag={tagDetail}
+        transactions={tagDetailTransactions}
+        total={tagDetailTotal}
+        offset={tagDetailOffset}
+        loading={tagDetailLoading}
+        tags={tags}
+        tagStatsById={tagStatsById}
+        onClose={() => {
+          setTagDetail(null)
+          setTagDetailTransactions([])
+          setTagDetailTotal(0)
+          setTagDetailOffset(0)
         }}
-      >
-        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
-          <DialogHeader className="border-b border-border/60 px-6 py-4">
-            <DialogTitle className="flex items-center gap-2">
-              <span
-                className="flex h-6 w-6 items-center justify-center rounded-md text-xs font-bold text-white"
-                style={{ background: tagDetail?.color || '#94a3b8' }}
-              >
-                #
-              </span>
-              <span className="truncate">{tagDetail?.name || ''}</span>
-            </DialogTitle>
-          </DialogHeader>
-          {tagDetail ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              {/* 统计摘要 */}
-              {(() => {
-                const stats = tagStatsById[tagDetail.id]
-                if (!stats) return null
-                return (
-                  <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.txCount')}
-                      </div>
-                      <div className="mt-0.5 font-mono text-xl font-bold tabular-nums">
-                        {stats.count}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.accumExpense')}
-                      </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
-                        {stats.expense.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.accumIncome')}
-                      </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
-                        {stats.income.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })()}
+        onLoadMore={(tagSyncId, offset) => void loadTagDetailPage(tagSyncId, offset)}
+        onPreviewAttachment={onPreviewTxAttachment as never}
+        resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl as never}
+      />
 
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <TransactionList
-                  items={tagDetailTransactions}
-                  tags={tags}
-                  variant="compact"
-                  loading={tagDetailLoading}
-                  hasMore={tagDetailTransactions.length < tagDetailTotal}
-                  onLoadMore={() => {
-                    if (!tagDetailLoading && tagDetail) {
-                      void loadTagDetailPage(tagDetail.id, tagDetailOffset)
-                    }
-                  }}
-                  onPreviewAttachment={onPreviewTxAttachment}
-                  resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
-                  emptyTitle={t('transactions.empty.forTag.title')}
-                  emptyDescription={t('transactions.empty.forTag.desc')}
-                />
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(accountDetail)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setAccountDetail(null)
-            setAccountDetailTransactions([])
-            setAccountDetailTotal(0)
-            setAccountDetailOffset(0)
-          }
+      <AccountDetailDialog
+        account={accountDetail}
+        transactions={accountDetailTransactions}
+        total={accountDetailTotal}
+        offset={accountDetailOffset}
+        loading={accountDetailLoading}
+        tags={tags}
+        onClose={() => {
+          setAccountDetail(null)
+          setAccountDetailTransactions([])
+          setAccountDetailTotal(0)
+          setAccountDetailOffset(0)
         }}
-      >
-        <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
-          <DialogHeader className="border-b border-border/60 px-6 py-4">
-            <DialogTitle className="truncate">
-              {accountDetail?.name || ''}
-            </DialogTitle>
-          </DialogHeader>
-          {accountDetail ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              {/* 统计摘要（优先用 server 返回的 balance/income/expense，无则跳过） */}
-              {(() => {
-                const a = accountDetail as ReadAccount & {
-                  tx_count?: number | null
-                  income_total?: number | null
-                  expense_total?: number | null
-                  balance?: number | null
-                }
-                const hasServerStats = typeof a.balance === 'number'
-                return (
-                  <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.currentBalance')}
-                      </div>
-                      <div className={`mt-0.5 font-mono text-base font-bold tabular-nums ${
-                        (hasServerStats ? a.balance! : a.initial_balance ?? 0) >= 0
-                          ? 'text-foreground'
-                          : 'text-expense'
-                      }`}>
-                        {(hasServerStats
-                          ? a.balance!
-                          : a.initial_balance ?? 0
-                        ).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.accumIncome')}
-                      </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-income">
-                        {(a.income_total ?? 0).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        {t('detail.stats.accumExpense')}
-                      </div>
-                      <div className="mt-0.5 font-mono text-base font-bold tabular-nums text-expense">
-                        {(a.expense_total ?? 0).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })()}
-
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <TransactionList
-                  items={accountDetailTransactions}
-                  tags={tags}
-                  variant="compact"
-                  loading={accountDetailLoading}
-                  hasMore={accountDetailTransactions.length < accountDetailTotal}
-                  onLoadMore={() => {
-                    if (!accountDetailLoading && accountDetail) {
-                      void loadAccountDetailPage(accountDetail.name, accountDetailOffset)
-                    }
-                  }}
-                  onPreviewAttachment={onPreviewTxAttachment}
-                  resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
-                  emptyTitle={t('transactions.empty.forAccount.title')}
-                />
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+        onLoadMore={(name, offset) => void loadAccountDetailPage(name, offset)}
+        onPreviewAttachment={onPreviewTxAttachment as never}
+        resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl as never}
+      />
 
       <Dialog open={txFilterOpen} onOpenChange={setTxFilterOpen}>
         <DialogContent className="max-w-md">
@@ -3417,6 +2867,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
 
       {/* "创建账本"对话框已移除 —— web 不再建账本,见文件顶部 createCurrency 的注释。 */}
-    </>
+      </LedgersProvider>
+    </AuthProvider>
   )
 }
