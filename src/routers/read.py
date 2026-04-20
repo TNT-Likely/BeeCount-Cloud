@@ -1191,7 +1191,8 @@ def list_workspace_accounts(
         init_bal = float(acct.initial_balance or 0.0)
         led_ext_id, led_name = ledger_meta.get(acct.ledger_id, ("", ""))
         change_id = change_id_by_ledger.get(acct.ledger_id, 0)
-        bucket = stats.get((acct.ledger_id, sync_id))
+        # stats dict 的 key 是 sync_id(跨 ledger 聚合,见上面 group_by 改动)
+        bucket = stats.get(sync_id)
         income_total = float(bucket.get("income", 0.0)) if bucket else 0.0
         expense_total = float(bucket.get("expense", 0.0)) if bucket else 0.0
         tx_count = int(bucket.get("count", 0)) if bucket else 0
