@@ -1110,14 +1110,17 @@ def list_workspace_accounts(
     ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
     change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
 
-    # 一次 SQL GROUP BY 出所有账户的 tx 聚合(count/income/expense/transfer 进出)。
-    # 每条 tx 可能同时计入 from/to/main account,按 (ledger_id, account) 聚合。
+    # account 是 **user-global** 实体(Flutter 侧 Accounts 表没 ledger_id),但
+    # projection 历史上 per-ledger 重复存(snapshot 每 ledger 各一份)。所以 tx
+    # 聚合也要 **跨 ledger** 按 account_sync_id 累加,不能按 (ledger, account)
+    # 分桶 —— 否则后面的 dedup(`best_by_key` 按 last_change_id 留一份 ledger
+    # 下的 account)会跟 tx 聚合的 ledger 对不上,tx_count 永远 miss。
+    # 用户可见 ledger 范围靠 `ledger_id IN ledger_internal_ids` 限定。
     from sqlalchemy import case as sa_case
 
-    # Main account stats: income + expense
+    # Main account stats: income + expense,按 account_sync_id 聚合
     main_stats = db.execute(
         select(
-            ReadTxProjection.ledger_id,
             ReadTxProjection.account_sync_id,
             func.count().label("cnt"),
             func.coalesce(func.sum(sa_case(
@@ -1130,13 +1133,12 @@ def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.account_sync_id.is_not(None),
             ReadTxProjection.tx_type.in_(["income", "expense"]),
-        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.account_sync_id)
+        ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
     # Transfer adjustments: from_account = minus, to_account = plus
     transfer_from = db.execute(
         select(
-            ReadTxProjection.ledger_id,
             ReadTxProjection.from_account_sync_id,
             func.count().label("cnt"),
             func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
@@ -1144,11 +1146,10 @@ def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
             ReadTxProjection.from_account_sync_id.is_not(None),
-        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.from_account_sync_id)
+        ).group_by(ReadTxProjection.from_account_sync_id)
     ).all()
     transfer_to = db.execute(
         select(
-            ReadTxProjection.ledger_id,
             ReadTxProjection.to_account_sync_id,
             func.count().label("cnt"),
             func.coalesce(func.sum(ReadTxProjection.amount), 0.0).label("amt"),
@@ -1156,21 +1157,21 @@ def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.tx_type == "transfer",
             ReadTxProjection.to_account_sync_id.is_not(None),
-        ).group_by(ReadTxProjection.ledger_id, ReadTxProjection.to_account_sync_id)
+        ).group_by(ReadTxProjection.to_account_sync_id)
     ).all()
 
-    # 合并成 per-ledger + per-account 的 dict
-    stats: dict[tuple[str, str], dict[str, float | int]] = {}
-    for lid, acc, cnt, inc, exp in main_stats:
-        stats[(lid, acc)] = {"count": int(cnt), "income": float(inc),
-                             "expense": float(exp), "balance": float(inc) - float(exp)}
-    for lid, acc, cnt, amt in transfer_from:
-        bucket = stats.setdefault((lid, acc),
+    # 合并成 per-account 的 dict(跨 ledger,key 只是 sync_id)
+    stats: dict[str, dict[str, float | int]] = {}
+    for acc, cnt, inc, exp in main_stats:
+        stats[acc] = {"count": int(cnt), "income": float(inc),
+                      "expense": float(exp), "balance": float(inc) - float(exp)}
+    for acc, cnt, amt in transfer_from:
+        bucket = stats.setdefault(acc,
                                    {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
         bucket["count"] = int(bucket["count"]) + int(cnt)
         bucket["balance"] = float(bucket["balance"]) - float(amt)
-    for lid, acc, cnt, amt in transfer_to:
-        bucket = stats.setdefault((lid, acc),
+    for acc, cnt, amt in transfer_to:
+        bucket = stats.setdefault(acc,
                                    {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
         bucket["count"] = int(bucket["count"]) + int(cnt)
         bucket["balance"] = float(bucket["balance"]) + float(amt)
