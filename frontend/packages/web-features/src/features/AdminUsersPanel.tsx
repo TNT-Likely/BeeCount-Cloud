@@ -503,21 +503,9 @@ export function AdminUsersPanel({
                 onChange={(event) => onCreatePasswordChange(event.target.value)}
               />
             </div>
-            <div className="space-y-1">
-              <Label>{t('admin.users.table.role')}</Label>
-              <Select
-                value={createIsAdmin ? 'admin' : 'user'}
-                onValueChange={(value) => onCreateIsAdminChange(value === 'admin')}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="admin">{t('enum.platformRole.admin')}</SelectItem>
-                  <SelectItem value="user">{t('enum.platformRole.user')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {/* 角色选择已移除 —— self-host 定位单管理员(创始人账号),
+                新建用户一律是普通用户。想升/降管理员只能走 DB 手工操作 +
+                审计,见 src/routers/admin.py create_user 里的硬锁注释。 */}
             <div className="space-y-1">
               <Label>{t('admin.users.table.status')}</Label>
               <Select

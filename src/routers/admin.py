@@ -420,10 +420,15 @@ def create_user(
     if exists is not None:
         raise HTTPException(status_code=409, detail="User email exists")
 
+    # 产品定位:单租户 self-host,**只允许一个管理员**(创始人账号)。
+    # 即使 UI 删了管理员选项,API 这里也硬锁 is_admin=False,防止直接调接口
+    # 或客户端 bug 把普通用户提权。要加管理员目前只能走 DB 手动 UPDATE +
+    # 审计,后续如果有"多租户 / 多管理员"需求再改回允许字段。
+    new_user_is_admin = False
     user = User(
         email=req.email,
         password_hash=hash_password(req.password),
-        is_admin=bool(req.is_admin),
+        is_admin=new_user_is_admin,
         is_enabled=bool(req.is_enabled),
     )
     db.add(user)
@@ -438,6 +443,8 @@ def create_user(
                 "targetEmail": user.email,
                 "isAdmin": user.is_admin,
                 "isEnabled": user.is_enabled,
+                # 记一下请求是否试图传 is_admin=True,方便审计排查
+                "requestedIsAdmin": bool(req.is_admin),
             },
         )
     )
