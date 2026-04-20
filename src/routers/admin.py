@@ -25,6 +25,10 @@ from ..models import (
     BackupSnapshot,
     Device,
     Ledger,
+    ReadAccountProjection,
+    ReadCategoryProjection,
+    ReadTagProjection,
+    ReadTxProjection,
     RefreshToken,
     SyncChange,
     User,
@@ -449,30 +453,43 @@ def admin_overview(
     _admin_user: User = Depends(require_admin_user),
     db: Session = Depends(get_db),
 ) -> AdminOverviewOut:
-    # account/category/tag 本来从 UserAccount/UserCategory/UserTag 投影表数,
-    # 新架构全走 sync_changes 事件流后这些投影表不再维护。这里改成从
-    # sync_changes 的 DISTINCT entity_sync_id(action != 'delete')来算,
-    # 够管理员总览参考就行。
-    def _count_entity(entity_type: str) -> int:
-        return int(
-            db.scalar(
-                select(func.count(func.distinct(SyncChange.entity_sync_id)))
-                .where(SyncChange.entity_type == entity_type)
-                .where(SyncChange.action != "delete")
-            )
-            or 0
-        )
-
+    # 直接从 read_*_projection 取活数据。旧实现从 sync_changes DISTINCT
+    # entity_sync_id WHERE action!='delete' 数 —— 同一 sync_id 先有 upsert 再
+    # 有 delete 行时,filter 只排除 delete 行,upsert 行仍被 DISTINCT 算进去,
+    # 所以已删交易仍被计入(用户在健康页看到被删交易还在总数里的 bug)。
+    # projection 表是 hard-deleted 的权威源,直接 COUNT(*) / COUNT DISTINCT 就
+    # 干净正确。
+    #
+    # 注意:projection 的 account/category/tag 在每个 ledger 下都重复存一份
+    # (历史上 snapshot per-ledger 结构继承过来),全局总览需 DISTINCT sync_id
+    # 去重;transaction 是 per-ledger 真实行,COUNT(*) 就对。
     return AdminOverviewOut(
         users_total=int(db.scalar(select(func.count()).select_from(User)) or 0),
         users_enabled_total=int(
             db.scalar(select(func.count()).select_from(User).where(User.is_enabled.is_(True))) or 0
         ),
         ledgers_total=int(db.scalar(select(func.count()).select_from(Ledger)) or 0),
-        transactions_total=_count_entity("transaction"),
-        accounts_total=_count_entity("account"),
-        categories_total=_count_entity("category"),
-        tags_total=_count_entity("tag"),
+        transactions_total=int(
+            db.scalar(select(func.count()).select_from(ReadTxProjection)) or 0
+        ),
+        accounts_total=int(
+            db.scalar(
+                select(func.count(func.distinct(ReadAccountProjection.sync_id)))
+            )
+            or 0
+        ),
+        categories_total=int(
+            db.scalar(
+                select(func.count(func.distinct(ReadCategoryProjection.sync_id)))
+            )
+            or 0
+        ),
+        tags_total=int(
+            db.scalar(
+                select(func.count(func.distinct(ReadTagProjection.sync_id)))
+            )
+            or 0
+        ),
     )
 
 

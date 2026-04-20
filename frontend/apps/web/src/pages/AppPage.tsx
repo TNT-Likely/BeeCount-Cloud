@@ -867,31 +867,23 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
 
     if (section === 'transactions') {
+      // 交易是账本内的,按 ledger 过滤;账户/分类/标签都是 **用户全局**
+      // (Flutter schema:Categories/Accounts/Tags 表都没 ledger_id 字段,一套
+      // 跨所有账本共享)—— 拉字典不要按 ledger 过滤,避免多账本下漏数据。
+      const txUserId = isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined
       const [txPageResult, accountRows, categoryRows, tagRows] = await Promise.all([
         fetchWorkspaceTransactions(token, {
           ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
+          userId: txUserId,
           q: listQuery || undefined,
           txType: txFilterApplied.txType || undefined,
           accountName: txFilterApplied.accountName || undefined,
           limit: txPageSize,
           offset: (txPage - 1) * txPageSize
         }),
-        fetchWorkspaceAccounts(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
-          limit: 500
-        }),
-        fetchWorkspaceCategories(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
-          limit: 500
-        }),
-        fetchWorkspaceTags(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
-          limit: 500
-        })
+        fetchWorkspaceAccounts(token, { userId: txUserId, limit: 500 }),
+        fetchWorkspaceCategories(token, { userId: txUserId, limit: 500 }),
+        fetchWorkspaceTags(token, { userId: txUserId, limit: 500 })
       ])
       setTransactions(txPageResult.items)
       setTxTotal(txPageResult.total)
@@ -922,11 +914,15 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       return
     }
 
+    // accounts / categories / tags 是用户全局的(Flutter schema 里表都没
+    // ledger_id),跨账本共享一套。拉列表不要按 ledger 过滤,否则切账本会
+    // 看到"分类没了"的假象。
+    const userGlobalUserId = isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined
+
     if (section === 'accounts') {
       setAccounts(
         await fetchWorkspaceAccounts(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
+          userId: userGlobalUserId,
           q: listQuery || undefined,
           limit: 500
         })
@@ -937,8 +933,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     if (section === 'categories') {
       setCategories(
         await fetchWorkspaceCategories(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
+          userId: userGlobalUserId,
           q: listQuery || undefined,
           limit: 500
         })
@@ -949,8 +944,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     if (section === 'tags') {
       setTags(
         await fetchWorkspaceTags(token, {
-          ledgerId: ledgerId || undefined,
-          userId: isAdminUser && listUserFilter !== '__all__' ? listUserFilter : undefined,
+          userId: userGlobalUserId,
           q: listQuery || undefined,
           limit: 500
         })
@@ -1218,19 +1212,33 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     window.localStorage.setItem(txFilterPersistKey, JSON.stringify(payload))
   }, [route.section, txFilterPersistKey, listQuery, txFilterApplied.txType, txFilterApplied.accountName])
 
+  // 列表类 section / admin / 设备 / 健康 页的数据加载。合并了"filter 变化
+  // 刷新" + "切账本刷新" 两条触发路径 —— 原来分两个 useEffect 都调同一个
+  // refreshSectionData,StrictMode 双击下刷新分类页会看到 5 次重复请求。
+  // 现在单 effect + loadLedgerBase 串行,deps 汇到一起,一次 render 只发一轮。
   useEffect(() => {
+    const section = route.section
     if (
-      !isListSection(route.section) &&
-      route.section !== 'admin-users' &&
-      route.section !== 'settings-devices' &&
-      route.section !== 'settings-health'
+      !isListSection(section) &&
+      section !== 'admin-users' &&
+      section !== 'settings-devices' &&
+      section !== 'settings-health'
     ) {
       return
     }
+    // 需要 ledger 的 section(用户还没选/没拉到 ledger 列表时静默等待)
+    if (sectionNeedsLedger(section) && !activeLedgerId) return
+
     let cancelled = false
     const run = async () => {
       try {
-        await refreshSectionData(activeLedgerId, route.section)
+        // 切账本 / 进页面时要更新 base_change_id 给写操作用。section 不需要
+        // ledger 时(admin-users 等)不调,避免无意义请求。
+        if (sectionNeedsLedger(section) && activeLedgerId) {
+          await loadLedgerBase(activeLedgerId)
+        }
+        if (cancelled) return
+        await refreshSectionData(activeLedgerId, section)
       } catch (err) {
         if (!cancelled) {
           setErrorNotice(renderError(err))
@@ -1282,26 +1290,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.section, isAdminResolved, isAdminUser, listUserFilter, txForm.editingId, txForm.editingOwnerUserId, sessionUserId])
-
-  useEffect(() => {
-    if (!sectionNeedsLedger(route.section) || !activeLedgerId) return
-    let cancelled = false
-    const run = async () => {
-      try {
-        await loadLedgerBase(activeLedgerId)
-        await refreshSectionData(activeLedgerId, route.section)
-      } catch (err) {
-        if (!cancelled) {
-          setErrorNotice(renderError(err))
-        }
-      }
-    }
-    void run()
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLedgerId, route.section])
 
   useEffect(() => {
     const allowedIds = new Set(txWriteLedgerOptions.map((ledger) => ledger.ledger_id))
