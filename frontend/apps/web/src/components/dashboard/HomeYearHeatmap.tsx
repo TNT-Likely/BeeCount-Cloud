@@ -48,13 +48,16 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
         <span className="text-[11px] text-muted-foreground">{t('home.heatmap.hint')}</span>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-6 gap-2 sm:grid-cols-12">
+        {/* 12 格月度热力 —— 改成 **永远 2 排**(sm 4 列 × 3 行,md+ 6 列 × 2 行)。
+             之前试过 lg:12 列挤一排,桌面 13 寸仍然窄得金额 truncate 成 "9,..."
+             视觉上更糟。两排布局让每格有 120px+ 宽度,月名 + 完整金额都舒展,
+             代价是卡片高度翻倍 —— 但首页下方本来就空着,换个立体感反而好看。 */}
+        <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
           {data.rows.map((row) => {
             const pct = data.maxExpense > 0 ? row.expense / data.maxExpense : 0
-            // 色温：从透明到饱和玫红
             const bg =
               pct === 0
-                ? 'rgba(148,163,184,0.12)' // 无数据月
+                ? 'rgba(148,163,184,0.12)'
                 : `hsl(0 72% 60% / ${Math.max(0.18, pct).toFixed(2)})`
             const isCurrent =
               row.monthIndex === new Date().getMonth() &&
@@ -62,34 +65,34 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
             return (
               <div
                 key={row.monthIndex}
-                className={`group relative flex aspect-square flex-col items-center justify-center rounded-lg border ${
+                className={`group relative flex min-w-0 flex-col gap-0.5 rounded-lg border px-2 py-2 ${
                   isCurrent ? 'border-primary ring-1 ring-primary/40' : 'border-border/40'
                 }`}
                 style={{ background: bg }}
                 title={`${row.monthLabel} · ${t('home.heatmap.tooltipExpense').replace('{value}', row.expense.toFixed(2))}`}
               >
                 <span
-                  className={`text-[11px] font-semibold ${
+                  className={`text-[11px] font-semibold leading-tight ${
                     pct > 0.5 ? 'text-white' : 'text-foreground'
                   }`}
                 >
                   {row.monthLabel}
                 </span>
                 {row.expense > 0 ? (
-                  <Amount
-                    value={row.expense}
-                    currency={currency}
-                    size="xs"
-                    bold
-                    className={`mt-0.5 leading-none ${
-                      pct > 0.5 ? 'text-white' : 'text-muted-foreground'
+                  <span
+                    className={`truncate font-mono text-[11px] leading-tight tabular-nums ${
+                      pct > 0.5 ? 'text-white/90' : 'text-muted-foreground'
                     }`}
-                  />
+                  >
+                    {row.expense.toLocaleString(undefined, {
+                      maximumFractionDigits: 0
+                    })}
+                  </span>
                 ) : (
-                  <span className="mt-0.5 text-[10px] text-muted-foreground">—</span>
+                  <span className="text-[11px] leading-tight text-muted-foreground">—</span>
                 )}
 
-                {/* hover 时详情 tooltip（纯 CSS，避免额外依赖） */}
+                {/* hover 详情 tooltip(纯 CSS,避免额外依赖)*/}
                 <div className="pointer-events-none absolute -top-1 left-1/2 z-10 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
                   <div className="font-semibold">{row.monthLabel}</div>
                   <div className="text-income">
@@ -100,11 +103,7 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                   </div>
                   <div>
                     <span
-                      className={
-                        row.balance >= 0
-                          ? 'text-income'
-                          : 'text-expense'
-                      }
+                      className={row.balance >= 0 ? 'text-income' : 'text-expense'}
                     >
                       {t('home.heatmap.tooltipBalance').replace('{value}', row.balance.toFixed(2))}
                     </span>

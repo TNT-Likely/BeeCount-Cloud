@@ -56,6 +56,38 @@ const zhCN = {
   // 头像下拉组标题
   'avatar.group.account': '账户',
   'avatar.group.actions': '操作',
+  'avatar.group.info': '信息',
+  'avatar.github': 'GitHub 仓库',
+  'avatar.changelog': '更新日志',
+
+  // 账本列表页
+  'ledgers.title': '账本',
+  'ledgers.subtitle': '所有账本均来自 App 端创建,Web 仅展示。',
+  'ledgers.empty': '还没有账本,请先在手机 App 上创建。',
+  'ledgers.col.name': '名称',
+  'ledgers.col.currency': '币种',
+  'ledgers.col.tx': '交易数',
+  'ledgers.col.income': '收入',
+  'ledgers.col.expense': '支出',
+  'ledgers.col.balance': '余额',
+  'ledgers.col.updatedAt': '最近更新',
+  'ledgers.role.owner': '所有者',
+  'ledgers.role.editor': '编辑者',
+  'ledgers.role.viewer': '只读',
+  'ledgers.shared': '共享',
+
+  // 更新日志弹窗
+  'changelog.title': '更新日志',
+  'changelog.currentVersion': '当前版本',
+  'changelog.latestVersion': '最新版本',
+  'changelog.upToDate': '已是最新',
+  'changelog.newAvailable': '有新版本',
+  'changelog.loading': '加载中...',
+  'changelog.loadMore': '加载更多',
+  'changelog.noMore': '没有更多了',
+  'changelog.loadError': '加载失败,请稍后重试',
+  'changelog.published': '发布于',
+  'changelog.openGithub': '在 GitHub 查看',
 
   // 通用
   'common.on': '开启',
@@ -315,6 +347,7 @@ const zhCN = {
   'nav.categories': '分类',
   'nav.tags': '标签',
   'nav.budgets': '预算',
+  'nav.ledgers': '账本',
   'nav.profile': '个人资料',
   'nav.appearance': '外观',
   'nav.ai': 'AI 配置',
@@ -519,7 +552,7 @@ const zhCN = {
   'overview.createLedger.hint': '当前可访问账本数：{count}',
   'overview.empty': '暂无账本，请先创建一个账本开始使用。',
 
-  'ledgers.title': '账本列表',
+  // 'ledgers.title' 已在前面"账本列表页"段落定义,这里不再重复
   'summary.title': '汇总',
   'summary.button.refresh': '刷新汇总',
   'ops.health.title': '健康检查',

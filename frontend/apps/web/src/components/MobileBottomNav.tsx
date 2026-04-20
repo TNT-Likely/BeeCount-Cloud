@@ -16,6 +16,8 @@ interface Props {
   isAdmin: boolean
   onNavigate: (section: AppSection) => void
   onLogout: () => void
+  /** 打开"更新日志"弹窗,跟桌面端头像下拉同一入口复用。 */
+  onOpenChangelog?: () => void
 }
 
 /**
@@ -31,7 +33,8 @@ export function MobileBottomNav({
   activeSection,
   isAdmin,
   onNavigate,
-  onLogout
+  onLogout,
+  onOpenChangelog
 }: Props) {
   const t = useT()
 
@@ -47,6 +50,7 @@ export function MobileBottomNav({
 
   const moreActive =
     activeSection === 'budgets' ||
+    activeSection === 'ledgers' ||
     activeSection === 'settings-profile' ||
     activeSection === 'settings-ai' ||
     activeSection === 'settings-health' ||
@@ -120,6 +124,16 @@ export function MobileBottomNav({
             >
               {t('nav.budgets')}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              className={`rounded-lg px-2.5 py-2 text-[12px] ${
+                activeSection === 'ledgers'
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
+              }`}
+              onClick={() => onNavigate('ledgers')}
+            >
+              {t('nav.ledgers')}
+            </DropdownMenuItem>
 
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -162,6 +176,32 @@ export function MobileBottomNav({
                 </DropdownMenuItem>
               </>
             ) : null}
+
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+              {t('avatar.group.info')}
+            </DropdownMenuLabel>
+            {onOpenChangelog ? (
+              <DropdownMenuItem
+                className="rounded-lg px-2.5 py-2 text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                onClick={onOpenChangelog}
+              >
+                {t('avatar.changelog')}
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              className="rounded-lg px-2.5 py-2 text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+              onSelect={(e) => {
+                e.preventDefault()
+                window.open(
+                  'https://github.com/TNT-Likely/BeeCount-Cloud',
+                  '_blank',
+                  'noopener,noreferrer'
+                )
+              }}
+            >
+              {t('avatar.github')}
+            </DropdownMenuItem>
 
             <DropdownMenuSeparator />
             <DropdownMenuItem

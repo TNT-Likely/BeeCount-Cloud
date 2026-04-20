@@ -5,6 +5,7 @@ export type AppSection =
   | 'categories'
   | 'tags'
   | 'budgets'
+  | 'ledgers'
   | 'settings-profile'
   | 'settings-appearance'
   | 'settings-health'

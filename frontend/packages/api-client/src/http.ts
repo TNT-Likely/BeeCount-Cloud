@@ -88,11 +88,26 @@ export async function fetchCloudVersion(): Promise<BeeCountCloudVersion> {
   return publicGet<BeeCountCloudVersion>('/version')
 }
 
+/** 取当前浏览器 localStorage 存的 device_id(login 时落盘)。服务端鉴权中间件
+ *  根据这个 header bump Device.last_seen_at,让"设备页最近活跃时间"真实反映
+ *  web 操作而非"上次登录时间"。延迟 require 防止 auth.ts / http.ts 循环依赖。*/
+function currentDeviceId(): string | null {
+  if (typeof window === 'undefined') return null
+  try {
+    // 跟 auth.ts 的 DEVICE_ID_KEY 同名同义,复制避免循环 import
+    return window.localStorage.getItem(`beecount.web.device_id.${API_BASE}`)
+  } catch {
+    return null
+  }
+}
+
 function authHeaders(token: string, idempotencyKey?: string): Record<string, string> {
   const out: Record<string, string> = {
     Authorization: `Bearer ${token}`
   }
   if (idempotencyKey) out['Idempotency-Key'] = idempotencyKey
+  const deviceId = currentDeviceId()
+  if (deviceId) out['X-Device-ID'] = deviceId
   return out
 }
 

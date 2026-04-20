@@ -17,7 +17,11 @@ const appVersion = process.env.VITE_APP_VERSION || pkg.version
 
 export default defineConfig({
   define: {
-    __APP_VERSION__: JSON.stringify(appVersion)
+    __APP_VERSION__: JSON.stringify(appVersion),
+    // 本地 dev 时 process.env.VITE_APP_VERSION 为空,Vite 自动注入也拿不到值。
+    // 显式 define 一遍兜底,保证 import.meta.env.VITE_APP_VERSION 永远有值
+    // (本地 dev = pkg.version,生产 = CI 注入的 tag 版本)
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion)
   },
   resolve: {
     alias: {

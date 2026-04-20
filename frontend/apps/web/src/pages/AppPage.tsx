@@ -5,8 +5,12 @@ import { getStoredDeviceId, getStoredUserId } from '@beecount/api-client'
 import { useSyncSocket } from '../hooks/useSyncSocket'
 import { jwtUserId } from '../state/jwt'
 import { drainPull, startPoller } from '../state/sync-client'
+import { AvatarDropdown } from '../components/AvatarDropdown'
+import { ChangelogDialog } from '../components/ChangelogDialog'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
+import { BudgetsSection } from '../components/sections/BudgetsSection'
+import { LedgersSection } from '../components/sections/LedgersSection'
 import { HomeHero } from '../components/dashboard/HomeHero'
 import { HomeHabitStats } from '../components/dashboard/HomeHabitStats'
 import { HomeYearHeatmap } from '../components/dashboard/HomeYearHeatmap'
@@ -22,7 +26,6 @@ import {
   BookOpen,
   Database,
   FolderTree,
-  LogOut,
   MoreHorizontal,
   Receipt,
   RefreshCcw,
@@ -94,7 +97,6 @@ import {
   createAccount,
   createAdminUser,
   createCategory,
-  createLedger,
   deleteLedger,
   createTag,
   createTransaction,
@@ -111,6 +113,7 @@ import {
   fetchWorkspaceAnalytics,
   fetchWorkspaceLedgerCounts,
   type WorkspaceAccount,
+  type WorkspaceCategory,
   type WorkspaceAnalytics,
   type WorkspaceLedgerCounts,
   type WorkspaceTransaction,
@@ -552,6 +555,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const [isAdminUser, setIsAdminUser] = useState(false)
   const [isAdminResolved, setIsAdminResolved] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
+  const [changelogOpen, setChangelogOpen] = useState(false)
   const [txDictionaryLoading, setTxDictionaryLoading] = useState(false)
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
@@ -633,9 +637,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     objectUrl: ''
   })
 
-  const [createLedgerName, setCreateLedgerName] = useState('')
-  const [createCurrency, setCreateCurrency] = useState('CNY')
-  const [createLedgerDialogOpen, setCreateLedgerDialogOpen] = useState(false)
+  // Web 不再支持新建账本 —— 账本是 user-global 跨端同步的核心实体,
+  // 建账本走 mobile app 更自然(首次 welcome 页就会引导建),避免 web/mobile
+  // 双路径对初始化逻辑产生冲突。editLedger 还保留,只改名字和币种不建新账本。
+  const [createCurrency] = useState('CNY')
   const [editLedgerName, setEditLedgerName] = useState('')
   const [editCurrency, setEditCurrency] = useState('CNY')
 
@@ -811,22 +816,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
   const applyIncomeColorScheme = (incomeIsRed: boolean) => {
     if (typeof document === 'undefined') return
     document.documentElement.dataset.incomeColor = incomeIsRed ? 'red' : 'green'
-  }
-
-  /**
-   * 头像 URL cache-bust：避免浏览器把旧头像长期留在 disk cache。优先用后端
-   * 给的 `?v=<version>` 参数；如果 URL 里没有 v（老客户端 / 代理 strip 了）
-   * 再手动拼一次。`img` 外层也会用 `key={avatar_version}` 强制重挂，两层兜底。
-   */
-  const withAvatarCacheBust = (url?: string | null, version?: number | null): string => {
-    if (!url) return ''
-    if (version == null) return url
-    // 已经有 v 参数就 replace，没有就 append
-    const separator = url.includes('?') ? '&' : '?'
-    if (/[?&]v=\d+/.test(url)) {
-      return url.replace(/([?&])v=\d+/, `$1v=${version}`)
-    }
-    return `${url}${separator}v=${version}`
   }
 
   const loadLedgerBase = async (ledgerId: string) => {
@@ -1712,25 +1701,6 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
   }
 
-  const onCreateLedger = async () => {
-    try {
-      const response = await createLedger(token, {
-        ledger_name: createLedgerName.trim() || 'New Ledger',
-        currency: createCurrency.trim() || 'CNY'
-      })
-      setCreateLedgerName('')
-      setCreateCurrency('CNY')
-      setCreateLedgerDialogOpen(false)
-      await loadLedgers()
-      setActiveLedgerId(response.ledger_id)
-      setTxWriteLedgerId(response.ledger_id)
-      onNavigate({ kind: 'app', ledgerId: '', section: 'overview' })
-      setSuccessNotice(t('notice.ledgerCreated'))
-    } catch (err) {
-      setErrorNotice(renderError(err))
-    }
-  }
-
   const onUpdateLedgerMeta = async () => {
     if (!activeLedgerId) return
     try {
@@ -2285,18 +2255,9 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       </SelectContent>
                     </Select>
                   ) : null}
-                  {ledgers.length === 0 ? (
-                    <Button
-                      className="ml-1 hidden h-8 px-3 text-xs md:inline-flex"
-                      size="sm"
-                      onClick={() => {
-                        onNavigate({ kind: 'app', ledgerId: '', section: 'transactions' })
-                        setCreateLedgerDialogOpen(true)
-                      }}
-                    >
-                      {t('shell.createLedger')}
-                    </Button>
-                  ) : null}
+                  {/* ledgers.length === 0 时以前有"新建账本"按钮,现已移除 —— web
+                      不再建账本,新用户在 mobile app 首次启动会 welcome 引导建。
+                      这里保持空状态,提示用户去 App 端同步后再回来 web 使用。*/}
                 </div>
 
                 <nav className="hidden flex-1 items-center justify-center gap-1 md:flex">
@@ -2398,141 +2359,22 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                       分组：个人（资料 / 健康）+ 运维（设备）+ 操作（退出登录）。
                       退出按钮从右上角彻底移走了。 */}
                   {profileMe?.email ? (
-                    <div className="group relative" tabIndex={-1}>
-                      <button
-                        type="button"
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                        title={profileMe.display_name || profileMe.email}
-                      >
-                        {profileMe.avatar_url ? (
-                          <img
-                            // key 跟 avatar_version 绑定：服务端 bump 版本号后
-                            // React 会重挂载 <img>，彻底绕开浏览器 disk cache
-                            // 把旧帧当新 URL 继续复用的场景。
-                            key={profileMe.avatar_version ?? 0}
-                            src={withAvatarCacheBust(
-                              profileMe.avatar_url,
-                              profileMe.avatar_version
-                            )}
-                            alt=""
-                            className="h-8 w-8 rounded-full border border-border/40 object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-muted text-[11px] font-semibold text-muted-foreground">
-                            {profileMe.email.slice(0, 1).toUpperCase()}
-                          </div>
-                        )}
-                      </button>
-                      {/* 悬浮面板 —— 默认透明不接收指针，hover/focus 状态打开 */}
-                      <div
-                        className="invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
-                      >
-                        <div className="rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
-                          {/* 头部：用户身份 */}
-                          <div className="px-2 py-2">
-                            <div className="truncate text-[13px] font-semibold text-foreground">
-                              {profileMe.display_name || t('shell.userDefault')}
-                            </div>
-                            <div className="truncate text-[11px] font-normal text-muted-foreground">
-                              {profileMe.email}
-                            </div>
-                          </div>
-                          <div className="mx-1 h-px bg-border/60" />
-                          {/* 工具组:预算从顶部 bookkeeping 搬过来,访问频率
-                              不够 tab 高,放下拉里刚好。 */}
-                          <div className="px-1 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            {t('nav.group.tools')}
-                          </div>
-                          <button
-                            type="button"
-                            className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
-                              route.section === 'budgets'
-                                ? 'bg-primary/10 text-primary'
-                                : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
-                            }`}
-                            onClick={() =>
-                              onNavigate({
-                                kind: 'app',
-                                ledgerId: '',
-                                section: 'budgets'
-                              })
-                            }
-                          >
-                            {t('nav.budgets')}
-                          </button>
-                          <div className="mx-1 my-1 h-px bg-border/60" />
-                          {/* 分组：按 avatarMenuItems 原来的顺序直出 —— 个人资料 /
-                              健康 / 设备。目前三个 item 混在一组足够，等未来项
-                              多了再拆子 section。 */}
-                          <div className="px-1 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            {t('nav.group.settings')}
-                          </div>
-                          {avatarMenuItems.map((item) => {
-                            const active = route.section === item.key
-                            return (
-                              <button
-                                key={item.key}
-                                type="button"
-                                className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
-                                  active
-                                    ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
-                                }`}
-                                onClick={() =>
-                                  onNavigate({
-                                    kind: 'app',
-                                    ledgerId: '',
-                                    section: item.key
-                                  })
-                                }
-                              >
-                                {t(item.labelKey)}
-                              </button>
-                            )
-                          })}
-                          {/* admin-users 从顶部 nav 搬进来，只对管理员显示。 */}
-                          {isAdminUser ? (
-                            <>
-                              <div className="mx-1 my-1 h-px bg-border/60" />
-                              <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                                {t('nav.group.admin')}
-                              </div>
-                              <button
-                                type="button"
-                                className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
-                                  route.section === 'admin-users'
-                                    ? 'bg-primary/10 text-primary'
-                                    : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
-                                }`}
-                                onClick={() =>
-                                  onNavigate({
-                                    kind: 'app',
-                                    ledgerId: '',
-                                    section: 'admin-users'
-                                  })
-                                }
-                              >
-                                {t('nav.users')}
-                              </button>
-                            </>
-                          ) : null}
-                          {/* 主题色 / 收支颜色 从这里移到独立的"外观"设置页，
-                              头像下拉只留账户 + 登出的快捷入口。 */}
-                          <div className="mx-1 my-1 h-px bg-border/60" />
-                          <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                            {t('avatar.group.actions')}
-                          </div>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-destructive hover:bg-destructive/10"
-                            onClick={onLogout}
-                          >
-                            <LogOut className="h-3.5 w-3.5" />
-                            {t('shell.logout')}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                    <AvatarDropdown
+                      profileMe={{
+                        email: profileMe.email,
+                        display_name: profileMe.display_name ?? null,
+                        avatar_url: profileMe.avatar_url ?? null,
+                        avatar_version: profileMe.avatar_version ?? null,
+                      }}
+                      currentSection={route.section}
+                      isAdminUser={isAdminUser}
+                      avatarMenuItems={avatarMenuItems}
+                      onNavigate={(section) =>
+                        onNavigate({ kind: 'app', ledgerId: '', section })
+                      }
+                      onLogout={onLogout}
+                      onOpenChangelog={() => setChangelogOpen(true)}
+                    />
                   ) : null}
                 </div>
               </div>
@@ -2852,65 +2694,27 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
           ) : null}
 
           {route.section === 'budgets' ? (
-            <div className="space-y-4">
-              <Card className="bc-panel">
-                <CardHeader>
-                  <CardTitle>{t('nav.budgets')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="mb-3 text-xs text-muted-foreground">{t('budgets.desc')}</p>
-                  {!activeLedgerId ? (
-                    <p className="text-sm text-muted-foreground">{t('shell.selectLedgerFirst')}</p>
-                  ) : budgets.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">{t('budgets.empty')}</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {budgets.map((b) => (
-                        <div
-                          key={b.id}
-                          className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3"
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="inline-flex items-center rounded-full border border-border/60 bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider">
-                              {b.type === 'total' ? t('budgets.type.total') : t('budgets.type.category')}
-                            </span>
-                            <span className="text-sm font-medium">
-                              {b.type === 'category'
-                                ? (b.category_name || b.category_id || t('budgets.label.unknownCategory'))
-                                : t('budgets.label.allLedger')}
-                            </span>
-                            {!b.enabled ? (
-                              <span className="text-[11px] text-muted-foreground">
-                                {t('budgets.disabled')}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="text-right">
-                            <div className="font-semibold tabular-nums">
-                              {b.amount.toLocaleString(undefined, {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2
-                              })}
-                            </div>
-                            <div className="text-[11px] text-muted-foreground">
-                              {b.period === 'monthly'
-                                ? t('budgets.period.monthly')
-                                : b.period === 'weekly'
-                                  ? t('budgets.period.weekly')
-                                  : b.period === 'yearly'
-                                    ? t('budgets.period.yearly')
-                                    : b.period}
-                              {' · '}
-                              {t('budgets.startDay').replace('{day}', String(b.start_day))}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
+            <BudgetsSection
+              budgets={budgets}
+              categories={categories as WorkspaceCategory[]}
+              activeLedgerId={activeLedgerId}
+              currency={
+                ledgers.find((l) => l.ledger_id === activeLedgerId)?.currency ||
+                'CNY'
+              }
+              categoryIconPreviewByFileId={categoryIconPreviewByFileId}
+            />
+          ) : null}
+
+          {route.section === 'ledgers' ? (
+            <LedgersSection
+              ledgers={ledgers}
+              activeLedgerId={activeLedgerId}
+              onSelect={(ledgerId) => {
+                setActiveLedgerId(ledgerId)
+                onNavigate({ kind: 'app', ledgerId: '', section: 'overview' })
+              }}
+            />
           ) : null}
 
           {route.section === 'settings-ai' ? (
@@ -3266,6 +3070,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         <MobileBottomNav
           activeSection={route.section}
           isAdmin={isAdminUser}
+          onOpenChangelog={() => setChangelogOpen(true)}
           onNavigate={(section) =>
             onNavigate({ kind: 'app', ledgerId: '', section })
           }
@@ -3608,38 +3413,10 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
       {/* 服务端日志弹窗:只有 admin 才能在 toolbar 看到入口按钮,对话框常驻 root。 */}
       <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
 
-      {/* 创建账本对话框：常驻 root，任何分区 header 的"新建账本"按钮都能唤起。 */}
-      <Dialog open={createLedgerDialogOpen} onOpenChange={setCreateLedgerDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('overview.createLedger.title')}</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-3">
-            <div className="space-y-1">
-              <Label>{t('overview.createLedger.name')}</Label>
-              <Input
-                value={createLedgerName}
-                onChange={(e) => setCreateLedgerName(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>{t('overview.createLedger.currency')}</Label>
-              <Input
-                value={createCurrency}
-                onChange={(e) => setCreateCurrency(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateLedgerDialogOpen(false)}>
-              {t('dialog.cancel')}
-            </Button>
-            <Button onClick={() => void onCreateLedger()}>
-              {t('overview.createLedger.button.create')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 更新日志弹窗:头像下拉"信息"组触发,版本检测 + 拉 GitHub release 列表。 */}
+      <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
+
+      {/* "创建账本"对话框已移除 —— web 不再建账本,见文件顶部 createCurrency 的注释。 */}
     </>
   )
 }

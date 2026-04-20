@@ -16,6 +16,7 @@ export const APP_SECTIONS: AppSection[] = [
   'categories',
   'tags',
   'budgets',
+  'ledgers',
   'overview',
   'settings-profile',
   'settings-appearance',
@@ -76,6 +77,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'tags'
     case 'budgets':
       return 'budgets'
+    case 'ledgers':
+      return 'ledgers'
     case 'overview':
       return 'overview'
     case 'admin/users':
@@ -184,6 +187,8 @@ export function routePath(route: AppRoute): string {
       return '/app/tags'
     case 'budgets':
       return '/app/budgets'
+    case 'ledgers':
+      return '/app/ledgers'
     case 'overview':
       return '/app/overview'
     case 'settings-profile':
