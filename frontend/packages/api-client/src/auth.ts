@@ -38,7 +38,10 @@ export function clearStoredSession(): void {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
   window.localStorage.removeItem(USER_ID_KEY)
-  // Keep DEVICE_ID_KEY so the next login reuses the same device record.
+  // 顺带清 device_id:同一浏览器切换账户时,保留旧 user 的 device_id 会在
+  // 后端跨 user 撞 PK(已有后端兜底自动换新 id,但这里清干净让前端行为更
+  // 可预测)。同一 user 重新登录新 id 无伤,server 会建新 device 行。
+  window.localStorage.removeItem(DEVICE_ID_KEY)
 }
 
 export async function login(email: string, password: string): Promise<LoginResponse> {

@@ -60,9 +60,24 @@ def _upsert_device(
     now = datetime.now(timezone.utc)
     target_id = device_id or str(uuid4())
 
-    device = db.scalar(
-        select(Device).where(Device.id == target_id, Device.user_id == user_id)
-    )
+    # `devices.id` 是全局 PK,不跟 user_id 复合。客户端传的 device_id 如果已被
+    # **其他 user** 占用(常见场景:web 同一浏览器 localStorage 存着前一个登录
+    # 用户的 device_id,切号/注册新账户后传过来)—— 不能直接 insert 同 id 新行,
+    # 会撞 UNIQUE。这里检测到 cross-user 冲突就换新 uuid,登录 response 会把
+    # 新 device_id 回给客户端覆盖 localStorage,下次登录就一致了。
+    existing_any = db.scalar(select(Device).where(Device.id == target_id))
+    if existing_any is not None and existing_any.user_id != user_id:
+        logger.warning(
+            "auth.device_id cross-user collision id=%s prev_user=%s new_user=%s "
+            "-> minting new device_id",
+            target_id, existing_any.user_id, user_id,
+        )
+        target_id = str(uuid4())
+        existing_any = None
+
+    device = existing_any if (
+        existing_any is not None and existing_any.user_id == user_id
+    ) else None
     if device is None:
         device = Device(
             id=target_id,
