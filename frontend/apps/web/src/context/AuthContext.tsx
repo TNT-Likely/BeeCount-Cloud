@@ -18,6 +18,10 @@ export interface AuthContextValue {
   profileMe: ProfileMe | null
   sessionUserId: string | null
   isAdmin: boolean
+  /** 管理员探测是否已完成(探测期间 isAdmin 为 false,但不该用于权限判断)。 */
+  isAdminResolved: boolean
+  /** 重新拉取 profileMe。mutation 成功后调,把 server 权威数据刷回 context。 */
+  refreshProfile: () => Promise<void>
   logout: () => void
 }
 

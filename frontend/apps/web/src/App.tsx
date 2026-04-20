@@ -4,10 +4,21 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-route
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
 
-import { RequireAuth, useLegacyRoute } from './app/router'
-import { AppPage } from './pages/AppPage'
+import { AppShell } from './app/AppShell'
+import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
-import { jwtUserId } from './state/jwt'
+import { TransactionsPage } from './pages/sections/TransactionsPage'
+import { AccountsPage } from './pages/sections/AccountsPage'
+import { AdminUsersPage } from './pages/sections/AdminUsersPage'
+import { BudgetsPage } from './pages/sections/BudgetsPage'
+import { CategoriesPage } from './pages/sections/CategoriesPage'
+import { LedgersPage } from './pages/sections/LedgersPage'
+import { OverviewPage } from './pages/sections/OverviewPage'
+import { SettingsAiPage } from './pages/sections/SettingsAiPage'
+import { SettingsDevicesPage } from './pages/sections/SettingsDevicesPage'
+import { SettingsHealthPage } from './pages/sections/SettingsHealthPage'
+import { SettingsProfilePage } from './pages/sections/SettingsProfilePage'
+import { TagsPage } from './pages/sections/TagsPage'
 import { clearCursor } from './state/sync-client'
 
 const LEGACY_TOKEN_KEY = 'beecount.token'
@@ -91,12 +102,12 @@ function AppRoutes() {
     }
   }, [handleLogout])
 
-  // 显式枚举所有 section 路由 —— 阶段 3 Step 1。每条路由目前都走
-  // LegacyAppPage(内部仍靠 useLegacyRoute 桥反解析 URL → AppRoute),
-  // 后续 Step 2 每次把一条路由的 element 换成真正独立的 <XxxPage />。
-  const protectedElement = (
+  // Nested routes:AppShell 作为 /app 父路由的 element,其 <Outlet /> 渲染
+  // 当前子路由,切换 section 时 AppShell 不 unmount —— profileMe / ledgers
+  // 等全局数据跨页面保持。所有 section 都有独立 Page,挂到 Outlet 下。
+  const shellElement = (
     <RequireAuth isAuthed={!!token}>
-      <LegacyAppPage token={token} onLogout={handleLogout} />
+      <AppShell token={token} onLogout={handleLogout} />
     </RequireAuth>
   )
 
@@ -117,48 +128,29 @@ function AppRoutes() {
           )
         }
       />
-      <Route path="/app" element={<Navigate to="/app/overview" replace />} />
-      <Route path="/app/overview" element={protectedElement} />
-      <Route path="/app/transactions" element={protectedElement} />
-      <Route path="/app/ledgers" element={protectedElement} />
-      <Route path="/app/budgets" element={protectedElement} />
-      <Route path="/app/accounts" element={protectedElement} />
-      <Route path="/app/categories" element={protectedElement} />
-      <Route path="/app/tags" element={protectedElement} />
-      <Route path="/app/admin/users" element={protectedElement} />
-      <Route path="/app/settings/profile" element={protectedElement} />
-      <Route path="/app/settings/appearance" element={protectedElement} />
-      <Route path="/app/settings/ai" element={protectedElement} />
-      <Route path="/app/settings/health" element={protectedElement} />
-      <Route path="/app/settings/devices" element={protectedElement} />
-      {/* legacy 深链:/app/:ledgerId/... 由 useLegacyRoute 里的 parseRoute 兜底 */}
-      <Route path="/app/*" element={protectedElement} />
+      <Route path="/app" element={shellElement}>
+        <Route index element={<Navigate to="overview" replace />} />
+        <Route path="overview" element={<OverviewPage />} />
+        <Route path="transactions" element={<TransactionsPage />} />
+        <Route path="ledgers" element={<LedgersPage />} />
+        <Route path="budgets" element={<BudgetsPage />} />
+        <Route path="accounts" element={<AccountsPage />} />
+        <Route path="categories" element={<CategoriesPage />} />
+        <Route path="tags" element={<TagsPage />} />
+        <Route path="admin/users" element={<AdminUsersPage />} />
+        <Route path="settings/profile" element={<SettingsProfilePage />} />
+        <Route path="settings/appearance" element={<SettingsProfilePage />} />
+        <Route path="settings/ai" element={<SettingsAiPage />} />
+        <Route path="settings/health" element={<SettingsHealthPage />} />
+        <Route path="settings/devices" element={<SettingsDevicesPage />} />
+        {/* legacy 深链 /app/:ledgerId/... 目前直接 fall-through 到 transactions */}
+        <Route path="*" element={<Navigate to="/app/overview" replace />} />
+      </Route>
       <Route path="/" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
       <Route path="*" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
     </Routes>
   )
 }
 
-/**
- * 过渡壳:react-router 的 `/app/*` 通配路由挂这里,内部通过 useLegacyRoute
- * 把 URL 反解析成老的 AppRoute 对象注入 AppPage,保持 AppPage 内部代码零改动。
- *
- * key={userId}:切换用户时 React 会 unmount 旧 AppPage + 全新 mount,
- * 彻底清掉所有 useState(ledgers/accounts/categories/tags/...) 和 useEffect 闭包,
- * 避免 User A 的数据泄漏到 User B 的 session。
- */
-function LegacyAppPage({ token, onLogout }: { token: string; onLogout: () => void }) {
-  const { route, navigate } = useLegacyRoute()
-  if (route.kind !== 'app') {
-    return null
-  }
-  return (
-    <AppPage
-      key={jwtUserId(token) || 'anon'}
-      token={token}
-      route={route}
-      onNavigate={navigate}
-      onLogout={onLogout}
-    />
-  )
-}
+// LegacyAppPage 和 useLegacyRoute 桥已随阶段 3 T15 移除 —— 所有 section 都是
+// 独立 Page,直接挂到 react-router 的 Outlet 下。
