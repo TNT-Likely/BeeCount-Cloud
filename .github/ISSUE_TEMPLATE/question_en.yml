@@ -1,0 +1,49 @@
+name: ❓ Question / Help (English)
+description: Need help with deployment / usage / configuration
+title: "[Question] "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ **Questions are better in [Discussions](https://github.com/TNT-Likely/BeeCount-Cloud/discussions)** — issues are for bugs / features.
+        >
+        > If you do open an issue, please fill in details below.
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched [Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues) and [Discussions](https://github.com/TNT-Likely/BeeCount-Cloud/discussions) — no answer
+          required: true
+        - label: I read the [README](https://github.com/TNT-Likely/BeeCount-Cloud#readme)
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: What you're trying to do + what's blocking you
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you've tried
+      description: So we don't suggest something you already tried
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: BeeCount Cloud version
+      placeholder: "e.g. v3.0.1"
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Deployment env (optional)
+      description: Deployment method, network topology, reverse proxy, OS, etc.

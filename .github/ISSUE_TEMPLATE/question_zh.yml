@@ -1,0 +1,49 @@
+name: ❓ 问题求助(中文)
+description: 部署 / 使用 / 配置遇到困难,需要帮助
+title: "[Question] "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ **求助类问题更推荐用 [Discussions](https://github.com/TNT-Likely/BeeCount-Cloud/discussions)** —— issue 跟踪 bug / feature,Discussions 更适合交流。
+        >
+        > 确实要开 issue 也可以,请按下面填清楚。
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: 前置检查
+      options:
+        - label: 我已搜过 [Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues) 和 [Discussions](https://github.com/TNT-Likely/BeeCount-Cloud/discussions),没有找到答案
+          required: true
+        - label: 我看过 [README](https://github.com/TNT-Likely/BeeCount-Cloud#readme)
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 具体问题
+      description: 描述你想实现什么 + 遇到了什么困难
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已经尝试过什么
+      description: 避免推荐你重复尝试的路径
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: BeeCount Cloud 版本
+      placeholder: "例:v3.0.1"
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 部署环境(非必填)
+      description: 部署方式、网络拓扑、反向代理、OS 等

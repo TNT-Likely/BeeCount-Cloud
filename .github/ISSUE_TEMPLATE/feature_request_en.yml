@@ -1,0 +1,59 @@
+name: ✨ Feature Request (English)
+description: Suggest a new feature or improvement
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! **Describing the problem is more important than the solution** — it lets us decide whether & how to tackle it.
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched [existing issues / discussions](https://github.com/TNT-Likely/BeeCount-Cloud/issues?q=is%3Aissue) — no duplicate
+          required: true
+        - label: This is about **Cloud backend / Web console** (app-only goes to the app repo)
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use case
+      description: Describe your current workflow and what's inconvenient. **Don't just say "please add X"** — describe the problem first.
+      placeholder: |
+        e.g.
+        My partner and I share a household ledger but work in different cities.
+        Right now we screenshot-share over WeChat to reconcile.
+        We'd like to share a ledger between two registered users via the Web console.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you'd ideally like it to work
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives (optional)
+      description: Other approaches you considered and why they're not sufficient
+
+  - type: textarea
+    id: more
+    attributes:
+      label: References / Additional context (optional)
+      description: Similar feature in other products, mockups, scale/data estimates, etc.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Would you contribute?
+      options:
+        - label: I'm willing to submit a PR (will align with maintainer on the approach first)

@@ -1,0 +1,111 @@
+name: 🐛 Bug 报告(中文)
+description: 报告 BeeCount Cloud 服务端 / Web 控制台遇到的 bug
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢提交 bug 报告!请填完下面所有 **必填** 项 —— 没有复现步骤的 issue 基本无法定位。
+
+        **不确定是 Cloud 还是 App 问题?** 只动 App 不碰同步的问题请去 [BeeCount App 仓库](https://github.com/TNT-Likely/BeeCount/issues)。
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: 前置检查
+      description: 请逐项确认,减少 maintainer 重复工作
+      options:
+        - label: 我已搜索过 [已有 Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues?q=is%3Aissue) 没有找到重复
+          required: true
+        - label: 我已阅读 [README](https://github.com/TNT-Likely/BeeCount-Cloud#readme) 的部署 / 配置章节
+          required: true
+        - label: 我尝试过最新版本(docker pull 拉最新 image),问题仍在
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题简述
+      description: 一句话说明你遇到了什么问题
+      placeholder: "例:Web 控制台登录后点击账本列表立即 crash"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 详细到别人照着做能复现的程度。至少 3 步,每步一行
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      placeholder: "例:账本列表正常展示"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 出了什么具体现象。有报错请粘贴完整错误文本
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - Docker(官方镜像 ghcr.io / docker hub)
+        - Docker Compose(官方 compose 文件)
+        - Docker Compose(自建)
+        - 源码运行(本地开发)
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: BeeCount Cloud 版本
+      description: Web 健康检查页面,或 `docker images` 看 tag,或 `/healthz` 响应 header
+      placeholder: "例:v3.0.1"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器 / Web 版本
+      description: Web 控制台相关问题才填
+      placeholder: "例:Chrome 131 / macOS 15 / iPhone Safari"
+
+  - type: input
+    id: mobile_app
+    attributes:
+      label: 移动端 App 版本(若涉及跨端同步)
+      placeholder: "例:iOS v3.0.1 / Android v3.0.1"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: |
+        粘贴关键错误日志(`docker logs beecount-cloud | tail -100`)或截图。
+        **敏感信息(token / 邮箱 / sync_id)请自行打码**。
+      render: text
+
+  - type: textarea
+    id: more
+    attributes:
+      label: 其他补充(非必填)
+      description: 如网络环境、反向代理配置、自定义 env 变量等

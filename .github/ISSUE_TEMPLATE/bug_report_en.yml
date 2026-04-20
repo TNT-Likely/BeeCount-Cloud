@@ -1,0 +1,111 @@
+name: 🐛 Bug Report (English)
+description: Report a bug in BeeCount Cloud backend / Web console
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please fill every **required** field — issues without reproduction steps can't be triaged.
+
+        **Not sure if it's Cloud or App?** App-only issues (no sync involvement) belong in the [BeeCount App repo](https://github.com/TNT-Likely/BeeCount/issues).
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: Pre-flight checks
+      description: Please confirm each item to save maintainer time
+      options:
+        - label: I searched [existing issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues?q=is%3Aissue) — no duplicate
+          required: true
+        - label: I read the [README](https://github.com/TNT-Likely/BeeCount-Cloud#readme) deployment / configuration sections
+          required: true
+        - label: I tried the latest image (`docker pull`) — problem persists
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the problem
+      placeholder: "e.g. Web console crashes on click of ledger list after login"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Detailed enough that someone else can reproduce. At least 3 steps, one per line.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "e.g. Ledger list should render normally"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happens instead. Paste full error text if applicable.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker (official image from ghcr.io / docker hub)
+        - Docker Compose (official compose file)
+        - Docker Compose (custom)
+        - Source run (local dev)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: BeeCount Cloud version
+      description: See Web health check page, or `docker images` tag, or `/healthz` response header
+      placeholder: "e.g. v3.0.1"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / Web version
+      description: Only for Web console issues
+      placeholder: "e.g. Chrome 131 / macOS 15 / iPhone Safari"
+
+  - type: input
+    id: mobile_app
+    attributes:
+      label: Mobile App version (if cross-device sync involved)
+      placeholder: "e.g. iOS v3.0.1 / Android v3.0.1"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots
+      description: |
+        Paste key error logs (`docker logs beecount-cloud | tail -100`) or screenshots.
+        **Redact sensitive info** (tokens / emails / sync_ids) yourself.
+      render: text
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Additional context (optional)
+      description: Network setup, reverse proxy, custom env vars, etc.

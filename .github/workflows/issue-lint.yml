@@ -1,0 +1,139 @@
+name: Issue Lint
+
+# Issue 质量检查 —— 即便用了模板,仍会有"一句话 bug"、"标题 = bug" 等低信息量
+# issue 漏进来。这个 workflow 在 issue 提交/编辑时跑一次轻量校验,发现问题就:
+#   - 打 `needs-info` label
+#   - 发/更新一条 bot 评论告诉提交者要补什么(中英双语)
+#
+# 不会主动关闭 issue,只提示。maintainer 仍有最终判断权。
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate title & body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            if (!issue) return;
+            // 忽略 maintainer 自己开的 issue(通常是 tracking / meta,规则不适用)
+            if (issue.author_association === 'OWNER' ||
+                issue.author_association === 'MEMBER' ||
+                issue.author_association === 'COLLABORATOR') {
+              core.info(`skip lint: author_association=${issue.author_association}`);
+              return;
+            }
+
+            const title = (issue.title || '').trim();
+            const body = (issue.body || '').trim();
+            const { owner, repo } = context.repo;
+            const issue_number = issue.number;
+
+            const problems = [];
+
+            // 1. 标题长度:模板前缀 "[Bug] " 占 6 字符,真正内容至少 10 个字符
+            //    实际测下来低信息量标题都 < 20。设阈值 14(含前缀)。
+            if (title.length < 14) {
+              problems.push({
+                zh: '❌ **标题太短**:至少 14 个字符(含 `[Bug]` / `[Feature]` 前缀),请写清楚具体问题。',
+                en: '❌ **Title too short**: at least 14 chars (including `[Bug]` / `[Feature]` prefix). Be specific.',
+              });
+            }
+
+            // 2. 低信息量词只配占标题的 issue
+            const vaguePatterns = [
+              /^\[[^\]]*\]\s*$/,                          // 只有模板前缀
+              /^\[[^\]]*\]\s*(bug|help|问题|求助|疑问|issue|hi|hello)\s*\.?\??\s*$/i,
+              /^(bug|help|问题|求助|疑问|求帮忙|有问题|hi|hello)\s*\.?\??\s*$/i,
+              /^\?+$/,
+              /^!+$/,
+            ];
+            if (vaguePatterns.some(p => p.test(title))) {
+              problems.push({
+                zh: '❌ **标题过于模糊**:仅包含"bug / help / 问题"等关键词或只有前缀。请用一句话描述具体问题(如"登录后账本列表 crash")。',
+                en: '❌ **Title is too vague**: only contains words like "bug / help" or only the prefix. Use a one-sentence description (e.g. "Ledger list crashes after login").',
+              });
+            }
+
+            // 3. body 里有没真正填内容
+            //    模板留下的空段落(1. \n 2. \n 3. \n)和占位符不算
+            const strippedBody = body
+              .replace(/<!--[\s\S]*?-->/g, '')
+              .replace(/^\s*[0-9]+\.\s*$/gm, '')
+              .replace(/^\s*[-*]\s*$/gm, '')
+              .replace(/### .*$/gm, '')
+              .replace(/\[[ xX]\]/g, '')
+              .replace(/\s+/g, '')
+              .trim();
+
+            if (strippedBody.length < 40) {
+              problems.push({
+                zh: '❌ **正文内容过少**:请按模板填写复现步骤 / 预期行为 / 实际行为等字段,一句话无法定位问题。',
+                en: '❌ **Body too short**: please fill in reproduction steps / expected / actual behavior. One-liners can\'t be triaged.',
+              });
+            }
+
+            // ---------- 应用结果 ----------
+            // 寻找之前的 bot 评论(有 magic marker)用来 update 而不是刷屏
+            const MARKER = '<!-- beecount-cloud-issue-lint-bot -->';
+            const existing = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 },
+            );
+            const botComment = existing.find(c => (c.body || '').includes(MARKER));
+
+            if (problems.length === 0) {
+              // 通过校验:清理评论 + 去掉 needs-info label
+              if (botComment) {
+                await github.rest.issues.deleteComment({
+                  owner, repo, comment_id: botComment.id,
+                });
+              }
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number, name: 'needs-info',
+                });
+              } catch (e) {
+                // 404 = label 本来就没加,忽略
+                if (e.status !== 404) throw e;
+              }
+              core.info('issue lint passed');
+              return;
+            }
+
+            const lines = [
+              MARKER,
+              '👋 感谢提交 issue!但以下几点需要完善才能帮你排查 · Thanks for filing! Please address:',
+              '',
+              ...problems.map(p => `- ${p.zh}\n  ${p.en}`),
+              '',
+              '编辑本 issue(右上角 ⋯ → Edit)更新后会自动重新校验。',
+              'Edit this issue to re-run the check automatically.',
+              '',
+              '> 🤖 Bot 自动评论 · 不会主动关闭 issue,但低质量 issue 可能被延后处理。',
+              '> 🤖 Auto comment · Won\'t auto-close, but low-quality issues may be deprioritized.',
+            ];
+            const commentBody = lines.join('\n');
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: botComment.id, body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body: commentBody,
+              });
+            }
+
+            // 打 needs-info label
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number, labels: ['needs-info'],
+            });
+            core.setFailed(`issue lint found ${problems.length} problem(s)`);

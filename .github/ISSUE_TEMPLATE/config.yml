@@ -1,0 +1,14 @@
+# Issue 入口配置。关闭 blank issue,强迫用户走模板,减少"一句话 bug"。
+# contact_links 给用户提示:有些场景不适合开 issue(比如求助 / 讨论)。
+# Issue templates are in zh/en pairs — pick the language you're comfortable with.
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 使用交流 / General Questions
+    url: https://github.com/TNT-Likely/BeeCount-Cloud/discussions
+    about: 使用技巧、部署心得、功能讨论去 Discussions(不是 bug 报告请不要开 issue)。For usage tips, deployment experience, and feature discussions — please use Discussions, not Issues.
+  - name: 📖 部署文档 / Deployment Docs
+    url: https://github.com/TNT-Likely/BeeCount-Cloud#quick-start
+    about: 先看 README 里的 Docker / docker-compose 快速部署章节。Please read the Quick Start section in README first.
+  - name: 📱 移动端 App 问题 / Mobile App Issues
+    url: https://github.com/TNT-Likely/BeeCount/issues
+    about: 纯 App 端(非云同步相关)的 bug / 功能请求请去 App 仓库。For mobile-only issues (not related to cloud sync), please file at the app repo.
