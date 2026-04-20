@@ -1417,14 +1417,14 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
     }
   }
 
-  /** 拉一页标签详情的交易。后端 q 参数会同时 fuzzy 匹配 tags 字段（见 read.py
-   *  list_workspace_transactions 的 searchable 拼接），标签名足够独特时
-   *  够用；若出现重名再补专用 tag 过滤。 */
-  const loadTagDetailPage = async (tagName: string, offset: number) => {
+  /** 拉一页标签详情的交易。用后端 `tag_sync_id` 专门过滤(精确匹配 tagIds,
+   *  不会误命中备注/分类名里含标签文字的交易)。旧版走 q 关键字会把 note 里
+   *  出现标签名的 tx 也带出来。 */
+  const loadTagDetailPage = async (tagSyncId: string, offset: number) => {
     setTagDetailLoading(true)
     try {
       const page = await fetchWorkspaceTransactions(token, {
-        q: tagName,
+        tagSyncId,
         limit: TAG_DETAIL_PAGE_SIZE,
         offset
       })
@@ -2144,29 +2144,36 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
         const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
         const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
         const prevPeriod = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
+        // 本地时区偏移（东半球为正，中国 +480）。后端用它把月初边界按用户本地时区切，
+        // 避免 CST 月初零点的交易被误算到上一个月（UTC 切月 bug）。
+        const tzOffsetMinutes = -now.getTimezoneOffset()
         // 用 allSettled 而不是 all：单个请求失败时其它请求的数据依然 set。
         // 三视角预拉：month / year / all，加上 year 的 income metric（Top 5 收入）。
         const results = await Promise.allSettled([
           fetchWorkspaceAnalytics(token, {
             scope: 'year',
             metric: 'expense',
-            ledgerId: activeLedgerId || undefined
+            ledgerId: activeLedgerId || undefined,
+            tzOffsetMinutes
           }),
           fetchWorkspaceAnalytics(token, {
             scope: 'year',
             metric: 'income',
-            ledgerId: activeLedgerId || undefined
+            ledgerId: activeLedgerId || undefined,
+            tzOffsetMinutes
           }),
           fetchWorkspaceAnalytics(token, {
             scope: 'month',
             metric: 'expense',
             period: currentPeriod,
-            ledgerId: activeLedgerId || undefined
+            ledgerId: activeLedgerId || undefined,
+            tzOffsetMinutes
           }),
           fetchWorkspaceAnalytics(token, {
             scope: 'all',
             metric: 'expense',
-            ledgerId: activeLedgerId || undefined
+            ledgerId: activeLedgerId || undefined,
+            tzOffsetMinutes
           }),
           fetchWorkspaceLedgerCounts(token, {
             ledgerId: activeLedgerId || undefined
@@ -2851,7 +2858,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 setTagDetailTransactions([])
                 setTagDetailTotal(0)
                 setTagDetailOffset(0)
-                void loadTagDetailPage(row.name, 0)
+                void loadTagDetailPage(row.id, 0)
               }}
             />
           ) : null}
@@ -3352,7 +3359,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                   hasMore={tagDetailTransactions.length < tagDetailTotal}
                   onLoadMore={() => {
                     if (!tagDetailLoading && tagDetail) {
-                      void loadTagDetailPage(tagDetail.name, tagDetailOffset)
+                      void loadTagDetailPage(tagDetail.id, tagDetailOffset)
                     }
                   }}
                   onPreviewAttachment={onPreviewTxAttachment}

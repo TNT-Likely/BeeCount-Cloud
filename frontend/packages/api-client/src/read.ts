@@ -74,6 +74,9 @@ export async function fetchWorkspaceTransactions(
     q?: string
     txType?: string
     accountName?: string
+    tagSyncId?: string
+    categorySyncId?: string
+    accountSyncId?: string
     limit?: number
     offset?: number
   }
@@ -84,6 +87,9 @@ export async function fetchWorkspaceTransactions(
   if (options?.q) query.set('q', options.q)
   if (options?.txType) query.set('tx_type', options.txType)
   if (options?.accountName) query.set('account_name', options.accountName)
+  if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
+  if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
+  if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)
   if (typeof options?.limit === 'number') query.set('limit', `${options.limit}`)
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
@@ -179,6 +185,7 @@ export async function fetchWorkspaceAnalytics(
     period?: string
     ledgerId?: string
     userId?: string
+    tzOffsetMinutes?: number
   }
 ): Promise<WorkspaceAnalytics> {
   const query = new URLSearchParams()
@@ -187,6 +194,7 @@ export async function fetchWorkspaceAnalytics(
   if (options?.period) query.set('period', options.period)
   if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
   if (options?.userId) query.set('user_id', options.userId)
+  if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAnalytics>(`/read/workspace/analytics${suffix}`, token)
 }

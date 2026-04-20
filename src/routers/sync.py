@@ -159,22 +159,160 @@ def _apply_change_to_projection(
                         old_name=old_name, new_name=new_name,
                     )
 
-    # Entity 自身 upsert
+    # Entity 自身 upsert —— 关键:mobile 增量 push 只带部分字段(比如只改 name),
+    # 不带的字段要保留现有值,不能被默认值(0 / None / 空字符串)覆盖。所以这里
+    # 先拉已有 projection 行,payload 值为 None 的 key 用旧值补齐,再 upsert。
     if change.entity_type == "transaction":
+        merged = _merge_with_existing_tx(db, ledger_id, sync_id, payload)
         projection.upsert_tx(db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                              source_change_id=change.change_id, payload=payload)
+                              source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "account":
+        merged = _merge_with_existing_account(db, ledger_id, sync_id, payload)
         projection.upsert_account(db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                                    source_change_id=change.change_id, payload=payload)
+                                    source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "category":
+        merged = _merge_with_existing_category(db, ledger_id, sync_id, payload)
         projection.upsert_category(db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                                     source_change_id=change.change_id, payload=payload)
+                                     source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "tag":
+        merged = _merge_with_existing_tag(db, ledger_id, sync_id, payload)
         projection.upsert_tag(db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                                source_change_id=change.change_id, payload=payload)
+                                source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "budget":
+        merged = _merge_with_existing_budget(db, ledger_id, sync_id, payload)
         projection.upsert_budget(db, ledger_id=ledger_id, user_id=ledger_owner_id,
-                                   source_change_id=change.change_id, payload=payload)
+                                   source_change_id=change.change_id, payload=merged)
+
+
+def _merge_with_existing_account(db, ledger_id, sync_id, payload):
+    existing = db.scalar(
+        select(ReadAccountProjection).where(
+            ReadAccountProjection.ledger_id == ledger_id,
+            ReadAccountProjection.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    # 用 existing 的字段填补 payload 里缺的(key 不存在 或 值 is None)
+    base = {
+        "syncId": existing.sync_id,
+        "name": existing.name,
+        "type": existing.account_type,
+        "currency": existing.currency,
+        "initialBalance": existing.initial_balance,
+    }
+    return {**base, **{k: v for k, v in payload.items() if v is not None}}
+
+
+def _merge_with_existing_category(db, ledger_id, sync_id, payload):
+    existing = db.scalar(
+        select(ReadCategoryProjection).where(
+            ReadCategoryProjection.ledger_id == ledger_id,
+            ReadCategoryProjection.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    base = {
+        "syncId": existing.sync_id,
+        "name": existing.name,
+        "kind": existing.kind,
+        "level": existing.level,
+        "sortOrder": existing.sort_order,
+        "icon": existing.icon,
+        "iconType": existing.icon_type,
+        "customIconPath": existing.custom_icon_path,
+        "iconCloudFileId": existing.icon_cloud_file_id,
+        "iconCloudSha256": existing.icon_cloud_sha256,
+        "parentName": existing.parent_name,
+    }
+    return {**base, **{k: v for k, v in payload.items() if v is not None}}
+
+
+def _merge_with_existing_tag(db, ledger_id, sync_id, payload):
+    existing = db.scalar(
+        select(ReadTagProjection).where(
+            ReadTagProjection.ledger_id == ledger_id,
+            ReadTagProjection.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    base = {
+        "syncId": existing.sync_id,
+        "name": existing.name,
+        "color": existing.color,
+    }
+    return {**base, **{k: v for k, v in payload.items() if v is not None}}
+
+
+def _merge_with_existing_budget(db, ledger_id, sync_id, payload):
+    from .models import ReadBudgetProjection
+
+    existing = db.scalar(
+        select(ReadBudgetProjection).where(
+            ReadBudgetProjection.ledger_id == ledger_id,
+            ReadBudgetProjection.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    base = {
+        "syncId": existing.sync_id,
+        "type": existing.budget_type,
+        "categoryId": existing.category_sync_id,
+        "amount": existing.amount,
+        "period": existing.period,
+        "startDay": existing.start_day,
+        "enabled": existing.enabled,
+    }
+    return {**base, **{k: v for k, v in payload.items() if v is not None}}
+
+
+def _merge_with_existing_tx(db, ledger_id, sync_id, payload):
+    existing = db.scalar(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    import json as _json
+    tag_ids = None
+    if existing.tag_sync_ids_json:
+        try:
+            tag_ids = _json.loads(existing.tag_sync_ids_json)
+        except _json.JSONDecodeError:
+            tag_ids = None
+    attachments = None
+    if existing.attachments_json:
+        try:
+            attachments = _json.loads(existing.attachments_json)
+        except _json.JSONDecodeError:
+            attachments = None
+    base = {
+        "syncId": existing.sync_id,
+        "type": existing.tx_type,
+        "amount": existing.amount,
+        "happenedAt": existing.happened_at.isoformat() if existing.happened_at else None,
+        "note": existing.note,
+        "categoryId": existing.category_sync_id,
+        "categoryName": existing.category_name,
+        "categoryKind": existing.category_kind,
+        "accountId": existing.account_sync_id,
+        "accountName": existing.account_name,
+        "fromAccountId": existing.from_account_sync_id,
+        "fromAccountName": existing.from_account_name,
+        "toAccountId": existing.to_account_sync_id,
+        "toAccountName": existing.to_account_name,
+        "tags": existing.tags_csv,
+        "tagIds": tag_ids,
+        "attachments": attachments,
+        "txIndex": existing.tx_index,
+        "createdByUserId": existing.created_by_user_id,
+    }
+    return {**base, **{k: v for k, v in payload.items() if v is not None}}
 
 
 def _to_utc(dt: datetime) -> datetime:

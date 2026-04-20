@@ -372,13 +372,31 @@ def _analytics_range(
     *,
     scope: AnalyticsScope,
     period: str | None,
+    tz_offset_minutes: int = 0,
 ) -> tuple[datetime | None, datetime | None, str | None]:
+    """计算 analytics 的 [start, end) UTC 范围。
+
+    边界对应用户**本地**的月份/年份,不是 UTC —— UTC 计算会把 CST "2026-04-01 00:00"
+    当成 UTC "2026-03-31 16:00",落到 3 月,导致月初那笔支出没算进 4 月。
+
+    `tz_offset_minutes`:客户端传的本地时区偏移(正数 = 东半球),与 JavaScript
+    `-new Date().getTimezoneOffset()` 同符号。中国是 +480。默认 0 = UTC(老客户端不传
+    这个参数时的行为保持 UTC 切月)。
+    """
+    from datetime import timedelta
+
     now = datetime.now(timezone.utc)
+    tz = timezone(timedelta(minutes=tz_offset_minutes))
+
     if scope == "all":
         return None, None, None
 
     if scope == "month":
-        target = period.strip() if isinstance(period, str) and period.strip() else now.strftime("%Y-%m")
+        target = (
+            period.strip()
+            if isinstance(period, str) and period.strip()
+            else now.astimezone(tz).strftime("%Y-%m")
+        )
         try:
             year_part, month_part = target.split("-", 1)
             year = int(year_part)
@@ -387,20 +405,27 @@ def _analytics_range(
             raise HTTPException(status_code=400, detail="Invalid analytics period") from exc
         if month < 1 or month > 12:
             raise HTTPException(status_code=400, detail="Invalid analytics period")
-        start = datetime(year, month, 1, tzinfo=timezone.utc)
-        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if month == 12 else datetime(
-            year, month + 1, 1, tzinfo=timezone.utc
+        # 本地时区月初/月末 → 转 UTC 给 SQL 用
+        start_local = datetime(year, month, 1, tzinfo=tz)
+        end_local = (
+            datetime(year + 1, 1, 1, tzinfo=tz)
+            if month == 12
+            else datetime(year, month + 1, 1, tzinfo=tz)
         )
-        return start, end, f"{year:04d}-{month:02d}"
+        return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), f"{year:04d}-{month:02d}"
 
-    target = period.strip() if isinstance(period, str) and period.strip() else now.strftime("%Y")
+    target = (
+        period.strip()
+        if isinstance(period, str) and period.strip()
+        else now.astimezone(tz).strftime("%Y")
+    )
     try:
         year = int(target)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid analytics period") from exc
-    start = datetime(year, 1, 1, tzinfo=timezone.utc)
-    end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-    return start, end, f"{year:04d}"
+    start_local = datetime(year, 1, 1, tzinfo=tz)
+    end_local = datetime(year + 1, 1, 1, tzinfo=tz)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), f"{year:04d}"
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +931,9 @@ def list_workspace_transactions(
     tx_type: str | None = Query(default=None),
     account_name: str | None = Query(default=None),
     q: str | None = Query(default=None),
+    tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
+    category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
+    account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
     limit: int = Query(default=20, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -950,6 +978,20 @@ def list_workspace_transactions(
             ReadTxProjection.account_name.ilike(pattern),
             ReadTxProjection.from_account_name.ilike(pattern),
             ReadTxProjection.to_account_name.ilike(pattern),
+        ))
+    # Tag 精确过滤:用 tag_sync_ids_json LIKE 含引号形式 `"<sync_id>"`,确保是 JSON
+    # 数组里那个 id(而不是 note/tags_csv 里的字符串误匹配)。前端标签弹窗走这个参数。
+    if tag_sync_id:
+        query = query.where(
+            ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
+        )
+    if category_sync_id:
+        query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
+    if account_sync_id:
+        query = query.where(or_(
+            ReadTxProjection.account_sync_id == account_sync_id,
+            ReadTxProjection.from_account_sync_id == account_sync_id,
+            ReadTxProjection.to_account_sync_id == account_sync_id,
         ))
     if q:
         pattern = f"%{q}%"
@@ -1540,12 +1582,15 @@ def workspace_analytics(
     period: str | None = Query(default=None),
     ledger_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkspaceAnalyticsOut:
     is_admin = _is_admin(current_user)
-    start_at, end_at, normalized_period = _analytics_range(scope=scope, period=period)
+    start_at, end_at, normalized_period = _analytics_range(
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
+    )
 
     ledger_conditions: list[Any] = []
     if ledger_id:
