@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
 
+import { RequireAuth, useLegacyRoute } from './app/router'
 import { AppPage } from './pages/AppPage'
 import { LoginPage } from './pages/LoginPage'
 import { jwtUserId } from './state/jwt'
 import { clearCursor } from './state/sync-client'
-import { usePathRouter } from './state/usePathRouter'
 
 const LEGACY_TOKEN_KEY = 'beecount.token'
 const TOKEN_KEY = `beecount.token.${API_BASE}`
@@ -21,8 +22,6 @@ function clearUserScopedStorage(userId: string): void {
   if (typeof window === 'undefined' || !userId) return
   try {
     window.localStorage.removeItem(`beecount.active-ledger.${userId}`)
-    // txFilter 的 key 是 `beecount:web:txFilter:v1:<uid>:<ledgerFilter>`,
-    // ledgerFilter 不固定,遍历清理所有符合前缀的 key。
     const prefix = `beecount:web:txFilter:v1:${userId}:`
     const doomed: string[] = []
     for (let i = 0; i < window.localStorage.length; i += 1) {
@@ -37,11 +36,20 @@ function clearUserScopedStorage(userId: string): void {
 
 export function App() {
   const t = useT()
-  const { route, navigate } = usePathRouter()
 
   useEffect(() => {
     document.title = t('shell.docTitle')
   }, [t])
+
+  return (
+    <BrowserRouter>
+      <AppRoutes />
+    </BrowserRouter>
+  )
+}
+
+function AppRoutes() {
+  const navigate = useNavigate()
   const [token, setToken] = useState<string>(() => {
     const scoped = localStorage.getItem(TOKEN_KEY)
     if (scoped) return scoped
@@ -58,6 +66,17 @@ export function App() {
     }
   }, [token])
 
+  const handleLogout = useCallback(() => {
+    const prev = getStoredUserId()
+    if (prev) {
+      clearCursor(prev)
+      clearUserScopedStorage(prev)
+    }
+    clearStoredSession()
+    setToken('')
+    navigate('/login', { replace: true })
+  }, [navigate])
+
   useEffect(() => {
     configureHttp({
       refreshToken: async () => {
@@ -65,66 +84,81 @@ export function App() {
         setToken(fresh)
         return fresh
       },
-      onLogout: () => {
-        const prev = getStoredUserId()
-        if (prev) {
-          clearCursor(prev)
-          clearUserScopedStorage(prev)
-        }
-        clearStoredSession()
-        setToken('')
-        navigate({ kind: 'login' }, { replace: true })
-      }
+      onLogout: handleLogout
     })
     return () => {
       configureHttp({ refreshToken: null, onLogout: null })
     }
-  }, [navigate])
+  }, [handleLogout])
 
-  useEffect(() => {
-    if (!token && route.kind !== 'login') {
-      navigate({ kind: 'login' }, { replace: true })
-      return
-    }
-    if (token && route.kind === 'login') {
-      navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
-    }
-  }, [route.kind, token, navigate])
+  // 显式枚举所有 section 路由 —— 阶段 3 Step 1。每条路由目前都走
+  // LegacyAppPage(内部仍靠 useLegacyRoute 桥反解析 URL → AppRoute),
+  // 后续 Step 2 每次把一条路由的 element 换成真正独立的 <XxxPage />。
+  const protectedElement = (
+    <RequireAuth isAuthed={!!token}>
+      <LegacyAppPage token={token} onLogout={handleLogout} />
+    </RequireAuth>
+  )
 
-  if (!token) {
-    return (
-      <LoginPage
-        onLoggedIn={(nextToken) => {
-          setToken(nextToken)
-          navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
-        }}
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          token ? (
+            <Navigate to="/app/overview" replace />
+          ) : (
+            <LoginPage
+              onLoggedIn={(nextToken) => {
+                setToken(nextToken)
+                navigate('/app/overview', { replace: true })
+              }}
+            />
+          )
+        }
       />
-    )
-  }
+      <Route path="/app" element={<Navigate to="/app/overview" replace />} />
+      <Route path="/app/overview" element={protectedElement} />
+      <Route path="/app/transactions" element={protectedElement} />
+      <Route path="/app/ledgers" element={protectedElement} />
+      <Route path="/app/budgets" element={protectedElement} />
+      <Route path="/app/accounts" element={protectedElement} />
+      <Route path="/app/categories" element={protectedElement} />
+      <Route path="/app/tags" element={protectedElement} />
+      <Route path="/app/admin/users" element={protectedElement} />
+      <Route path="/app/settings/profile" element={protectedElement} />
+      <Route path="/app/settings/appearance" element={protectedElement} />
+      <Route path="/app/settings/ai" element={protectedElement} />
+      <Route path="/app/settings/health" element={protectedElement} />
+      <Route path="/app/settings/devices" element={protectedElement} />
+      {/* legacy 深链:/app/:ledgerId/... 由 useLegacyRoute 里的 parseRoute 兜底 */}
+      <Route path="/app/*" element={protectedElement} />
+      <Route path="/" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
+      <Route path="*" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
+    </Routes>
+  )
+}
 
+/**
+ * 过渡壳:react-router 的 `/app/*` 通配路由挂这里,内部通过 useLegacyRoute
+ * 把 URL 反解析成老的 AppRoute 对象注入 AppPage,保持 AppPage 内部代码零改动。
+ *
+ * key={userId}:切换用户时 React 会 unmount 旧 AppPage + 全新 mount,
+ * 彻底清掉所有 useState(ledgers/accounts/categories/tags/...) 和 useEffect 闭包,
+ * 避免 User A 的数据泄漏到 User B 的 session。
+ */
+function LegacyAppPage({ token, onLogout }: { token: string; onLogout: () => void }) {
+  const { route, navigate } = useLegacyRoute()
   if (route.kind !== 'app') {
     return null
   }
-
-  // key 绑定到 userId:切换用户时 React 会 unmount 旧 AppPage + 全新 mount,
-  // 彻底清掉所有 useState(ledgers/accounts/categories/tags/...) 和 useEffect 闭包,
-  // 避免 User A 的数据泄漏到 User B 的 session。
   return (
     <AppPage
       key={jwtUserId(token) || 'anon'}
       token={token}
       route={route}
       onNavigate={navigate}
-      onLogout={() => {
-        const prev = getStoredUserId()
-        if (prev) {
-          clearCursor(prev)
-          clearUserScopedStorage(prev)
-        }
-        clearStoredSession()
-        setToken('')
-        navigate({ kind: 'login' }, { replace: true })
-      }}
+      onLogout={onLogout}
     />
   )
 }
