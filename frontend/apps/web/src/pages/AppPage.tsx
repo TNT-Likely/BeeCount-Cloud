@@ -2620,7 +2620,7 @@ export function AppPage({ token, route, onNavigate, onLogout }: AppPageProps) {
                 />
               </div>
               <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
-                <AssetCompositionDonut accounts={accounts} />
+                <AssetCompositionDonut accounts={accounts as WorkspaceAccount[]} />
                 <MonthlyTrendBars data={analyticsData?.series || []} />
               </div>
               <div className="grid gap-4 md:grid-cols-2">

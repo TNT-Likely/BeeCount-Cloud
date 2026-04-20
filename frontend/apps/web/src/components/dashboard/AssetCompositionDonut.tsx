@@ -1,9 +1,9 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
-import type { ReadAccount } from '@beecount/api-client'
+import type { WorkspaceAccount } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 interface Props {
-  accounts: ReadAccount[]
+  accounts: WorkspaceAccount[]
 }
 
 // 与 AccountsPanel 里的 TRADABLE / VALUATION 分组 + 颜色一致。
@@ -27,7 +27,13 @@ export function AssetCompositionDonut({ accounts }: Props) {
   const totals = new Map<string, number>()
   for (const a of accounts) {
     const key = a.account_type || 'other'
-    const amount = Math.abs(a.initial_balance ?? 0)
+    // 用 balance(= initial_balance + 净流水)而非 initial_balance。用户常常
+    // 把初始余额留 0,靠日常记账累积现金/微信/支付宝等账户流水 —— 若只看
+    // initial_balance,donut 会全空;资产页走 balance 兜底所以正常。
+    const raw = typeof a.balance === 'number' && a.balance !== null
+      ? a.balance
+      : a.initial_balance ?? 0
+    const amount = Math.abs(raw)
     totals.set(key, (totals.get(key) || 0) + amount)
   }
   const data = Array.from(totals.entries())
