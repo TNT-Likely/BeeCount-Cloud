@@ -36,6 +36,7 @@ from ..schemas import (
     SyncPushResponse,
 )
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ
+from ..services.category_icon import resolve_icon_by_name
 from .. import projection, snapshot_builder, snapshot_cache
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,14 @@ def _apply_change_to_projection(
                                     source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "category":
         merged = _merge_with_existing_category(db, ledger_id, sync_id, payload)
+        # 兜底:老 App(Flutter 3.0 及之前)可能推空 icon 的 category(历史创建或
+        # 导入路径留下的 null)。写进 projection 前按分类名字 byName 推一次,跟
+        # alembic 0002 backfill 保持一致,避免 web 端继续看到兜底图。Flutter
+        # 3.0.1 做完 write-time migration + 清理 getCategoryIconByName 调用后,
+        # 这段兜底就可以退役。
+        icon_val = merged.get("icon") if isinstance(merged, dict) else None
+        if icon_val is None or (isinstance(icon_val, str) and not icon_val.strip()):
+            merged = {**merged, "icon": resolve_icon_by_name(merged.get("name"))}
         projection.upsert_category(db, ledger_id=ledger_id, user_id=ledger_owner_id,
                                      source_change_id=change.change_id, payload=merged)
     elif change.entity_type == "tag":

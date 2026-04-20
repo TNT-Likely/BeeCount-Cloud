@@ -20,6 +20,7 @@ import {
 
 import type { ReadCategory } from '@beecount/api-client'
 
+import { CategoryIcon } from '../components/CategoryIcon'
 import type { CategoryForm } from '../forms'
 
 type CategoryKind = 'expense' | 'income' | 'transfer'
@@ -276,42 +277,23 @@ export function CategoriesPanel({
     .filter((name) => name.length > 0 && name !== form.name.trim())
     .sort((a, b) => a.localeCompare(b))
 
-  // 只输出一个"小图标视觉"，不再带名字文本/badge —— 放在 h-9 w-9 的方块里
-  // 要小而稳定，不能出现原来那样图标名 + Material/Custom 标签叠加导致的错乱
-  // 排版。图标数据三种来源：云端文件（有 cloudFileId + 本地 map 到 URL）>
-  // 文件本身是 URL/路径（绝对路径时直接显示）> material 名字（取首字母）。
+  // 只输出一个"小图标视觉"。三种来源:云端文件(cloudFileId → 预签 URL)、
+  // URL/data URI 直接当 <img>、material 名字交给 CategoryIcon 用
+  // Material Symbols 字体 ligature 渲染。
   const renderIcon = (
     icon: string | null | undefined,
     iconType: string | null | undefined,
     iconCloudFileId?: string | null
-  ) => {
-    const normalized = (icon || '').trim()
-    const kind = (iconType || 'material').trim() || 'material'
-    const cloudFileId = typeof iconCloudFileId === 'string' ? iconCloudFileId.trim() : ''
-    const cloudPreview = cloudFileId ? iconPreviewUrlByFileId[cloudFileId] : undefined
-    if (kind === 'custom' && cloudPreview) {
-      return (
-        <img
-          alt=""
-          className="h-full w-full rounded-[inherit] object-cover"
-          src={cloudPreview}
-        />
-      )
-    }
-    if (kind === 'custom' && /^(https?:\/\/|data:image\/|\/)/.test(normalized)) {
-      return (
-        <img
-          alt=""
-          className="h-full w-full rounded-[inherit] object-cover"
-          src={normalized}
-        />
-      )
-    }
-    const letter = (normalized[0] || '?').toUpperCase()
-    return (
-      <span className="text-[13px] font-medium text-primary">{letter}</span>
-    )
-  }
+  ) => (
+    <CategoryIcon
+      icon={icon}
+      iconType={iconType}
+      iconCloudFileId={iconCloudFileId}
+      iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+      size={20}
+      className="text-primary"
+    />
+  )
 
   return (
     <>
