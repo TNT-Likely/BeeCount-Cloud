@@ -74,9 +74,11 @@ ENV TZ=Asia/Shanghai
 
 EXPOSE 8080
 
-# 健康检查：优先打 /api/v1/healthz；若没有，退回到 /
+# 健康检查:打根路径的 /healthz(app.get('/healthz') 直接挂在根,不在
+# /api/v1/ 前缀下)。以前写成 /api/v1/healthz + fallback 到 /,每 30s 日志
+# 里都多一条 404 噪声;这里直接打对的路径,/ 作二次兜底。
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -fsSL http://localhost:8080/api/v1/healthz \
+    CMD curl -fsSL http://localhost:8080/healthz \
      || curl -fsSL http://localhost:8080/ \
      || exit 1
 
