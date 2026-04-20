@@ -11,20 +11,25 @@ write / admin)负责把正确的 payload 字段拆出来传进来。
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .models import (
+    AttachmentFile,
     ReadAccountProjection,
     ReadBudgetProjection,
     ReadCategoryProjection,
     ReadTagProjection,
     ReadTxProjection,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -561,3 +566,191 @@ def rebuild_all(db: Session) -> int:
         count += 1
     db.commit()
     return count
+
+
+# --------------------------------------------------------------------------- #
+# AttachmentFile 垃圾回收                                                       #
+# --------------------------------------------------------------------------- #
+# AttachmentFile 表跟 tx / category 没有 FK —— 共享池 + sha256 去重,允许一个
+# blob 被多个 tx(截图上传同图)或 category 图标同时引用。所以删 tx/category
+# 时不能盲目删 AttachmentFile,必须查"还有没有其他实体引用同 fileId"。
+#
+# 反向引用只存在于:
+#   - read_tx_projection.attachments_json  (JSON list,每项含 cloudFileId)
+#   - read_category_projection.icon_cloud_file_id  (单列)
+# 0 引用就 DELETE 行 + unlink 物理文件(best-effort,磁盘 IO 失败只 warn)。
+
+
+def _extract_tx_cloud_file_ids(attachments_json: str | None) -> set[str]:
+    """从 tx projection 的 attachments_json 里抽出所有 cloudFileId。
+
+    mobile 序列化(`lib/cloud/sync/sync_engine.dart:802-812`) + web 写路径都用
+    `cloudFileId` 这个 camelCase key。JSON 缺失 / 解析失败 / 非 list → 空 set。
+    """
+    if not attachments_json:
+        return set()
+    try:
+        arr = json.loads(attachments_json)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(arr, list):
+        return set()
+    out: set[str] = set()
+    for item in arr:
+        if isinstance(item, dict):
+            fid = item.get("cloudFileId")
+            if isinstance(fid, str) and fid.strip():
+                out.add(fid.strip())
+    return out
+
+
+def _fileid_still_referenced(db: Session, *, ledger_id: str, file_id: str) -> bool:
+    """某个 AttachmentFile 在 projection 里还有引用吗?
+
+    扫:
+      - read_tx_projection.attachments_json LIKE '%"cloudFileId":"<id>"%' (JSON
+        字段名是 cloudFileId)。两种空格变体都 match,防备 client / server 序列
+        化习惯差异
+      - read_category_projection.icon_cloud_file_id = <id>
+    """
+    pat_no_space = f'%"cloudFileId":"{file_id}"%'
+    pat_with_space = f'%"cloudFileId": "{file_id}"%'
+    tx_hit = db.scalar(
+        select(func.count())
+        .select_from(ReadTxProjection)
+        .where(
+            ReadTxProjection.ledger_id == ledger_id,
+            or_(
+                ReadTxProjection.attachments_json.like(pat_no_space),
+                ReadTxProjection.attachments_json.like(pat_with_space),
+            ),
+        )
+    )
+    if tx_hit:
+        return True
+
+    cat_hit = db.scalar(
+        select(func.count())
+        .select_from(ReadCategoryProjection)
+        .where(
+            ReadCategoryProjection.ledger_id == ledger_id,
+            ReadCategoryProjection.icon_cloud_file_id == file_id,
+        )
+    )
+    return bool(cat_hit)
+
+
+def gc_orphan_attachments(
+    db: Session,
+    *,
+    ledger_id: str,
+    file_ids: Iterable[str | None],
+) -> int:
+    """对给定 fileId 集合,若 projection 里无任何引用 → 删 AttachmentFile 行 +
+    unlink 物理文件。返回实际清掉的条数(日志/测试用)。
+
+    **调用契约**:必须在目标 tx/category 的 projection 行**已经删掉**之后调用。
+    否则会把正在用的 blob 误删。事务边界由调用方管(两个修改应在同一事务 commit)。
+
+    Scope 到单 ledger:AttachmentFile 自身带 ledger_id,引用检查也限到同 ledger,
+    不用担心跨账本污染。
+
+    物理文件 unlink 失败只 warn 不抛 —— DB 行已删是事实,磁盘残留可后续清理
+    脚本补扫。
+    """
+    cleaned = 0
+    seen: set[str] = set()
+    for fid in file_ids:
+        if not fid:
+            continue
+        file_id = fid.strip()
+        if not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+
+        if _fileid_still_referenced(db, ledger_id=ledger_id, file_id=file_id):
+            continue
+
+        att = db.scalar(
+            select(AttachmentFile).where(
+                AttachmentFile.id == file_id,
+                AttachmentFile.ledger_id == ledger_id,
+            )
+        )
+        if att is None:
+            # AttachmentFile 已经不存在(手动清过 / 历史脏数据)—— 不算失败
+            continue
+
+        storage_path = att.storage_path
+        db.delete(att)
+
+        # Best-effort unlink。DB 提交失败时这里改不回来,但事务 rollback 后
+        # AttachmentFile 行还在,下次 GC 再来。
+        try:
+            p = Path(storage_path)
+            if p.exists():
+                p.unlink()
+        except OSError as exc:
+            logger.warning(
+                "attachment gc unlink failed ledger=%s file=%s path=%s err=%s",
+                ledger_id, file_id, storage_path, exc,
+            )
+
+        cleaned += 1
+
+    if cleaned:
+        logger.info(
+            "attachment gc ledger=%s cleaned=%d", ledger_id, cleaned,
+        )
+    return cleaned
+
+
+def collect_tx_attachment_fileids(
+    db: Session, *, ledger_id: str, sync_id: str,
+) -> set[str]:
+    """在 tx projection 删之前取 attachments_json 里的 fileId 列表,供删后 GC 用。
+    行不存在(已删 / 从未有过)→ 空 set。"""
+    row = db.scalar(
+        select(ReadTxProjection.attachments_json).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == sync_id,
+        )
+    )
+    return _extract_tx_cloud_file_ids(row)
+
+
+def collect_category_icon_fileids(
+    db: Session, *, ledger_id: str, sync_id: str,
+) -> set[str]:
+    """在 category projection 删之前取 icon_cloud_file_id + 所有 parent=sync_id
+    子分类的 icon_cloud_file_id。级联删父分类时会同步带走子分类。"""
+    out: set[str] = set()
+    # 自身
+    self_icon = db.scalar(
+        select(ReadCategoryProjection.icon_cloud_file_id).where(
+            ReadCategoryProjection.ledger_id == ledger_id,
+            ReadCategoryProjection.sync_id == sync_id,
+        )
+    )
+    if isinstance(self_icon, str) and self_icon.strip():
+        out.add(self_icon.strip())
+    # 子分类(parent_name 匹配本分类的 name —— projection 里 parent 关系由 name
+    # 串起来,见 upsert_category 的 parent_name 字段)。这里不走级联删,仅提取
+    # icon。调用方如果要真级联删子分类,另外安排。
+    own_name = db.scalar(
+        select(ReadCategoryProjection.name).where(
+            ReadCategoryProjection.ledger_id == ledger_id,
+            ReadCategoryProjection.sync_id == sync_id,
+        )
+    )
+    if isinstance(own_name, str) and own_name:
+        child_icons = db.scalars(
+            select(ReadCategoryProjection.icon_cloud_file_id).where(
+                ReadCategoryProjection.ledger_id == ledger_id,
+                ReadCategoryProjection.parent_name == own_name,
+            )
+        ).all()
+        for icon in child_icons:
+            if isinstance(icon, str) and icon.strip():
+                out.add(icon.strip())
+    return out

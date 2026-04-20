@@ -94,11 +94,27 @@ def _apply_change_to_projection(
     sync_id = change.entity_sync_id
     if change.action == "delete":
         if change.entity_type == "transaction":
+            # 先收集附件 fileId(删行后 attachments_json 就没了)再删 tx,然后
+            # GC 孤立附件。共享引用(同图多 tx)的会自动保留。
+            tx_file_ids = projection.collect_tx_attachment_fileids(
+                db, ledger_id=ledger_id, sync_id=sync_id,
+            )
             projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
+            projection.gc_orphan_attachments(
+                db, ledger_id=ledger_id, file_ids=tx_file_ids,
+            )
         elif change.entity_type == "account":
             projection.delete_account(db, ledger_id=ledger_id, sync_id=sync_id)
         elif change.entity_type == "category":
+            # 分类的自定义图标走 attachment_files。删分类前取自己 + 子分类的
+            # icon_cloud_file_id,删完 GC 孤立图标附件。
+            cat_file_ids = projection.collect_category_icon_fileids(
+                db, ledger_id=ledger_id, sync_id=sync_id,
+            )
             projection.delete_category(db, ledger_id=ledger_id, sync_id=sync_id)
+            projection.gc_orphan_attachments(
+                db, ledger_id=ledger_id, file_ids=cat_file_ids,
+            )
         elif change.entity_type == "tag":
             projection.delete_tag(db, ledger_id=ledger_id, sync_id=sync_id)
         elif change.entity_type == "budget":

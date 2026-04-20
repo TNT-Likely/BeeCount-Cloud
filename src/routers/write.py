@@ -245,6 +245,20 @@ def _diff_entity_list(
 
     for sync_id in prev_map:
         if sync_id not in next_map:
+            # 删 tx / category 前先收集附件 fileId(tx 从 attachments_json,
+            # category 从 icon_cloud_file_id + 子分类图标)。删完 projection
+            # 行后调 gc_orphan_attachments:被共享引用的 blob 保留,完全孤立
+            # 的 DELETE attachment_files + unlink 物理文件。
+            gc_file_ids: set[str] = set()
+            if entity_type == "transaction":
+                gc_file_ids = projection.collect_tx_attachment_fileids(
+                    db, ledger_id=ledger.id, sync_id=sync_id,
+                )
+            elif entity_type == "category":
+                gc_file_ids = projection.collect_category_icon_fileids(
+                    db, ledger_id=ledger.id, sync_id=sync_id,
+                )
+
             change_row = SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
@@ -261,6 +275,10 @@ def _diff_entity_list(
             emitted_ids.append(change_row.change_id)
             if delete_fn is not None:
                 delete_fn(db, ledger_id=ledger.id, sync_id=sync_id)
+            if gc_file_ids:
+                projection.gc_orphan_attachments(
+                    db, ledger_id=ledger.id, file_ids=gc_file_ids,
+                )
 
     # Bulk flush cascade-only rows
     if bulk_upsert_rows:
@@ -478,6 +496,10 @@ async def _commit_write_fast_tx(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     if action == "delete":
+        # 删 tx 前收集引用的 cloudFileId,删后 GC 孤立附件(物理 blob + 行)
+        tx_file_ids = projection.collect_tx_attachment_fileids(
+            db, ledger_id=ledger.id, sync_id=tx_id,
+        )
         change_row = SyncChange(
             user_id=ledger.user_id,
             ledger_id=ledger.id,
@@ -492,6 +514,9 @@ async def _commit_write_fast_tx(
         db.add(change_row)
         db.flush()
         projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
+        projection.gc_orphan_attachments(
+            db, ledger_id=ledger.id, file_ids=tx_file_ids,
+        )
     else:
         # Upsert:merge payload 到 prev_item
         from ..snapshot_mutator import update_transaction
