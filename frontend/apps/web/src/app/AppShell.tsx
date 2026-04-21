@@ -214,10 +214,7 @@ export function AppShell({ token, onLogout }: Props) {
             </div>
             <MobileBottomNav
               activeSection={currentSection}
-              isAdmin={isAdmin}
-              onOpenChangelog={() => setChangelogOpen(true)}
               onNavigate={handleSectionNavigate}
-              onLogout={onLogout}
             />
           </AppLayout>
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />

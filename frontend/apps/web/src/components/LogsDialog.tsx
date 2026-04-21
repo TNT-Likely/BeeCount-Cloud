@@ -175,9 +175,11 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="border-b border-border/60 px-5 py-3">
-          <DialogTitle className="flex items-center justify-between gap-3 pr-8">
+      {/* mobile 直接全屏(w-full / max-h-screen)才能塞下日志列表;sm+ 恢复
+          原来的 max-w-4xl 弹窗。 */}
+      <DialogContent className="flex h-[95vh] w-[calc(100vw-1rem)] max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:h-auto sm:max-h-[85vh]">
+        <DialogHeader className="border-b border-border/60 px-3 py-3 sm:px-5">
+          <DialogTitle className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pr-8">
             <span>{t('logs.title')}</span>
             <span className="text-[11px] font-normal text-muted-foreground">
               {data
@@ -189,9 +191,10 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-muted/30 px-5 py-2.5">
+        {/* mobile: selects 两个一行 grid,Input + 刷新按钮再一行;sm+ 走 inline wrap。 */}
+        <div className="grid grid-cols-2 gap-2 border-b border-border/60 bg-muted/30 px-3 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:px-5">
           <Select value={level} onValueChange={setLevel}>
-            <SelectTrigger className="h-8 w-28 text-xs">
+            <SelectTrigger className="h-8 w-full text-xs sm:w-28">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -203,7 +206,7 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
             </SelectContent>
           </Select>
           <Select value={sourceKey} onValueChange={setSourceKey}>
-            <SelectTrigger className="h-8 w-32 text-xs">
+            <SelectTrigger className="h-8 w-full text-xs sm:w-32">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -221,13 +224,13 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
               if (e.key === 'Enter') void load()
             }}
             placeholder={t('logs.search.placeholder')}
-            className="h-8 min-w-[180px] flex-1 text-xs"
+            className="col-span-2 h-8 text-xs sm:col-auto sm:min-w-[180px] sm:flex-1"
           />
           <Select
             value={String(autoRefreshSeconds)}
             onValueChange={(v) => setAutoRefreshSeconds(Number(v) || 0)}
           >
-            <SelectTrigger className="h-8 w-28 text-xs">
+            <SelectTrigger className="h-8 w-full text-xs sm:w-28">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -258,9 +261,9 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
           className="min-h-0 flex-1 overflow-y-auto bg-background/40 font-mono text-[11px] leading-5"
         >
           {error ? (
-            <div className="px-5 py-6 text-center text-rose-500">{error}</div>
+            <div className="px-3 py-6 text-center text-rose-500 sm:px-5">{error}</div>
           ) : items.length === 0 ? (
-            <div className="px-5 py-10 text-center text-muted-foreground">
+            <div className="px-3 py-10 text-center text-muted-foreground sm:px-5">
               {loading ? t('logs.loading') : t('logs.empty')}
             </div>
           ) : (
@@ -268,23 +271,30 @@ export function LogsDialog({ token, open, onOpenChange }: Props) {
               {items.map((it) => (
                 <li
                   key={it.seq}
-                  className="flex gap-2 px-5 py-1.5 hover:bg-accent/30"
+                  className="flex flex-col gap-0.5 px-3 py-1.5 hover:bg-accent/30 sm:flex-row sm:gap-2 sm:px-5"
                 >
-                  <span className="w-16 shrink-0 text-muted-foreground">{formatTs(it.ts)}</span>
-                  <span className={`w-14 shrink-0 font-bold ${LEVEL_TONE[it.level] || 'text-foreground'}`}>
-                    {it.level}
-                  </span>
-                  <span className="w-48 shrink-0 truncate text-muted-foreground" title={it.logger}>
-                    {it.logger}
-                  </span>
-                  <span className="min-w-0 flex-1 break-all text-foreground">{it.message}</span>
+                  {/* mobile: 上行 metadata(时间 · 级别 · logger),下行 message
+                      —— 单列要全宽要 break-all;sm+ 恢复 4 列横排。 */}
+                  <div className="flex shrink-0 items-center gap-2 sm:contents">
+                    <span className="w-16 shrink-0 text-muted-foreground">{formatTs(it.ts)}</span>
+                    <span className={`w-14 shrink-0 font-bold ${LEVEL_TONE[it.level] || 'text-foreground'}`}>
+                      {it.level}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-muted-foreground sm:w-48 sm:flex-none"
+                      title={it.logger}
+                    >
+                      {it.logger}
+                    </span>
+                  </div>
+                  <span className="min-w-0 break-all text-foreground sm:flex-1">{it.message}</span>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-border/60 bg-muted/20 px-5 py-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-between border-t border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground sm:px-5">
           <span>{t('logs.footer.hint')}</span>
         </div>
       </DialogContent>

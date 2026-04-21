@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
-import type { AttachmentRef, ReadTag, ReadTransaction } from '@beecount/api-client'
+import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 import { EmptyState, useT } from '@beecount/ui'
 
 import {
@@ -13,6 +13,11 @@ interface Props {
   items: ReadTransaction[]
   /** 如果传了 `tags` 会从中算 tag → color，TransactionRow 的 badge 就会上色。 */
   tags?: Array<Pick<ReadTag, 'name' | 'color'>>
+  /** 分类列表:用于在行首渲染分类图标。不传 → 不显示图标(行内容不变)。 */
+  categories?: ReadCategory[]
+  /** 自定义分类图标的预签预览 URL 字典(`icon_cloud_file_id → blob URL`)。
+   *  跟 CategoryIcon 的接口一致。不传也没关系,material icon 照常显示。 */
+  iconPreviewUrlByFileId?: Record<string, string>
   variant?: TransactionRowVariant
   loading?: boolean
   /** 还有更多要拉时设为 true，组件会监听底部 sentinel 触发 onLoadMore。 */
@@ -45,6 +50,8 @@ interface Props {
 export function TransactionList({
   items,
   tags,
+  categories,
+  iconPreviewUrlByFileId,
   variant = 'default',
   loading = false,
   hasMore = false,
@@ -62,6 +69,14 @@ export function TransactionList({
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const tagColorByName = tags ? buildTagColorMap(tags) : undefined
+  const categoryById = useMemo(() => {
+    if (!categories || categories.length === 0) return undefined
+    const map = new Map<string, ReadCategory>()
+    for (const cat of categories) {
+      if (cat.id) map.set(cat.id, cat)
+    }
+    return map
+  }, [categories])
 
   useEffect(() => {
     if (!hasMore || !onLoadMore) return
@@ -105,6 +120,8 @@ export function TransactionList({
                 row={row}
                 variant={variant}
                 tagColorByName={tagColorByName}
+                categoryById={categoryById}
+                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
                 onEdit={onEdit}
                 onDelete={onDelete}
                 canManage={canManage}

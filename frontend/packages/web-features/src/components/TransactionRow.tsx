@@ -1,5 +1,7 @@
-import type { AttachmentRef, ReadTag, ReadTransaction } from '@beecount/api-client'
+import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
+
+import { CategoryIcon } from './CategoryIcon'
 
 export type TransactionRowVariant = 'default' | 'compact'
 
@@ -8,6 +10,11 @@ type CommonProps = {
   variant?: TransactionRowVariant
   /** 标签配色字典：tagName.lowercase → color，渲染 tag badge 用。 */
   tagColorByName?: Map<string, string>
+  /** 分类字典：category_id → ReadCategory，渲染分类图标用。不传 → 不渲染图标。 */
+  categoryById?: Map<string, ReadCategory>
+  /** 自定义分类图标的预签预览 URL 字典(`icon_cloud_file_id → blob URL`)。
+   *  透传给 CategoryIcon,custom icon 才能出图;material icon 不需要。 */
+  iconPreviewUrlByFileId?: Record<string, string>
   /** 点编辑 / 删除 的回调；不传则隐藏对应按钮。 */
   onEdit?: (row: ReadTransaction) => void
   onDelete?: (row: ReadTransaction) => void
@@ -37,6 +44,8 @@ export function TransactionRow({
   row,
   variant = 'default',
   tagColorByName,
+  categoryById,
+  iconPreviewUrlByFileId,
   onEdit,
   onDelete,
   canManage = true,
@@ -46,31 +55,6 @@ export function TransactionRow({
 }: CommonProps) {
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
-
-  const typeBadge = (() => {
-    switch (row.tx_type) {
-      case 'income':
-        return (
-          <span className="inline-flex items-center rounded-full bg-income/15 px-2 py-0.5 text-[10px] font-semibold text-income">
-            {t('enum.txType.income')}
-          </span>
-        )
-      case 'expense':
-        return (
-          <span className="inline-flex items-center rounded-full bg-expense/15 px-2 py-0.5 text-[10px] font-semibold text-expense">
-            {t('enum.txType.expense')}
-          </span>
-        )
-      case 'transfer':
-        return (
-          <span className="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold text-sky-600 dark:text-sky-400">
-            {t('enum.txType.transfer')}
-          </span>
-        )
-      default:
-        return null
-    }
-  })()
 
   const amountTone = row.tx_type === 'expense' ? 'negative' : row.tx_type === 'income' ? 'positive' : 'default'
   const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
@@ -82,6 +66,19 @@ export function TransactionRow({
 
   const isCompact = variant === 'compact'
 
+  // 分类图标:优先按 category_id 精确匹配;匹配不到(跨账本 id 冲突 /
+  // 脏数据)退化到按 name+kind 兜底,避免一整列空白。
+  const categoryEntry = (() => {
+    if (!categoryById) return null
+    const byId = row.category_id ? categoryById.get(row.category_id) : null
+    if (byId) return byId
+    if (!row.category_name) return null
+    for (const cat of categoryById.values()) {
+      if (cat.name === row.category_name && cat.kind === row.category_kind) return cat
+    }
+    return null
+  })()
+
   const hasAttachments = attachments.length > 0 && Boolean(onPreviewAttachment)
   const firstAttachment = attachments[0]
 
@@ -92,12 +89,28 @@ export function TransactionRow({
       } transition-colors hover:bg-accent/30 ${className || ''}`}
     >
       <div className="min-w-0 flex-1">
-        {/* 标题行：左 类型徽章 + 分类；右 hover 动作 + 金额。动作放在金额左
-            侧同一 flex 行里，不再 absolute 悬浮，避免与金额重叠。 */}
+        {/* 标题行:左 分类图标 + 分类名 · 备注;右 hover 动作 + 金额。类型徽章
+            去掉了 —— 金额正负号 + 颜色已经能明确表达 income/expense/transfer,
+            重复的文字标签只会挤位置。动作放在金额左侧同一 flex 行里,不再
+            absolute 悬浮,避免与金额重叠。 */}
         <div className="flex items-baseline justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            {typeBadge}
+            {categoryEntry ? (
+              <CategoryIcon
+                icon={categoryEntry.icon}
+                iconType={categoryEntry.icon_type}
+                iconCloudFileId={categoryEntry.icon_cloud_file_id}
+                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                size={isCompact ? 16 : 18}
+                className="shrink-0 text-muted-foreground"
+              />
+            ) : null}
             <span className="truncate text-sm font-medium">{categoryText}</span>
+            {row.note ? (
+              <span className="truncate text-xs text-muted-foreground">
+                ({row.note})
+              </span>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {(onEdit || onDelete) && !isCompact ? (
@@ -146,8 +159,8 @@ export function TransactionRow({
           </div>
         </div>
 
-        {/* 元信息行：时间 · 账户 · 备注 · 标签 · 附件 chip。全部在同一行，
-            不论有无附件行高一致；附件是个小 chip，点击触发预览。 */}
+        {/* 元信息行:时间 · 账户 · 标签 · 附件 chip。备注迁到了上面标题行和
+            分类名连在一起,这里不再重复。 */}
         <div className={`mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 ${
           isCompact ? 'text-[11px]' : 'text-xs'
         } text-muted-foreground`}>
@@ -155,7 +168,6 @@ export function TransactionRow({
           {accountText && accountText !== '-' ? (
             <span className="truncate">· {accountText}</span>
           ) : null}
-          {row.note ? <span className="truncate">· {row.note}</span> : null}
 
           {row.tags_list && row.tags_list.length > 0
             ? row.tags_list.map((tagName) => {

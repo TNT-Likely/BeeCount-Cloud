@@ -56,6 +56,9 @@ type TransactionsPanelProps = {
     startIndex: number
   ) => Promise<void>
   resolveAttachmentPreviewUrl: (ref: AttachmentRef) => Promise<string | null>
+  /** 自定义分类图标的预签预览 URL 字典,TransactionList 里每行 CategoryIcon
+   *  用来拿 blob URL 显示云端上传的 PNG 图标。material icon 不需要。 */
+  iconPreviewUrlByFileId?: Record<string, string>
   onEdit: (row: ReadTransaction) => void
   onDelete: (row: ReadTransaction) => void
 }
@@ -222,6 +225,7 @@ export function TransactionsPanel({
   onReload,
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
+  iconPreviewUrlByFileId,
   onEdit,
   onDelete
 }: TransactionsPanelProps) {
@@ -302,6 +306,8 @@ export function TransactionsPanel({
         <TransactionList
           items={rows}
           tags={tags}
+          categories={categories}
+          iconPreviewUrlByFileId={iconPreviewUrlByFileId}
           variant="default"
           canManage={canWrite}
           onEdit={(row) => {
@@ -312,16 +318,18 @@ export function TransactionsPanel({
           onPreviewAttachment={onPreviewAttachment}
           resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
         />
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 px-3 py-3">
+        {/* mobile 上分页栏改成两行:顶行 summary,底行控件,避免 3 栏宽度
+            挤不下被 card 裁掉(截图 2026-04-21 bug)。sm+ 横屏恢复单行。 */}
+        <div className="flex flex-col gap-2 border-t border-border/60 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3">
           <p className="text-xs text-muted-foreground">
             {t('pagination.summary', { start: rangeStart, end: rangeEnd, total })}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select
               value={`${pageSize}`}
               onValueChange={(value) => onPageSizeChange(Number(value))}
             >
-              <SelectTrigger className="h-8 w-[110px]">
+              <SelectTrigger className="h-8 w-[96px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -339,7 +347,7 @@ export function TransactionsPanel({
             >
               {t('pagination.prev')}
             </Button>
-            <span className="min-w-[72px] text-center text-xs text-muted-foreground">
+            <span className="min-w-[56px] text-center text-xs text-muted-foreground">
               {safePage}/{totalPages}
             </span>
             <Button

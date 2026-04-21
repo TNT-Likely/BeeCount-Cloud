@@ -206,14 +206,14 @@ export function AdminUsersPanel({
     <ListTableShell
       title={t('admin.users.title')}
       actions={
-        <div className="flex items-center gap-2">
+        <>
           <Select
             value={statusFilter}
             onValueChange={(value) =>
               onStatusFilterChange(value as 'enabled' | 'disabled' | 'all')
             }
           >
-            <SelectTrigger className="h-9 w-[180px] bg-muted">
+            <SelectTrigger className="h-9 w-[140px] bg-muted sm:w-[180px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -226,7 +226,7 @@ export function AdminUsersPanel({
             {t('shell.refresh')}
           </Button>
           <Button onClick={() => setCreateOpen(true)}>{t('admin.users.button.create')}</Button>
-        </div>
+        </>
       }
     >
       <div className="overflow-x-auto">
@@ -257,7 +257,9 @@ export function AdminUsersPanel({
                 className="odd:bg-muted/20 [&>td:last-child]:sticky [&>td:last-child]:right-0 [&>td:last-child]:z-10 [&>td:last-child]:min-w-[180px] [&>td:last-child]:bg-background odd:[&>td:last-child]:bg-muted/20"
               >
                 <TableCell>
-                  <div className="flex min-w-[220px] items-center gap-2">
+                  {/* mobile 上 min-w 设 160 够放头像 + 名字 + 邮箱,sm+ 恢复 220。
+                      过宽会顶走 Ops sticky 列的可用空间。 */}
+                  <div className="flex min-w-[160px] items-center gap-2 sm:min-w-[220px]">
                     {row.avatar_url && !brokenAvatarUserIds.has(row.id) ? (
                       <img
                         alt={userDisplayName(row)}

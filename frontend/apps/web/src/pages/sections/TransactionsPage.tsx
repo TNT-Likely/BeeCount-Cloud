@@ -1339,7 +1339,16 @@ export function TransactionsPage() {
   }
 
   useEffect(() => {
-    if (route.section !== 'categories') return
+    // 分类页(iconGrid)+ 交易页(tx list 每行图标)+ 预算页(BudgetsSection
+    // CategoryIcon)都依赖 categoryIconPreviewByFileId,缺哪个都会退化成空白
+    // 方块。只按需预热,避免 user 一开 app 就扫全量云文件。
+    const sectionsNeedingIcons: Array<typeof route.section> = [
+      'categories',
+      'transactions',
+      'budgets',
+      'overview'
+    ]
+    if (!sectionsNeedingIcons.includes(route.section)) return
     const missingFileIds = categories
       .map((row) => row.icon_cloud_file_id || '')
       .filter((value) => value.trim().length > 0)
@@ -1411,6 +1420,7 @@ export function TransactionsPage() {
                 pageSize={txPageSize}
                 accounts={txWriteAccounts}
                 categories={txWriteCategories}
+                iconPreviewUrlByFileId={categoryIconPreviewByFileId}
                 tags={txWriteTags}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
