@@ -67,7 +67,9 @@ function formatTs(iso: string): string {
 
 export function LogsDialog({ token, open, onOpenChange }: Props) {
   const t = useT()
-  const [level, setLevel] = useState<string>('ALL')
+  // 默认筛选 ERROR —— 进来最常见的需求是看报错,先只显示 error + critical,
+  // 要调试再切 ALL / INFO。避免打开就被一片 access 日志淹没。
+  const [level, setLevel] = useState<string>('ERROR')
   const [sourceKey, setSourceKey] = useState<string>('all')
   const [q, setQ] = useState('')
   const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<number>(0)
