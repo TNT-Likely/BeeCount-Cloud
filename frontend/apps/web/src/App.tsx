@@ -1,13 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
 
-import { AppPage } from './pages/AppPage'
+import { AppShell } from './app/AppShell'
+import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
-import { jwtUserId } from './state/jwt'
+import { TransactionsPage } from './pages/sections/TransactionsPage'
+import { AccountsPage } from './pages/sections/AccountsPage'
+import { AdminUsersPage } from './pages/sections/AdminUsersPage'
+import { BudgetsPage } from './pages/sections/BudgetsPage'
+import { CategoriesPage } from './pages/sections/CategoriesPage'
+import { LedgersPage } from './pages/sections/LedgersPage'
+import { OverviewPage } from './pages/sections/OverviewPage'
+import { SettingsAiPage } from './pages/sections/SettingsAiPage'
+import { SettingsDevicesPage } from './pages/sections/SettingsDevicesPage'
+import { SettingsHealthPage } from './pages/sections/SettingsHealthPage'
+import { SettingsProfilePage } from './pages/sections/SettingsProfilePage'
+import { TagsPage } from './pages/sections/TagsPage'
 import { clearCursor } from './state/sync-client'
-import { usePathRouter } from './state/usePathRouter'
 
 const LEGACY_TOKEN_KEY = 'beecount.token'
 const TOKEN_KEY = `beecount.token.${API_BASE}`
@@ -21,8 +33,6 @@ function clearUserScopedStorage(userId: string): void {
   if (typeof window === 'undefined' || !userId) return
   try {
     window.localStorage.removeItem(`beecount.active-ledger.${userId}`)
-    // txFilter 的 key 是 `beecount:web:txFilter:v1:<uid>:<ledgerFilter>`,
-    // ledgerFilter 不固定,遍历清理所有符合前缀的 key。
     const prefix = `beecount:web:txFilter:v1:${userId}:`
     const doomed: string[] = []
     for (let i = 0; i < window.localStorage.length; i += 1) {
@@ -37,11 +47,20 @@ function clearUserScopedStorage(userId: string): void {
 
 export function App() {
   const t = useT()
-  const { route, navigate } = usePathRouter()
 
   useEffect(() => {
     document.title = t('shell.docTitle')
   }, [t])
+
+  return (
+    <BrowserRouter>
+      <AppRoutes />
+    </BrowserRouter>
+  )
+}
+
+function AppRoutes() {
+  const navigate = useNavigate()
   const [token, setToken] = useState<string>(() => {
     const scoped = localStorage.getItem(TOKEN_KEY)
     if (scoped) return scoped
@@ -58,6 +77,17 @@ export function App() {
     }
   }, [token])
 
+  const handleLogout = useCallback(() => {
+    const prev = getStoredUserId()
+    if (prev) {
+      clearCursor(prev)
+      clearUserScopedStorage(prev)
+    }
+    clearStoredSession()
+    setToken('')
+    navigate('/login', { replace: true })
+  }, [navigate])
+
   useEffect(() => {
     configureHttp({
       refreshToken: async () => {
@@ -65,66 +95,62 @@ export function App() {
         setToken(fresh)
         return fresh
       },
-      onLogout: () => {
-        const prev = getStoredUserId()
-        if (prev) {
-          clearCursor(prev)
-          clearUserScopedStorage(prev)
-        }
-        clearStoredSession()
-        setToken('')
-        navigate({ kind: 'login' }, { replace: true })
-      }
+      onLogout: handleLogout
     })
     return () => {
       configureHttp({ refreshToken: null, onLogout: null })
     }
-  }, [navigate])
+  }, [handleLogout])
 
-  useEffect(() => {
-    if (!token && route.kind !== 'login') {
-      navigate({ kind: 'login' }, { replace: true })
-      return
-    }
-    if (token && route.kind === 'login') {
-      navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
-    }
-  }, [route.kind, token, navigate])
+  // Nested routes:AppShell 作为 /app 父路由的 element,其 <Outlet /> 渲染
+  // 当前子路由,切换 section 时 AppShell 不 unmount —— profileMe / ledgers
+  // 等全局数据跨页面保持。所有 section 都有独立 Page,挂到 Outlet 下。
+  const shellElement = (
+    <RequireAuth isAuthed={!!token}>
+      <AppShell token={token} onLogout={handleLogout} />
+    </RequireAuth>
+  )
 
-  if (!token) {
-    return (
-      <LoginPage
-        onLoggedIn={(nextToken) => {
-          setToken(nextToken)
-          navigate({ kind: 'app', ledgerId: '', section: 'overview' }, { replace: true })
-        }}
-      />
-    )
-  }
-
-  if (route.kind !== 'app') {
-    return null
-  }
-
-  // key 绑定到 userId:切换用户时 React 会 unmount 旧 AppPage + 全新 mount,
-  // 彻底清掉所有 useState(ledgers/accounts/categories/tags/...) 和 useEffect 闭包,
-  // 避免 User A 的数据泄漏到 User B 的 session。
   return (
-    <AppPage
-      key={jwtUserId(token) || 'anon'}
-      token={token}
-      route={route}
-      onNavigate={navigate}
-      onLogout={() => {
-        const prev = getStoredUserId()
-        if (prev) {
-          clearCursor(prev)
-          clearUserScopedStorage(prev)
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          token ? (
+            <Navigate to="/app/overview" replace />
+          ) : (
+            <LoginPage
+              onLoggedIn={(nextToken) => {
+                setToken(nextToken)
+                navigate('/app/overview', { replace: true })
+              }}
+            />
+          )
         }
-        clearStoredSession()
-        setToken('')
-        navigate({ kind: 'login' }, { replace: true })
-      }}
-    />
+      />
+      <Route path="/app" element={shellElement}>
+        <Route index element={<Navigate to="overview" replace />} />
+        <Route path="overview" element={<OverviewPage />} />
+        <Route path="transactions" element={<TransactionsPage />} />
+        <Route path="ledgers" element={<LedgersPage />} />
+        <Route path="budgets" element={<BudgetsPage />} />
+        <Route path="accounts" element={<AccountsPage />} />
+        <Route path="categories" element={<CategoriesPage />} />
+        <Route path="tags" element={<TagsPage />} />
+        <Route path="admin/users" element={<AdminUsersPage />} />
+        <Route path="settings/profile" element={<SettingsProfilePage />} />
+        <Route path="settings/appearance" element={<SettingsProfilePage />} />
+        <Route path="settings/ai" element={<SettingsAiPage />} />
+        <Route path="settings/health" element={<SettingsHealthPage />} />
+        <Route path="settings/devices" element={<SettingsDevicesPage />} />
+        {/* legacy 深链 /app/:ledgerId/... 目前直接 fall-through 到 transactions */}
+        <Route path="*" element={<Navigate to="/app/overview" replace />} />
+      </Route>
+      <Route path="/" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
+      <Route path="*" element={<Navigate to={token ? '/app/overview' : '/login'} replace />} />
+    </Routes>
   )
 }
+
+// LegacyAppPage 和 useLegacyRoute 桥已随阶段 3 T15 移除 —— 所有 section 都是
+// 独立 Page,直接挂到 react-router 的 Outlet 下。

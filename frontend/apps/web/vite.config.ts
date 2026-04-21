@@ -27,8 +27,15 @@ export default defineConfig({
     alias: {
       '@beecount/api-client': path.resolve(__dirname, '../../packages/api-client/src'),
       '@beecount/ui': path.resolve(__dirname, '../../packages/ui/src'),
-      '@beecount/web-features': path.resolve(__dirname, '../../packages/web-features/src')
-    }
+      '@beecount/web-features': path.resolve(__dirname, '../../packages/web-features/src'),
+      // 强制 react / react-dom 走 web app 自己的 node_modules,避免
+      // react-router-dom (7.x) 经由 pnpm 链接到另一份 react 实例,
+      // 触发 "Cannot read properties of null (reading 'useState')" /
+      // "Invalid hook call" 错误。
+      react: path.resolve(__dirname, 'node_modules/react'),
+      'react-dom': path.resolve(__dirname, 'node_modules/react-dom')
+    },
+    dedupe: ['react', 'react-dom', 'react/jsx-runtime']
   },
   server: {
     port: 5173,

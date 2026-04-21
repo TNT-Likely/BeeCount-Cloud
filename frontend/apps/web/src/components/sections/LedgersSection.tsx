@@ -10,9 +10,9 @@ import {
 } from '@beecount/ui'
 import { Amount, formatIsoDateTime } from '@beecount/web-features'
 
+import { useLedgers } from '../../context/LedgersContext'
+
 interface Props {
-  ledgers: ReadLedger[]
-  activeLedgerId: string | null
   onSelect: (ledgerId: string) => void
 }
 
@@ -26,8 +26,9 @@ interface Props {
  *
  * 点击整张卡片切到该账本的 overview;active ledger 有明显高亮边框。
  */
-export function LedgersSection({ ledgers, activeLedgerId, onSelect }: Props) {
+export function LedgersSection({ onSelect }: Props) {
   const t = useT()
+  const { ledgers, activeLedgerId } = useLedgers()
 
   return (
     <div className="space-y-4">

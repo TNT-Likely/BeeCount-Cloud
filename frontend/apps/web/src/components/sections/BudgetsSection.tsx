@@ -2,11 +2,11 @@ import type { ReadBudget, WorkspaceCategory } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 import { Amount, CategoryIcon } from '@beecount/web-features'
 
+import { useLedgers } from '../../context/LedgersContext'
+
 interface Props {
   budgets: ReadBudget[]
   categories: WorkspaceCategory[]
-  activeLedgerId: string | null
-  currency: string
   categoryIconPreviewByFileId: Record<string, string>
 }
 
@@ -24,11 +24,10 @@ interface Props {
 export function BudgetsSection({
   budgets,
   categories,
-  activeLedgerId,
-  currency,
   categoryIconPreviewByFileId,
 }: Props) {
   const t = useT()
+  const { activeLedgerId, currency } = useLedgers()
 
   return (
     <div className="space-y-4">
