@@ -176,6 +176,13 @@ def upsert_tx(
         or "expense"
     )
 
+    # Upsert 前抓 prev 附件 fileIds,跟 new 做 diff 找到被移除的那些。
+    # 覆盖"一张交易有 N 个附件,只删掉其中一个"的场景 —— 老逻辑只管写新的
+    # attachments_json,没清理从列表里被剔除的 AttachmentFile 行 + 物理文件。
+    prev_file_ids = collect_tx_attachment_fileids(
+        db, ledger_id=ledger_id, sync_id=sync_id
+    )
+
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
@@ -203,6 +210,13 @@ def upsert_tx(
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadTxProjection, ("ledger_id", "sync_id"), values)
+
+    # 新行已落地,对 prev - new 的 fileId 查还有无引用 → GC。
+    # gc_orphan_attachments 契约要求新行就位后再调,这里顺序正确。
+    new_file_ids = _extract_tx_cloud_file_ids(attachments_json)
+    removed = prev_file_ids - new_file_ids
+    if removed:
+        gc_orphan_attachments(db, ledger_id=ledger_id, file_ids=removed)
 
 
 def upsert_account(

@@ -27,7 +27,7 @@ from src.models import (
     ReadTxProjection,
     User,
 )
-from src.projection import gc_orphan_attachments
+from src.projection import gc_orphan_attachments, upsert_tx
 
 
 def _make_db():
@@ -174,6 +174,166 @@ def test_gc_unlink_failure_still_deletes_row(tmp_path, caplog):
         db.commit()
         assert n == 1
         assert db.get(AttachmentFile, "f-nofile") is None
+
+
+def test_upsert_tx_gc_removes_detached_attachment(tmp_path):
+    """交易原本有 2 个附件,app 删掉其中 1 个后 upsert_tx 进来只带 1 个 →
+    被剔除的那个 fileId 应该触发 GC(AttachmentFile 行删 + 物理文件 unlink),
+    保留的那个不动。覆盖 2026-04 发现的 bug:老代码只写新 attachments_json,
+    不 diff 旧值,导致 web /data/attachments 残留已被删的附件。"""
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        att_keep, path_keep = _make_attachment(tmp_path, "f-keep")
+        att_drop, path_drop = _make_attachment(tmp_path, "f-drop")
+        db.add_all([att_keep, att_drop])
+        db.commit()
+
+        # 初始:tx 带两个附件
+        upsert_tx(
+            db,
+            ledger_id="L1",
+            user_id="U1",
+            source_change_id=1,
+            payload={
+                "syncId": "tx-multi",
+                "type": "expense",
+                "amount": 10.0,
+                "happenedAt": "2026-04-21T00:00:00Z",
+                "attachments": [
+                    {"fileName": "a.png", "cloudFileId": "f-keep"},
+                    {"fileName": "b.png", "cloudFileId": "f-drop"},
+                ],
+            },
+        )
+        db.commit()
+        assert path_keep.exists() and path_drop.exists()
+        assert db.get(AttachmentFile, "f-keep") is not None
+        assert db.get(AttachmentFile, "f-drop") is not None
+
+        # App 删掉 f-drop 后的再次推送:只带 f-keep
+        upsert_tx(
+            db,
+            ledger_id="L1",
+            user_id="U1",
+            source_change_id=2,
+            payload={
+                "syncId": "tx-multi",
+                "type": "expense",
+                "amount": 10.0,
+                "happenedAt": "2026-04-21T00:00:00Z",
+                "attachments": [
+                    {"fileName": "a.png", "cloudFileId": "f-keep"},
+                ],
+            },
+        )
+        db.commit()
+
+        # f-drop 应已 GC
+        assert db.get(AttachmentFile, "f-drop") is None
+        assert not path_drop.exists(), "被剔除的附件物理文件应已 unlink"
+        # f-keep 应保留
+        assert db.get(AttachmentFile, "f-keep") is not None
+        assert path_keep.exists()
+
+
+def test_upsert_tx_gc_clears_all_when_attachments_removed(tmp_path):
+    """交易原本有附件,app 把全部附件都删了 → attachments_json 变 null,
+    原有的 AttachmentFile 应全部 GC 掉(确认 prev_file_ids 抓取路径对空 new
+    的差集正确)。"""
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        att, path = _make_attachment(tmp_path, "f-only")
+        db.add(att)
+        db.commit()
+
+        upsert_tx(
+            db,
+            ledger_id="L1",
+            user_id="U1",
+            source_change_id=1,
+            payload={
+                "syncId": "tx-empty-after",
+                "type": "expense",
+                "amount": 5.0,
+                "happenedAt": "2026-04-21T00:00:00Z",
+                "attachments": [
+                    {"fileName": "x.png", "cloudFileId": "f-only"},
+                ],
+            },
+        )
+        db.commit()
+        assert db.get(AttachmentFile, "f-only") is not None
+
+        # 清空附件
+        upsert_tx(
+            db,
+            ledger_id="L1",
+            user_id="U1",
+            source_change_id=2,
+            payload={
+                "syncId": "tx-empty-after",
+                "type": "expense",
+                "amount": 5.0,
+                "happenedAt": "2026-04-21T00:00:00Z",
+                "attachments": [],
+            },
+        )
+        db.commit()
+
+        assert db.get(AttachmentFile, "f-only") is None
+        assert not path.exists()
+
+
+def test_upsert_tx_preserves_file_shared_by_another_tx(tmp_path):
+    """同一 fileId 被两笔 tx 共享(mobile 端同一附件贴到多条交易) → 从其中
+    一笔移除时仍有另一笔引用,AttachmentFile 不应被 GC。"""
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        att, path = _make_attachment(tmp_path, "f-dual")
+        db.add(att)
+        db.commit()
+
+        # tx-A 和 tx-B 都带这个附件
+        for sid in ("tx-A", "tx-B"):
+            upsert_tx(
+                db,
+                ledger_id="L1",
+                user_id="U1",
+                source_change_id=1,
+                payload={
+                    "syncId": sid,
+                    "type": "expense",
+                    "amount": 1.0,
+                    "happenedAt": "2026-04-21T00:00:00Z",
+                    "attachments": [
+                        {"fileName": "shared.png", "cloudFileId": "f-dual"},
+                    ],
+                },
+            )
+        db.commit()
+
+        # tx-A 把附件删了
+        upsert_tx(
+            db,
+            ledger_id="L1",
+            user_id="U1",
+            source_change_id=2,
+            payload={
+                "syncId": "tx-A",
+                "type": "expense",
+                "amount": 1.0,
+                "happenedAt": "2026-04-21T00:00:00Z",
+                "attachments": [],
+            },
+        )
+        db.commit()
+
+        # tx-B 还在引用 → 保留
+        assert db.get(AttachmentFile, "f-dual") is not None
+        assert path.exists()
 
 
 def test_gc_dedup_and_empty_input(tmp_path):
