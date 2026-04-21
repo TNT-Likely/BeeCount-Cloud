@@ -65,14 +65,56 @@ function formatTs(iso: string): string {
   }
 }
 
+// localStorage 里持久化筛选偏好,key 别按用户分桶 —— 日志是管理员工具,
+// 同浏览器下无论切哪个 admin 账号都复用同一份偏好。q(搜索关键词)不持久化,
+// 它太 ad-hoc,下次打开再输入更符合直觉。
+const LS_LEVEL = 'beecount:web:logsDialog:level'
+const LS_SOURCE = 'beecount:web:logsDialog:source'
+const LS_AUTO_REFRESH = 'beecount:web:logsDialog:autoRefreshSeconds'
+
+function readLsString(key: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback
+  try {
+    return window.localStorage.getItem(key) || fallback
+  } catch {
+    return fallback
+  }
+}
+function readLsNumber(key: string, fallback: number): number {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const v = window.localStorage.getItem(key)
+    if (v === null) return fallback
+    const n = Number(v)
+    return Number.isFinite(n) ? n : fallback
+  } catch {
+    return fallback
+  }
+}
+function writeLs(key: string, value: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // localStorage 超配额 / 私密模式 —— 持久化丢了也不致命。
+  }
+}
+
 export function LogsDialog({ token, open, onOpenChange }: Props) {
   const t = useT()
-  // 默认筛选 ERROR —— 进来最常见的需求是看报错,先只显示 error + critical,
-  // 要调试再切 ALL / INFO。避免打开就被一片 access 日志淹没。
-  const [level, setLevel] = useState<string>('ERROR')
-  const [sourceKey, setSourceKey] = useState<string>('all')
+  // 筛选偏好走 localStorage 持久化:首次进来默认 ERROR(看报错),之后记住
+  // 用户选择,下次打开还是上次那个级别 / 来源 / 自动刷新间隔。
+  const [level, setLevel] = useState<string>(() => readLsString(LS_LEVEL, 'ERROR'))
+  const [sourceKey, setSourceKey] = useState<string>(() => readLsString(LS_SOURCE, 'all'))
   const [q, setQ] = useState('')
-  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<number>(0)
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<number>(() =>
+    readLsNumber(LS_AUTO_REFRESH, 0)
+  )
+
+  // 任一 select 改变都同步写 localStorage。
+  useEffect(() => writeLs(LS_LEVEL, level), [level])
+  useEffect(() => writeLs(LS_SOURCE, sourceKey), [sourceKey])
+  useEffect(() => writeLs(LS_AUTO_REFRESH, String(autoRefreshSeconds)), [autoRefreshSeconds])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<AdminLogList | null>(null)
