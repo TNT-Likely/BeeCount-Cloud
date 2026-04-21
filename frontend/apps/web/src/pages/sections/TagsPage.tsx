@@ -22,6 +22,7 @@ import { TagDetailDialog } from '../../components/dialogs/TagDetailDialog'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 
@@ -39,7 +40,7 @@ export function TagsPage() {
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
-  const [rows, setRows] = useState<WorkspaceTag[]>([])
+  const [rows, setRows] = usePageCache<WorkspaceTag[]>('tags:rows', [])
   const [form, setForm] = useState<TagForm>(tagDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
 

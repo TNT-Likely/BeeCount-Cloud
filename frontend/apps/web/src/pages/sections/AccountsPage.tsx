@@ -20,6 +20,7 @@ import {
 import { AccountDetailDialog } from '../../components/dialogs/AccountDetailDialog'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
@@ -43,8 +44,9 @@ export function AccountsPage() {
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
-  const [rows, setRows] = useState<ReadAccount[]>([])
-  const [tags, setTags] = useState<WorkspaceTag[]>([])
+  // 主要数据走 PageDataCache —— 切走再切回来立刻显示上次的值,不闪烁。
+  const [rows, setRows] = usePageCache<ReadAccount[]>('accounts:rows', [])
+  const [tags, setTags] = usePageCache<WorkspaceTag[]>('accounts:tags', [])
   const [form, setForm] = useState<AccountForm>(accountDefaults())
 
   const [detail, setDetail] = useState<ReadAccount | null>(null)

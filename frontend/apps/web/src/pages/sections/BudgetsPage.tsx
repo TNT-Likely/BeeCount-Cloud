@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import {
   fetchReadBudgets,
@@ -12,6 +12,7 @@ import { BudgetsSection } from '../../components/sections/BudgetsSection'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 
@@ -29,8 +30,14 @@ export function BudgetsPage() {
   const { activeLedgerId } = useLedgers()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
-  const [budgets, setBudgets] = useState<ReadBudget[]>([])
-  const [categories, setCategories] = useState<WorkspaceCategory[]>([])
+  // 预算按账本分桶 —— key 带 activeLedgerId,切账本时自己走对应桶
+  // (没命中会回到 initial 空数组,用户会看到空态;但这符合"切账本切数据"的直觉)。
+  const bucket = activeLedgerId || '__none__'
+  const [budgets, setBudgets] = usePageCache<ReadBudget[]>(`budgets:${bucket}:rows`, [])
+  const [categories, setCategories] = usePageCache<WorkspaceCategory[]>(
+    'budgets:categories', // categories 是 user-global,不按账本分桶
+    []
+  )
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),

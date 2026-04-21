@@ -20,6 +20,7 @@ import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 
@@ -39,7 +40,7 @@ export function CategoriesPage() {
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
-  const [rows, setRows] = useState<ReadCategory[]>([])
+  const [rows, setRows] = usePageCache<ReadCategory[]>('categories:rows', [])
   const [form, setForm] = useState<CategoryForm>(categoryDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
 

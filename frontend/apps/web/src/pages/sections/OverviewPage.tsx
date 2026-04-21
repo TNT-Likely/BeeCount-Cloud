@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
@@ -15,6 +15,7 @@ import {
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 
 /**
@@ -29,26 +30,47 @@ export function OverviewPage() {
   const { token } = useAuth()
   const { activeLedgerId } = useLedgers()
 
-  const [accounts, setAccounts] = useState<WorkspaceAccount[]>([])
-  const [tags, setTags] = useState<WorkspaceTag[]>([])
-  const [analyticsData, setAnalyticsData] = useState<WorkspaceAnalytics | null>(null)
-  const [analyticsIncomeRanks, setAnalyticsIncomeRanks] = useState<
+  // Overview 的所有数据按当前账本分桶 —— 切账本时读对应桶,没命中显示空
+  // 态后台 refetch。accounts / tags 是 user-global 不按账本分。
+  const bucket = activeLedgerId || '__none__'
+  const [accounts, setAccounts] = usePageCache<WorkspaceAccount[]>('overview:accounts', [])
+  const [tags, setTags] = usePageCache<WorkspaceTag[]>('overview:tags', [])
+  const [analyticsData, setAnalyticsData] = usePageCache<WorkspaceAnalytics | null>(
+    `overview:${bucket}:analyticsData`,
+    null
+  )
+  const [analyticsIncomeRanks, setAnalyticsIncomeRanks] = usePageCache<
     WorkspaceAnalytics['category_ranks']
-  >([])
-  const [currentMonthSummary, setCurrentMonthSummary] = useState<
+  >(`overview:${bucket}:incomeRanks`, [])
+  const [currentMonthSummary, setCurrentMonthSummary] = usePageCache<
     WorkspaceAnalytics['summary'] | null
-  >(null)
-  const [currentMonthSeries, setCurrentMonthSeries] = useState<WorkspaceAnalytics['series']>([])
-  const [currentMonthCategoryRanks, setCurrentMonthCategoryRanks] = useState<
+  >(`overview:${bucket}:monthSummary`, null)
+  const [currentMonthSeries, setCurrentMonthSeries] = usePageCache<WorkspaceAnalytics['series']>(
+    `overview:${bucket}:monthSeries`,
+    []
+  )
+  const [currentMonthCategoryRanks, setCurrentMonthCategoryRanks] = usePageCache<
     WorkspaceAnalytics['category_ranks']
-  >([])
-  const [currentYearSummary, setCurrentYearSummary] = useState<
+  >(`overview:${bucket}:monthCategoryRanks`, [])
+  const [currentYearSummary, setCurrentYearSummary] = usePageCache<
     WorkspaceAnalytics['summary'] | null
-  >(null)
-  const [currentYearSeries, setCurrentYearSeries] = useState<WorkspaceAnalytics['series']>([])
-  const [allTimeSummary, setAllTimeSummary] = useState<WorkspaceAnalytics['summary'] | null>(null)
-  const [allTimeSeries, setAllTimeSeries] = useState<WorkspaceAnalytics['series']>([])
-  const [ledgerCounts, setLedgerCounts] = useState<WorkspaceLedgerCounts | null>(null)
+  >(`overview:${bucket}:yearSummary`, null)
+  const [currentYearSeries, setCurrentYearSeries] = usePageCache<WorkspaceAnalytics['series']>(
+    `overview:${bucket}:yearSeries`,
+    []
+  )
+  const [allTimeSummary, setAllTimeSummary] = usePageCache<WorkspaceAnalytics['summary'] | null>(
+    `overview:${bucket}:allSummary`,
+    null
+  )
+  const [allTimeSeries, setAllTimeSeries] = usePageCache<WorkspaceAnalytics['series']>(
+    `overview:${bucket}:allSeries`,
+    []
+  )
+  const [ledgerCounts, setLedgerCounts] = usePageCache<WorkspaceLedgerCounts | null>(
+    `overview:${bucket}:ledgerCounts`,
+    null
+  )
 
   const loadAccountsAndTags = useCallback(async () => {
     try {

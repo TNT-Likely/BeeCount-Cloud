@@ -3,6 +3,7 @@ import { useNavigate as useNavigateRR, useSearchParams } from 'react-router-dom'
 
 import { routePath, type AppRoute } from '../../state/router'
 
+import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 // AvatarDropdown / ChangelogDialog / LogsDialog / MobileBottomNav 已搬到 AppShell。
 // AccountDetailDialog 现仅被 AccountsPage 使用。
@@ -255,13 +256,21 @@ export function TransactionsPage() {
   // 原来用 Notice 顶栏显示成功/失败,改成 toast 后不再需要这个 state。
   const [baseChangeId, setBaseChangeId] = useState(0)
 
-  const [transactions, setTransactions] = useState<ReadTransaction[]>([])
-  const [txTotal, setTxTotal] = useState(0)
+  // 列表数据走 PageDataCache(按账本分桶),切走再切回不闪烁。
+  // 分页 / filter state 不进 cache —— 它们跟当前页面会话强相关,stale
+  // 没有意义(用户期望 re-enter 时回到 page 1 看最新)。
+  const txBucket = activeLedgerId || '__none__'
+  const [transactions, setTransactions] = usePageCache<ReadTransaction[]>(
+    `transactions:${txBucket}:rows`,
+    []
+  )
+  const [txTotal, setTxTotal] = usePageCache<number>(`transactions:${txBucket}:total`, 0)
   const [txPage, setTxPage] = useState(1)
   const [txPageSize, setTxPageSize] = useState(TX_PAGE_SIZE_DEFAULT)
-  const [accounts, setAccounts] = useState<ReadAccount[]>([])
-  const [categories, setCategories] = useState<ReadCategory[]>([])
-  const [tags, setTags] = useState<WorkspaceTag[]>([])
+  // accounts / categories / tags 是全局字典,用于 form 下拉选项,跨页面共享一份。
+  const [accounts, setAccounts] = usePageCache<ReadAccount[]>('transactions:accounts', [])
+  const [categories, setCategories] = usePageCache<ReadCategory[]>('transactions:categories', [])
+  const [tags, setTags] = usePageCache<WorkspaceTag[]>('transactions:tags', [])
   // budgets state 已迁到 BudgetsPage。
   // analyticsData / analyticsIncomeRanks 已迁到 OverviewPage。
   // 首页 Hero 支持 月/年/汇总 三个视角切换：预先一次性把三个 scope 拉回来，

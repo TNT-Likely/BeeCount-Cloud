@@ -18,6 +18,7 @@ import { MobileBottomNav } from '../components/MobileBottomNav'
 import { AttachmentCacheProvider } from '../context/AttachmentCacheContext'
 import { AuthProvider } from '../context/AuthContext'
 import { LedgersProvider } from '../context/LedgersContext'
+import { PageDataCacheProvider } from '../context/PageDataCacheContext'
 import { SyncSocketProvider, useSyncEvent } from '../context/SyncSocketContext'
 import { AppLayout } from '../layout/AppLayout'
 import { jwtUserId } from '../state/jwt'
@@ -193,6 +194,7 @@ export function AppShell({ token, onLogout }: Props) {
         refreshLedgers={refreshLedgers}
       >
         <SyncSocketProvider>
+        <PageDataCacheProvider>
         <AttachmentCacheProvider>
         <AppShellSyncReactor
           refreshLedgers={refreshLedgers}
@@ -221,6 +223,7 @@ export function AppShell({ token, onLogout }: Props) {
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
           <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
         </AttachmentCacheProvider>
+        </PageDataCacheProvider>
         </SyncSocketProvider>
       </LedgersProvider>
     </AuthProvider>
