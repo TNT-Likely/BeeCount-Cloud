@@ -1,3 +1,21 @@
+"""write.py 的共享 helper 层。
+
+原 src/routers/write.py(1658 行)按路由拆成 6 个子模块后,所有 endpoint
+都依赖的辅助函数 / 常量 / 响应表 / 写入引擎(_commit_write /
+_commit_write_fast_tx / _diff_entity_list / _emit_entity_diffs /
+idempotency key 机制 / normalize helper / projection upsert-deleter 派发表)
+集中在这里。
+
+子模块只管:
+  - endpoint 路由定义
+  - 参数 / 权限校验
+  - 调 _commit_write / _prepare_write / 其它 _shared 里的 helper
+  - 返回 WriteCommitMeta
+
+修改 snapshot 写入 / idempotency / cascade 规则应当来这里改一处即可,
+修改单个 entity 的 endpoint 行为在对应子模块改。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,16 +31,16 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..concurrency import lock_ledger_for_materialize
-from ..config import get_settings
-from ..database import get_db
-from ..deps import get_current_user, require_any_scopes, require_scopes
-from ..ledger_access import (
+from ...concurrency import lock_ledger_for_materialize
+from ...config import get_settings
+from ...database import get_db
+from ...deps import get_current_user, require_any_scopes, require_scopes
+from ...ledger_access import (
     ROLE_EDITOR,
     ROLE_OWNER,
     get_accessible_ledger_by_external_id,
 )
-from ..models import (
+from ...models import (
     AuditLog,
     Ledger,
     ReadTxProjection,
@@ -30,7 +48,7 @@ from ..models import (
     SyncPushIdempotency,
     User,
 )
-from ..schemas import (
+from ...schemas import (
     WriteAccountCreateRequest,
     WriteAccountUpdateRequest,
     WriteCategoryCreateRequest,
@@ -44,9 +62,9 @@ from ..schemas import (
     WriteTransactionCreateRequest,
     WriteTransactionUpdateRequest,
 )
-from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
-from .. import projection, snapshot_builder, snapshot_cache
-from ..snapshot_mutator import (
+from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
+from ... import projection, snapshot_builder, snapshot_cache
+from ...snapshot_mutator import (
     create_account,
     create_category,
     create_tag,
@@ -64,7 +82,8 @@ from ..snapshot_mutator import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# router instance lives in each sub-module (ledgers.py / transactions.py / ...).
+# _shared.py is helper-only, no routes.
 settings = get_settings()
 _WRITE_SCOPE_DEP = (
     require_any_scopes(SCOPE_WEB_WRITE, SCOPE_APP_WRITE)
@@ -489,7 +508,7 @@ async def _commit_write_fast_tx(
     prev_item = _projection_row_to_tx_dict(tx_row)
 
     # 3. actor 权限检查(复用现有逻辑)
-    from ..snapshot_mutator import _assert_actor_can_modify  # 延迟 import 避免循环
+    from ...snapshot_mutator import _assert_actor_can_modify  # 延迟 import 避免循环
     try:
         _assert_actor_can_modify(prev_item, mutate_payload)
     except PermissionError as exc:
@@ -519,7 +538,7 @@ async def _commit_write_fast_tx(
         )
     else:
         # Upsert:merge payload 到 prev_item
-        from ..snapshot_mutator import update_transaction
+        from ...snapshot_mutator import update_transaction
         # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
         minimal_snap = {"items": [prev_item], "count": 1}
         minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
@@ -619,7 +638,7 @@ async def _commit_write_fast_tx(
 
 def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     """projection row → snapshot item dict,跟 snapshot_builder.build 的格式一致。"""
-    from ..snapshot_builder import _to_iso_utc
+    from ...snapshot_builder import _to_iso_utc
     item: dict[str, Any] = {
         "syncId": row.sync_id,
         "type": row.tx_type,
@@ -689,7 +708,12 @@ async def _commit_write(
     # strict_base_change_id 语义转换:原先比 latest ledger_snapshot.change_id,
     # 方案 B 后 snapshot 不再写,改比 ledger 上任意 entity 的最新 change_id
     # (更严格 —— 连 tx 级修改都会触发 409)。默认关闭的 feature flag,生产用不到。
-    if settings.strict_base_change_id:
+    #
+    # 动态读 get_settings() 而不是缓存模块级 `settings`,是为了让测试 flip
+    # STRICT_BASE_CHANGE_ID + get_settings.cache_clear() 的方式能立刻生效
+    # (否则写入包分多个文件后,importlib.reload 不会重新执行 _shared.py
+    # 的 module-level `settings = get_settings()`,flag 读的永远是旧值)。
+    if get_settings().strict_base_change_id:
         latest_any_change_id = snapshot_builder.latest_change_id(db, ledger.id)
         if base_change_id != latest_any_change_id:
             raise HTTPException(
@@ -874,785 +898,98 @@ def _assert_can_modify_entity(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
-@router.post("/ledgers", response_model=WriteCommitMeta, responses=_WRITE_RESPONSES)
-async def create_ledger(
-    req: WriteLedgerCreateRequest,
-    request: Request,
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    external_id = (req.ledger_id or f"ledger_{uuid4().hex[:12]}").strip()
-    if not external_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ledger id is required")
-    # Scope uniqueness to current user — different users can use the same
-    # external_id (enforced by the (user_id, external_id) unique constraint).
-    exists = db.scalar(
-        select(Ledger).where(
-            Ledger.external_id == external_id,
-            Ledger.user_id == current_user.id,
-        )
-    )
-    if exists is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ledger already exists")
 
-    name = _normalize_ledger_name(req.ledger_name)
-    currency = _normalize_currency(req.currency)
-    now = _utcnow()
-
-    ledger = Ledger(
-        user_id=current_user.id,
-        external_id=external_id,
-        name=name,
-        currency=currency,
-    )
-    db.add(ledger)
-    db.flush()
-
-    # 方案 B:不写 ledger_snapshot 行。emit 一个 ledger entity SyncChange 个体事件,
-    # mobile /sync/pull 能收到这个 ledger 被创建的事件。
-    row_change = SyncChange(
-        user_id=current_user.id,
-        ledger_id=ledger.id,
-        entity_type="ledger",
-        entity_sync_id=external_id,
-        action="upsert",
-        payload_json={"ledgerName": name, "currency": currency},
-        updated_at=now,
-        updated_by_device_id="web-console",
-        updated_by_user_id=current_user.id,
-    )
-    db.add(row_change)
-    db.flush()
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
-            ledger_id=ledger.id,
-            action="web_ledger_create",
-            metadata_json={
-                "ledgerId": external_id,
-                "newChangeId": row_change.change_id,
-            },
-        )
-    )
-    db.commit()
-
-    await request.app.state.ws_manager.broadcast_to_user(
-        current_user.id,
-        {
-            "type": "sync_change",
-            "ledgerId": external_id,
-            "serverCursor": row_change.change_id,
-            "serverTimestamp": row_change.updated_at.isoformat(),
-        },
-    )
-
-    logger.info(
-        "write.ledger.create ledger=%s name=%s currency=%s user=%s",
-        external_id,
-        name,
-        currency,
-        current_user.id,
-    )
-    return WriteCommitMeta(
-        ledger_id=external_id,
-        base_change_id=0,
-        new_change_id=row_change.change_id,
-        server_timestamp=row_change.updated_at,
-        idempotency_replayed=False,
-        entity_id=external_id,
-    )
-
-
-@router.patch(
-    "/ledgers/{ledger_id}/meta",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def update_ledger_meta(
-    ledger_id: str,
-    req: WriteLedgerMetaUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json", exclude_unset=True)
-    if "ledger_name" in payload:
-        payload["ledger_name"] = _normalize_ledger_name(payload.get("ledger_name"))
-    if "currency" in payload:
-        payload["currency"] = _normalize_currency(payload.get("currency"))
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-
-    if "ledger_name" in payload:
-        ledger.name = payload["ledger_name"]
-    if "currency" in payload:
-        ledger.currency = payload["currency"]
-
-    def mutate(snapshot: dict) -> tuple[dict, str]:
-        next_snapshot = ensure_snapshot_v2(snapshot)
-        if "ledger_name" in payload:
-            next_snapshot["ledgerName"] = payload["ledger_name"]
-        if "currency" in payload:
-            next_snapshot["currency"] = payload["currency"]
-        return next_snapshot, ledger.external_id
-
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_ledger_meta_update",
-        mutate=mutate,
-    )
-
-
-@router.delete(
-    "/ledgers/{ledger_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def delete_ledger(
-    ledger_id: str,
-    request: Request,
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    """Soft-delete a ledger: append a ``ledger_snapshot action=delete`` tombstone
-    SyncChange. Reads filter it out; historical rows are retained for audit."""
-    row = get_accessible_ledger_by_external_id(
-        db,
-        user_id=current_user.id,
-        ledger_external_id=ledger_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
-    ledger, _ = row
-
-    lock_ledger_for_materialize(db, ledger.id)
-    now = _utcnow()
-    tombstone = SyncChange(
-        user_id=ledger.user_id,
-        ledger_id=ledger.id,
-        entity_type="ledger_snapshot",
-        entity_sync_id=ledger.external_id,
-        action="delete",
-        payload_json={},
-        updated_at=now,
-        updated_by_device_id=device_id,
-        updated_by_user_id=current_user.id,
-    )
-    db.add(tombstone)
-    db.flush()
-    snapshot_cache.invalidate(ledger.id)
-    # 软删除:Ledger 行不动(留着外键历史),但 projection 清零,让 /read/* 立刻看不到
-    projection._truncate_ledger(db, ledger.id)
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
-            ledger_id=ledger.id,
-            action="web_ledger_delete",
-            metadata_json={
-                "ledgerId": ledger.external_id,
-                "newChangeId": tombstone.change_id,
-            },
-        )
-    )
-    db.commit()
-
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
-            "type": "sync_change",
-            "ledgerId": ledger.external_id,
-            "serverCursor": tombstone.change_id,
-            "serverTimestamp": tombstone.updated_at.isoformat(),
-        },
-    )
-    return WriteCommitMeta(
-        ledger_id=ledger.external_id,
-        base_change_id=0,
-        new_change_id=tombstone.change_id,
-        server_timestamp=tombstone.updated_at,
-        idempotency_replayed=False,
-        entity_id=ledger.external_id,
-    )
-
-
-@router.post(
-    "/ledgers/{ledger_id}/transactions",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def create_tx(
-    ledger_id: str,
-    req: WriteTransactionCreateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_TRANSACTION_WRITE_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    # 旧架构这里要跑 _resolve_tx_dictionary_payload 去 UserAccount/Category/Tag
-    # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
-    # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
-    # 是 syncId,不再需要任何投影表。payload 直接传给 snapshot_mutator。
-    mutate_payload = _payload_with_actor(payload, current_user)
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tx_create",
-        mutate=lambda snapshot: create_transaction(snapshot, mutate_payload),
-    )
-
-
-@router.patch(
-    "/ledgers/{ledger_id}/transactions/{tx_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def update_tx(
-    ledger_id: str,
-    tx_id: str,
-    req: WriteTransactionUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json", exclude_unset=True)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_TRANSACTION_WRITE_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    _assert_can_modify_entity(
-        db=db,
-        ledger=ledger,
-        current_user=current_user,
-        entity_sync_id=tx_id,
-    )
-    # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,
-    # 不再经 UserAccount 投影表。
-    mutate_payload = _payload_with_actor(payload, current_user)
-    return await _commit_write_fast_tx(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tx_update",
-        tx_id=tx_id,
-        mutate_payload=mutate_payload,
-        action="upsert",
-    )
-
-
-@router.delete(
-    "/ledgers/{ledger_id}/transactions/{tx_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def delete_tx(
-    ledger_id: str,
-    tx_id: str,
-    req: WriteEntityDeleteRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_TRANSACTION_WRITE_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    _assert_can_modify_entity(
-        db=db,
-        ledger=ledger,
-        current_user=current_user,
-        entity_sync_id=tx_id,
-    )
-    return await _commit_write_fast_tx(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tx_delete",
-        tx_id=tx_id,
-        mutate_payload=mutate_payload,
-        action="delete",
-    )
-
-
-@router.post(
-    "/ledgers/{ledger_id}/accounts",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def create_acc(
-    ledger_id: str,
-    req: WriteAccountCreateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_account_create",
-        mutate=lambda snapshot: create_account(snapshot, mutate_payload),
-    )
-
-
-@router.patch(
-    "/ledgers/{ledger_id}/accounts/{account_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def update_acc(
-    ledger_id: str,
-    account_id: str,
-    req: WriteAccountUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json", exclude_unset=True)
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_account_update",
-        mutate=lambda snapshot: (update_account(snapshot, account_id, mutate_payload), account_id),
-    )
-
-
-@router.delete(
-    "/ledgers/{ledger_id}/accounts/{account_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def delete_acc(
-    ledger_id: str,
-    account_id: str,
-    req: WriteEntityDeleteRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_account_delete",
-        mutate=lambda snapshot: (delete_account(snapshot, account_id, mutate_payload), account_id),
-    )
-
-
-@router.post(
-    "/ledgers/{ledger_id}/categories",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def create_cat(
-    ledger_id: str,
-    req: WriteCategoryCreateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_category_create",
-        mutate=lambda snapshot: create_category(snapshot, mutate_payload),
-    )
-
-
-@router.patch(
-    "/ledgers/{ledger_id}/categories/{category_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def update_cat(
-    ledger_id: str,
-    category_id: str,
-    req: WriteCategoryUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json", exclude_unset=True)
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_category_update",
-        mutate=lambda snapshot: (update_category(snapshot, category_id, mutate_payload), category_id),
-    )
-
-
-@router.delete(
-    "/ledgers/{ledger_id}/categories/{category_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def delete_cat(
-    ledger_id: str,
-    category_id: str,
-    req: WriteEntityDeleteRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_category_delete",
-        mutate=lambda snapshot: (delete_category(snapshot, category_id, mutate_payload), category_id),
-    )
-
-
-@router.post(
-    "/ledgers/{ledger_id}/tags",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def create_tag_api(
-    ledger_id: str,
-    req: WriteTagCreateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tag_create",
-        mutate=lambda snapshot: create_tag(snapshot, mutate_payload),
-    )
-
-
-@router.patch(
-    "/ledgers/{ledger_id}/tags/{tag_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def update_tag_api(
-    ledger_id: str,
-    tag_id: str,
-    req: WriteTagUpdateRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json", exclude_unset=True)
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tag_update",
-        mutate=lambda snapshot: (update_tag(snapshot, tag_id, mutate_payload), tag_id),
-    )
-
-
-@router.delete(
-    "/ledgers/{ledger_id}/tags/{tag_id}",
-    response_model=WriteCommitMeta,
-    responses=_WRITE_RESPONSES,
-)
-async def delete_tag_api(
-    ledger_id: str,
-    tag_id: str,
-    req: WriteEntityDeleteRequest,
-    request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    device_id: str = Header(default="web-console", alias="X-Device-ID"),
-    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
-    ledger, replay = _prepare_write(
-        db=db,
-        current_user=current_user,
-        ledger_external_id=ledger_id,
-        required_roles=_OWNER_ONLY_ROLES,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        method=request.method,
-        path=request.url.path,
-        payload=payload,
-    )
-    if replay:
-        return replay
-    return await _commit_write(
-        request=request,
-        db=db,
-        current_user=current_user,
-        ledger=ledger,
-        base_change_id=req.base_change_id,
-        request_payload=payload,
-        idempotency_key=idempotency_key,
-        device_id=device_id,
-        audit_action="web_tag_delete",
-        mutate=lambda snapshot: (delete_tag(snapshot, tag_id, mutate_payload), tag_id),
-    )
-
+__all__ = [
+    'hashlib',
+    'json',
+    'logging',
+    'Callable',
+    'datetime',
+    'timedelta',
+    'timezone',
+    'Any',
+    'uuid4',
+    'APIRouter',
+    'Depends',
+    'Header',
+    'HTTPException',
+    'Request',
+    'status',
+    'func',
+    'select',
+    'IntegrityError',
+    'Session',
+    'lock_ledger_for_materialize',
+    'get_settings',
+    'get_db',
+    'get_current_user',
+    'require_any_scopes',
+    'require_scopes',
+    'ROLE_EDITOR',
+    'ROLE_OWNER',
+    'get_accessible_ledger_by_external_id',
+    'AuditLog',
+    'Ledger',
+    'ReadTxProjection',
+    'SyncChange',
+    'SyncPushIdempotency',
+    'User',
+    'WriteAccountCreateRequest',
+    'WriteAccountUpdateRequest',
+    'WriteCategoryCreateRequest',
+    'WriteCategoryUpdateRequest',
+    'WriteCommitMeta',
+    'WriteEntityDeleteRequest',
+    'WriteLedgerCreateRequest',
+    'WriteLedgerMetaUpdateRequest',
+    'WriteTagCreateRequest',
+    'WriteTagUpdateRequest',
+    'WriteTransactionCreateRequest',
+    'WriteTransactionUpdateRequest',
+    'SCOPE_APP_WRITE',
+    'SCOPE_WEB_WRITE',
+    'projection',
+    'snapshot_builder',
+    'snapshot_cache',
+    'create_account',
+    'create_category',
+    'create_tag',
+    'create_transaction',
+    'delete_account',
+    'delete_category',
+    'delete_tag',
+    'delete_transaction',
+    'ensure_snapshot_v2',
+    'update_account',
+    'update_category',
+    'update_tag',
+    'update_transaction',
+    'logger',
+    'settings',
+    '_WRITE_SCOPE_DEP',
+    '_TRANSACTION_WRITE_ROLES',
+    '_OWNER_ONLY_ROLES',
+    '_WRITE_RESPONSES',
+    '_utcnow',
+    '_PROJECTION_UPSERTERS',
+    '_PROJECTION_DELETERS',
+    '_TX_CASCADE_FIELDS',
+    '_tx_diff_only_cascade',
+    '_collect_renames',
+    '_diff_entity_list',
+    '_emit_entity_diffs',
+    '_load_ledger_for_write',
+    '_latest_snapshot_change',
+    '_parse_snapshot',
+    '_hash_request',
+    '_purge_expired_idempotency',
+    '_load_idempotent_response',
+    '_commit_write_fast_tx',
+    '_projection_row_to_tx_dict',
+    '_commit_write',
+    '_prepare_write',
+    '_normalize_currency',
+    '_normalize_ledger_name',
+    '_payload_with_actor',
+    '_assert_can_modify_entity',
+]

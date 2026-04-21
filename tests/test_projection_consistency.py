@@ -416,3 +416,118 @@ def test_projection_isolated_per_ledger():
             assert tx_b.tx_type == "income" and tx_b.amount == 2
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Budget coverage                                                              #
+# --------------------------------------------------------------------------- #
+# 2026-04 踩过坑:_merge_with_existing_budget 的 `from ..models import
+# ReadBudgetProjection` 一度被写成 `from .models`,模块加载不报错,只有在
+# 真推一条 budget change 时才会 ModuleNotFoundError → 500。现在 merge 逻辑
+# 收敛到表驱动的 _merge_with_existing + 顶层统一 import,这种类型错误不会
+# 再发生。下面这些 budget / 分类规范化 test 作为回归保底。
+
+
+def test_mobile_push_budget_creates_projection_row():
+    """纯创建:budget 能被 /sync/push 接受并写入 read_budget_projection。
+    2026-04 之前这里直接 500(ModuleNotFoundError on `.models`)。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "b1@t.com", device_id="b1", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        _push(client, hdr, "b1", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "budget", "entity_sync_id": "bud1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "bud1", "type": "total", "amount": 500.0,
+                         "period": "monthly", "startDay": 1, "enabled": True}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            b = db.scalar(select(ReadBudgetProjection).where(
+                ReadBudgetProjection.ledger_id == lid, ReadBudgetProjection.sync_id == "bud1"))
+            assert b is not None, "budget projection row missing"
+            assert b.budget_type == "total"
+            assert b.amount == 500.0
+            assert b.period == "monthly"
+            assert b.start_day == 1
+            assert b.enabled is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_budget_partial_update_keeps_existing_fields():
+    """增量 update:只推 amount,其它字段(period / startDay / enabled)
+    必须保留旧值。如果 _merge_with_existing 读不到现有行就拿 None 覆盖旧值,
+    这一条会失败。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "b2@t.com", device_id="b2", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        # 先完整 create
+        _push(client, hdr, "b2", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "budget", "entity_sync_id": "bud1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "bud1", "type": "category", "categoryId": "cat-x",
+                         "amount": 300.0, "period": "monthly", "startDay": 5, "enabled": True}},
+        ])
+        # 再用只有 amount 的增量 update(mobile 只改了金额)
+        _push(client, hdr, "b2", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "budget", "entity_sync_id": "bud1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "bud1", "amount": 700.0}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            b = db.scalar(select(ReadBudgetProjection).where(
+                ReadBudgetProjection.ledger_id == lid, ReadBudgetProjection.sync_id == "bud1"))
+            assert b.amount == 700.0, "新 amount 没落"
+            # 旧值必须保留 —— 这是 _merge_with_existing 的核心契约
+            assert b.budget_type == "category"
+            assert b.category_sync_id == "cat-x"
+            assert b.period == "monthly"
+            assert b.start_day == 5
+            assert b.enabled is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_push_mixed_entities_in_one_batch():
+    """一次 push 里混合五种 entity(account / category / tag / budget / transaction)。
+    之前 budget 500 时整批 rollback,这个测试作为回归:五种都能走通。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "mix@t.com", device_id="mix", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        _push(client, hdr, "mix", "lg1", [
+            {"ledger_id": "lg1", "entity_type": "account", "entity_sync_id": "a1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "a1", "name": "Cash", "type": "cash", "currency": "CNY"}},
+            {"ledger_id": "lg1", "entity_type": "category", "entity_sync_id": "c1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "c1", "name": "Food", "kind": "expense"}},
+            {"ledger_id": "lg1", "entity_type": "tag", "entity_sync_id": "tg1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "tg1", "name": "work", "color": "#F00"}},
+            {"ledger_id": "lg1", "entity_type": "budget", "entity_sync_id": "bu1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "bu1", "type": "total", "amount": 1000,
+                         "period": "monthly", "startDay": 1, "enabled": True}},
+            {"ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t1", "type": "expense", "amount": 12,
+                         "happenedAt": _iso(), "accountId": "a1", "accountName": "Cash"}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            assert db.scalar(select(ReadAccountProjection).where(
+                ReadAccountProjection.ledger_id == lid, ReadAccountProjection.sync_id == "a1"))
+            assert db.scalar(select(ReadCategoryProjection).where(
+                ReadCategoryProjection.ledger_id == lid, ReadCategoryProjection.sync_id == "c1"))
+            assert db.scalar(select(ReadTagProjection).where(
+                ReadTagProjection.ledger_id == lid, ReadTagProjection.sync_id == "tg1"))
+            assert db.scalar(select(ReadBudgetProjection).where(
+                ReadBudgetProjection.ledger_id == lid, ReadBudgetProjection.sync_id == "bu1"))
+            assert db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
+    finally:
+        app.dependency_overrides.clear()
