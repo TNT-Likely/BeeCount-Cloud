@@ -272,7 +272,7 @@ def _merge_with_existing_tag(db, ledger_id, sync_id, payload):
 
 
 def _merge_with_existing_budget(db, ledger_id, sync_id, payload):
-    from .models import ReadBudgetProjection
+    from ..models import ReadBudgetProjection
 
     existing = db.scalar(
         select(ReadBudgetProjection).where(
@@ -502,12 +502,27 @@ async def push_changes(
         if change.entity_type in _INDIVIDUAL_ENTITY_TYPES:
             # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
             lock_ledger_for_materialize(db, ledger.id)
-            _apply_change_to_projection(
-                db,
-                ledger_id=ledger.id,
-                ledger_owner_id=ledger.user_id,
-                change=row_change,
-            )
+            try:
+                _apply_change_to_projection(
+                    db,
+                    ledger_id=ledger.id,
+                    ledger_owner_id=ledger.user_id,
+                    change=row_change,
+                )
+            except Exception:
+                # 批量 push 里一条坏 change 炸了要看得到是哪一条;不然 500 只见
+                # generic Internal server error,得上生产日志面板才能查。
+                logger.exception(
+                    "sync.push.apply_failed entity=%s action=%s ledger=%s sync_id=%s "
+                    "change_id=%d payload=%s",
+                    change.entity_type,
+                    change.action,
+                    change.ledger_id,
+                    change.entity_sync_id,
+                    row_change.change_id,
+                    change.payload,
+                )
+                raise
 
         accepted += 1
         max_cursor = max(max_cursor, row_change.change_id)
