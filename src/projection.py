@@ -230,6 +230,24 @@ def upsert_account(
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
+    # 扩展字段读 snapshot 的 camelCase key,空 / NaN 转 None。这些字段是
+    # nullable 的(老 snapshot 没这些 key 时落 None,前端展示空)。
+    def _opt_float(raw: Any) -> float | None:
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _opt_int(raw: Any) -> int | None:
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
@@ -238,6 +256,12 @@ def upsert_account(
         "account_type": _as_str(payload.get("type")),
         "currency": _as_str(payload.get("currency")),
         "initial_balance": _as_float(payload.get("initialBalance")),
+        "note": _as_str(payload.get("note")),
+        "credit_limit": _opt_float(payload.get("creditLimit")),
+        "billing_day": _opt_int(payload.get("billingDay")),
+        "payment_due_day": _opt_int(payload.get("paymentDueDay")),
+        "bank_name": _as_str(payload.get("bankName")),
+        "card_last_four": _as_str(payload.get("cardLastFour")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadAccountProjection, ("ledger_id", "sync_id"), values)
@@ -254,6 +278,20 @@ def upsert_category(
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
+
+    # 取 prev icon_cloud_file_id —— upsert 后跟 new 比对,若变更则 GC 旧 attachment。
+    # 跟 upsert_tx 的模式对齐(line 214-219):防止用户在 web 点 "remove 自定义图标"
+    # 后旧 cloud blob 永远成孤儿。
+    prev_icon_file_id: str | None = None
+    prev_row = db.scalar(
+        select(ReadCategoryProjection.icon_cloud_file_id).where(
+            ReadCategoryProjection.ledger_id == ledger_id,
+            ReadCategoryProjection.sync_id == sync_id,
+        )
+    )
+    if prev_row:
+        prev_icon_file_id = prev_row.strip() if isinstance(prev_row, str) else None
+
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
@@ -273,6 +311,14 @@ def upsert_category(
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadCategoryProjection, ("ledger_id", "sync_id"), values)
+
+    # 如果 prev_icon_file_id 跟新值不一样(包括清空、换图),且 prev 不是空,
+    # 把旧 fileId 交给 gc_orphan_attachments —— 内部会查 projection 是否还有
+    # 别的引用,真孤儿才删 AttachmentFile + 物理文件,被共用的(理论上不该
+    # 发生但保险)会留着。
+    new_icon_file_id = _as_str(payload.get("iconCloudFileId")) or None
+    if prev_icon_file_id and prev_icon_file_id != new_icon_file_id:
+        gc_orphan_attachments(db, ledger_id=ledger_id, file_ids=[prev_icon_file_id])
 
 
 def upsert_tag(

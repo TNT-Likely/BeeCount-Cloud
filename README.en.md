@@ -68,11 +68,9 @@ services:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8869:8080"
     volumes:
-      # One volume holds everything: DB / attachments / backups / avatars / JWT secret.
-      # First boot auto-generates a 32-byte secret to /data/.jwt_secret — zero config.
-      - beecount_data:/data
+      - ./data:/data
 
 volumes:
   beecount_data:
@@ -83,9 +81,23 @@ volumes:
 
 ```bash
 docker compose up -d
+# View the first-boot admin credentials:
+docker compose logs beecount-cloud | grep -A 10 "admin"
 ```
 
-Open http://localhost:8080 — register the first account (it becomes admin automatically), then configure the mobile app to point at your domain.
+You'll see something like:
+
+```
+ BeeCount Cloud — First boot. Admin account auto-created:
+
+   email:    owner@example.com
+   password: FIDodUnwprkw1zUi
+```
+
+With that account:
+
+- Browser → `http://<server-ip>:8869` for the **Web UI**
+- In the app, pick "BeeCount Cloud", fill in server URL + account, sign in
 
 ### 3) Upgrade
 

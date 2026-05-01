@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import {
   Badge,
@@ -8,14 +8,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Input,
   Label,
+  Pagination,
   Select,
   SelectContent,
   SelectItem,
@@ -24,9 +19,20 @@ import {
   useT
 } from '@beecount/ui'
 
-import type { AttachmentRef, ReadAccount, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
+import type {
+  AttachmentRef,
+  ReadAccount,
+  ReadCategory,
+  ReadTag,
+  ReadTransaction,
+  WorkspaceCategory,
+} from '@beecount/api-client'
 
+import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
+import { CategoryIcon } from '../components/CategoryIcon'
+import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
+import { tagTextColorOn } from '../lib/tagColorPalette'
 import type { TxForm } from '../forms'
 
 type TransactionsPanelProps = {
@@ -48,6 +54,11 @@ type TransactionsPanelProps = {
   showCreatorColumn?: boolean
   showLedgerColumn?: boolean
   onFormChange: (next: TxForm) => void
+  /** Dialog 显隐由外层控制。新建/编辑入口都靠 parent 在 setOpen(true) 之前
+   *  把 form 初始化好,然后 setOpen(true)。这样 page 可以把"新建交易"按钮
+   *  跟搜索/筛选放同一行,跟内嵌在 panel 内的 onCreate 解耦。 */
+  dialogOpen: boolean
+  onDialogOpenChange: (open: boolean) => void
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onReload: () => void
@@ -220,6 +231,8 @@ export function TransactionsPanel({
   showCreatorColumn = false,
   showLedgerColumn = false,
   onFormChange,
+  dialogOpen,
+  onDialogOpenChange,
   onSave,
   onReset,
   onReload,
@@ -230,7 +243,10 @@ export function TransactionsPanel({
   onDelete
 }: TransactionsPanelProps) {
   const t = useT()
-  const [open, setOpen] = useState(false)
+  const open = dialogOpen
+  const setOpen = onDialogOpenChange
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
+  const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -247,11 +263,9 @@ export function TransactionsPanel({
     .filter((name) => name.length > 0)
     .filter((name, index, self) => self.indexOf(name) === index)
     .sort((a, b) => a.localeCompare(b))
-  const tagOptions = tags
-    .map((row) => row.name.trim())
-    .filter((name) => name.length > 0)
-    .filter((name, index, self) => self.indexOf(name) === index)
-    .sort((a, b) => a.localeCompare(b))
+  // tag 选择改用 TagPickerDialog,组件自己做 dedup + 搜索 + chip 渲染,这里
+  // 不再需要 tagOptions 派生(只保留 tagColorByName 给 trigger 按钮的小 chip
+  // 渲染上色用)。
   // 按 name 反查 tag 颜色，tx 列表行里给每个标签 badge 上色。大小写不敏感。
   const tagColorByName = new Map<string, string>()
   for (const row of tags) {
@@ -259,6 +273,20 @@ export function TransactionsPanel({
     if (!key) continue
     if (row.color && !tagColorByName.has(key)) tagColorByName.set(key, row.color)
   }
+
+  // 当前选中的分类 row(按 name + kind 反查),给 CategoryPicker 高亮 + 触发
+  // 按钮显示图标。和 TransactionList 行内渲染保持同源。
+  const selectedCategoryRow = useMemo<WorkspaceCategory | null>(() => {
+    const name = (form.category_name || '').trim().toLowerCase()
+    if (!name) return null
+    return (
+      (categories as WorkspaceCategory[]).find(
+        (row) =>
+          row.kind === form.tx_type &&
+          (row.name || '').trim().toLowerCase() === name,
+      ) ?? null
+    )
+  }, [categories, form.category_name, form.tx_type])
 
   const isTransfer = form.tx_type === 'transfer'
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
@@ -268,7 +296,6 @@ export function TransactionsPanel({
     : true)
   const selectedTags = form.tags
   const categoryValue = form.category_name.trim()
-  const tagsSummary = selectedTags.length === 0 ? t('common.none') : selectedTags.join(', ')
 
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
@@ -293,15 +320,13 @@ export function TransactionsPanel({
   }
 
   const colCount = 8 + (showCreatorColumn ? 1 : 0) + (showLedgerColumn ? 1 : 0)
-  const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)))
-  const safePage = Math.min(Math.max(page, 1), totalPages)
-  const rangeStart = total === 0 ? 0 : (safePage - 1) * pageSize + 1
-  const rangeEnd = total === 0 ? 0 : Math.min(total, safePage * pageSize)
 
   return (
     <>
       {/* 去掉 ListTableShell 的"交易管理" header，改用紧凑的 TransactionList
-          —— 表格信息列太多，首页/交易页都不需要账本 + 创建人那两列。 */}
+          —— 表格信息列太多，首页/交易页都不需要账本 + 创建人那两列。
+          "新建交易"按钮由 parent page 在搜索/过滤行右侧渲染,跟其他工具按钮
+          视觉对齐;panel 自身不再渲染,避免重复。 */}
       <div className="rounded-xl border border-border/50 bg-card">
         <TransactionList
           items={rows}
@@ -318,49 +343,13 @@ export function TransactionsPanel({
           onPreviewAttachment={onPreviewAttachment}
           resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
         />
-        {/* mobile 上分页栏改成两行:顶行 summary,底行控件,避免 3 栏宽度
-            挤不下被 card 裁掉(截图 2026-04-21 bug)。sm+ 横屏恢复单行。 */}
-        <div className="flex flex-col gap-2 border-t border-border/60 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3">
-          <p className="text-xs text-muted-foreground">
-            {t('pagination.summary', { start: rangeStart, end: rangeEnd, total })}
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={`${pageSize}`}
-              onValueChange={(value) => onPageSizeChange(Number(value))}
-            >
-              <SelectTrigger className="h-8 w-[96px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="20">{t('pagination.perPage', { size: 20 })}</SelectItem>
-                <SelectItem value="50">{t('pagination.perPage', { size: 50 })}</SelectItem>
-                <SelectItem value="100">{t('pagination.perPage', { size: 100 })}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              className="h-8 px-3"
-              disabled={safePage <= 1}
-              size="sm"
-              variant="outline"
-              onClick={() => onPageChange(safePage - 1)}
-            >
-              {t('pagination.prev')}
-            </Button>
-            <span className="min-w-[56px] text-center text-xs text-muted-foreground">
-              {safePage}/{totalPages}
-            </span>
-            <Button
-              className="h-8 px-3"
-              disabled={safePage >= totalPages}
-              size="sm"
-              variant="outline"
-              onClick={() => onPageChange(safePage + 1)}
-            >
-              {t('pagination.next')}
-            </Button>
-          </div>
-        </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -425,29 +414,35 @@ export function TransactionsPanel({
               {isTransfer ? (
                 <Input disabled value={t('common.none')} />
               ) : (
-                <Select
-                  value={categoryValue || '__none__'}
+                // 跟同行的 SelectTrigger 视觉对齐:h-10 + bg-muted + border-input,
+                // 图标用 h-6 w-6 圆形塞得进 40px 高度,不撑大行高。
+                <button
+                  type="button"
                   disabled={dictionariesLoading}
-                  onValueChange={(value) =>
-                    onFormChange({
-                      ...form,
-                      category_name: value === '__none__' ? '' : value,
-                      category_kind: form.tx_type
-                    })
-                  }
+                  onClick={() => setCategoryPickerOpen(true)}
+                  className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('transactions.placeholder.categoryName')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">{t('common.none')}</SelectItem>
-                    {categoryOptions.map((name) => (
-                      <SelectItem key={name} value={name}>
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {selectedCategoryRow ? (
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/15">
+                      <CategoryIcon
+                        icon={selectedCategoryRow.icon}
+                        iconType={selectedCategoryRow.icon_type}
+                        iconCloudFileId={selectedCategoryRow.icon_cloud_file_id}
+                        iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+                        size={16}
+                        className="text-primary"
+                      />
+                    </span>
+                  ) : null}
+                  <span
+                    className={`flex-1 truncate ${
+                      categoryValue ? '' : 'text-muted-foreground'
+                    }`}
+                  >
+                    {categoryValue || t('transactions.placeholder.categoryName')}
+                  </span>
+                  <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                </button>
               )}
             </div>
 
@@ -516,46 +511,46 @@ export function TransactionsPanel({
 
             <div className="space-y-1">
               <Label>{t('tags.title')}</Label>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button className="w-full justify-between" disabled={dictionariesLoading} variant="outline">
-                    <span className="truncate text-left">{tagsSummary}</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="start"
-                  className="max-h-64 w-[320px] overflow-y-auto border-border/60 bg-popover text-popover-foreground shadow-lg"
-                >
-                  <DropdownMenuLabel>{t('tags.title')}</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {tagOptions.map((name) => (
-                    <DropdownMenuCheckboxItem
-                      key={name}
-                      checked={selectedTags.includes(name)}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          if (selectedTags.includes(name)) return
-                          onFormChange({ ...form, tags: [...selectedTags, name] })
-                          return
-                        }
-                        onFormChange({ ...form, tags: selectedTags.filter((value) => value !== name) })
-                      }}
-                      onSelect={(event) => event.preventDefault()}
-                    >
-                      {name}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                  <DropdownMenuSeparator />
-                  <Button
-                    className="mx-1 h-8 w-[calc(100%-0.5rem)]"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => onFormChange({ ...form, tags: [] })}
-                  >
-                    {t('tags.button.reset')}
-                  </Button>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* tag 多选改用 TagPickerDialog —— mobile 风格的 chip 选择,带搜索
+                  + 颜色块,比 DropdownMenu 直观。trigger 按钮里把已选标签缩略
+                  显示成彩色 chip,空时占位文案。视觉上跟同行的 SelectTrigger 同高。 */}
+              <button
+                type="button"
+                disabled={dictionariesLoading}
+                onClick={() => setTagPickerOpen(true)}
+                className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="flex flex-1 items-center gap-1 overflow-hidden">
+                  {selectedTags.length === 0 ? (
+                    <span className="text-muted-foreground">
+                      {t('common.none')}
+                    </span>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-1 overflow-hidden">
+                      {selectedTags.slice(0, 3).map((name) => {
+                        const color = tagColorByName.get(name.toLowerCase()) || '#94a3b8'
+                        const fg = tagTextColorOn(color)
+                        return (
+                          <span
+                            key={name}
+                            className="inline-flex h-5 max-w-[120px] items-center rounded-full px-1.5 text-[11px] leading-none"
+                            style={{ background: color, color: fg }}
+                            title={name}
+                          >
+                            <span className="truncate">{name}</span>
+                          </span>
+                        )
+                      })}
+                      {selectedTags.length > 3 ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          +{selectedTags.length - 3}
+                        </span>
+                      ) : null}
+                    </span>
+                  )}
+                </span>
+                <span className="text-xs text-muted-foreground opacity-60">▾</span>
+              </button>
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label>{t('transactions.table.note')}</Label>
@@ -591,6 +586,37 @@ export function TransactionsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 标签 picker —— chip 多选,跟 TagsPanel 卡片视觉一致。 */}
+      <TagPickerDialog
+        open={tagPickerOpen}
+        onClose={() => setTagPickerOpen(false)}
+        tags={tags}
+        selectedNames={selectedTags}
+        onChange={(names) => onFormChange({ ...form, tags: names })}
+        onClearAll={() => onFormChange({ ...form, tags: [] })}
+      />
+
+      {/* 分类 picker —— 跟 mobile category_selector_dialog 同样的网格 + 子级
+          展开交互。expense / income 切换跟随 form.tx_type;转账类型不开 picker。
+          移除"未分类"footer —— 非转账交易必选分类(对齐 mobile transaction_editor_page,
+          page 层 onSaveTransaction 也会再 guard 一次)。 */}
+      <CategoryPickerDialog
+        open={categoryPickerOpen}
+        onClose={() => setCategoryPickerOpen(false)}
+        kind={form.tx_type === 'income' ? 'income' : 'expense'}
+        rows={categories as WorkspaceCategory[]}
+        iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+        selectedId={selectedCategoryRow?.id}
+        title={t('transactions.placeholder.categoryName')}
+        onSelect={(cat) => {
+          onFormChange({
+            ...form,
+            category_name: cat.name.trim(),
+            category_kind: form.tx_type,
+          })
+        }}
+      />
     </>
   )
 }

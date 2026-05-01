@@ -1,40 +1,60 @@
-import { ArrowRight, TrendingDown, TrendingUp, Users } from 'lucide-react'
+import { useState } from 'react'
+
+import { TrendingDown, TrendingUp, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
+  Button,
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-  useT
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  useT,
 } from '@beecount/ui'
-import { Amount, formatIsoDateTime } from '@beecount/web-features'
+import {
+  Amount,
+  CurrencySelectorTrigger,
+  formatIsoDateTime,
+} from '@beecount/web-features'
 
 import { useLedgers } from '../../context/LedgersContext'
 
 interface Props {
-  onSelect: (ledgerId: string) => void
+  /** 点击账本卡片(整张卡)的回调。当前实现里:打开编辑 dialog,不切换
+   *  active ledger 也不跳转 —— 切账本仍走顶部 ledger picker / 其它入口。 */
+  onEdit: (ledger: ReadLedger) => void
+  onCreate: () => void
 }
 
 /**
- * 账本列表 section —— 从 AppPage.tsx 抽出独立组件。
+ * 账本列表 section。
  *
  * 信息密度分三层:
  *   - 头部:首字母色块 avatar(名字哈希稳定色) + 大号账本名 + 徽章
- *   - 统计:tx 数 / 收入 / 支出 三栏(有上下标指引方向)
- *   - 底部:净值(醒目)+ 最近更新时间 + 箭头图标
+ *   - 统计:tx 数 / 收入 / 支出 三栏
+ *   - 底部:净值 + 最近更新时间
  *
- * 点击整张卡片切到该账本的 overview;active ledger 有明显高亮边框。
+ * 顶部右侧 "新建账本" 按钮。点击账本卡片 → 编辑 dialog。
  */
-export function LedgersSection({ onSelect }: Props) {
+export function LedgersSection({ onEdit, onCreate }: Props) {
   const t = useT()
   const { ledgers, activeLedgerId } = useLedgers()
 
   return (
     <div className="space-y-4">
       <Card className="bc-panel">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle>{t('ledgers.title')}</CardTitle>
+          <Button size="sm" onClick={onCreate}>
+            {t('ledgers.button.create')}
+          </Button>
         </CardHeader>
         <CardContent>
           <p className="mb-4 text-xs text-muted-foreground">
@@ -49,7 +69,7 @@ export function LedgersSection({ onSelect }: Props) {
                   key={ledger.ledger_id}
                   ledger={ledger}
                   isActive={activeLedgerId === ledger.ledger_id}
-                  onSelect={() => onSelect(ledger.ledger_id)}
+                  onEdit={() => onEdit(ledger)}
                   roleLabel={roleLabelOf(ledger.role, t)}
                 />
               ))}
@@ -67,7 +87,6 @@ function roleLabelOf(role: ReadLedger['role'], t: (key: string) => string): stri
   return t('ledgers.role.viewer')
 }
 
-/** 按名字稳定哈希到 9 个主题色里的一个,让每个账本在卡片上有可辨识的 accent。 */
 const ACCENT_PALETTE = [
   { bg: 'from-amber-400/20 to-amber-500/5', solid: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400' },
   { bg: 'from-sky-400/20 to-sky-500/5', solid: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' },
@@ -92,10 +111,10 @@ interface LedgerCardProps {
   ledger: ReadLedger
   isActive: boolean
   roleLabel: string
-  onSelect: () => void
+  onEdit: () => void
 }
 
-function LedgerCard({ ledger, isActive, roleLabel, onSelect }: LedgerCardProps) {
+function LedgerCard({ ledger, isActive, roleLabel, onEdit }: LedgerCardProps) {
   const t = useT()
   const accent = accentFor(ledger.ledger_name || '?')
   const initial = (ledger.ledger_name || '?').trim().slice(0, 1).toUpperCase()
@@ -103,17 +122,15 @@ function LedgerCard({ ledger, isActive, roleLabel, onSelect }: LedgerCardProps) 
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={onEdit}
       className={`group relative overflow-hidden rounded-2xl border text-left transition hover:-translate-y-0.5 hover:shadow-lg ${
         isActive
           ? 'border-primary/60 shadow-md ring-1 ring-primary/20'
           : 'border-border/60'
       }`}
     >
-      {/* 顶部渐变条:按名字哈希到 palette,让每个账本有颜色 signature */}
       <div className={`absolute inset-x-0 top-0 h-1 ${accent.solid}`} />
 
-      {/* Header 区:avatar + name + badges */}
       <div
         className={`flex items-start gap-3 bg-gradient-to-br px-4 pb-3 pt-4 ${accent.bg}`}
       >
@@ -143,15 +160,13 @@ function LedgerCard({ ledger, isActive, roleLabel, onSelect }: LedgerCardProps) 
                 ) : null}
               </div>
             </div>
-            <ArrowRight
-              className="mt-1 h-4 w-4 shrink-0 text-muted-foreground transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary"
-              aria-hidden
-            />
+            <span className="mt-1 shrink-0 rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
+              {t('common.edit')}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Stats 区:tx / income / expense 三栏 */}
       <div className="grid grid-cols-3 gap-2 border-t border-border/40 bg-card px-4 py-3">
         <div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -189,7 +204,6 @@ function LedgerCard({ ledger, isActive, roleLabel, onSelect }: LedgerCardProps) 
         </div>
       </div>
 
-      {/* Footer:balance + updated */}
       <div className="flex items-end justify-between border-t border-border/40 bg-muted/20 px-4 py-2.5">
         <div>
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -212,5 +226,93 @@ function LedgerCard({ ledger, isActive, roleLabel, onSelect }: LedgerCardProps) 
         </div>
       </div>
     </button>
+  )
+}
+
+/**
+ * 编辑/新建账本通用 dialog。`mode='create'` 隐藏 ledgerId 字段(server 自动生成),
+ * `mode='edit'` 锁定 ledgerId 文案显示。币种走 CurrencySelector。
+ */
+export type LedgerForm = {
+  ledger_name: string
+  currency: string
+}
+
+interface LedgerEditDialogProps {
+  open: boolean
+  mode: 'create' | 'edit'
+  form: LedgerForm
+  onChange: (next: LedgerForm) => void
+  onClose: () => void
+  onSubmit: () => Promise<boolean> | boolean
+  /** 编辑模式额外信息行,例如 ledger id / 创建者 / 角色。 */
+  meta?: { label: string; value: string }[]
+}
+
+export function LedgerEditDialog({
+  open,
+  mode,
+  form,
+  onChange,
+  onClose,
+  onSubmit,
+  meta,
+}: LedgerEditDialogProps) {
+  const t = useT()
+  const [submitting, setSubmitting] = useState(false)
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    try {
+      const ok = await onSubmit()
+      if (ok) onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && !submitting && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {mode === 'create' ? t('ledgers.button.create') : t('ledgers.button.update')}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>{t('ledgers.field.name')}</Label>
+            <Input
+              placeholder={t('ledgers.placeholder.name')}
+              value={form.ledger_name}
+              onChange={(e) => onChange({ ...form, ledger_name: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>{t('ledgers.field.currency')}</Label>
+            <CurrencySelectorTrigger
+              value={form.currency || 'CNY'}
+              onChange={(code) => onChange({ ...form, currency: code })}
+            />
+          </div>
+          {meta && meta.length > 0 ? (
+            <div className="space-y-1 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
+              {meta.map((row) => (
+                <div key={row.label} className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">{row.label}</span>
+                  <span className="truncate font-mono">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={submitting} onClick={onClose}>
+            {t('dialog.cancel')}
+          </Button>
+          <Button disabled={submitting} onClick={() => void handleSubmit()}>
+            {mode === 'create' ? t('ledgers.button.create') : t('ledgers.button.update')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

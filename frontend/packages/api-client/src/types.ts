@@ -130,6 +130,18 @@ export type ReadAccount = {
   ledger_name?: string | null
   created_by_user_id?: string | null
   created_by_email?: string | null
+  /** 备注,所有类型可填。null = 未填。 */
+  note?: string | null
+  /** 信用额度,仅 credit_card。 */
+  credit_limit?: number | null
+  /** 账单日(1-31),仅 credit_card。 */
+  billing_day?: number | null
+  /** 还款日(1-31),仅 credit_card。 */
+  payment_due_day?: number | null
+  /** 开户行,bank_card / credit_card 元信息。 */
+  bank_name?: string | null
+  /** 卡号后四位,bank_card / credit_card。 */
+  card_last_four?: string | null
 }
 
 export type ReadCategory = {
@@ -210,6 +222,9 @@ export type WorkspaceCategory = ReadCategory & {
   ledger_name: string | null
   created_by_user_id: string | null
   created_by_email: string | null
+  // 服务端按 category_sync_id 聚合的笔数,跨所有账本累加(跟 dedup 后的展
+  // 示口径一致)。None = 历史接口未提供。
+  tx_count?: number | null
 }
 
 export type WorkspaceTag = ReadTag & {
@@ -387,11 +402,35 @@ export type TxPayload = {
   attachments?: AttachmentRef[] | null
 }
 
+export type BudgetCreatePayload = {
+  type: 'total' | 'category'
+  /** category 预算必填,total 可省略;后端校验。 */
+  category_id?: string | null
+  amount: number
+  period?: 'monthly' | 'weekly' | 'yearly'
+  /** 起始日(1-28),默认 1。 */
+  start_day?: number
+  enabled?: boolean
+}
+
+export type BudgetUpdatePayload = {
+  amount?: number
+  period?: 'monthly' | 'weekly' | 'yearly'
+  start_day?: number
+  enabled?: boolean
+}
+
 export type AccountPayload = {
   name: string
   account_type?: string | null
   currency?: string | null
   initial_balance?: number | null
+  note?: string | null
+  credit_limit?: number | null
+  billing_day?: number | null
+  payment_due_day?: number | null
+  bank_name?: string | null
+  card_last_four?: string | null
 }
 
 export type CategoryPayload = {

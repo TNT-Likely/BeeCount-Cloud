@@ -68,11 +68,9 @@ services:
     image: sunxiao0721/beecount-cloud:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8869:8080"
     volumes:
-      # 一个 volume 装全部数据:DB / 附件 / 备份 / 头像 / JWT 密钥。
-      # 首次启动自动生成 32 bytes 密钥到 /data/.jwt_secret,零配置。
-      - beecount_data:/data
+      - ./data:/data
 
 volumes:
   beecount_data:
@@ -83,9 +81,23 @@ volumes:
 
 ```bash
 docker compose up -d
+# 查看首次启动生成的随机管理员账号密码:
+docker compose logs beecount-cloud | grep -A 10 "初次启动"
 ```
 
-访问 http://localhost:8080 — 注册的第一个账号自动成为管理员,然后在 App 里填自己的服务器地址即可。
+看到类似:
+
+```
+ BeeCount Cloud — 初次启动,已自动创建管理员账号:
+
+   邮箱:    owner@example.com
+   密码:    FIDodUnwprkw1zUi
+```
+
+拿这个账号:
+
+- 浏览器访问 `http://<你的服务器 IP>:8869` 即可用 **Web 管理端**
+- App 里选「BeeCount Cloud」,填服务器地址 + 上面账号登录
 
 ### 3) 升级
 

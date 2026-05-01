@@ -163,6 +163,7 @@ export function TagsPage() {
         canManage
         statsById={tagStatsById}
         onFormChange={setForm}
+        onCreate={() => setForm(tagDefaults())}
         onSave={onSave}
         onReset={() => setForm(tagDefaults())}
         onEdit={(row) => {
@@ -173,7 +174,19 @@ export function TagsPage() {
             color: row.color || '#F59E0B',
           })
         }}
-        onDelete={(row) => setPendingDelete({ id: row.id, name: row.name })}
+        onDelete={(row) => {
+          // 关联交易 > 0 直接拦,不让走 confirm dialog,跟 app 端行为对齐。
+          // server 也有兜底校验(snapshot_mutator.delete_tag)防止漏网。
+          const linkedCount = tagStatsById[row.id]?.count ?? 0
+          if (linkedCount > 0) {
+            toast.error(
+              t('tags.error.hasTransactions').replace('{count}', String(linkedCount)),
+              t('notice.error')
+            )
+            return
+          }
+          setPendingDelete({ id: row.id, name: row.name })
+        }}
         onClickTag={(row) => {
           setDetail(row)
           setDetailTx([])

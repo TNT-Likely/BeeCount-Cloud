@@ -1,6 +1,8 @@
 import { authedDelete, authedPatch, authedPost } from './http'
 import type {
   AccountPayload,
+  BudgetCreatePayload,
+  BudgetUpdatePayload,
   CategoryPayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
@@ -114,12 +116,62 @@ export async function deleteAccount(
   token: string,
   ledgerId: string,
   accountId: string,
-  baseChangeId: number
+  baseChangeId: number,
 ): Promise<WriteCommitMeta> {
+  // server 端 snapshot_mutator.delete_account 会 raise 如果账户还有任何关联
+  // 交易 —— 客户端必须先看 tx_count,>0 时直接拒绝,不要走删除流程。
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}`,
     token,
-    { base_change_id: baseChangeId }
+    { base_change_id: baseChangeId },
+  )
+}
+
+export async function createBudget(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: BudgetCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateBudget(
+  token: string,
+  ledgerId: string,
+  budgetId: string,
+  baseChangeId: number,
+  payload: BudgetUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteBudget(
+  token: string,
+  ledgerId: string,
+  budgetId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    { base_change_id: baseChangeId },
   )
 }
 

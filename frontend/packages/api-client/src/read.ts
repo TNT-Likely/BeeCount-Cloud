@@ -77,6 +77,14 @@ export async function fetchWorkspaceTransactions(
     tagSyncId?: string
     categorySyncId?: string
     accountSyncId?: string
+    /** 金额下限(含),按 abs 比较 */
+    amountMin?: number
+    /** 金额上限(含) */
+    amountMax?: number
+    /** happened_at >= dateFrom (ISO 8601) */
+    dateFrom?: string
+    /** happened_at < dateTo (ISO 8601, 独占)。前端通常传"次日 00:00"包含整天。 */
+    dateTo?: string
     limit?: number
     offset?: number
   }
@@ -90,6 +98,10 @@ export async function fetchWorkspaceTransactions(
   if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
   if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
   if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)
+  if (typeof options?.amountMin === 'number') query.set('amount_min', `${options.amountMin}`)
+  if (typeof options?.amountMax === 'number') query.set('amount_max', `${options.amountMax}`)
+  if (options?.dateFrom) query.set('date_from', options.dateFrom)
+  if (options?.dateTo) query.set('date_to', options.dateTo)
   if (typeof options?.limit === 'number') query.set('limit', `${options.limit}`)
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''

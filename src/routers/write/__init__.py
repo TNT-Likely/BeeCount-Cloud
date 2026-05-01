@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import accounts, categories, ledgers, tags, transactions
+from . import accounts, budgets, categories, ledgers, tags, transactions
 
 router = APIRouter()
 router.include_router(ledgers.router)
 router.include_router(transactions.router)
 router.include_router(accounts.router)
+router.include_router(budgets.router)
 router.include_router(categories.router)
 router.include_router(tags.router)

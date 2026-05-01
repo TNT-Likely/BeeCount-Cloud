@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   createCategory,
@@ -7,6 +7,7 @@ import {
   updateCategory,
   uploadAttachment,
   type ReadCategory,
+  type WorkspaceCategory,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
 import {
@@ -40,7 +41,7 @@ export function CategoriesPage() {
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
-  const [rows, setRows] = usePageCache<ReadCategory[]>('categories:rows', [])
+  const [rows, setRows] = usePageCache<WorkspaceCategory[]>('categories:rows', [])
   const [form, setForm] = useState<CategoryForm>(categoryDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
 
@@ -77,6 +78,15 @@ export function CategoriesPage() {
       .filter((value) => value.trim().length > 0)
     if (ids.length > 0) ensureLoadedMany(ids)
   }, [rows, ensureLoadedMany])
+
+  const txCountById = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const row of rows) {
+      if (!row.id) continue
+      out[row.id] = row.tx_count ?? 0
+    }
+    return out
+  }, [rows])
 
   const onSave = async (): Promise<boolean> => {
     if (!activeLedgerId) {
@@ -134,8 +144,10 @@ export function CategoriesPage() {
         form={form}
         rows={rows}
         iconPreviewUrlByFileId={iconPreviewByFileId}
+        txCountById={txCountById}
         canManage
         onFormChange={setForm}
+        onCreate={() => setForm(categoryDefaults())}
         onSave={onSave}
         onReset={() => setForm(categoryDefaults())}
         onEdit={(row) => {

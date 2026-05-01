@@ -404,6 +404,14 @@ class ReadAccountOut(BaseModel):
     ledger_name: str | None = None
     created_by_user_id: str | None = None
     created_by_email: str | None = None
+    # 扩展字段(mobile sync_engine 一直在 push 这些,server 现在落库 + round-trip,
+    # web 编辑也能完整保存):
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = None
+    payment_due_day: int | None = None
+    bank_name: str | None = None
+    card_last_four: str | None = None
 
 
 class ReadCategoryOut(BaseModel):
@@ -477,7 +485,10 @@ class WorkspaceAccountOut(ReadAccountOut):
 
 
 class WorkspaceCategoryOut(ReadCategoryOut):
-    pass
+    # 跨账本按该分类聚合的笔数。Web 列表展示用,跟 tags 的 tx_count 对齐。
+    # 不带 expense/income total — 分类本身已经按 kind 区分(支出/收入),
+    # 累计金额可在分类详情页另行查询。None = 历史接口可选不提供。
+    tx_count: int | None = None
 
 
 class WorkspaceTagOut(ReadTagOut):
@@ -626,6 +637,13 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     account_type: str | None = None
     currency: str | None = None
     initial_balance: float | None = None
+    # 扩展字段:跟 mobile lib/data/db.dart Account 表对齐,跨端可编辑。
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = Field(default=None, ge=1, le=31)
+    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    bank_name: str | None = None
+    card_last_four: str | None = Field(default=None, max_length=8)
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -633,6 +651,28 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     account_type: str | None = None
     currency: str | None = None
     initial_balance: float | None = None
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = Field(default=None, ge=1, le=31)
+    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    bank_name: str | None = None
+    card_last_four: str | None = Field(default=None, max_length=8)
+
+
+class WriteBudgetCreateRequest(WriteBaseRequest):
+    type: Literal["total", "category"]
+    category_id: str | None = None
+    amount: float = Field(gt=0)
+    period: Literal["monthly", "weekly", "yearly"] = "monthly"
+    start_day: int = Field(default=1, ge=1, le=28)
+    enabled: bool = True
+
+
+class WriteBudgetUpdateRequest(WriteBaseRequest):
+    amount: float | None = Field(default=None, gt=0)
+    period: Literal["monthly", "weekly", "yearly"] | None = None
+    start_day: int | None = Field(default=None, ge=1, le=28)
+    enabled: bool | None = None
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):

@@ -120,6 +120,14 @@ _MERGE_SPECS: dict[str, _MergeSpec] = {
         ("type", "account_type"),
         ("currency", "currency"),
         ("initialBalance", "initial_balance"),
+        # 扩展字段:跟 mobile lib/data/db.dart Account 表对齐,sync_engine 已经
+        # 在 push 这些字段(driftCamel),server 现在落库 + round-trip。
+        ("note", "note"),
+        ("creditLimit", "credit_limit"),
+        ("billingDay", "billing_day"),
+        ("paymentDueDay", "payment_due_day"),
+        ("bankName", "bank_name"),
+        ("cardLastFour", "card_last_four"),
     ]),
     "category": _MergeSpec(ReadCategoryProjection, [
         ("syncId", "sync_id"),

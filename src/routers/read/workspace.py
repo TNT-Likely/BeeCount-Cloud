@@ -18,6 +18,10 @@ def list_workspace_transactions(
     tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
     category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
     account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
+    amount_min: float | None = Query(default=None, description="金额下限(含)。按 abs(amount) 比较以兼容 expense 负值"),
+    amount_max: float | None = Query(default=None, description="金额上限(含)"),
+    date_from: datetime | None = Query(default=None, description="happened_at >= date_from"),
+    date_to: datetime | None = Query(default=None, description="happened_at < date_to(独占,前端传当天 23:59:59 即可包含整天)"),
     limit: int = Query(default=20, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -87,6 +91,19 @@ def list_workspace_transactions(
             ReadTxProjection.to_account_name.ilike(pattern),
             ReadTxProjection.tags_csv.ilike(pattern),
         ))
+    # 金额范围 — 跟 mobile search_page 对齐,按 abs(amount) 过滤(expense 是
+    # 正值存储,但用户视觉上看到的也是正数,直接比较 amount 即可。如果未来
+    # 改成 signed 存储再调整)。
+    if amount_min is not None:
+        query = query.where(ReadTxProjection.amount >= amount_min)
+    if amount_max is not None:
+        query = query.where(ReadTxProjection.amount <= amount_max)
+    # 日期范围 — happened_at 是 UTC 存储,前端传 ISO datetime 即可;
+    # date_from 含,date_to 不含(独占,匹配 mobile "<endOfDay" 半开区间习惯)。
+    if date_from is not None:
+        query = query.where(ReadTxProjection.happened_at >= date_from)
+    if date_to is not None:
+        query = query.where(ReadTxProjection.happened_at < date_to)
 
     total = int(db.scalar(
         select(func.count()).select_from(query.subquery())
@@ -295,6 +312,12 @@ def list_workspace_accounts(
                     ledger_name=led_name,
                     created_by_user_id=None,
                     created_by_email=None,
+                    note=acct.note,
+                    credit_limit=acct.credit_limit,
+                    billing_day=acct.billing_day,
+                    payment_due_day=acct.payment_due_day,
+                    bank_name=acct.bank_name,
+                    card_last_four=acct.card_last_four,
                     tx_count=tx_count,
                     income_total=income_total,
                     expense_total=expense_total,
@@ -376,6 +399,28 @@ def list_workspace_categories(
     if q:
         cat_query = cat_query.where(ReadCategoryProjection.name.ilike(f"%{q}%"))
 
+    # tx_count 聚合:按 (ledger_id, category_sync_id) 数 ReadTxProjection 行。
+    # category_sync_id 在 tx projection 上可空(转账类交易没分类),NULL 用单独
+    # 桶不计入。这里用 sync_id 全局聚合(不区分 ledger)是因为前端 dedup 时
+    # 同 syncId 跨账本会合并展示,统计一并合并跟 dedup 一致。
+    from collections import defaultdict
+    tx_count_by_sync_id: dict[str, int] = defaultdict(int)
+    tx_count_rows = db.execute(
+        select(
+            ReadTxProjection.category_sync_id,
+            func.count(),
+        )
+        .where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.category_sync_id.is_not(None),
+        )
+        .group_by(ReadTxProjection.category_sync_id)
+    ).all()
+    for row in tx_count_rows:
+        sid = row[0]
+        if sid:
+            tx_count_by_sync_id[sid] += int(row[1] or 0)
+
     cat_rows: list[tuple[str, WorkspaceCategoryOut]] = []
     for cat in db.scalars(cat_query).all():
         name = (cat.name or "").strip()
@@ -406,6 +451,7 @@ def list_workspace_categories(
                     ledger_name=led_name,
                     created_by_user_id=None,
                     created_by_email=None,
+                    tx_count=tx_count_by_sync_id.get(sync_id, 0) if sync_id else 0,
                 ),
             )
         )

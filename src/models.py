@@ -338,6 +338,15 @@ class ReadAccountProjection(Base):
     account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
     initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 跟 mobile lib/data/db.dart Account 表对齐的扩展字段。mobile sync_engine
+    # 一直在 push 这些字段,server 之前丢弃 — 现在 round-trip 全保留,这样 web
+    # 编辑也能完整保存。
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
