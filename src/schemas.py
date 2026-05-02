@@ -756,3 +756,134 @@ class AttachmentBatchExistsRequest(BaseModel):
 
 class AttachmentBatchExistsResponse(BaseModel):
     items: list[AttachmentExistsItem] = Field(default_factory=list)
+
+
+# ============================================================================
+# Backup schemas — Web UI 写入 / 读取请求和响应。详见 .docs/backup-rclone-plan.md
+# ============================================================================
+
+
+class BackupRemoteCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")
+    backend_type: str = Field(min_length=1, max_length=32)
+    # rclone 配置字段(类型不同而异):s3 用 access_key_id/secret_access_key/...;
+    # gdrive 用 client_id/client_secret/token。server 不在此校验具体字段,直接
+    # 交给 rclone — 写完后立刻调 `rclone lsd <name>:` 测连通性,失败回写
+    # last_test_error。
+    config: dict[str, str] = Field(default_factory=dict)
+    # 是否对 backup tarball 做 age passphrase 加密。开启时 age_passphrase 必填
+    # (一旦丢失,该 remote 上的所有备份永久不可恢复)。
+    encrypted: bool = False
+    age_passphrase: str | None = None
+
+
+class BackupRemoteUpdateRequest(BaseModel):
+    config: dict[str, str] | None = None
+    age_passphrase: str | None = None
+    # 用户在编辑时切换 encrypted 状态(开/关) — 必须能持久化。
+    encrypted: bool | None = None
+
+
+class BackupRemoteOut(BaseModel):
+    id: int
+    name: str
+    backend_type: str
+    encrypted: bool
+    config_summary: dict | None = None
+    last_test_at: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_error: str | None = None
+    created_at: datetime
+
+
+class BackupRemoteTestResponse(BaseModel):
+    ok: bool
+    error: str | None = None
+    listing: list[str] | None = None
+
+
+class BackupScheduleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    cron_expr: str = Field(min_length=1, max_length=64)
+    retention_days: int = Field(ge=1, le=3650, default=30)
+    include_attachments: bool = True
+    enabled: bool = True
+    remote_ids: list[int] = Field(min_length=1)
+
+
+class BackupScheduleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    cron_expr: str | None = Field(default=None, min_length=1, max_length=64)
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+    include_attachments: bool | None = None
+    enabled: bool | None = None
+    remote_ids: list[int] | None = None
+
+
+class BackupScheduleOut(BaseModel):
+    id: int
+    name: str
+    cron_expr: str
+    retention_days: int
+    include_attachments: bool
+    enabled: bool
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    remote_ids: list[int] = Field(default_factory=list)
+    created_at: datetime
+
+
+class BackupRunTargetOut(BaseModel):
+    id: int
+    remote_id: int
+    remote_name: str | None = None
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    bytes_transferred: int | None = None
+    error_message: str | None = None
+
+
+class BackupRunOut(BaseModel):
+    id: int
+    schedule_id: int | None = None
+    schedule_name: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: str
+    backup_filename: str | None = None
+    bytes_total: int | None = None
+    error_message: str | None = None
+    log_text: str | None = None
+    targets: list[BackupRunTargetOut] = Field(default_factory=list)
+
+
+class BackupRunListOut(BaseModel):
+    items: list[BackupRunOut]
+    total: int
+
+
+# ============================================================================
+# Restore schemas (PR3 用)
+# ============================================================================
+
+
+class BackupRestoreOut(BaseModel):
+    """`<DATA_DIR>/restore/<run_id>/status.json` 的读视图。"""
+
+    run_id: int
+    phase: str  # 'downloading' / 'extracting' / 'done' / 'failed'
+    started_at: datetime
+    finished_at: datetime | None = None
+    bytes_total: int | None = None
+    bytes_downloaded: int | None = None
+    error_message: str | None = None
+    extracted_path: str | None = None
+    source_remote_id: int | None = None
+    source_remote_name: str | None = None
+    backup_filename: str | None = None
+
+
+class BackupRestoreListOut(BaseModel):
+    items: list[BackupRestoreOut]

@@ -23,6 +23,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
+from .routers import admin_backup
 from .websocket_manager import WSConnectionManager
 
 # 日志配置提前 —— stdout handler 必须在 ensure_admin() 之前就绪,
@@ -103,6 +104,11 @@ app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["aut
 app.include_router(devices.router, prefix=f"{settings.api_prefix}/devices", tags=["devices"])
 app.include_router(sync.router, prefix=f"{settings.api_prefix}/sync", tags=["sync"])
 app.include_router(admin.router, prefix=f"{settings.api_prefix}/admin", tags=["admin"])
+app.include_router(
+    admin_backup.router,
+    prefix=f"{settings.api_prefix}/admin/backup",
+    tags=["admin-backup"],
+)
 app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["read"])
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
@@ -132,3 +138,47 @@ if _static_dir.exists():
         if _index_file.exists():
             return FileResponse(_index_file)
         raise HTTPException(status_code=404, detail="Web console not found")
+
+
+# ============================================================================
+# Backup scheduler — startup 装载,shutdown 关停。lifespan 接口避免
+# on_event 的 deprecation warning。
+# ============================================================================
+
+
+@app.on_event("startup")
+async def _start_backup_scheduler() -> None:  # noqa: B008
+    import asyncio
+    from .services.backup.scheduler import get_scheduler
+
+    # 让 admin_backup.run-now 的 thread 能用 run_coroutine_threadsafe 把 WS
+    # broadcast 推回主 loop。
+    app.state.main_loop = asyncio.get_running_loop()
+
+    scheduler = get_scheduler()
+
+    def _ws_progress(user_id: str, event: dict) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                app.state.ws_manager.broadcast_to_user(user_id, event),
+                app.state.main_loop,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("scheduled backup WS push failed")
+
+    scheduler.on_progress(_ws_progress)
+    try:
+        scheduler.start_from_db()
+    except Exception:
+        # APScheduler 未安装(test env),或 DB 还没建表 — 不阻塞启动
+        logging.getLogger(__name__).warning("backup scheduler did not start", exc_info=True)
+
+
+@app.on_event("shutdown")
+async def _stop_backup_scheduler() -> None:  # noqa: B008
+    try:
+        from .services.backup.scheduler import get_scheduler
+
+        get_scheduler().shutdown()
+    except Exception:
+        logging.getLogger(__name__).exception("scheduler shutdown failed")

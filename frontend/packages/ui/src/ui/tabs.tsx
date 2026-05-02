@@ -26,8 +26,10 @@ export function TabsTrigger({ className, active = false, ...props }: TabsTrigger
   return (
     <button
       className={cn(
-        'inline-flex items-center rounded-sm px-3 py-1.5 text-sm font-medium transition-colors',
-        active ? 'bg-card text-card-foreground shadow-sm' : 'hover:bg-accent/40',
+        'inline-flex items-center rounded-sm px-3 py-1.5 text-sm transition-all',
+        active
+          ? 'bg-primary text-primary-foreground font-semibold shadow-md'
+          : 'font-medium text-muted-foreground hover:bg-accent/40 hover:text-foreground',
         className
       )}
       {...props}

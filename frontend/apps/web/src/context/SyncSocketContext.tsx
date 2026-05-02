@@ -26,6 +26,14 @@ export type SyncEventKind =
   | 'profile_change'
   | 'sync_change'
   | 'backup_restore'
+  /** 备份运行中的进度事件,字段:phase / bytesTransferred / bytesTotal /
+   *  speed / remoteId / remoteName。由 admin_backup.run-now 后台线程或
+   *  scheduler 触发推送。 */
+  | 'backup_progress'
+  /** 备份终态事件,字段:status='succeeded'/'partial'/'failed'。 */
+  | 'backup_status'
+  /** restore 阶段进度,字段:phase='downloading'/'extracting'/'done'/'failed'。 */
+  | 'restore_progress'
   /** 本地 poller 拉到一批 change_envelope;payload.changes 是 envelope 数组 */
   | 'sync_change_batch'
   /** 订阅"任何 server 事件",原始 payload 透传 */

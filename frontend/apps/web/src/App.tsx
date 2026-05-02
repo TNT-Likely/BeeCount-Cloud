@@ -9,6 +9,7 @@ import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
 import { TransactionsPage } from './pages/sections/TransactionsPage'
 import { AccountsPage } from './pages/sections/AccountsPage'
+import { AdminBackupPage } from './pages/sections/AdminBackupPage'
 import { AdminUsersPage } from './pages/sections/AdminUsersPage'
 import { BudgetsPage } from './pages/sections/BudgetsPage'
 import { CategoriesPage } from './pages/sections/CategoriesPage'
@@ -138,6 +139,7 @@ function AppRoutes() {
         <Route path="categories" element={<CategoriesPage />} />
         <Route path="tags" element={<TagsPage />} />
         <Route path="admin/users" element={<AdminUsersPage />} />
+        <Route path="admin/backup" element={<AdminBackupPage />} />
         <Route path="settings/profile" element={<SettingsProfilePage />} />
         <Route path="settings/appearance" element={<SettingsProfilePage />} />
         <Route path="settings/ai" element={<SettingsAiPage />} />

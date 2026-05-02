@@ -33,10 +33,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 系统依赖：tzdata 用于时区，curl 用于 HEALTHCHECK（比起 Python urllib 更省事）
+# 系统依赖:
+#  - tzdata: 时区数据
+#  - curl: HEALTHCHECK 用(比 Python urllib 省事)
+#  - rclone: 备份模块用,subprocess 调用推数据到对象存储。
+#    Debian 12 仓库版本 1.60.x,S3/R2/WebDAV/B2/GDrive/OneDrive 全支持。
+# 注:age 加密走 pyrage Python binding(见 requirements.txt),不需要装
+# age CLI。用户灾难恢复在自己机器装 age 即可。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     curl \
+    rclone \
     && rm -rf /var/lib/apt/lists/*
 
 # 先装 Python 依赖（单独一层，改业务代码时不用重装）
@@ -69,7 +76,10 @@ ENV APP_ENV=production \
 # 记下版本号便于排查
 RUN echo "${VERSION}" > /app/VERSION
 
-# 默认时区（docker run 可通过 -e TZ=... 覆盖）
+# 默认时区(docker run 可通过 -e TZ=... 覆盖)。
+# APScheduler 通过 tzlocal 自动从 TZ env 读取,镜像里 tzdata 已装,
+# "0 4 * * *" 在容器本地 4 点触发。如 tzlocal 极少数情况失效(自定义
+# minimal base),可显式设置 SCHEDULER_TIMEZONE=<IANA TZ> 兜底。
 ENV TZ=Asia/Shanghai
 
 EXPOSE 8080

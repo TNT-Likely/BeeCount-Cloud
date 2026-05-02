@@ -23,7 +23,8 @@ export const APP_SECTIONS: AppSection[] = [
   'settings-ai',
   'settings-health',
   'settings-devices',
-  'admin-users'
+  'admin-users',
+  'admin-backup'
 ]
 
 export const DEFAULT_APP_SECTION: AppSection = 'transactions'
@@ -148,7 +149,9 @@ export function parseRoute(pathname: string): AppRoute {
     return { kind: 'app', ledgerId: '', section: parseWorkspaceSection(parts.slice(2)) }
   }
   if (parts[1] === 'admin') {
-    return { kind: 'app', ledgerId: '', section: parts[2] === 'users' ? 'admin-users' : DEFAULT_APP_SECTION }
+    if (parts[2] === 'users') return { kind: 'app', ledgerId: '', section: 'admin-users' }
+    if (parts[2] === 'backup') return { kind: 'app', ledgerId: '', section: 'admin-backup' }
+    return { kind: 'app', ledgerId: '', section: DEFAULT_APP_SECTION }
   }
   if (parts[1] === 'settings') {
     return { kind: 'app', ledgerId: '', section: parseSettingsSection(parts.slice(2)) }
@@ -203,5 +206,7 @@ export function routePath(route: AppRoute): string {
       return '/app/settings/devices'
     case 'admin-users':
       return '/app/admin/users'
+    case 'admin-backup':
+      return '/app/admin/backup'
   }
 }

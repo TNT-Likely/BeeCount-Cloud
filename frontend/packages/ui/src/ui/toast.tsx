@@ -99,12 +99,14 @@ function ToastView({ item, onDismiss }: { item: ToastItem; onDismiss: () => void
     <div
       role={item.variant === 'error' ? 'alert' : 'status'}
       className={cn(
+        // 不透明 — 之前 dark 用 /40 alpha 让背景透出来,在深色 UI 上文字
+        // 跟下层内容混在一起难看 + 在浅色截图上更糟。改成全不透明。
         'pointer-events-auto animate-in slide-in-from-right-4 rounded-md border px-4 py-3 shadow-lg',
         'bg-card text-card-foreground',
-        item.variant === 'success' && 'border-emerald-500/60 bg-emerald-50 text-emerald-950 dark:border-emerald-400/60 dark:bg-emerald-950/40 dark:text-emerald-50',
-        item.variant === 'error' && 'border-red-500/60 bg-red-50 text-red-950 dark:border-red-400/60 dark:bg-red-950/40 dark:text-red-50',
-        item.variant === 'warning' && 'border-amber-500/60 bg-amber-50 text-amber-950 dark:border-amber-400/60 dark:bg-amber-950/40 dark:text-amber-50',
-        item.variant === 'info' && 'border-blue-500/60 bg-blue-50 text-blue-950 dark:border-blue-400/60 dark:bg-blue-950/40 dark:text-blue-50'
+        item.variant === 'success' && 'border-emerald-500/60 bg-emerald-50 text-emerald-950 dark:border-emerald-400/60 dark:bg-emerald-900 dark:text-emerald-50',
+        item.variant === 'error' && 'border-red-500/60 bg-red-50 text-red-950 dark:border-red-400/60 dark:bg-red-900 dark:text-red-50',
+        item.variant === 'warning' && 'border-amber-500/60 bg-amber-50 text-amber-950 dark:border-amber-400/60 dark:bg-amber-900 dark:text-amber-50',
+        item.variant === 'info' && 'border-blue-500/60 bg-blue-50 text-blue-950 dark:border-blue-400/60 dark:bg-blue-900 dark:text-blue-50'
       )}
     >
       <div className="flex items-start gap-2">

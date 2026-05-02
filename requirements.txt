@@ -9,6 +9,16 @@ email-validator>=2.2.0
 passlib>=1.7.4
 PyJWT>=2.9.0
 python-multipart>=0.0.9
+# APScheduler: in-process 定时任务调度器,backup 模块用 BackgroundScheduler
+# 跑每日备份。BackgroundScheduler 用线程池,避免 rclone subprocess 长任务
+# 阻塞 FastAPI 事件循环。
+apscheduler>=3.10.4
+# pyzipper: AES-256 加密 zip(WinZip AES extension)。stdlib zipfile
+# 只支持破掉的 ZipCrypto,不安全。pyzipper 是 stdlib zipfile 的 drop-in
+# 子类,加密/解密 API 完全一致。
+# macOS Archive Utility / Keka / 7-Zip / The Unarchiver / WinRAR 都
+# 原生支持,用户双击 → 弹密码框 → 解压。
+pyzipper>=0.3.6
 pytest>=8.3.2
 httpx>=0.27.0
 ruff>=0.5.5

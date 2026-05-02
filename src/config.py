@@ -26,6 +26,24 @@ class Settings(BaseSettings):
     backup_max_upload_bytes: int = 64 * 1024 * 1024
     attachment_storage_dir: str = "./data/attachments"
     attachment_max_upload_bytes: int = 64 * 1024 * 1024
+
+    # ===== rclone 备份模块 =====
+    # rclone.conf 路径(权限 0600,只 server 进程读写)。默认放在 DATA_DIR
+    # 同级,跟 backup volume 一起被备份覆盖外部脚本时也能保留。
+    rclone_config_path: str = "./data/rclone.conf"
+    # rclone 二进制路径,Docker 镜像里 apt 装的会在 /usr/bin/rclone。
+    rclone_binary: str = "rclone"
+    # 备份打包 + 还原解压的临时区。需要 ≥ 2x DATA_DIR 大小。
+    backup_staging_dir: str = "./data/backup-staging"
+    # 还原(restore)隔离目录 —— 服务端只往这写,绝不动 live data。
+    restore_dir: str = "./data/restore"
+    # 调度器开关。测试和某些命令行场景关掉避免后台 thread 干扰。
+    backup_scheduler_enabled: bool = Field(default=True, alias="BACKUP_SCHEDULER_ENABLED")
+    # 调度器时区(影响 cron 解释)。空 = 走 tzlocal(读 TZ env 或 /etc/localtime)。
+    # 显式设置 IANA 时区名(如 'Asia/Shanghai')可绕开 tzlocal 失效坑 — 容器
+    # 没装 tzdata 时 tzlocal 会静默 fallback UTC,"0 4 * * *" 就在 UTC 4 点
+    # 跑(不是用户期望的本地 4 点)。
+    scheduler_timezone: str = Field(default="", alias="SCHEDULER_TIMEZONE")
     device_online_window_minutes: int = 10
     allow_app_rw_scopes: bool = True
 

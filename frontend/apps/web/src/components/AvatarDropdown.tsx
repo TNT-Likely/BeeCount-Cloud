@@ -123,6 +123,12 @@ export function AvatarDropdown({
               >
                 {t('nav.users')}
               </MenuButton>
+              <MenuButton
+                active={currentSection === 'admin-backup'}
+                onClick={() => onNavigate('admin-backup')}
+              >
+                {t('nav.backup')}
+              </MenuButton>
             </>
           ) : null}
 
