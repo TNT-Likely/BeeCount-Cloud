@@ -1,5 +1,5 @@
 import { MoreHorizontal, ScrollText } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import {
@@ -21,6 +21,7 @@ import {
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
+import { AnnualReportLauncher } from '../components/dashboard/AnnualReportEntry'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
 import { parseRoute, routePath } from '../state/router'
@@ -47,6 +48,7 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
   const location = useLocation()
   const { profileMe, isAdmin, logout } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
+  const [annualReportOpen, setAnnualReportOpen] = useState(false)
 
   const currentSection: AppSection = useMemo(() => {
     const parsed = parseRoute(location.pathname)
@@ -218,6 +220,7 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
                 onNavigate={goToSection}
                 onLogout={logout}
                 onOpenChangelog={onOpenChangelog}
+                onOpenAnnualReport={() => setAnnualReportOpen(true)}
               />
             ) : null}
           </div>
@@ -240,6 +243,7 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
           </div>
         ) : null}
       </header>
+      <AnnualReportLauncher open={annualReportOpen} onClose={() => setAnnualReportOpen(false)} />
     </div>
   )
 }

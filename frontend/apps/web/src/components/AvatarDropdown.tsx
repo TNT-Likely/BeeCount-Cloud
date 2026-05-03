@@ -1,4 +1,4 @@
-import { LogOut } from 'lucide-react'
+import { LogOut, Sparkles } from 'lucide-react'
 
 import type { AppSection, NavItem } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
@@ -31,6 +31,7 @@ interface Props {
   onNavigate: (section: AppSection) => void
   onLogout: () => void
   onOpenChangelog: () => void
+  onOpenAnnualReport: () => void
 }
 
 export function AvatarDropdown({
@@ -41,6 +42,7 @@ export function AvatarDropdown({
   onNavigate,
   onLogout,
   onOpenChangelog,
+  onOpenAnnualReport,
 }: Props) {
   const t = useT()
 
@@ -83,7 +85,7 @@ export function AvatarDropdown({
           </div>
           <div className="mx-1 h-px bg-border/60" />
 
-          {/* Tools 组:预算 + 账本。访问频率低,不进顶部 nav */}
+          {/* Tools 组:预算 + 账本 + 年度报告。访问频率低,不进顶部 nav */}
           <GroupLabel>{t('nav.group.tools')}</GroupLabel>
           <MenuButton
             active={currentSection === 'budgets'}
@@ -97,6 +99,14 @@ export function AvatarDropdown({
           >
             {t('nav.ledgers')}
           </MenuButton>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+            onClick={onOpenAnnualReport}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {t('nav.annualReport')}
+          </button>
 
           <Divider />
 
