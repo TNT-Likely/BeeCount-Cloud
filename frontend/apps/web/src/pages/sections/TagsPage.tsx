@@ -19,6 +19,7 @@ import {
 } from '@beecount/web-features'
 
 import { TagDetailDialog } from '../../components/dialogs/TagDetailDialog'
+import { onOpenDetailTag } from '../../lib/txDialogEvents'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -155,6 +156,24 @@ export function TagsPage() {
     setDetailOffset(0)
   }
 
+  const openDetail = useCallback(
+    (row: ReadTag) => {
+      setDetail(row)
+      setDetailTx([])
+      setDetailTotal(0)
+      setDetailOffset(0)
+      void loadDetailPage(row.id, 0)
+    },
+    [loadDetailPage],
+  )
+
+  // CommandPalette 派发的「打开标签详情」事件
+  useEffect(() => {
+    return onOpenDetailTag((tag) => {
+      openDetail(tag)
+    })
+  }, [openDetail])
+
   return (
     <>
       <TagsPanel
@@ -187,13 +206,7 @@ export function TagsPage() {
           }
           setPendingDelete({ id: row.id, name: row.name })
         }}
-        onClickTag={(row) => {
-          setDetail(row)
-          setDetailTx([])
-          setDetailTotal(0)
-          setDetailOffset(0)
-          void loadDetailPage(row.id, 0)
-        }}
+        onClickTag={openDetail}
       />
       <TagDetailDialog
         tag={detail}

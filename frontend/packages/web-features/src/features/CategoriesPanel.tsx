@@ -424,6 +424,10 @@ type CategoriesPanelProps = {
   onDelete?: (row: ReadCategory) => void
   /** Upload a custom icon file to the cloud and return the refs to store in the form. */
   onUploadIcon?: (file: File) => Promise<{ fileId: string; sha256: string } | null>
+  /** 受控 dialog 开关 — 让外层(如详情弹窗 → 编辑链)能命令式打开本 panel
+   *  的编辑 dialog。不传时 panel 内部用 state 自己管;传了就 controlled。 */
+  dialogOpen?: boolean
+  onDialogOpenChange?: (next: boolean) => void
 }
 
 /**
@@ -453,10 +457,17 @@ export function CategoriesPanel({
   onReset,
   onEdit,
   onDelete,
-  onUploadIcon
+  onUploadIcon,
+  dialogOpen,
+  onDialogOpenChange
 }: CategoriesPanelProps) {
   const t = useT()
-  const [open, setOpen] = useState(false)
+  const [internalOpen, setInternalOpen] = useState(false)
+  const open = dialogOpen ?? internalOpen
+  const setOpen = (next: boolean) => {
+    if (onDialogOpenChange) onDialogOpenChange(next)
+    else setInternalOpen(next)
+  }
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
   const [parentPickerOpen, setParentPickerOpen] = useState(false)
   const [duplicateError, setDuplicateError] = useState<string | null>(null)

@@ -1,7 +1,30 @@
-import { LogOut, Sparkles } from 'lucide-react'
+import {
+  Activity,
+  Archive,
+  BookOpen,
+  Bot,
+  Github,
+  LogOut,
+  ScrollText,
+  Smartphone,
+  Sparkles,
+  User,
+  Users,
+  Wallet,
+  type LucideIcon,
+} from 'lucide-react'
 
 import type { AppSection, NavItem } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
+
+// Settings 子项的 key → icon 映射。avatarMenuItems 动态传入,根据 item.key
+// 反查对应 icon。新增 settings 子页时在这里加一行即可。
+const SETTINGS_ICONS: Record<string, LucideIcon> = {
+  'settings-profile': User,
+  'settings-ai': Bot,
+  'settings-health': Activity,
+  'settings-devices': Smartphone,
+}
 
 /**
  * 头像悬浮下拉菜单 —— 从 AppPage.tsx 抽出独立组件。
@@ -46,7 +69,6 @@ export function AvatarDropdown({
 }: Props) {
   const t = useT()
 
-  const displayName = profileMe.display_name || t('shell.userDefault')
   const avatarSrc = withAvatarCacheBust(profileMe.avatar_url, profileMe.avatar_version)
 
   return (
@@ -74,39 +96,48 @@ export function AvatarDropdown({
       {/* 悬浮面板 —— 默认透明不接收指针,hover/focus 状态打开 */}
       <div className="invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
         <div className="rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
-          {/* 头部:用户身份 */}
-          <div className="px-2 py-2">
-            <div className="truncate text-[13px] font-semibold text-foreground">
-              {displayName}
-            </div>
-            <div className="truncate text-[11px] font-normal text-muted-foreground">
+          {/* 头部:角色标识 + email。display_name 跟 email 重复已删;
+              admin/user 用 ShieldCheck/UserRound 区分 + tooltip 显示完整角色名。 */}
+          <div className="flex items-center gap-1.5 px-2 py-2">
+            <span
+              className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted-foreground"
+              title={profileMe.email}
+            >
               {profileMe.email}
-            </div>
+            </span>
+            <span
+              className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold leading-none ${
+                isAdminUser
+                  ? 'bg-primary/15 text-primary'
+                  : 'bg-muted text-muted-foreground'
+              }`}
+            >
+              {isAdminUser
+                ? t('enum.platformRole.admin')
+                : t('enum.platformRole.user')}
+            </span>
           </div>
           <div className="mx-1 h-px bg-border/60" />
 
           {/* Tools 组:预算 + 账本 + 年度报告。访问频率低,不进顶部 nav */}
           <GroupLabel>{t('nav.group.tools')}</GroupLabel>
           <MenuButton
+            icon={Wallet}
             active={currentSection === 'budgets'}
             onClick={() => onNavigate('budgets')}
           >
             {t('nav.budgets')}
           </MenuButton>
           <MenuButton
+            icon={BookOpen}
             active={currentSection === 'ledgers'}
             onClick={() => onNavigate('ledgers')}
           >
             {t('nav.ledgers')}
           </MenuButton>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
-            onClick={onOpenAnnualReport}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
+          <MenuButton icon={Sparkles} onClick={onOpenAnnualReport}>
             {t('nav.annualReport')}
-          </button>
+          </MenuButton>
 
           <Divider />
 
@@ -115,6 +146,7 @@ export function AvatarDropdown({
           {avatarMenuItems.map((item) => (
             <MenuButton
               key={item.key}
+              icon={SETTINGS_ICONS[item.key]}
               active={currentSection === item.key}
               onClick={() => onNavigate(item.key)}
             >
@@ -128,12 +160,14 @@ export function AvatarDropdown({
               <Divider />
               <GroupLabel>{t('nav.group.admin')}</GroupLabel>
               <MenuButton
+                icon={Users}
                 active={currentSection === 'admin-users'}
                 onClick={() => onNavigate('admin-users')}
               >
                 {t('nav.users')}
               </MenuButton>
               <MenuButton
+                icon={Archive}
                 active={currentSection === 'admin-backup'}
                 onClick={() => onNavigate('admin-backup')}
               >
@@ -145,15 +179,16 @@ export function AvatarDropdown({
           {/* Info 组:更新日志 / GitHub */}
           <Divider />
           <GroupLabel>{t('avatar.group.info')}</GroupLabel>
-          <MenuButton onClick={onOpenChangelog}>
+          <MenuButton icon={ScrollText} onClick={onOpenChangelog}>
             {t('avatar.changelog')}
           </MenuButton>
           <a
-            className="block rounded-lg px-2.5 py-2 text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+            className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
             href="https://github.com/TNT-Likely/BeeCount-Cloud"
             target="_blank"
             rel="noopener noreferrer"
           >
+            <Github className="h-3.5 w-3.5" />
             {t('avatar.github')}
           </a>
 
@@ -208,22 +243,26 @@ function MenuButton({
   children,
   active,
   onClick,
+  icon: Icon,
 }: {
   children: React.ReactNode
   active?: boolean
   onClick: () => void
+  /** lucide-react icon 组件,统一 14px(h-3.5 w-3.5) */
+  icon?: LucideIcon
 }) {
   return (
     <button
       type="button"
-      className={`block w-full rounded-lg px-2.5 py-2 text-left text-[12px] ${
+      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] ${
         active
           ? 'bg-primary/10 text-primary'
           : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
       }`}
       onClick={onClick}
     >
-      {children}
+      {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" /> : null}
+      <span className="flex-1 truncate">{children}</span>
     </button>
   )
 }

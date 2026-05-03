@@ -86,7 +86,10 @@ import {
   type TxForm
 } from '@beecount/web-features'
 
+import { TransactionDetailDialog } from '../../components/dialogs/TransactionDetailDialog'
+import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { localizeError } from '../../i18n/errors'
+import { onOpenDetailTx, onOpenEditTx, onOpenNewTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 
@@ -381,13 +384,20 @@ export function TransactionsPage() {
   // 行(panel 自己不再渲染按钮 + dialog state)。编辑流程通过 onEdit 回调
   // 设 form 后 page 这里 setOpen(true)。
   const [txDialogOpen, setTxDialogOpen] = useState(false)
+  // 交易详情弹窗(只读 + Edit/Delete 入口)。点列表行 / CommandPalette 选中
+  // 交易 都触发它,而非直接进编辑弹窗 — 让用户先看完整信息再决定操作。
+  const [txDetail, setTxDetail] = useState<WorkspaceTransaction | null>(null)
   // accountForm state 已迁到 AccountsPage。
   // categoryForm state 已迁到 CategoriesPage。
   // tagForm state 已迁到 TagsPage。
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
 
   // adminCreate* 表单状态已迁到 AdminUsersPage。
-  const [categoryIconPreviewByFileId, setCategoryIconPreviewByFileId] = useState<Record<string, string>>({})
+  // 分类自定义图标的预览 URL 走全局 AttachmentCache(跟 CategoriesPage /
+  // BudgetsPage 共享),避免每次进入交易页都重新拉一遍 → 之前的视觉「闪现」
+  // 是因为本地 state 每次进页面都从 {} 起步,所有图标都要再跑一次 fetch。
+  const { previewMap: categoryIconPreviewByFileId, ensureLoadedMany: ensureIconsLoaded } =
+    useAttachmentCache()
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewState>({
     open: false,
     attachments: [],
@@ -1200,29 +1210,13 @@ export function TransactionsPage() {
     }
   }
 
+  // ensureCategoryIconPreview 已合并到全局 AttachmentCache.ensureLoadedMany 里,
+  // 不再每个页面手动维护 inflight 去重。下面这个 noop 只是为了向下兼容
+  // 保留旧调用点签名(其中一个 attachment 预览 fallback 还会调到)。
   const ensureCategoryIconPreview = async (fileId: string) => {
     const normalized = fileId.trim()
     if (!normalized) return
-    if (categoryIconPreviewByFileId[normalized]) return
-    try {
-      const response = await downloadAttachment(token, normalized)
-      if (!isPreviewableImage(response.mimeType, response.fileName)) {
-        return
-      }
-      const nextUrl = URL.createObjectURL(response.blob)
-      setCategoryIconPreviewByFileId((prev) => {
-        if (prev[normalized]) {
-          URL.revokeObjectURL(nextUrl)
-          return prev
-        }
-        return {
-          ...prev,
-          [normalized]: nextUrl
-        }
-      })
-    } catch {
-      // Keep category rendering non-blocking when icon file is unavailable.
-    }
+    ensureIconsLoaded([normalized])
   }
 
   const onUpdateLedgerMeta = async () => {
@@ -1429,9 +1423,9 @@ export function TransactionsPage() {
   }
 
   useEffect(() => {
-    // 分类页(iconGrid)+ 交易页(tx list 每行图标)+ 预算页(BudgetsSection
-    // CategoryIcon)都依赖 categoryIconPreviewByFileId,缺哪个都会退化成空白
-    // 方块。只按需预热,避免 user 一开 app 就扫全量云文件。
+    // 把当前 categories 里所有 cloud icon fileId 一次性扔给全局 cache 预热。
+    // ensureLoadedMany 内部去重 + dedupe inflight,重复调用零开销。
+    // 这样切换 section 时图标不会"闪一下" — 切回来时 previewMap 还在。
     const sectionsNeedingIcons: Array<typeof route.section> = [
       'categories',
       'transactions',
@@ -1439,17 +1433,61 @@ export function TransactionsPage() {
       'overview'
     ]
     if (!sectionsNeedingIcons.includes(route.section)) return
-    const missingFileIds = categories
+    const ids = categories
       .map((row) => row.icon_cloud_file_id || '')
       .filter((value) => value.trim().length > 0)
-      .filter((value, index, arr) => arr.indexOf(value) === index)
-      .filter((value) => !categoryIconPreviewByFileId[value])
-    if (missingFileIds.length === 0) return
-    for (const fileId of missingFileIds) {
-      void ensureCategoryIconPreview(fileId)
+    if (ids.length > 0) ensureIconsLoaded(ids)
+  }, [route.section, categories, ensureIconsLoaded])
+
+  // CommandPalette 触发的「新建 / 编辑交易」事件 — 命令式打开弹窗,
+  // 不依赖 URL 参数(因为 form 状态用 query string 表达不优雅)。
+  useEffect(() => {
+    const offNew = onOpenNewTx(() => {
+      setTxForm(txDefaults())
+      if (
+        activeLedgerId &&
+        txWriteLedgerOptions.some((option) => option.ledger_id === activeLedgerId)
+      ) {
+        setTxWriteLedgerId(activeLedgerId)
+      } else {
+        setTxWriteLedgerId(txWriteLedgerOptions[0]?.ledger_id || '')
+      }
+      setTxDialogOpen(true)
+    })
+    const offDetail = onOpenDetailTx((tx) => {
+      setTxDetail(tx)
+    })
+    const offEdit = onOpenEditTx((tx) => {
+      setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
+      setTxForm({
+        editingId: tx.id,
+        editingOwnerUserId: tx.created_by_user_id || '',
+        tx_type: tx.tx_type,
+        amount: String(tx.amount),
+        happened_at: tx.happened_at,
+        note: tx.note || '',
+        category_name: tx.category_name || '',
+        category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
+        account_name: tx.account_name || '',
+        from_account_name: tx.from_account_name || '',
+        to_account_name: tx.to_account_name || '',
+        tags:
+          tx.tags_list && tx.tags_list.length > 0
+            ? tx.tags_list
+            : (tx.tags || '')
+                .split(',')
+                .map((value) => value.trim())
+                .filter((value) => value.length > 0),
+        attachments: normalizeAttachmentRefs(tx.attachments),
+      })
+      setTxDialogOpen(true)
+    })
+    return () => {
+      offNew()
+      offEdit()
+      offDetail()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.section, categories, categoryIconPreviewByFileId, token])
+  }, [activeLedgerId, txWriteLedgerOptions])
 
   useEffect(() => {
     return () => {
@@ -1593,6 +1631,10 @@ export function TransactionsPage() {
                     ledgerId: row.ledger_id || txWriteLedgerId || activeLedgerId || ''
                   })
                 }
+                onSelect={(row) => {
+                  // ReadTransaction → WorkspaceTransaction(workspace 是 read 的扩展)
+                  setTxDetail(row as WorkspaceTransaction)
+                }}
               />
             </div>
           ) : null}
@@ -1946,6 +1988,39 @@ export function TransactionsPage() {
         confirmText={t('dialog.delete.confirm')}
         onCancel={() => setPendingDelete(null)}
         onConfirm={onConfirmDelete}
+      />
+
+      <TransactionDetailDialog
+        tx={txDetail}
+        canManage={canWriteTx}
+        onClose={() => setTxDetail(null)}
+        onEdit={(tx) => {
+          // 详情 → 编辑:关掉详情弹窗,把 form 填上 tx 数据,开编辑弹窗
+          setTxDetail(null)
+          setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
+          setTxForm({
+            editingId: tx.id,
+            editingOwnerUserId: tx.created_by_user_id || '',
+            tx_type: tx.tx_type,
+            amount: String(tx.amount),
+            happened_at: tx.happened_at,
+            note: tx.note || '',
+            category_name: tx.category_name || '',
+            category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
+            account_name: tx.account_name || '',
+            from_account_name: tx.from_account_name || '',
+            to_account_name: tx.to_account_name || '',
+            tags:
+              tx.tags_list && tx.tags_list.length > 0
+                ? tx.tags_list
+                : (tx.tags || '')
+                    .split(',')
+                    .map((value) => value.trim())
+                    .filter((value) => value.length > 0),
+            attachments: normalizeAttachmentRefs(tx.attachments),
+          })
+          setTxDialogOpen(true)
+        }}
       />
 
       {/* LogsDialog / ChangelogDialog / MobileBottomNav / AppLayout / header 全部迁到 AppShell。 */}

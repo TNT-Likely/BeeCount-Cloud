@@ -21,6 +21,7 @@ import {
 } from '@beecount/web-features'
 
 import { AccountDetailDialog } from '../../components/dialogs/AccountDetailDialog'
+import { onOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
@@ -59,6 +60,8 @@ export function AccountsPage() {
   const [deleting, setDeleting] = useState(false)
 
   const [detail, setDetail] = useState<ReadAccount | null>(null)
+  // 把"打开账户详情"的逻辑提到 useCallback 里,既给本页 onClickAccount 用,
+  // 也给 CommandPalette 派发的事件用。复用 = 行为一致 + 维护单点。
   const [detailTx, setDetailTx] = useState<WorkspaceTransaction[]>([])
   const [detailTotal, setDetailTotal] = useState(0)
   const [detailOffset, setDetailOffset] = useState(0)
@@ -209,6 +212,24 @@ export function AccountsPage() {
     setDetailOffset(0)
   }
 
+  const openDetail = useCallback(
+    (row: ReadAccount) => {
+      setDetail(row)
+      setDetailTx([])
+      setDetailTotal(0)
+      setDetailOffset(0)
+      void loadDetailPage(row.name, 0)
+    },
+    [loadDetailPage],
+  )
+
+  // 监听 CommandPalette 派发的「打开账户详情」事件
+  useEffect(() => {
+    return onOpenDetailAccount((account) => {
+      openDetail(account)
+    })
+  }, [openDetail])
+
   // 删除流程:点删除按钮 → 弹 ConfirmDialog,dialog 里根据 tx_count 决定文案。
   // 跟 mobile account_edit_page._delete 对齐:有交易则警示总条数 + 红色按钮。
   const onConfirmDelete = async () => {
@@ -266,13 +287,7 @@ export function AccountsPage() {
             card_last_four: row.card_last_four ?? '',
           })
         }}
-        onClickAccount={(row) => {
-          setDetail(row)
-          setDetailTx([])
-          setDetailTotal(0)
-          setDetailOffset(0)
-          void loadDetailPage(row.name, 0)
-        }}
+        onClickAccount={openDetail}
         onDelete={(row) => {
           // 严格策略:有关联交易直接拒绝,不弹"是否强制删除"。先要求用户在
           // 详情页/交易页把这些交易改/删/迁走,账户回到 0 笔再来删。比 mobile

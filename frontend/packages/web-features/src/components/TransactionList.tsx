@@ -34,6 +34,8 @@ interface Props {
    *  prop 是为了避免旧调用点报类型错误，内部不再消费。 */
   resolveAttachmentPreviewUrl?: (ref: AttachmentRef) => Promise<string | null>
   onClickTag?: (tagName: string) => void
+  /** 行整体点击 → 打开详情弹窗。透传给 TransactionRow。 */
+  onSelect?: (row: ReadTransaction) => void
   /** 外层列表 wrapper className，比如弹窗里加 max-h + overflow-y-auto。 */
   className?: string
   emptyTitle?: string
@@ -62,6 +64,7 @@ export function TransactionList({
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
   onClickTag,
+  onSelect,
   className,
   emptyTitle,
   emptyDescription
@@ -127,6 +130,7 @@ export function TransactionList({
                 canManage={canManage}
                 onPreviewAttachment={onPreviewAttachment}
                 onClickTag={onClickTag}
+                onSelect={onSelect}
               />
             </li>
           ))}

@@ -1,5 +1,5 @@
-import { MoreHorizontal, ScrollText } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { MoreHorizontal, ScrollText, Search } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import {
@@ -21,6 +21,7 @@ import {
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
+import { CommandPalette } from '../components/CommandPalette'
 import { AnnualReportLauncher } from '../components/dashboard/AnnualReportEntry'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
@@ -49,6 +50,23 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
   const { profileMe, isAdmin, logout } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
   const [annualReportOpen, setAnnualReportOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // Cmd+K (Mac) / Ctrl+K (其他) 打开命令面板
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+        return
+      }
+      if (e.key === 'Escape' && paletteOpen) {
+        setPaletteOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [paletteOpen])
 
   const currentSection: AppSection = useMemo(() => {
     const parsed = parseRoute(location.pathname)
@@ -81,21 +99,23 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
   }
 
   return (
-    <div className="sticky top-0 z-50 px-4 pb-2 pt-3 md:px-6 md:pt-4">
-      <header className="card px-3 md:px-5">
-        <div className="flex h-14 items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+    <div className="sticky top-0 z-50 px-2 pb-2 pt-3 md:px-6 md:pt-4">
+      <header className="card px-2 md:px-5">
+        <div className="flex h-14 items-center justify-between gap-2 md:gap-3">
+          <div className="flex min-w-0 items-center gap-1.5 md:gap-2.5">
             <button
               type="button"
               onClick={() => goToSection('overview')}
-              className="flex items-center gap-2.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex items-center gap-1.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-2.5"
               aria-label={t('shell.goHome')}
             >
-              <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
-              <div className="flex flex-col leading-tight md:flex-row md:items-baseline md:gap-1.5">
-                <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
+              <img alt={t('shell.appName')} className="h-7 w-7 shrink-0 md:h-8 md:w-8" src="/branding/logo.svg" />
+              <div className="flex flex-col leading-none md:flex-row md:items-baseline md:gap-1.5 md:leading-tight">
+                <p className="whitespace-nowrap text-[13px] font-bold text-foreground md:text-[15px]">
+                  {t('shell.appName')}
+                </p>
                 <span
-                  className="font-mono text-[10px] text-muted-foreground/70"
+                  className="mt-0.5 font-mono text-[9px] text-muted-foreground/70 md:mt-0 md:text-[10px]"
                   title={`BeeCount Cloud v${__APP_VERSION__}`}
                 >
                   v{__APP_VERSION__}
@@ -192,14 +212,36 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
             ) : null}
           </nav>
 
-          <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
+          <div className="flex shrink-0 items-center gap-0 rounded-2xl border border-border/40 bg-accent/20 px-0.5 py-0.5 md:gap-2 md:px-2 md:py-1">
+            <button
+              type="button"
+              title={t('cmdk.headerButton')}
+              aria-label={t('cmdk.headerButton')}
+              onClick={() => setPaletteOpen(true)}
+              className="hidden h-9 items-center gap-2 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary md:flex"
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span>{t('cmdk.headerButton')}</span>
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+                {navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl+K'}
+              </kbd>
+            </button>
+            <button
+              type="button"
+              title={t('cmdk.headerButton')}
+              aria-label={t('cmdk.headerButton')}
+              onClick={() => setPaletteOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:h-9 md:w-9 md:hidden"
+            >
+              <Search className="h-4 w-4" />
+            </button>
             {isAdmin ? (
               <button
                 type="button"
                 title={t('logs.open')}
                 aria-label={t('logs.open')}
                 onClick={onOpenLogs}
-                className="flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
+                className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:h-9 md:w-9"
               >
                 <ScrollText className="h-4 w-4" />
               </button>
@@ -244,6 +286,11 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
         ) : null}
       </header>
       <AnnualReportLauncher open={annualReportOpen} onClose={() => setAnnualReportOpen(false)} />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onOpenAnnualReport={() => setAnnualReportOpen(true)}
+      />
     </div>
   )
 }

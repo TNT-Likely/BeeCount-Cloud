@@ -6,6 +6,7 @@ import {
   fetchAdminUsers,
   fetchProfileMe,
   fetchReadLedgers,
+  fetchWorkspaceCategories,
   type ProfileMe,
   type ReadLedger,
 } from '@beecount/api-client'
@@ -15,7 +16,7 @@ import type { AppSection } from '@beecount/web-features'
 import { ChangelogDialog } from '../components/ChangelogDialog'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
-import { AttachmentCacheProvider } from '../context/AttachmentCacheContext'
+import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
 import { AuthProvider } from '../context/AuthContext'
 import { LedgersProvider } from '../context/LedgersContext'
 import { PageDataCacheProvider } from '../context/PageDataCacheContext'
@@ -196,6 +197,7 @@ export function AppShell({ token, onLogout }: Props) {
         <SyncSocketProvider>
         <PageDataCacheProvider>
         <AttachmentCacheProvider>
+        <CategoryIconPrefetcher token={token} />
         <AppShellSyncReactor
           refreshLedgers={refreshLedgers}
           refreshProfile={refreshProfile}
@@ -230,6 +232,38 @@ export function AppShell({ token, onLogout }: Props) {
 function applyIncomeColorScheme(incomeIsRed: boolean) {
   if (typeof document === 'undefined') return
   document.documentElement.dataset.incomeColor = incomeIsRed ? 'red' : 'green'
+}
+
+/**
+ * 在 AppShell 挂载时一次性预热所有分类自定义图标 — 拉一次 categories,
+ * 把所有 cloud icon fileId 灌给 AttachmentCache,让任何后续 page(交易页 /
+ * 分类页 / 预算页 / 概览页)进入时图标已经在内存里,**消除"晚出来"闪烁**。
+ *
+ * AttachmentCache.ensureLoadedMany 内部:
+ *   - 去重:同一 fileId 只 fetch 一次
+ *   - dedupe inflight:并发 N 个相同 fileId 只走 1 个网络请求
+ *   - 已加载就立即 noop
+ * 所以这里调一次 = 全局预热,跟 page 内重复调用零冲突。
+ */
+function CategoryIconPrefetcher({ token }: { token: string }) {
+  const { ensureLoadedMany } = useAttachmentCache()
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    fetchWorkspaceCategories(token, { limit: 500 })
+      .then((rows) => {
+        if (cancelled) return
+        const ids = rows
+          .map((row) => (row.icon_cloud_file_id || '').trim())
+          .filter((value) => value.length > 0)
+        if (ids.length > 0) ensureLoadedMany(ids)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [token, ensureLoadedMany])
+  return null
 }
 
 /**

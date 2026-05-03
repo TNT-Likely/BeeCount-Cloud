@@ -599,12 +599,33 @@ def delete_category(snapshot: dict, category_id: str, payload: dict | None = Non
     _assert_actor_can_modify(category, payload or {})
     old_name = str(category.get("name") or "").strip()
     old_kind = str(category.get("kind") or "").strip()
-    categories.pop(idx)
+    # 严格策略(跟 AccountsPage / mobile 对齐):有子分类或关联交易时拒绝删除,
+    # 要求用户先迁移这些数据。比"允许删除并 orphan"安全 — 避免误删导致一堆
+    # 无主交易污染 ledger。前端也有同款拦截,这里是兜底服务端校验防止旧客户
+    # 端 / 直接 API 调用绕过。
     if old_name and old_kind:
-        for tx in _ensure_list(target, "items"):
-            if tx.get("categoryName") == old_name and tx.get("categoryKind") == old_kind:
-                tx.pop("categoryName", None)
-                tx.pop("categoryKind", None)
+        child_count = sum(
+            1
+            for row in categories
+            if str(row.get("syncId") or "") != category_id
+            and str(row.get("parentName") or "").strip() == old_name
+            and str(row.get("kind") or "").strip() == old_kind
+        )
+        if child_count > 0:
+            raise ValueError(
+                f"write validation failed: category has {child_count} child categories"
+            )
+        tx_count = sum(
+            1
+            for tx in _ensure_list(target, "items")
+            if tx.get("categoryName") == old_name
+            and tx.get("categoryKind") == old_kind
+        )
+        if tx_count > 0:
+            raise ValueError(
+                f"write validation failed: category has {tx_count} transactions"
+            )
+    categories.pop(idx)
     return target
 
 

@@ -72,6 +72,8 @@ type TransactionsPanelProps = {
   iconPreviewUrlByFileId?: Record<string, string>
   onEdit: (row: ReadTransaction) => void
   onDelete: (row: ReadTransaction) => void
+  /** 行整体点击 → 打开详情弹窗。如果不传则点行无效果(保留兼容性)。 */
+  onSelect?: (row: ReadTransaction) => void
 }
 
 type AttachmentCarouselCellProps = {
@@ -240,7 +242,8 @@ export function TransactionsPanel({
   resolveAttachmentPreviewUrl,
   iconPreviewUrlByFileId,
   onEdit,
-  onDelete
+  onDelete,
+  onSelect
 }: TransactionsPanelProps) {
   const t = useT()
   const open = dialogOpen
@@ -340,6 +343,7 @@ export function TransactionsPanel({
             setOpen(true)
           }}
           onDelete={onDelete}
+          onSelect={onSelect}
           onPreviewAttachment={onPreviewAttachment}
           resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
         />

@@ -4,10 +4,14 @@ import {
   createCategory,
   deleteCategory,
   fetchWorkspaceCategories,
+  fetchWorkspaceTags,
+  fetchWorkspaceTransactions,
   updateCategory,
   uploadAttachment,
   type ReadCategory,
   type WorkspaceCategory,
+  type WorkspaceTag,
+  type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
 import {
@@ -18,6 +22,8 @@ import {
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../../app/useLedgerWrite'
+import { CategoryDetailDialog } from '../../components/dialogs/CategoryDetailDialog'
+import { onOpenDetailCategory } from '../../lib/txDialogEvents'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -44,6 +50,20 @@ export function CategoriesPage() {
   const [rows, setRows] = usePageCache<WorkspaceCategory[]>('categories:rows', [])
   const [form, setForm] = useState<CategoryForm>(categoryDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
+  // 编辑 dialog 受控开关 — CategoriesPanel 行编辑、CategoryDetailDialog 联动
+  // 编辑都通过这个 state 触发;由 panel 内部 onCreate/onEdit 也会切到 true。
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+
+  // 分类详情弹窗 — 跟 AccountDetailDialog / TagDetailDialog 模式对齐:
+  // 选中分类 → 顶部展示分类信息 + 该分类下交易列表 + 底部 Edit/Delete
+  const [detail, setDetail] = useState<WorkspaceCategory | null>(null)
+  const [detailTx, setDetailTx] = useState<WorkspaceTransaction[]>([])
+  const [detailTotal, setDetailTotal] = useState(0)
+  const [detailOffset, setDetailOffset] = useState(0)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailTags, setDetailTags] = useState<WorkspaceTag[]>([])
+
+  const CATEGORY_DETAIL_PAGE_SIZE = 50
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -122,6 +142,74 @@ export function CategoriesPage() {
     }
   }
 
+  const loadDetailPage = useCallback(
+    async (categorySyncId: string, offset: number) => {
+      setDetailLoading(true)
+      try {
+        const page = await fetchWorkspaceTransactions(token, {
+          categorySyncId,
+          limit: CATEGORY_DETAIL_PAGE_SIZE,
+          offset,
+        })
+        setDetailTx((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
+        setDetailTotal(page.total)
+        setDetailOffset(offset + page.items.length)
+      } catch (err) {
+        notifyError(err)
+      } finally {
+        setDetailLoading(false)
+      }
+    },
+    [token, notifyError],
+  )
+
+  const openDetail = useCallback(
+    (row: WorkspaceCategory) => {
+      setDetail(row)
+      setDetailTx([])
+      setDetailTotal(0)
+      setDetailOffset(0)
+      void loadDetailPage(row.id, 0)
+      // 加载 tag 颜色字典(detail 弹窗内交易行渲染 tag chip 用)
+      fetchWorkspaceTags(token, { limit: 500 })
+        .then(setDetailTags)
+        .catch(() => undefined)
+    },
+    [loadDetailPage, token],
+  )
+
+  const closeDetail = () => {
+    setDetail(null)
+    setDetailTx([])
+    setDetailTotal(0)
+    setDetailOffset(0)
+  }
+
+  const enterEdit = useCallback((row: ReadCategory) => {
+    setForm({
+      editingId: row.id,
+      editingOwnerUserId: row.created_by_user_id || '',
+      name: row.name,
+      kind: row.kind,
+      level: String(row.level ?? ''),
+      sort_order: String(row.sort_order ?? ''),
+      icon: row.icon || '',
+      icon_type: row.icon_type || 'material',
+      custom_icon_path: row.custom_icon_path || '',
+      icon_cloud_file_id: row.icon_cloud_file_id || '',
+      icon_cloud_sha256: row.icon_cloud_sha256 || '',
+      parent_name: row.parent_name || '',
+    })
+    setEditDialogOpen(true)
+  }, [])
+
+  // CommandPalette 派发的「打开分类详情」事件 → 详情弹窗(非直接编辑)
+  useEffect(() => {
+    return onOpenDetailCategory((row) => {
+      openDetail(row)
+    })
+  }, [openDetail])
+
   const confirmDelete = async () => {
     if (!pendingDelete || !activeLedgerId) return
     try {
@@ -146,27 +234,48 @@ export function CategoriesPage() {
         iconPreviewUrlByFileId={iconPreviewByFileId}
         txCountById={txCountById}
         canManage
+        dialogOpen={editDialogOpen}
+        onDialogOpenChange={setEditDialogOpen}
         onFormChange={setForm}
         onCreate={() => setForm(categoryDefaults())}
         onSave={onSave}
         onReset={() => setForm(categoryDefaults())}
-        onEdit={(row) => {
-          setForm({
-            editingId: row.id,
-            editingOwnerUserId: row.created_by_user_id || '',
-            name: row.name,
-            kind: row.kind,
-            level: String(row.level ?? ''),
-            sort_order: String(row.sort_order ?? ''),
-            icon: row.icon || '',
-            icon_type: row.icon_type || 'material',
-            custom_icon_path: row.custom_icon_path || '',
-            icon_cloud_file_id: row.icon_cloud_file_id || '',
-            icon_cloud_sha256: row.icon_cloud_sha256 || '',
-            parent_name: row.parent_name || '',
-          })
+        onEdit={enterEdit}
+        onDelete={(row) => {
+          // 跟 mobile + AccountsPage 对齐:有关联交易 / 子分类 → 拒删,要求
+          // 用户先迁移这些数据。比"允许删除并 orphan 子分类/交易"更严格。
+          const ws =
+            (rows.find((r) => r.id === row.id) as WorkspaceCategory | undefined) ||
+            (row as WorkspaceCategory)
+          const txCount = ws.tx_count ?? 0
+          if (txCount > 0) {
+            toast.error(
+              t('categories.delete.blockedByTransactions', {
+                name: ws.name,
+                count: txCount,
+              }),
+              t('notice.error'),
+            )
+            return
+          }
+          const childCount = rows.filter(
+            (r) =>
+              r.id !== ws.id &&
+              r.parent_name === ws.name &&
+              r.kind === ws.kind,
+          ).length
+          if (childCount > 0) {
+            toast.error(
+              t('categories.delete.blockedByChildren', {
+                name: ws.name,
+                count: childCount,
+              }),
+              t('notice.error'),
+            )
+            return
+          }
+          setPendingDelete({ id: ws.id, name: ws.name })
         }}
-        onDelete={(row) => setPendingDelete({ id: row.id, name: row.name })}
         onUploadIcon={async (file) => {
           if (!activeLedgerId) {
             toast.error(t('accounts.error.ledgerRequired'), t('notice.error'))
@@ -193,6 +302,21 @@ export function CategoriesPage() {
         cancelText={t('confirm.cancel')}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
+      />
+      <CategoryDetailDialog
+        category={detail}
+        transactions={detailTx}
+        total={detailTotal}
+        offset={detailOffset}
+        loading={detailLoading}
+        tags={detailTags}
+        iconPreviewUrlByFileId={iconPreviewByFileId}
+        onClose={closeDetail}
+        onLoadMore={(syncId, offset) => void loadDetailPage(syncId, offset)}
+        onEdit={(row) => {
+          closeDetail()
+          enterEdit(row)
+        }}
       />
     </>
   )

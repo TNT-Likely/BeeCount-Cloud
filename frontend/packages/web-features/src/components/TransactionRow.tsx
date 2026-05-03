@@ -27,6 +27,9 @@ type CommonProps = {
   ) => Promise<void>
   /** 点标签可以 emit 让外层打开标签详情弹窗或过滤。 */
   onClickTag?: (tagName: string) => void
+  /** 行整体点击(空白处)→ 打开详情弹窗。Edit / Delete / Tag / Attachment
+   *  按钮已 stopPropagation,不会触发本回调。 */
+  onSelect?: (row: ReadTransaction) => void
   /** 额外的 className，外层可以加边距 / 分隔线。 */
   className?: string
 }
@@ -51,6 +54,7 @@ export function TransactionRow({
   canManage = true,
   onPreviewAttachment,
   onClickTag,
+  onSelect,
   className
 }: CommonProps) {
   const t = useT()
@@ -84,9 +88,24 @@ export function TransactionRow({
 
   return (
     <div
+      onClick={onSelect ? () => onSelect(row) : undefined}
+      role={onSelect ? 'button' : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={
+        onSelect
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelect(row)
+              }
+            }
+          : undefined
+      }
       className={`group relative flex items-start gap-3 py-2.5 ${
         isCompact ? 'px-3' : 'px-4'
-      } transition-colors hover:bg-accent/30 ${className || ''}`}
+      } transition-colors hover:bg-accent/30 ${
+        onSelect ? 'cursor-pointer' : ''
+      } ${className || ''}`}
     >
       <div className="min-w-0 flex-1">
         {/* 标题行:左 分类图标 + 分类名 · 备注;右 hover 动作 + 金额。类型徽章
