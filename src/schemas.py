@@ -136,6 +136,77 @@ class AuthTokenResponse(BaseModel):
     scopes: list[str] = Field(default_factory=list)
 
 
+class AuthLoginResponse(BaseModel):
+    """统一登录响应:requires_2fa=False 时直接是 token,True 时返回 challenge。
+
+    设计思路:为了兼容老 App / 老 Web 客户端(只读 access_token 等字段),
+    所有字段都做成 Optional;新客户端先看 requires_2fa 字段决定走哪条分支。
+    """
+
+    requires_2fa: bool = False
+
+    # 2FA 未启用 / 已通过验证时填这些(等价老 AuthTokenResponse):
+    user: UserOut | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    expires_in: int | None = None
+    device_id: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+
+    # 2FA 启用且未通过验证时填这些:
+    challenge_token: str | None = None
+    available_methods: list[str] = Field(default_factory=list)
+
+
+class TwoFASetupResponse(BaseModel):
+    """启用 2FA 第一步:server 生成 secret,客户端拿去画 QR / 手输。"""
+
+    secret: str  # base32,Web 端可手动输入到 authenticator
+    qr_code_uri: str  # otpauth://...,Web 端用 qrcode 库渲染成图片
+    expires_in: int = 300  # 5 分钟内未 confirm 则 secret 仍可被覆盖重来
+
+
+class TwoFAConfirmRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=8)  # 允许带空格
+
+
+class TwoFAConfirmResponse(BaseModel):
+    enabled: bool
+    recovery_codes: list[str]  # 仅在这一刻明文返回,服务器只存 sha256
+
+
+class TwoFAStatusResponse(BaseModel):
+    enabled: bool
+    enabled_at: datetime | None = None
+
+
+class TwoFAVerifyRequest(BaseModel):
+    challenge_token: str
+    method: Literal["totp", "recovery_code"] = "totp"
+    code: str
+    # 登录时这些跟 login 一致,verify 通过后调 _issue_tokens 用
+    device_id: str | None = None
+    device_name: str | None = None
+    platform: str | None = None
+    app_version: str | None = None
+    os_version: str | None = None
+    device_model: str | None = None
+    client_type: Literal["app", "web"] = "app"
+
+
+class TwoFADisableRequest(BaseModel):
+    password: str
+    code: str  # TOTP 6 位码,确认本人操作
+
+
+class TwoFARegenerateRequest(BaseModel):
+    code: str  # 当前 TOTP 6 位码
+
+
+class TwoFARegenerateResponse(BaseModel):
+    recovery_codes: list[str]
+
+
 class DeviceOut(BaseModel):
     id: str
     name: str

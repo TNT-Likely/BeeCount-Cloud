@@ -23,7 +23,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
-from .routers import admin_backup
+from .routers import admin_backup, two_factor
 from .websocket_manager import WSConnectionManager
 
 # 日志配置提前 —— stdout handler 必须在 ensure_admin() 之前就绪,
@@ -101,6 +101,11 @@ def prometheus_metrics() -> str:
 
 
 app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["auth"])
+app.include_router(
+    two_factor.router,
+    prefix=f"{settings.api_prefix}/auth/2fa",
+    tags=["2fa"],
+)
 app.include_router(devices.router, prefix=f"{settings.api_prefix}/devices", tags=["devices"])
 app.include_router(sync.router, prefix=f"{settings.api_prefix}/sync", tags=["sync"])
 app.include_router(admin.router, prefix=f"{settings.api_prefix}/admin", tags=["admin"])

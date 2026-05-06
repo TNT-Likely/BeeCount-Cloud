@@ -1,6 +1,12 @@
 import { FormEvent, useState } from 'react'
 
-import { ApiError, login } from '@beecount/api-client'
+import {
+  ApiError,
+  detectWebClientInfo,
+  getStoredDeviceId,
+  login,
+  verifyTwoFA
+} from '@beecount/api-client'
 import {
   Alert,
   AlertDescription,
@@ -18,20 +24,37 @@ type LoginPageProps = {
   onLoggedIn: (token: string) => void
 }
 
+type ChallengeState = {
+  challenge_token: string
+  available_methods: Array<'totp' | 'recovery_code'>
+}
+
 export function LoginPage({ onLoggedIn }: LoginPageProps) {
   const t = useT()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState<{ type: 'default' | 'destructive'; title: string; message: string } | null>(null)
+  const [challenge, setChallenge] = useState<ChallengeState | null>(null)
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
     setLoading(true)
     try {
       const data = await login(email, password)
-      onLoggedIn(data.access_token)
-      setNotice(null)
+      if (data.requires_2fa && data.challenge_token) {
+        // 切到 2FA 输码视图,留住表单内容(用户失败重试时不必重输邮密)
+        setChallenge({
+          challenge_token: data.challenge_token,
+          available_methods: data.available_methods || ['totp', 'recovery_code']
+        })
+        setNotice(null)
+        return
+      }
+      if (data.access_token) {
+        onLoggedIn(data.access_token)
+        setNotice(null)
+      }
     } catch (err) {
       const message = localizeError(err, t)
       if (err instanceof ApiError && err.code === 'AUTH_INVALID_CREDENTIALS') {
@@ -140,31 +163,44 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
                 <h2 className="mt-2 text-2xl font-bold">{t('login.title')}</h2>
               </div>
 
-              <form className="space-y-4" onSubmit={onSubmit}>
-                <div className="space-y-1.5">
-                  <Label htmlFor="login-email">{t('login.email')}</Label>
-                  <Input
-                    id="login-email"
-                    autoComplete="email"
-                    placeholder="owner@example.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="login-password">{t('login.password')}</Label>
-                  <Input
-                    id="login-password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                </div>
-                <Button className="w-full" type="submit" disabled={loading}>
-                  {loading ? '…' : t('login.submit')}
-                </Button>
-              </form>
+              {challenge ? (
+                <TwoFactorChallengeView
+                  challenge={challenge}
+                  onCancel={() => {
+                    setChallenge(null)
+                    setNotice(null)
+                  }}
+                  onVerified={(accessToken) => {
+                    onLoggedIn(accessToken)
+                  }}
+                />
+              ) : (
+                <form className="space-y-4" onSubmit={onSubmit}>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="login-email">{t('login.email')}</Label>
+                    <Input
+                      id="login-email"
+                      autoComplete="email"
+                      placeholder="owner@example.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="login-password">{t('login.password')}</Label>
+                    <Input
+                      id="login-password"
+                      type="password"
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </div>
+                  <Button className="w-full" type="submit" disabled={loading}>
+                    {loading ? '…' : t('login.submit')}
+                  </Button>
+                </form>
+              )}
 
               {notice && (
                 <Alert className="mt-4" variant={notice.type}>
@@ -177,5 +213,114 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * 2FA challenge view - login 拿到 requires_2fa=true 后切到这个表单。
+ *
+ * 倒计时:5 分钟从 challenge_token 签发起算;到点提示用户重新登录(后端的
+ * challenge_token 实际 exp 也是 5 分钟,这里只是 UI 提示,过期后 verify 会
+ * 抛 401,我们 fallback 让用户重 login)。
+ */
+function TwoFactorChallengeView({
+  challenge,
+  onCancel,
+  onVerified
+}: {
+  challenge: ChallengeState
+  onCancel: () => void
+  onVerified: (accessToken: string) => void
+}) {
+  const t = useT()
+  const [method, setMethod] = useState<'totp' | 'recovery_code'>('totp')
+  const [code, setCode] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const onSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setLoading(true)
+    setErr(null)
+    try {
+      const data = await verifyTwoFA({
+        challenge_token: challenge.challenge_token,
+        method,
+        code: code.trim().replace(/\s+/g, ''),
+        device_id: getStoredDeviceId(),
+        client_info: detectWebClientInfo()
+      })
+      if (data.access_token) {
+        onVerified(data.access_token)
+      }
+    } catch (e) {
+      const message = e instanceof ApiError ? e.message : String(e)
+      setErr(message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <form className="space-y-4" onSubmit={onSubmit}>
+      <div className="space-y-1.5">
+        <Label>{t('login.twofa.method')}</Label>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={method === 'totp' ? 'default' : 'outline'}
+            onClick={() => {
+              setMethod('totp')
+              setCode('')
+            }}
+          >
+            {t('login.twofa.methodTotp')}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={method === 'recovery_code' ? 'default' : 'outline'}
+            onClick={() => {
+              setMethod('recovery_code')
+              setCode('')
+            }}
+          >
+            {t('login.twofa.methodRecovery')}
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="login-2fa-code">
+          {method === 'totp' ? t('login.twofa.totpLabel') : t('login.twofa.recoveryLabel')}
+        </Label>
+        <Input
+          id="login-2fa-code"
+          inputMode={method === 'totp' ? 'numeric' : 'text'}
+          autoComplete="one-time-code"
+          maxLength={method === 'totp' ? 6 : 16}
+          placeholder={method === 'totp' ? '000000' : 'xxxx-xxxx'}
+          value={code}
+          onChange={(e) =>
+            setCode(method === 'totp' ? e.target.value.replace(/\D/g, '') : e.target.value)
+          }
+          autoFocus
+        />
+      </div>
+      {err && <p className="text-sm text-destructive">{err}</p>}
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" onClick={onCancel} className="flex-1">
+          {t('common.cancel')}
+        </Button>
+        <Button
+          type="submit"
+          disabled={loading || (method === 'totp' ? code.length !== 6 : code.length < 6)}
+          className="flex-1"
+        >
+          {loading ? '…' : t('login.twofa.submit')}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">{t('login.twofa.hint')}</p>
+    </form>
   )
 }

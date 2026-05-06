@@ -6,8 +6,10 @@ const DEVICE_ID_KEY = `beecount.web.device_id.${API_BASE}`
 const REFRESH_TOKEN_KEY = `beecount.refresh_token.${API_BASE}`
 const USER_ID_KEY = `beecount.user_id.${API_BASE}`
 
-function persistSession(payload: LoginResponse): void {
+/** 持久化登录会话。2FA challenge 阶段不持久化(payload.requires_2fa=true)。 */
+export function persistSession(payload: LoginResponse): void {
   if (typeof window === 'undefined') return
+  if (payload.requires_2fa) return
   if (payload.device_id) {
     window.localStorage.setItem(DEVICE_ID_KEY, payload.device_id)
   }
@@ -45,7 +47,7 @@ export function clearStoredSession(): void {
 }
 
 /** 解析 UA,给 server 一个可读的浏览器 + OS 标识,设备管理页才能区分 web 多端。 */
-function detectWebClientInfo(): {
+export function detectWebClientInfo(): {
   app_version: string | undefined
   os_version: string
   device_model: string
@@ -144,5 +146,10 @@ export async function refreshAuth(): Promise<string> {
   }
   const payload = (await res.json()) as LoginResponse
   persistSession(payload)
+  // refresh 路径不会触发 2FA challenge(refresh_token 本身就代表已通过验证),
+  // 所以 access_token 必然有值。
+  if (!payload.access_token) {
+    throw new Error('refresh response missing access_token')
+  }
   return payload.access_token
 }

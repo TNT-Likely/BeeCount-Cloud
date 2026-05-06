@@ -10,6 +10,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
+import { TwoFactorAuthSection } from './TwoFactorAuthSection'
 
 /**
  * 设置 - 账号 / 主题色 / 同步偏好(只读) section —— 从 AppPage.tsx 抽出。
@@ -55,6 +56,8 @@ export function SettingsProfileAppearanceSection() {
           </CardContent>
         </div>
       </Card>
+
+      <TwoFactorAuthSection />
 
       <Card className="bc-panel">
         <CardHeader>

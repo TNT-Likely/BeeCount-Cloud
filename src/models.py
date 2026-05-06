@@ -33,6 +33,33 @@ class User(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # 2FA(TOTP)。详见 .docs/2fa-design.md。
+    # null = 未启用 / 未 setup。totp_enabled=False 但 secret 不为空 = setup 流程
+    # 中途用户没 confirm,可以重新走 /setup 覆盖。
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_enabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class RecoveryCode(Base):
+    """2FA 一次性恢复码。启用 2FA 时一次生成 10 个,sha256 hash 存库。"""
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"

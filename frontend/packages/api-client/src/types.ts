@@ -1,10 +1,36 @@
 export type LoginResponse = {
-  access_token: string
-  refresh_token: string
+  /** 2FA 已启用且未验证时为 true,其余字段除 challenge_token / available_methods 外都 undefined */
+  requires_2fa?: boolean
+  // 2FA 未启用 / 已验证时填这些(后端 AuthLoginResponse 见 .docs/2fa-design.md):
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  device_id?: string
+  scopes?: string[]
+  user?: { id: string; email: string; is_admin?: boolean }
+  // 2FA 启用且未验证时填这些:
+  challenge_token?: string
+  available_methods?: Array<'totp' | 'recovery_code'>
+}
+
+export type TwoFASetupResponse = {
+  secret: string
+  qr_code_uri: string
   expires_in: number
-  device_id: string
-  scopes: string[]
-  user: { id: string; email: string; is_admin?: boolean }
+}
+
+export type TwoFAConfirmResponse = {
+  enabled: boolean
+  recovery_codes: string[]
+}
+
+export type TwoFAStatusResponse = {
+  enabled: boolean
+  enabled_at: string | null
+}
+
+export type TwoFARegenerateResponse = {
+  recovery_codes: string[]
 }
 
 export type ProfileAppearance = {

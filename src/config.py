@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # regresses in the field.
     strict_base_change_id: bool = Field(default=False, alias="STRICT_BASE_CHANGE_ID")
 
+    # ===== 2FA(TOTP)=====
+    # authenticator app 扫描 QR 后展示的"账号名"前缀。默认 "BeeCount",
+    # 自托管用户可以改成自己的品牌(如 "蜜蜂记账云" / "MyAcme")。
+    totp_issuer_name: str = Field(default="BeeCount", alias="TOTP_ISSUER_NAME")
+    # otpauth URI 上挂的 image= 参数,部分 authenticator app(Microsoft Authenticator
+    # 等)会取这个 URL 显示账号 logo。需要是公网可访问的 https PNG/SVG。
+    # 空字符串 = 不附加 image 参数。Google Authenticator 不支持这个参数。
+    # 推荐值:'https://<your-host>/branding/logo.png'
+    totp_image_url: str = Field(default="", alias="TOTP_IMAGE_URL")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

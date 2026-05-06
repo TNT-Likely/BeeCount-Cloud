@@ -15,6 +15,7 @@ from ..deps import get_current_user
 from ..models import Device, RefreshToken, User
 from ..schemas import (
     AuthLoginRequest,
+    AuthLoginResponse,
     AuthLogoutRequest,
     AuthRefreshRequest,
     AuthRegisterRequest,
@@ -26,6 +27,7 @@ from ..security import (
     SCOPE_OPS_WRITE,
     SCOPE_WEB_READ,
     SCOPE_WEB_WRITE,
+    create_2fa_challenge_token,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -213,12 +215,22 @@ def register(
     return token_response
 
 
-@router.post("/login", response_model=AuthTokenResponse)
+@router.post("/login", response_model=AuthLoginResponse)
 def login(
     req: AuthLoginRequest,
     request: Request,
     db: Session = Depends(get_db),
-) -> AuthTokenResponse:
+) -> AuthLoginResponse:
+    """密码登录。
+
+    返回结构 AuthLoginResponse 是统一形态:
+    - 用户未启用 2FA → requires_2fa=False,access_token / refresh_token 等正常字段
+    - 用户启用了 2FA → requires_2fa=True,只返回 challenge_token + available_methods,
+      客户端必须再调 POST /auth/2fa/verify 才能拿到真 token
+
+    老客户端(只读 access_token 字段不看 requires_2fa)在 2FA 关闭场景仍能正常工作;
+    用户一旦启用 2FA,App / Web 必须升级才能登录。详见 .docs/2fa-design.md。
+    """
     _apply_rate_limit(request, "login")
     email = _normalize_email(req.email)
     user = db.scalar(select(User).where(User.email == email))
@@ -226,6 +238,22 @@ def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User disabled")
+
+    # 已启用 2FA → 不发 token,改发 challenge,客户端走 /auth/2fa/verify
+    if user.totp_enabled:
+        challenge = create_2fa_challenge_token(
+            user.id,
+            client_type=req.client_type,
+        )
+        logger.info(
+            "auth.login.2fa_challenge user=%s client_type=%s",
+            user.id, req.client_type,
+        )
+        return AuthLoginResponse(
+            requires_2fa=True,
+            challenge_token=challenge,
+            available_methods=["totp", "recovery_code"],
+        )
 
     device = _upsert_device(
         db,
@@ -247,7 +275,15 @@ def login(
         req.platform,
         req.client_type,
     )
-    return token_response
+    return AuthLoginResponse(
+        requires_2fa=False,
+        user=token_response.user,
+        access_token=token_response.access_token,
+        refresh_token=token_response.refresh_token,
+        expires_in=token_response.expires_in,
+        device_id=token_response.device_id,
+        scopes=token_response.scopes,
+    )
 
 
 @router.post("/refresh", response_model=AuthTokenResponse)

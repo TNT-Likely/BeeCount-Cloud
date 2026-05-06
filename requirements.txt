@@ -19,6 +19,10 @@ apscheduler>=3.10.4
 # macOS Archive Utility / Keka / 7-Zip / The Unarchiver / WinRAR 都
 # 原生支持,用户双击 → 弹密码框 → 解压。
 pyzipper>=0.3.6
+# pyotp: RFC 6238 TOTP 实现,2FA 6 位码生成 / 校验。纯 Python 无系统依赖。
+pyotp>=2.9.0
+# cryptography: Fernet 对称加密,用 JWT_SECRET 派生 key 保护 totp_secret 落库。
+cryptography>=42.0.0
 pytest>=8.3.2
 httpx>=0.27.0
 ruff>=0.5.5
