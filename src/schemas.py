@@ -338,6 +338,32 @@ class AdminLogEntryOut(BaseModel):
     device_id: str | None = None
 
 
+class AdminIntegrityIssueSample(BaseModel):
+    """整体性扫描:单条 issue 样本(完整 list 可能很长,只回 5 条 spot check)"""
+
+    sync_id: str
+    label: str
+    extra: dict[str, Any] | None = None
+
+
+class AdminIntegrityIssue(BaseModel):
+    """单类问题在某 ledger 下的统计"""
+
+    issue_type: str  # "orphan_tx_category" | "orphan_tx_account" | ...
+    ledger_id: str
+    ledger_name: str | None
+    owner_email: str | None
+    count: int
+    samples: list[AdminIntegrityIssueSample]
+
+
+class AdminIntegrityScanOut(BaseModel):
+    scanned_at: datetime
+    ledgers_total: int
+    issues_total: int
+    issues: list[AdminIntegrityIssue]
+
+
 class AdminLogListOut(BaseModel):
     items: list[AdminLogEntryOut]
     capacity: int

@@ -86,10 +86,12 @@ import {
   type TxForm
 } from '@beecount/web-features'
 
-import { TransactionDetailDialog } from '../../components/dialogs/TransactionDetailDialog'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { localizeError } from '../../i18n/errors'
-import { onOpenDetailTx, onOpenEditTx, onOpenNewTx } from '../../lib/txDialogEvents'
+import {
+  dispatchOpenDetailTx,
+  onOpenNewTx,
+} from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 
@@ -384,9 +386,6 @@ export function TransactionsPage() {
   // 行(panel 自己不再渲染按钮 + dialog state)。编辑流程通过 onEdit 回调
   // 设 form 后 page 这里 setOpen(true)。
   const [txDialogOpen, setTxDialogOpen] = useState(false)
-  // 交易详情弹窗(只读 + Edit/Delete 入口)。点列表行 / CommandPalette 选中
-  // 交易 都触发它,而非直接进编辑弹窗 — 让用户先看完整信息再决定操作。
-  const [txDetail, setTxDetail] = useState<WorkspaceTransaction | null>(null)
   // accountForm state 已迁到 AccountsPage。
   // categoryForm state 已迁到 CategoriesPage。
   // tagForm state 已迁到 TagsPage。
@@ -1439,10 +1438,10 @@ export function TransactionsPage() {
     if (ids.length > 0) ensureIconsLoaded(ids)
   }, [route.section, categories, ensureIconsLoaded])
 
-  // CommandPalette 触发的「新建 / 编辑交易」事件 — 命令式打开弹窗,
-  // 不依赖 URL 参数(因为 form 状态用 query string 表达不优雅)。
+  // CommandPalette 触发「新建交易」时本页 setForm + 开 Dialog。
+  // 编辑事件已交给 GlobalEditDialogs 全局监听处理(详情→编辑链可在任何页面工作)。
   useEffect(() => {
-    const offNew = onOpenNewTx(() => {
+    return onOpenNewTx(() => {
       setTxForm(txDefaults())
       if (
         activeLedgerId &&
@@ -1454,39 +1453,6 @@ export function TransactionsPage() {
       }
       setTxDialogOpen(true)
     })
-    const offDetail = onOpenDetailTx((tx) => {
-      setTxDetail(tx)
-    })
-    const offEdit = onOpenEditTx((tx) => {
-      setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
-      setTxForm({
-        editingId: tx.id,
-        editingOwnerUserId: tx.created_by_user_id || '',
-        tx_type: tx.tx_type,
-        amount: String(tx.amount),
-        happened_at: tx.happened_at,
-        note: tx.note || '',
-        category_name: tx.category_name || '',
-        category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
-        account_name: tx.account_name || '',
-        from_account_name: tx.from_account_name || '',
-        to_account_name: tx.to_account_name || '',
-        tags:
-          tx.tags_list && tx.tags_list.length > 0
-            ? tx.tags_list
-            : (tx.tags || '')
-                .split(',')
-                .map((value) => value.trim())
-                .filter((value) => value.length > 0),
-        attachments: normalizeAttachmentRefs(tx.attachments),
-      })
-      setTxDialogOpen(true)
-    })
-    return () => {
-      offNew()
-      offEdit()
-      offDetail()
-    }
   }, [activeLedgerId, txWriteLedgerOptions])
 
   useEffect(() => {
@@ -1632,8 +1598,8 @@ export function TransactionsPage() {
                   })
                 }
                 onSelect={(row) => {
-                  // ReadTransaction → WorkspaceTransaction(workspace 是 read 的扩展)
-                  setTxDetail(row as WorkspaceTransaction)
+                  // 派发全局 detail 事件,弹窗由 GlobalEntityDialogs 渲染
+                  dispatchOpenDetailTx(row as WorkspaceTransaction)
                 }}
               />
             </div>
@@ -1990,38 +1956,9 @@ export function TransactionsPage() {
         onConfirm={onConfirmDelete}
       />
 
-      <TransactionDetailDialog
-        tx={txDetail}
-        canManage={canWriteTx}
-        onClose={() => setTxDetail(null)}
-        onEdit={(tx) => {
-          // 详情 → 编辑:关掉详情弹窗,把 form 填上 tx 数据,开编辑弹窗
-          setTxDetail(null)
-          setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
-          setTxForm({
-            editingId: tx.id,
-            editingOwnerUserId: tx.created_by_user_id || '',
-            tx_type: tx.tx_type,
-            amount: String(tx.amount),
-            happened_at: tx.happened_at,
-            note: tx.note || '',
-            category_name: tx.category_name || '',
-            category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
-            account_name: tx.account_name || '',
-            from_account_name: tx.from_account_name || '',
-            to_account_name: tx.to_account_name || '',
-            tags:
-              tx.tags_list && tx.tags_list.length > 0
-                ? tx.tags_list
-                : (tx.tags || '')
-                    .split(',')
-                    .map((value) => value.trim())
-                    .filter((value) => value.length > 0),
-            attachments: normalizeAttachmentRefs(tx.attachments),
-          })
-          setTxDialogOpen(true)
-        }}
-      />
+      {/* TransactionDetailDialog 已迁到 GlobalEntityDialogs(AppShell 层)
+          Edit 链路通过 dispatchOpenEditTx 事件由本页 useEffect 接管,
+          不需要在这里渲染弹窗 */}
 
       {/* LogsDialog / ChangelogDialog / MobileBottomNav / AppLayout / header 全部迁到 AppShell。 */}
     </>

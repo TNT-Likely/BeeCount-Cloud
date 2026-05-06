@@ -74,6 +74,7 @@ export async function fetchWorkspaceTransactions(
     q?: string
     txType?: string
     accountName?: string
+    txSyncId?: string
     tagSyncId?: string
     categorySyncId?: string
     accountSyncId?: string
@@ -95,6 +96,7 @@ export async function fetchWorkspaceTransactions(
   if (options?.q) query.set('q', options.q)
   if (options?.txType) query.set('tx_type', options.txType)
   if (options?.accountName) query.set('account_name', options.accountName)
+  if (options?.txSyncId) query.set('tx_sync_id', options.txSyncId)
   if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
   if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
   if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)

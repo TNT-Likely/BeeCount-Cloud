@@ -20,8 +20,7 @@ import {
   type AccountForm,
 } from '@beecount/web-features'
 
-import { AccountDetailDialog } from '../../components/dialogs/AccountDetailDialog'
-import { onOpenDetailAccount } from '../../lib/txDialogEvents'
+import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
@@ -59,13 +58,8 @@ export function AccountsPage() {
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const [detail, setDetail] = useState<ReadAccount | null>(null)
-  // 把"打开账户详情"的逻辑提到 useCallback 里,既给本页 onClickAccount 用,
-  // 也给 CommandPalette 派发的事件用。复用 = 行为一致 + 维护单点。
-  const [detailTx, setDetailTx] = useState<WorkspaceTransaction[]>([])
-  const [detailTotal, setDetailTotal] = useState(0)
-  const [detailOffset, setDetailOffset] = useState(0)
-  const [detailLoading, setDetailLoading] = useState(false)
+  // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
+  // dispatch openDetailAccount 事件,弹窗在全局渲染。
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -184,51 +178,6 @@ export function AccountsPage() {
     }
   }
 
-  const loadDetailPage = useCallback(
-    async (accountName: string, offset: number) => {
-      setDetailLoading(true)
-      try {
-        const page = await fetchWorkspaceTransactions(token, {
-          accountName,
-          limit: ACCOUNT_DETAIL_PAGE_SIZE,
-          offset,
-        })
-        setDetailTx((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
-        setDetailTotal(page.total)
-        setDetailOffset(offset + page.items.length)
-      } catch (err) {
-        notifyError(err)
-      } finally {
-        setDetailLoading(false)
-      }
-    },
-    [token, notifyError]
-  )
-
-  const closeDetail = () => {
-    setDetail(null)
-    setDetailTx([])
-    setDetailTotal(0)
-    setDetailOffset(0)
-  }
-
-  const openDetail = useCallback(
-    (row: ReadAccount) => {
-      setDetail(row)
-      setDetailTx([])
-      setDetailTotal(0)
-      setDetailOffset(0)
-      void loadDetailPage(row.name, 0)
-    },
-    [loadDetailPage],
-  )
-
-  // 监听 CommandPalette 派发的「打开账户详情」事件
-  useEffect(() => {
-    return onOpenDetailAccount((account) => {
-      openDetail(account)
-    })
-  }, [openDetail])
 
   // 删除流程:点删除按钮 → 弹 ConfirmDialog,dialog 里根据 tx_count 决定文案。
   // 跟 mobile account_edit_page._delete 对齐:有交易则警示总条数 + 红色按钮。
@@ -287,7 +236,9 @@ export function AccountsPage() {
             card_last_four: row.card_last_four ?? '',
           })
         }}
-        onClickAccount={openDetail}
+        onClickAccount={(row) =>
+          dispatchOpenDetailAccount(row as WorkspaceAccount)
+        }
         onDelete={(row) => {
           // 严格策略:有关联交易直接拒绝,不弹"是否强制删除"。先要求用户在
           // 详情页/交易页把这些交易改/删/迁走,账户回到 0 笔再来删。比 mobile
@@ -307,16 +258,7 @@ export function AccountsPage() {
           setPendingDelete(ws)
         }}
       />
-      <AccountDetailDialog
-        account={detail}
-        transactions={detailTx}
-        total={detailTotal}
-        offset={detailOffset}
-        loading={detailLoading}
-        tags={tags}
-        onClose={closeDetail}
-        onLoadMore={(name, offset) => void loadDetailPage(name, offset)}
-      />
+      {/* AccountDetailDialog 已迁到 GlobalEntityDialogs */}
       {/* 删除确认 — 有 tx 时显示 warning 文案 + count(对齐 mobile);无 tx
           就普通确认。dialog confirm 后调 deleteAccount,server 端会 silent
           orphan 关联交易(snapshot_mutator.delete_account 已实现 strip

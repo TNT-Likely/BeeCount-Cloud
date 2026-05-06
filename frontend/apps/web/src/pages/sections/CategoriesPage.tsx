@@ -22,8 +22,7 @@ import {
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../../app/useLedgerWrite'
-import { CategoryDetailDialog } from '../../components/dialogs/CategoryDetailDialog'
-import { onOpenDetailCategory } from '../../lib/txDialogEvents'
+import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -54,16 +53,9 @@ export function CategoriesPage() {
   // 编辑都通过这个 state 触发;由 panel 内部 onCreate/onEdit 也会切到 true。
   const [editDialogOpen, setEditDialogOpen] = useState(false)
 
-  // 分类详情弹窗 — 跟 AccountDetailDialog / TagDetailDialog 模式对齐:
-  // 选中分类 → 顶部展示分类信息 + 该分类下交易列表 + 底部 Edit/Delete
-  const [detail, setDetail] = useState<WorkspaceCategory | null>(null)
-  const [detailTx, setDetailTx] = useState<WorkspaceTransaction[]>([])
-  const [detailTotal, setDetailTotal] = useState(0)
-  const [detailOffset, setDetailOffset] = useState(0)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailTags, setDetailTags] = useState<WorkspaceTag[]>([])
-
-  const CATEGORY_DETAIL_PAGE_SIZE = 50
+  // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层)。本页只负责
+  // dispatch openDetailCategory 让全局打开;同时监听 openEditCategory
+  // 把 inline 编辑表单填上 + 打开。
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -142,49 +134,6 @@ export function CategoriesPage() {
     }
   }
 
-  const loadDetailPage = useCallback(
-    async (categorySyncId: string, offset: number) => {
-      setDetailLoading(true)
-      try {
-        const page = await fetchWorkspaceTransactions(token, {
-          categorySyncId,
-          limit: CATEGORY_DETAIL_PAGE_SIZE,
-          offset,
-        })
-        setDetailTx((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
-        setDetailTotal(page.total)
-        setDetailOffset(offset + page.items.length)
-      } catch (err) {
-        notifyError(err)
-      } finally {
-        setDetailLoading(false)
-      }
-    },
-    [token, notifyError],
-  )
-
-  const openDetail = useCallback(
-    (row: WorkspaceCategory) => {
-      setDetail(row)
-      setDetailTx([])
-      setDetailTotal(0)
-      setDetailOffset(0)
-      void loadDetailPage(row.id, 0)
-      // 加载 tag 颜色字典(detail 弹窗内交易行渲染 tag chip 用)
-      fetchWorkspaceTags(token, { limit: 500 })
-        .then(setDetailTags)
-        .catch(() => undefined)
-    },
-    [loadDetailPage, token],
-  )
-
-  const closeDetail = () => {
-    setDetail(null)
-    setDetailTx([])
-    setDetailTotal(0)
-    setDetailOffset(0)
-  }
-
   const enterEdit = useCallback((row: ReadCategory) => {
     setForm({
       editingId: row.id,
@@ -203,12 +152,9 @@ export function CategoriesPage() {
     setEditDialogOpen(true)
   }, [])
 
-  // CommandPalette 派发的「打开分类详情」事件 → 详情弹窗(非直接编辑)
-  useEffect(() => {
-    return onOpenDetailCategory((row) => {
-      openDetail(row)
-    })
-  }, [openDetail])
+  // 编辑分类的 openEditCategory 事件由 GlobalEditDialogs 全局接管,
+  // 不需要在本页再注册一份监听(否则会双开 dialog)。本页只在用户直接
+  // 点击行的「编辑」按钮时通过 onEdit prop 触发本页内置 dialog。
 
   const confirmDelete = async () => {
     if (!pendingDelete || !activeLedgerId) return
@@ -303,21 +249,8 @@ export function CategoriesPage() {
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
       />
-      <CategoryDetailDialog
-        category={detail}
-        transactions={detailTx}
-        total={detailTotal}
-        offset={detailOffset}
-        loading={detailLoading}
-        tags={detailTags}
-        iconPreviewUrlByFileId={iconPreviewByFileId}
-        onClose={closeDetail}
-        onLoadMore={(syncId, offset) => void loadDetailPage(syncId, offset)}
-        onEdit={(row) => {
-          closeDetail()
-          enterEdit(row)
-        }}
-      />
+      {/* CategoryDetailDialog 已迁到 GlobalEntityDialogs。本页 onClickCategory 现
+          dispatch openDetailCategory 让全局弹窗渲染。 */}
     </>
   )
 }

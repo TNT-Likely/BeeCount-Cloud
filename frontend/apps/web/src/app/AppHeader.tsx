@@ -1,5 +1,5 @@
 import { MoreHorizontal, ScrollText, Search } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import {
@@ -21,9 +21,18 @@ import {
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
-import { CommandPalette } from '../components/CommandPalette'
-import { AnnualReportLauncher } from '../components/dashboard/AnnualReportEntry'
 import { useAuth } from '../context/AuthContext'
+
+// CommandPalette + AnnualReportLauncher 都不在首屏关键路径,只在用户主动
+// 打开时才需要,懒加载省 ~150KB(framer-motion / cmdk / 年度报告整包)
+const CommandPalette = lazy(() =>
+  import('../components/CommandPalette').then((m) => ({ default: m.CommandPalette })),
+)
+const AnnualReportLauncher = lazy(() =>
+  import('../components/dashboard/AnnualReportEntry').then((m) => ({
+    default: m.AnnualReportLauncher,
+  })),
+)
 import { useLedgers } from '../context/LedgersContext'
 import { parseRoute, routePath } from '../state/router'
 
@@ -222,9 +231,10 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
             >
               <Search className="h-3.5 w-3.5" />
               <span>{t('cmdk.headerButton')}</span>
-              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
-                {navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl+K'}
-              </kbd>
+              {/* 单 chip 「⌘ K」/「⌃ K」 — 符号 + 空格 + 字母,Apple 菜单同款 */}                                                                                                                                                   
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-semibold leading-none">                                                                                                                               
+                  {navigator.platform.includes('Mac') ? '⌘ K' : '⌃ K'}                                                                                                                                                                
+              </kbd>         
             </button>
             <button
               type="button"
@@ -285,12 +295,25 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
           </div>
         ) : null}
       </header>
-      <AnnualReportLauncher open={annualReportOpen} onClose={() => setAnnualReportOpen(false)} />
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        onOpenAnnualReport={() => setAnnualReportOpen(true)}
-      />
+      {/* 只在 open 时挂载 — 既保证 lazy chunk 不在首屏拉,又让组件内部
+          useEffect/state 跟弹窗生命周期严格绑定,关闭时彻底卸载 */}
+      {annualReportOpen ? (
+        <Suspense fallback={null}>
+          <AnnualReportLauncher
+            open={annualReportOpen}
+            onClose={() => setAnnualReportOpen(false)}
+          />
+        </Suspense>
+      ) : null}
+      {paletteOpen ? (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={paletteOpen}
+            onClose={() => setPaletteOpen(false)}
+            onOpenAnnualReport={() => setAnnualReportOpen(true)}
+          />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

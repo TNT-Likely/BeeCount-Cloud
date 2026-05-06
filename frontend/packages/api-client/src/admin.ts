@@ -5,6 +5,7 @@ import type {
   AdminBackupRestoreResponse,
   AdminDeviceList,
   AdminHealth,
+  AdminIntegrityScan,
   AdminLogList,
   AdminOverview,
   AdminSyncErrors,
@@ -100,6 +101,12 @@ export async function fetchAdminOverview(token: string): Promise<AdminOverview> 
 
 export async function fetchAdminHealth(token: string): Promise<AdminHealth> {
   return authedGet<AdminHealth>('/admin/health', token)
+}
+
+export async function fetchAdminIntegrityScan(
+  token: string,
+): Promise<AdminIntegrityScan> {
+  return authedGet<AdminIntegrityScan>('/admin/integrity/scan', token)
 }
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {

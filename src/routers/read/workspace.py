@@ -15,6 +15,7 @@ def list_workspace_transactions(
     tx_type: str | None = Query(default=None),
     account_name: str | None = Query(default=None),
     q: str | None = Query(default=None),
+    tx_sync_id: str | None = Query(default=None, description="按 tx 自身 syncId 精确过滤(用于 admin/integrity 跳到具体交易)"),
     tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
     category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
     account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
@@ -67,6 +68,9 @@ def list_workspace_transactions(
             ReadTxProjection.from_account_name.ilike(pattern),
             ReadTxProjection.to_account_name.ilike(pattern),
         ))
+    # tx 自身 sync_id 过滤(单条精确查找)
+    if tx_sync_id:
+        query = query.where(ReadTxProjection.sync_id == tx_sync_id)
     # Tag 精确过滤:用 tag_sync_ids_json LIKE 含引号形式 `"<sync_id>"`,确保是 JSON
     # 数组里那个 id(而不是 note/tags_csv 里的字符串误匹配)。前端标签弹窗走这个参数。
     if tag_sync_id:

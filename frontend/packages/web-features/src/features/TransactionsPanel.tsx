@@ -74,6 +74,10 @@ type TransactionsPanelProps = {
   onDelete: (row: ReadTransaction) => void
   /** 行整体点击 → 打开详情弹窗。如果不传则点行无效果(保留兼容性)。 */
   onSelect?: (row: ReadTransaction) => void
+  /** dialogOnly:不渲染交易列表/分页,只挂编辑 Dialog + 内嵌 picker。
+   *  让全局 edit 容器(GlobalEditTxDialog)能复用 panel 内置的所有字段渲染 +
+   *  picker 联动逻辑,不必从头实现。 */
+  dialogOnlyMode?: boolean
 }
 
 type AttachmentCarouselCellProps = {
@@ -243,7 +247,8 @@ export function TransactionsPanel({
   iconPreviewUrlByFileId,
   onEdit,
   onDelete,
-  onSelect
+  onSelect,
+  dialogOnlyMode
 }: TransactionsPanelProps) {
   const t = useT()
   const open = dialogOpen
@@ -326,35 +331,35 @@ export function TransactionsPanel({
 
   return (
     <>
-      {/* 去掉 ListTableShell 的"交易管理" header，改用紧凑的 TransactionList
-          —— 表格信息列太多，首页/交易页都不需要账本 + 创建人那两列。
-          "新建交易"按钮由 parent page 在搜索/过滤行右侧渲染,跟其他工具按钮
-          视觉对齐;panel 自身不再渲染,避免重复。 */}
-      <div className="rounded-xl border border-border/50 bg-card">
-        <TransactionList
-          items={rows}
-          tags={tags}
-          categories={categories}
-          iconPreviewUrlByFileId={iconPreviewUrlByFileId}
-          variant="default"
-          canManage={canWrite}
-          onEdit={(row) => {
-            onEdit(row)
-            setOpen(true)
-          }}
-          onDelete={onDelete}
-          onSelect={onSelect}
-          onPreviewAttachment={onPreviewAttachment}
-          resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
-        />
-        <Pagination
-          page={page}
-          pageSize={pageSize}
-          total={total}
-          onPageChange={onPageChange}
-          onPageSizeChange={onPageSizeChange}
-        />
-      </div>
+      {/* dialogOnlyMode: 全局编辑容器复用本 panel 的 Dialog + picker 联动,
+          不渲染列表 / 分页。 */}
+      {dialogOnlyMode ? null : (
+        <div className="rounded-xl border border-border/50 bg-card">
+          <TransactionList
+            items={rows}
+            tags={tags}
+            categories={categories}
+            iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+            variant="default"
+            canManage={canWrite}
+            onEdit={(row) => {
+              onEdit(row)
+              setOpen(true)
+            }}
+            onDelete={onDelete}
+            onSelect={onSelect}
+            onPreviewAttachment={onPreviewAttachment}
+            resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
+          />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        </div>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">

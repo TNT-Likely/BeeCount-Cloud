@@ -428,6 +428,8 @@ type CategoriesPanelProps = {
    *  的编辑 dialog。不传时 panel 内部用 state 自己管;传了就 controlled。 */
   dialogOpen?: boolean
   onDialogOpenChange?: (next: boolean) => void
+  /** 不渲染列表/EmptyState,只挂 Dialog + picker — 用于全局编辑容器复用。 */
+  dialogOnlyMode?: boolean
 }
 
 /**
@@ -459,7 +461,8 @@ export function CategoriesPanel({
   onDelete,
   onUploadIcon,
   dialogOpen,
-  onDialogOpenChange
+  onDialogOpenChange,
+  dialogOnlyMode
 }: CategoriesPanelProps) {
   const t = useT()
   const [internalOpen, setInternalOpen] = useState(false)
@@ -580,43 +583,47 @@ export function CategoriesPanel({
 
   return (
     <>
-      {/* 顶部操作条:右上角"新建分类"。即使 rows 为空也保留,EmptyState 那边
-          也会再放一个 CTA 按钮。 */}
-      {onCreate && canManage ? (
-        <div className="mb-4 flex justify-end">
-          <Button onClick={startCreate}>{t('categories.button.create')}</Button>
-        </div>
-      ) : null}
-
-      {isEmpty ? (
-        <EmptyState
-          icon={
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                 strokeLinejoin="round">
-              <path d="M3 6l3-3h12l3 3" />
-              <path d="M3 6v14a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V6" />
-              <path d="M8 11h8" />
-            </svg>
-          }
-          title={t('categories.empty.title')}
-          description={t('categories.empty.desc')}
-          action={
-            onCreate && canManage ? (
+      {/* dialogOnlyMode: 全局编辑容器复用 Dialog + picker,不渲染列表 */}
+      {!dialogOnlyMode && (
+        <>
+          {/* 顶部操作条:右上角"新建分类"。即使 rows 为空也保留 */}
+          {onCreate && canManage ? (
+            <div className="mb-4 flex justify-end">
               <Button onClick={startCreate}>{t('categories.button.create')}</Button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <CategoriesCardBody
-          rows={rows}
-          onEdit={startEdit}
-          onDelete={onDelete}
-          canManage={canManage}
-          showCreatorColumn={showCreatorColumn}
-          txCountById={txCountById}
-          renderIcon={renderIcon}
-        />
+            </div>
+          ) : null}
+
+          {isEmpty ? (
+            <EmptyState
+              icon={
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                     strokeLinejoin="round">
+                  <path d="M3 6l3-3h12l3 3" />
+                  <path d="M3 6v14a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V6" />
+                  <path d="M8 11h8" />
+                </svg>
+              }
+              title={t('categories.empty.title')}
+              description={t('categories.empty.desc')}
+              action={
+                onCreate && canManage ? (
+                  <Button onClick={startCreate}>{t('categories.button.create')}</Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <CategoriesCardBody
+              rows={rows}
+              onEdit={startEdit}
+              onDelete={onDelete}
+              canManage={canManage}
+              showCreatorColumn={showCreatorColumn}
+              txCountById={txCountById}
+              renderIcon={renderIcon}
+            />
+          )}
+        </>
       )}
 
       <Dialog open={open} onOpenChange={(next) => {

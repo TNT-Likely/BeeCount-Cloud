@@ -26,6 +26,11 @@ const NEW_TX_EVENT = 'bee:open-new-tx'
 const EDIT_TX_EVENT = 'bee:open-edit-tx'
 const DETAIL_TX_EVENT = 'bee:open-detail-tx'
 
+// 监听器计数 — 让派发方判断"目标页是否挂载",决定是否展示「请到对应页编辑」
+// 提示。比 dispatchEvent 自己的回执机制简单。
+let editTxHandlerCount = 0
+let editCategoryHandlerCount = 0
+
 export function dispatchOpenNewTx() {
   window.dispatchEvent(new CustomEvent(NEW_TX_EVENT))
 }
@@ -36,6 +41,10 @@ export function dispatchOpenEditTx(tx: WorkspaceTransaction) {
 
 export function dispatchOpenDetailTx(tx: WorkspaceTransaction) {
   window.dispatchEvent(new CustomEvent(DETAIL_TX_EVENT, { detail: tx }))
+}
+
+export function hasEditTxHandler(): boolean {
+  return editTxHandlerCount > 0
 }
 
 export function onOpenNewTx(handler: () => void): () => void {
@@ -51,7 +60,11 @@ export function onOpenEditTx(
     if (detail) handler(detail)
   }
   window.addEventListener(EDIT_TX_EVENT, wrapped)
-  return () => window.removeEventListener(EDIT_TX_EVENT, wrapped)
+  editTxHandlerCount += 1
+  return () => {
+    window.removeEventListener(EDIT_TX_EVENT, wrapped)
+    editTxHandlerCount -= 1
+  }
 }
 
 export function onOpenDetailTx(
@@ -103,10 +116,17 @@ export function onOpenDetailTag(
 
 // ========== Category ==========
 const DETAIL_CATEGORY_EVENT = 'bee:open-detail-category'
+const EDIT_CATEGORY_EVENT = 'bee:open-edit-category'
 
 export function dispatchOpenDetailCategory(category: WorkspaceCategory) {
   window.dispatchEvent(
     new CustomEvent(DETAIL_CATEGORY_EVENT, { detail: category }),
+  )
+}
+
+export function dispatchOpenEditCategory(category: WorkspaceCategory) {
+  window.dispatchEvent(
+    new CustomEvent(EDIT_CATEGORY_EVENT, { detail: category }),
   )
 }
 
@@ -119,4 +139,23 @@ export function onOpenDetailCategory(
   }
   window.addEventListener(DETAIL_CATEGORY_EVENT, wrapped)
   return () => window.removeEventListener(DETAIL_CATEGORY_EVENT, wrapped)
+}
+
+export function onOpenEditCategory(
+  handler: (category: WorkspaceCategory) => void,
+): () => void {
+  const wrapped = (e: Event) => {
+    const detail = (e as CustomEvent<WorkspaceCategory>).detail
+    if (detail) handler(detail)
+  }
+  window.addEventListener(EDIT_CATEGORY_EVENT, wrapped)
+  editCategoryHandlerCount += 1
+  return () => {
+    window.removeEventListener(EDIT_CATEGORY_EVENT, wrapped)
+    editCategoryHandlerCount -= 1
+  }
+}
+
+export function hasEditCategoryHandler(): boolean {
+  return editCategoryHandlerCount > 0
 }

@@ -328,6 +328,28 @@ export type AdminHealth = {
   time: string
 }
 
+export type AdminIntegrityIssueSample = {
+  sync_id: string
+  label: string
+  extra?: Record<string, unknown> | null
+}
+
+export type AdminIntegrityIssue = {
+  issue_type: string
+  ledger_id: string
+  ledger_name: string
+  owner_email: string | null
+  count: number
+  samples: AdminIntegrityIssueSample[]
+}
+
+export type AdminIntegrityScan = {
+  scanned_at: string
+  ledgers_total: number
+  issues_total: number
+  issues: AdminIntegrityIssue[]
+}
+
 export type AdminSyncErrorItem = {
   id: number
   action: string

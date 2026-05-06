@@ -14,6 +14,8 @@ import { usePrimaryColor } from '@beecount/ui'
 import type { AppSection } from '@beecount/web-features'
 
 import { ChangelogDialog } from '../components/ChangelogDialog'
+import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
+import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
 import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
@@ -221,6 +223,8 @@ export function AppShell({ token, onLogout }: Props) {
           </AppLayout>
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
           <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
+          <GlobalEntityDialogs />
+          <GlobalEditDialogs />
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
         </SyncSocketProvider>

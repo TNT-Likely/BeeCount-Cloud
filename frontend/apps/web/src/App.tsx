@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 
 import { API_BASE, clearStoredSession, configureHttp, getStoredUserId, refreshAuth } from '@beecount/api-client'
@@ -7,20 +7,60 @@ import { useT } from '@beecount/ui'
 import { AppShell } from './app/AppShell'
 import { RequireAuth } from './app/router'
 import { LoginPage } from './pages/LoginPage'
-import { TransactionsPage } from './pages/sections/TransactionsPage'
-import { AccountsPage } from './pages/sections/AccountsPage'
-import { AdminBackupPage } from './pages/sections/AdminBackupPage'
-import { AdminUsersPage } from './pages/sections/AdminUsersPage'
-import { BudgetsPage } from './pages/sections/BudgetsPage'
-import { CategoriesPage } from './pages/sections/CategoriesPage'
-import { LedgersPage } from './pages/sections/LedgersPage'
-import { OverviewPage } from './pages/sections/OverviewPage'
-import { SettingsAiPage } from './pages/sections/SettingsAiPage'
-import { SettingsDevicesPage } from './pages/sections/SettingsDevicesPage'
-import { SettingsHealthPage } from './pages/sections/SettingsHealthPage'
-import { SettingsProfilePage } from './pages/sections/SettingsProfilePage'
-import { TagsPage } from './pages/sections/TagsPage'
 import { clearCursor } from './state/sync-client'
+
+// Section 页面全部懒加载 — 首屏只下载当前 route 需要的 chunk,显著降低
+// 首次进入 /app/overview 的 JS 体积。每个页面会是独立 chunk,后续切到
+// 其他 section 时按需 fetch。
+const TransactionsPage = lazy(() =>
+  import('./pages/sections/TransactionsPage').then((m) => ({ default: m.TransactionsPage })),
+)
+const AccountsPage = lazy(() =>
+  import('./pages/sections/AccountsPage').then((m) => ({ default: m.AccountsPage })),
+)
+const AdminBackupPage = lazy(() =>
+  import('./pages/sections/AdminBackupPage').then((m) => ({ default: m.AdminBackupPage })),
+)
+const AdminUsersPage = lazy(() =>
+  import('./pages/sections/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })),
+)
+const BudgetsPage = lazy(() =>
+  import('./pages/sections/BudgetsPage').then((m) => ({ default: m.BudgetsPage })),
+)
+const CategoriesPage = lazy(() =>
+  import('./pages/sections/CategoriesPage').then((m) => ({ default: m.CategoriesPage })),
+)
+const LedgersPage = lazy(() =>
+  import('./pages/sections/LedgersPage').then((m) => ({ default: m.LedgersPage })),
+)
+const OverviewPage = lazy(() =>
+  import('./pages/sections/OverviewPage').then((m) => ({ default: m.OverviewPage })),
+)
+const SettingsAiPage = lazy(() =>
+  import('./pages/sections/SettingsAiPage').then((m) => ({ default: m.SettingsAiPage })),
+)
+const SettingsDevicesPage = lazy(() =>
+  import('./pages/sections/SettingsDevicesPage').then((m) => ({ default: m.SettingsDevicesPage })),
+)
+const SettingsHealthPage = lazy(() =>
+  import('./pages/sections/SettingsHealthPage').then((m) => ({ default: m.SettingsHealthPage })),
+)
+const SettingsProfilePage = lazy(() =>
+  import('./pages/sections/SettingsProfilePage').then((m) => ({ default: m.SettingsProfilePage })),
+)
+const TagsPage = lazy(() =>
+  import('./pages/sections/TagsPage').then((m) => ({ default: m.TagsPage })),
+)
+
+/** 路由切换时的 Suspense fallback。section 切换通常 < 200ms,加个轻量
+ *  loading shell 避免白屏闪烁。 */
+function RouteFallback() {
+  return (
+    <div className="flex h-32 items-center justify-center">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-primary" />
+    </div>
+  )
+}
 
 const LEGACY_TOKEN_KEY = 'beecount.token'
 const TOKEN_KEY = `beecount.token.${API_BASE}`
@@ -131,20 +171,118 @@ function AppRoutes() {
       />
       <Route path="/app" element={shellElement}>
         <Route index element={<Navigate to="overview" replace />} />
-        <Route path="overview" element={<OverviewPage />} />
-        <Route path="transactions" element={<TransactionsPage />} />
-        <Route path="ledgers" element={<LedgersPage />} />
-        <Route path="budgets" element={<BudgetsPage />} />
-        <Route path="accounts" element={<AccountsPage />} />
-        <Route path="categories" element={<CategoriesPage />} />
-        <Route path="tags" element={<TagsPage />} />
-        <Route path="admin/users" element={<AdminUsersPage />} />
-        <Route path="admin/backup" element={<AdminBackupPage />} />
-        <Route path="settings/profile" element={<SettingsProfilePage />} />
-        <Route path="settings/appearance" element={<SettingsProfilePage />} />
-        <Route path="settings/ai" element={<SettingsAiPage />} />
-        <Route path="settings/health" element={<SettingsHealthPage />} />
-        <Route path="settings/devices" element={<SettingsDevicesPage />} />
+        <Route
+          path="overview"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <OverviewPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="transactions"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <TransactionsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="ledgers"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <LedgersPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="budgets"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <BudgetsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="accounts"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AccountsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="categories"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <CategoriesPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tags"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <TagsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/users"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminUsersPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/backup"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminBackupPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/profile"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsProfilePage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/appearance"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsProfilePage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/ai"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsAiPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/health"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsHealthPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/devices"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsDevicesPage />
+            </Suspense>
+          }
+        />
         {/* legacy 深链 /app/:ledgerId/... 目前直接 fall-through 到 transactions */}
         <Route path="*" element={<Navigate to="/app/overview" replace />} />
       </Route>
