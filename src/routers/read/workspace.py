@@ -181,6 +181,284 @@ def list_workspace_transactions(
     )
 
 
+# ---------------------------------------------------------------------------
+# CSV 导出 — 跟 list_workspace_transactions 共用一组 filter,流式输出。
+# 设计:.docs/web-csv-export-design.md
+# ---------------------------------------------------------------------------
+
+
+_CSV_HEADERS_BY_LANG: dict[str, list[str]] = {
+    # 跟 mobile lib/pages/data/export_page.dart 的 11 列严格对齐:
+    # Type, Category, SubCategory, Amount, Account, FromAccount,
+    # ToAccount, Note, Time, Tags, Attachments
+    "zh-CN": ["类型", "分类", "二级分类", "金额", "账户", "转出账户",
+              "转入账户", "备注", "时间", "标签", "附件"],
+    "zh-TW": ["類型", "分類", "二級分類", "金額", "帳戶", "轉出帳戶",
+              "轉入帳戶", "備註", "時間", "標籤", "附件"],
+    "en":    ["Type", "Category", "Subcategory", "Amount", "Account",
+              "From Account", "To Account", "Note", "Time", "Tags",
+              "Attachments"],
+}
+
+_TX_TYPE_LABELS_BY_LANG: dict[str, dict[str, str]] = {
+    "zh-CN": {"income": "收入", "expense": "支出", "transfer": "转账"},
+    "zh-TW": {"income": "收入", "expense": "支出", "transfer": "轉帳"},
+    "en":    {"income": "Income", "expense": "Expense", "transfer": "Transfer"},
+}
+
+
+def _normalize_lang(lang: str | None) -> str:
+    """归一化 ?lang= 到 zh-CN / zh-TW / en,无效值落回 en(跟 web 默认一致)。"""
+    if not lang:
+        return "en"
+    s = lang.strip().lower().replace("_", "-")
+    if s.startswith("zh-tw") or s in {"zh-hant", "zh-hk", "zh-mo"}:
+        return "zh-TW"
+    if s.startswith("zh"):
+        return "zh-CN"
+    return "en"
+
+
+@router.get("/workspace/transactions.csv")
+def export_workspace_transactions_csv(
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    tx_type: str | None = Query(default=None),
+    account_name: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    tx_sync_id: str | None = Query(default=None),
+    tag_sync_id: str | None = Query(default=None),
+    category_sync_id: str | None = Query(default=None),
+    account_sync_id: str | None = Query(default=None),
+    amount_min: float | None = Query(default=None),
+    amount_max: float | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    tz_offset_minutes: int = Query(
+        default=0,
+        description="客户端本地时区偏移,正数 = 东半球;Time 列按这个折算",
+    ),
+    lang: str | None = Query(
+        default=None,
+        description="表头 + Type 列语言。zh-CN / zh-TW / en;默认 en",
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """导出当前用户可见账本的 tx 明细为 CSV(UTF-8 BOM)。
+
+    跟 mobile `lib/pages/data/export_page.dart` 严格对齐(11 列、本地化表头、
+    parent/sub 分类拆列、单 Time 列、Type 本地化为 收入/支出/转账)。这样 web
+    导出 → mobile 导入可以无损 round-trip。
+
+    - 字段(11):type,category,subcategory,amount,account,from_account,
+      to_account,note,time,tags,attachments
+    - subcategory:level=2 时 category 写父类名、subcategory 写当前;level=1 时
+      只写 category。父类名走 LEFT JOIN read_category_projection 拿 parent_name。
+    - time:`  YYYY-MM-DD HH:mm:ss  `(前后各 2 空格,App 一致,Excel 列宽好看)
+    - 流式 yield_per(500),50k+ 笔 server 内存稳定
+    - 文件名:`beecount-<ledger>-<date_from>_<date_to>.csv`,中文走 RFC 5987
+    """
+    from urllib.parse import quote
+    from sqlalchemy.orm import aliased
+    from fastapi.responses import StreamingResponse
+
+    is_admin = _is_admin(current_user)
+    lang_key = _normalize_lang(lang)
+    headers = _CSV_HEADERS_BY_LANG[lang_key]
+    type_labels = _TX_TYPE_LABELS_BY_LANG[lang_key]
+
+    # 账本筛选 — 跟 list_workspace_transactions 完全一致
+    ledger_conditions: list[Any] = []
+    if ledger_id:
+        ledger_conditions.append(Ledger.external_id == ledger_id)
+    if is_admin:
+        if user_id:
+            ledger_conditions.append(Ledger.user_id == user_id)
+    else:
+        ledger_conditions.append(Ledger.user_id == current_user.id)
+    ledgers = list(db.execute(
+        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
+    ).scalars().all())
+
+    if ledgers:
+        ledger_internal_ids = [l.id for l in ledgers]
+        primary_name = _sanitize_filename(_resolve_ledger_name(db, ledger=ledgers[0]))
+    else:
+        ledger_internal_ids = []
+        primary_name = "ledger"
+
+    # LEFT JOIN ReadCategoryProjection 拿 level + parent_name,做 parent/sub 列拆分
+    Cat = aliased(ReadCategoryProjection)
+
+    query = (
+        select(
+            ReadTxProjection,
+            Cat.level.label("cat_level"),
+            Cat.parent_name.label("cat_parent_name"),
+        )
+        .select_from(ReadTxProjection)
+        .outerjoin(
+            Cat,
+            and_(
+                Cat.ledger_id == ReadTxProjection.ledger_id,
+                Cat.sync_id == ReadTxProjection.category_sync_id,
+            ),
+        )
+    )
+
+    if ledger_internal_ids:
+        query = query.where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+    else:
+        query = query.where(false_literal())
+
+    # 复用 list endpoint 的所有 filter 条件
+    if tx_type:
+        query = query.where(ReadTxProjection.tx_type == tx_type)
+    if account_name:
+        pattern = f"%{account_name}%"
+        query = query.where(or_(
+            ReadTxProjection.account_name.ilike(pattern),
+            ReadTxProjection.from_account_name.ilike(pattern),
+            ReadTxProjection.to_account_name.ilike(pattern),
+        ))
+    if tx_sync_id:
+        query = query.where(ReadTxProjection.sync_id == tx_sync_id)
+    if tag_sync_id:
+        query = query.where(
+            ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
+        )
+    if category_sync_id:
+        query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
+    if account_sync_id:
+        query = query.where(or_(
+            ReadTxProjection.account_sync_id == account_sync_id,
+            ReadTxProjection.from_account_sync_id == account_sync_id,
+            ReadTxProjection.to_account_sync_id == account_sync_id,
+        ))
+    if q:
+        pattern = f"%{q}%"
+        query = query.where(or_(
+            ReadTxProjection.note.ilike(pattern),
+            ReadTxProjection.category_name.ilike(pattern),
+            ReadTxProjection.account_name.ilike(pattern),
+            ReadTxProjection.from_account_name.ilike(pattern),
+            ReadTxProjection.to_account_name.ilike(pattern),
+            ReadTxProjection.tags_csv.ilike(pattern),
+        ))
+    if amount_min is not None:
+        query = query.where(ReadTxProjection.amount >= amount_min)
+    if amount_max is not None:
+        query = query.where(ReadTxProjection.amount <= amount_max)
+    if date_from is not None:
+        query = query.where(ReadTxProjection.happened_at >= date_from)
+    if date_to is not None:
+        query = query.where(ReadTxProjection.happened_at < date_to)
+
+    query = query.order_by(
+        ReadTxProjection.happened_at.desc(),
+        ReadTxProjection.tx_index.desc(),
+    ).execution_options(stream_results=True)
+
+    tz_delta = timedelta(minutes=tz_offset_minutes)
+
+    def generate():
+        # BOM 让 Excel 双击中文不乱码
+        yield "\ufeff"
+        yield ",".join(_csv_field(h) for h in headers) + "\n"
+        for row in db.execute(query).yield_per(500):
+            tx = row[0]  # ReadTxProjection
+            cat_level = row.cat_level
+            cat_parent_name = row.cat_parent_name
+            is_transfer = tx.tx_type == "transfer"
+
+            local_dt = _to_utc(tx.happened_at) + tz_delta
+            tags_list = _tags_list(tx.tags_csv)
+            attachment_names = _attachment_names(tx.attachments_json)
+
+            # 转账无分类;否则按 level 拆 parent/sub
+            if is_transfer:
+                category_col = ""
+                sub_category_col = ""
+            elif cat_level == 2 and cat_parent_name:
+                category_col = cat_parent_name
+                sub_category_col = tx.category_name or ""
+            else:
+                category_col = tx.category_name or ""
+                sub_category_col = ""
+
+            type_label = type_labels.get(tx.tx_type or "", tx.tx_type or "")
+
+            # mobile 用前后各 2 空格,Excel 列宽好看 — 完全一致
+            time_str = (
+                f"  {local_dt.strftime('%Y-%m-%d %H:%M:%S')}  "
+            )
+
+            yield ",".join([
+                _csv_field(type_label),
+                _csv_field(category_col),
+                _csv_field(sub_category_col),
+                f"{tx.amount:.2f}" if tx.amount is not None else "",
+                _csv_field(tx.account_name) if not is_transfer else "",
+                _csv_field(tx.from_account_name) if is_transfer else "",
+                _csv_field(tx.to_account_name) if is_transfer else "",
+                _csv_field(tx.note),
+                _csv_field(time_str),
+                _csv_field(",".join(tags_list)),
+                _csv_field(",".join(attachment_names)),
+            ]) + "\n"
+
+    if date_from is None and date_to is None:
+        # 没设日期 → 用导出当下本地时间戳。多次下载文件名才能区分,且非日期
+        # filter(category / account / q)也不会被误标成 "all"。
+        local_now = datetime.now(timezone.utc) + tz_delta
+        period_segment = local_now.strftime("%Y%m%d-%H%M%S")
+    else:
+        period_from = date_from.isoformat()[:10] if date_from else "all"
+        period_to = date_to.isoformat()[:10] if date_to else "all"
+        period_segment = f"{period_from}_{period_to}"
+    filename = f"beecount-{primary_name}-{period_segment}.csv"
+    ascii_filename = filename.encode("ascii", "replace").decode("ascii")
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_filename}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _attachment_names(raw: str | None) -> list[str]:
+    """从 attachments_json 里挑 fileName(跟 mobile 导出用 fileName 一致)。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            name = item.get("fileName") or item.get("file_name") or item.get("name")
+            if name:
+                out.append(str(name))
+    return out
+
+
+def false_literal():
+    """SQL FALSE 字面量(用于"用户无任何账本可读"时的强制空结果)。"""
+    from sqlalchemy import literal
+    return literal(False)
+
+
 @router.get("/workspace/accounts", response_model=list[WorkspaceAccountOut])
 def list_workspace_accounts(
     ledger_id: str | None = Query(default=None),

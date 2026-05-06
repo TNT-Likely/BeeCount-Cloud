@@ -1,4 +1,5 @@
-import { authedGet, resolveApiUrl } from './http'
+import { API_BASE, authedGet, resolveApiUrl } from './http'
+import { extractApiError } from './errors'
 import type {
   AnalyticsMetric,
   AnalyticsScope,
@@ -211,4 +212,112 @@ export async function fetchWorkspaceAnalytics(
   if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAnalytics>(`/read/workspace/analytics${suffix}`, token)
+}
+
+// ============================================================================
+// CSV 导出 — 见 .docs/web-csv-export-design.md
+// ============================================================================
+
+export type DownloadCsvOptions = {
+  ledgerId: string
+  /** date_from(ISO 8601);happenedAt >= dateFrom */
+  dateFrom?: string
+  /** date_to(ISO 8601,独占,前端通常传"次日 00:00") */
+  dateTo?: string
+  txType?: string
+  q?: string
+  accountName?: string
+  accountSyncId?: string
+  categorySyncId?: string
+  tagSyncId?: string
+  amountMin?: number
+  amountMax?: number
+  /** 客户端本地时区偏移,Time 列按这个折算。默认 -getTimezoneOffset() */
+  tzOffsetMinutes?: number
+  /** 表头 / Type 列语言。zh-CN / zh-TW / en;省略走 server 默认(en) */
+  lang?: string
+  /** 当 server 没给 Content-Disposition filename 时的 fallback 文件名 */
+  fallbackFilename?: string
+}
+
+/**
+ * 下载 workspace tx CSV 导出。
+ *
+ * 实现细节:
+ * - 用 fetch + Authorization header 调 server 的 /transactions.csv 端点
+ *   (不能直接 <a download=> 跳 URL,token 进 access log 不安全)
+ * - 流式接收 → blob → URL.createObjectURL → 程序化触发 <a> click 下载
+ * - 优先用 server 给的 Content-Disposition filename(支持 RFC 5987 中文)
+ *
+ * 抛 ApiError(失败时,跟其他 read endpoint 一致)。
+ */
+export async function downloadWorkspaceTransactionsCsv(
+  token: string,
+  options: DownloadCsvOptions,
+): Promise<void> {
+  const query = new URLSearchParams()
+  query.set('ledger_id', options.ledgerId)
+  if (options.dateFrom) query.set('date_from', options.dateFrom)
+  if (options.dateTo) query.set('date_to', options.dateTo)
+  if (options.txType) query.set('tx_type', options.txType)
+  if (options.q) query.set('q', options.q)
+  if (options.accountName) query.set('account_name', options.accountName)
+  if (options.accountSyncId) query.set('account_sync_id', options.accountSyncId)
+  if (options.categorySyncId) query.set('category_sync_id', options.categorySyncId)
+  if (options.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
+  if (typeof options.amountMin === 'number')
+    query.set('amount_min', `${options.amountMin}`)
+  if (typeof options.amountMax === 'number')
+    query.set('amount_max', `${options.amountMax}`)
+  const tzOffset =
+    typeof options.tzOffsetMinutes === 'number'
+      ? options.tzOffsetMinutes
+      : typeof window !== 'undefined'
+        ? -new Date().getTimezoneOffset()
+        : 0
+  query.set('tz_offset_minutes', `${tzOffset}`)
+  if (options.lang) query.set('lang', options.lang)
+
+  const url = `${API_BASE}/read/workspace/transactions.csv?${query.toString()}`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw await extractApiError(response)
+  }
+
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const filename =
+    parseFilenameFromDisposition(disposition) ||
+    options.fallbackFilename ||
+    'beecount-export.csv'
+
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } finally {
+    // 即时回收 — 浏览器下载已经从 blob 拿走数据,不需要 URL 长期持有
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+/** 解析 Content-Disposition,优先 RFC 5987 filename*=UTF-8'',fallback 普通 filename。 */
+function parseFilenameFromDisposition(value: string): string | null {
+  // RFC 5987 优先(中文文件名场景)
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(value)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      // ignore,落 plain
+    }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(value)
+  return plain ? plain[1].trim() : null
 }

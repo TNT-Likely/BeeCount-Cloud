@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ShieldCheck, ShieldOff } from 'lucide-react'
 
 import {
   ApiError,
@@ -10,10 +11,6 @@ import {
 } from '@beecount/api-client'
 import {
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -31,24 +28,21 @@ import { useAuth } from '../../context/AuthContext'
 type Status = { enabled: boolean; enabled_at: string | null } | null
 
 /**
- * 个人资料页「二次验证」卡片。
+ * 个人资料页「二次验证」内联触发器(不带 Card 外壳,嵌入在父 Card 里)。
  *
- * 状态:
- * - 未启用 → "为账号添加额外保护" + [启用] 按钮
- * - 已启用 → "已启用 ✓ · 启用于 YYYY-MM-DD" + [重新生成 recovery code] [禁用] 按钮
+ * UI 形态:一个 pill 按钮,左边 shield 图标 + "二次验证 · 已启用 / 未启用",右边 chevron。
+ * 点击展开管理弹窗 — 弹窗里再分支(未启用 → setup;已启用 → 看 enabled_at + 重新
+ * 生成 / 禁用 两个二级动作)。
  *
- * 子 dialog:
- * - SetupDialog:三步向导(QR → 输码 confirm → 显示 10 个 recovery codes)
- * - DisableDialog:密码 + 6 位码双重确认
- * - RegenerateDialog:6 位码 → 显示新 10 个
- *
- * 设计文档:.docs/2fa-design.md(第 4.7 节)
+ * 子 dialog 不变:SetupDialog / DisableDialog / RegenerateDialog,设计文档
+ * `.docs/2fa-design.md` (第 4.7 节)。
  */
-export function TwoFactorAuthSection() {
+export function TwoFactorAuthInline() {
   const t = useT()
   const { token } = useAuth()
   const [status, setStatus] = useState<Status>(null)
   const [loading, setLoading] = useState(true)
+  const [manageOpen, setManageOpen] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
   const [disableOpen, setDisableOpen] = useState(false)
   const [regenerateOpen, setRegenerateOpen] = useState(false)
@@ -70,65 +64,103 @@ export function TwoFactorAuthSection() {
     void reload()
   }, [reload])
 
-  const enabledLabel = status?.enabled
-    ? `${t('twofa.status.enabled')} ✓`
-    : t('twofa.status.disabled')
+  const enabled = !!status?.enabled
+  const StatusIcon = enabled ? ShieldCheck : ShieldOff
+  const statusLabel = loading
+    ? t('common.loading')
+    : enabled
+      ? t('twofa.status.enabled')
+      : t('twofa.status.disabled')
 
   const enabledAtLabel = status?.enabled_at
     ? new Date(status.enabled_at).toLocaleDateString()
     : null
 
   return (
-    <Card className="bc-panel">
-      <CardHeader>
-        <CardTitle>{t('twofa.title')}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-xs text-muted-foreground">{t('twofa.desc')}</p>
+    <>
+      <button
+        type="button"
+        onClick={() => setManageOpen(true)}
+        className="group inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-3 py-1.5 text-xs font-medium transition hover:bg-muted"
+        aria-label={t('twofa.title')}
+      >
+        <StatusIcon
+          className={`h-3.5 w-3.5 ${enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}
+        />
+        <span>{t('twofa.title')}</span>
+        <span
+          className={
+            enabled
+              ? 'rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300'
+              : 'rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground'
+          }
+        >
+          {statusLabel}
+        </span>
+        <ChevronDown className="h-3 w-3 text-muted-foreground transition group-hover:translate-y-0.5" />
+      </button>
 
-        <div className="flex items-center gap-2 text-sm">
-          <span
-            className={
-              status?.enabled
-                ? 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300'
-                : 'rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground'
-            }
-          >
-            {loading ? t('common.loading') : enabledLabel}
-          </span>
-          {enabledAtLabel && (
-            <span className="text-xs text-muted-foreground">
-              {t('twofa.enabledAt', { date: enabledAtLabel })}
-            </span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {!status?.enabled && (
-            <Button size="sm" onClick={() => setSetupOpen(true)} disabled={loading}>
-              {t('twofa.action.enable')}
-            </Button>
-          )}
-          {status?.enabled && (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setRegenerateOpen(true)}
+      {/* 管理弹窗 — 站位 + 分流到 setup / disable / regenerate */}
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('twofa.title')}</DialogTitle>
+            <DialogDescription>{t('twofa.desc')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span
+                className={
+                  enabled
+                    ? 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300'
+                    : 'rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground'
+                }
               >
-                {t('twofa.action.regenerate')}
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => setDisableOpen(true)}
-              >
-                {t('twofa.action.disable')}
-              </Button>
-            </>
-          )}
-        </div>
-      </CardContent>
+                {statusLabel}
+              </span>
+              {enabledAtLabel && (
+                <span className="text-xs text-muted-foreground">
+                  {t('twofa.enabledAt', { date: enabledAtLabel })}
+                </span>
+              )}
+            </div>
+            <DialogFooter>
+              {!enabled ? (
+                <Button
+                  onClick={() => {
+                    setManageOpen(false)
+                    setSetupOpen(true)
+                  }}
+                  disabled={loading}
+                >
+                  {t('twofa.action.enable')}
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setManageOpen(false)
+                      setRegenerateOpen(true)
+                    }}
+                  >
+                    {t('twofa.action.regenerate')}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => {
+                      setManageOpen(false)
+                      setDisableOpen(true)
+                    }}
+                  >
+                    {t('twofa.action.disable')}
+                  </Button>
+                </>
+              )}
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <SetupDialog
         open={setupOpen}
@@ -150,7 +182,7 @@ export function TwoFactorAuthSection() {
           setRegenerateOpen(v)
         }}
       />
-    </Card>
+    </>
   )
 }
 

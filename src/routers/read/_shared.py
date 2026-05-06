@@ -461,6 +461,35 @@ def _analytics_range(
 
 
 # ---------------------------------------------------------------------------
+# CSV 导出辅助
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_CSV_NEEDS_QUOTE = (",", '"', "\n", "\r")
+_FILENAME_BAD = _re.compile(r'[\\/:*?"<>|\r\n]')
+
+
+def _csv_field(value: Any) -> str:
+    """RFC 4180 字段转义。None / "" → 空;含 , " \\n \\r → 双引号包裹 + 转义。"""
+    if value is None:
+        return ""
+    s = str(value)
+    if s == "":
+        return ""
+    if any(c in s for c in _CSV_NEEDS_QUOTE):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _sanitize_filename(name: str | None, max_len: int = 64) -> str:
+    """文件系统安全的文件名片段。Windows 上 / \\ : * ? \" < > | 都禁;两端空格点也清。"""
+    safe = _FILENAME_BAD.sub("_", (name or "").strip()) or "ledger"
+    safe = safe.strip(" .") or "ledger"
+    return safe[:max_len]
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -539,4 +568,6 @@ __all__ = [
     '_projection_totals',
     '_bucket_key',
     '_analytics_range',
+    '_csv_field',
+    '_sanitize_filename',
 ]

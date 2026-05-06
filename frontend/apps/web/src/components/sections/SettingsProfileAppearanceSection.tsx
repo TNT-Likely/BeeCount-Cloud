@@ -1,24 +1,38 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { ChevronDown, Palette } from 'lucide-react'
 
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
   PrimaryColorPicker,
   useT,
+  usePrimaryColor,
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
-import { TwoFactorAuthSection } from './TwoFactorAuthSection'
+import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 
 /**
- * 设置 - 账号 / 主题色 / 同步偏好(只读) section —— 从 AppPage.tsx 抽出。
- * 头像 + display_name 只读(统一在 mobile "我的" 里修改,避免两端都能改导致 LWW 抖动)。
+ * 设置 - 账号 / 主题色 / 二次验证 / 同步偏好(只读) section。
+ *
+ * 顶部一张 hero 卡:头像 + email + 两个 inline pill(主题色 / 二次验证),
+ * 各自打开 popup。第二张卡保留 sync 偏好(只读,概念跟账号偏好不同)。
+ *
+ * 头像 + display_name 只读 — 统一在 mobile "我的" 里修改,避免两端都能改
+ * 导致 LWW 抖动。
  */
 export function SettingsProfileAppearanceSection() {
   const t = useT()
   const { profileMe, sessionUserId } = useAuth()
+  const { color: primaryColor } = usePrimaryColor()
+  const [themeOpen, setThemeOpen] = useState(false)
 
   const profileDisplayLabel = useMemo(
     () => profileMe?.display_name?.trim() || profileMe?.email || sessionUserId || '-',
@@ -52,22 +66,41 @@ export function SettingsProfileAppearanceSection() {
                 <p className="truncate text-xs text-muted-foreground">{profileMe?.email || '-'}</p>
               </div>
             </div>
+
+            {/* Inline pills:主题色 + 二次验证 各自打开 popup */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setThemeOpen(true)}
+                className="group inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-3 py-1.5 text-xs font-medium transition hover:bg-muted"
+                aria-label={t('profile.theme.title')}
+              >
+                <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+                <span>{t('profile.theme.title')}</span>
+                <span
+                  className="inline-block h-3.5 w-3.5 rounded-full border border-border/60 shadow-sm"
+                  style={{ background: primaryColor }}
+                  aria-hidden
+                />
+                <ChevronDown className="h-3 w-3 text-muted-foreground transition group-hover:translate-y-0.5" />
+              </button>
+              <TwoFactorAuthInline />
+            </div>
+
             <p className="text-xs text-muted-foreground">{t('profile.avatarManagedByApp')}</p>
           </CardContent>
         </div>
       </Card>
 
-      <TwoFactorAuthSection />
-
-      <Card className="bc-panel">
-        <CardHeader>
-          <CardTitle>{t('profile.theme.title')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-3 text-xs text-muted-foreground">{t('profile.theme.desc')}</p>
+      <Dialog open={themeOpen} onOpenChange={setThemeOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t('profile.theme.title')}</DialogTitle>
+            <DialogDescription>{t('profile.theme.desc')}</DialogDescription>
+          </DialogHeader>
           <PrimaryColorPicker />
-        </CardContent>
-      </Card>
+        </DialogContent>
+      </Dialog>
 
       <Card className="bc-panel">
         <CardHeader>

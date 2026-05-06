@@ -17,7 +17,7 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 
-import { SlidersHorizontal } from 'lucide-react'
+import { Download, SlidersHorizontal } from 'lucide-react'
 
 import {
   useToast,
@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
   Tooltip,
+  useLocale,
   useT
 } from '@beecount/ui'
 
@@ -59,6 +60,7 @@ import {
   deleteLedger,
   createTransaction,
   deleteTransaction,
+  downloadWorkspaceTransactionsCsv,
   fetchAdminUsers,
   fetchReadLedgerDetail,
   fetchReadLedgers,
@@ -271,6 +273,7 @@ export function TransactionsPage() {
   )
   const { token, logout: onLogout } = useAuth()
   const t = useT()
+  const { locale } = useLocale()
   // mobile 推过来的主题色偏好:本地没 override 时跟随 server。
   // profileMe 订阅:主题色/收支配色 apply 现在由 AppShell 负责;这里仅保留
   // usePrimaryColor 是因为早期代码里有些 WS 事件路径还需要本地短路应用。
@@ -383,6 +386,8 @@ export function TransactionsPage() {
   // 行(panel 自己不再渲染按钮 + dialog state)。编辑流程通过 onEdit 回调
   // 设 form 后 page 这里 setOpen(true)。
   const [txDialogOpen, setTxDialogOpen] = useState(false)
+  // CSV 导出 in-flight 标记 — 大账本流式下载 1-3s,期间按钮 disabled + 防重复点击
+  const [exportingCsv, setExportingCsv] = useState(false)
   // accountForm state 已迁到 AccountsPage。
   // categoryForm state 已迁到 CategoriesPage。
   // tagForm state 已迁到 TagsPage。
@@ -1463,37 +1468,98 @@ export function TransactionsPage() {
           {route.section === 'transactions' ? (
             <div className="space-y-3">
               {/* 交易搜索简化：keyword + 可选 filter 按钮，去掉 Card 包裹与
-                  admin 用户选择（admin 场景走单独页，普通用户不需要暴露）。 */}
+                  admin 用户选择（admin 场景走单独页，普通用户不需要暴露）。
+                  左组 = 搜索输入 + 筛选;右组 = 导出 / 新建,
+                  ml-auto 套在右组上(而不是单按钮),即便其中一个 button 隐藏
+                  另一个仍会贴右,不会跟左组贴在一起。 */}
               <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  className="h-9 w-[260px] bg-muted lg:w-[360px]"
-                  placeholder={t('shell.placeholder.keyword')}
-                  value={listQuery}
-                  onChange={(event) => setListQuery(event.target.value)}
-                />
-                {showTxFilter ? (
-                  <div className="relative">
-                    <Tooltip content={t('shell.filter.title')}>
-                      <Button
-                        aria-label={t('shell.filter.title')}
-                        className="h-9 w-9 bg-muted"
-                        size="icon"
-                        variant="outline"
-                        onClick={onOpenTxFilter}
-                      >
-                        <SlidersHorizontal className="h-4 w-4" />
-                      </Button>
-                    </Tooltip>
-                    {txFilterActiveCount > 0 ? (
-                      <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
-                    ) : null}
-                  </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    className="h-9 w-[260px] bg-muted lg:w-[360px]"
+                    placeholder={t('shell.placeholder.keyword')}
+                    value={listQuery}
+                    onChange={(event) => setListQuery(event.target.value)}
+                  />
+                  {showTxFilter ? (
+                    <div className="relative">
+                      <Tooltip content={t('shell.filter.title')}>
+                        <Button
+                          aria-label={t('shell.filter.title')}
+                          className="h-9 w-9 bg-muted"
+                          size="icon"
+                          variant="outline"
+                          onClick={onOpenTxFilter}
+                        >
+                          <SlidersHorizontal className="h-4 w-4" />
+                        </Button>
+                      </Tooltip>
+                      {txFilterActiveCount > 0 ? (
+                        <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                {/* 「导出 CSV」按钮 — 跟新建按钮做一组,布局对称。
+                    复用当前 txFilterApplied 全部字段(date / type / q / amount /
+                    category/tag/account syncId)— 所见即所得。 */}
+                {activeLedgerId ? (
+                  <Tooltip content={t('export.csv.tooltip')}>
+                    <Button
+                      variant="outline"
+                      className="h-9"
+                      disabled={exportingCsv}
+                      onClick={async () => {
+                        if (!activeLedgerId) return
+                        setExportingCsv(true)
+                        try {
+                          const filter = txFilterApplied
+                          // dateTo 是 YYYY-MM-DD 含整天 → 转成"次日 00:00 独占"
+                          let dateTo: string | undefined
+                          if (filter.dateTo) {
+                            const [y, m, d] = filter.dateTo.split('-').map(Number)
+                            const next = new Date(y, m - 1, d + 1)
+                            dateTo = next.toISOString()
+                          }
+                          await downloadWorkspaceTransactionsCsv(token, {
+                            ledgerId: activeLedgerId,
+                            dateFrom: filter.dateFrom
+                              ? new Date(filter.dateFrom + 'T00:00:00').toISOString()
+                              : undefined,
+                            dateTo,
+                            txType: filter.txType || undefined,
+                            // 头部 search bar (listQuery) 优先,跟列表一致;
+                            // filter.q 是 filter modal 里的备用关键词。
+                            q: listQuery || filter.q || undefined,
+                            accountName: filter.accountName || undefined,
+                            categorySyncId: filter.categorySyncId || undefined,
+                            tagSyncId: filter.tagSyncId || undefined,
+                            amountMin: filter.amountMin
+                              ? Number(filter.amountMin)
+                              : undefined,
+                            amountMax: filter.amountMax
+                              ? Number(filter.amountMax)
+                              : undefined,
+                            lang: locale,
+                          })
+                          toast.success(t('export.csv.success'))
+                        } catch (err) {
+                          toast.error(localizeError(err, t))
+                        } finally {
+                          setExportingCsv(false)
+                        }
+                      }}
+                    >
+                      <Download className="mr-1 h-3.5 w-3.5" />
+                      {exportingCsv ? t('export.csv.loading') : t('export.csv')}
+                    </Button>
+                  </Tooltip>
                 ) : null}
-                {/* "新建交易"按钮顶到右侧,跟搜索框同一行同高(h-9)。
+                {/* "新建交易" — 跟导出 CSV 一组,跟搜索框同一行同高(h-9)。
                     需要有写权限 + writeLedger 候选可用,否则隐藏。 */}
                 {canWriteTx && txWriteLedgerOptions.length > 0 ? (
                   <Button
-                    className="ml-auto h-9"
+                    className="h-9"
                     onClick={() => {
                       setTxForm(txDefaults())
                       if (
@@ -1510,6 +1576,7 @@ export function TransactionsPage() {
                     {t('transactions.button.create')}
                   </Button>
                 ) : null}
+                </div>
               </div>
               <TransactionsPanel
                 form={txForm}

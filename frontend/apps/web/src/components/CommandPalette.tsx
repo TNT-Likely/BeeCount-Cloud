@@ -7,6 +7,7 @@ import {
   CalendarDays,
   CornerDownLeft,
   CreditCard,
+  Download,
   FileBarChart2,
   FolderTree,
   Hash,
@@ -24,6 +25,7 @@ import {
 } from 'lucide-react'
 
 import {
+  downloadWorkspaceTransactionsCsv,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
@@ -33,10 +35,11 @@ import {
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
-import { useT, useTheme } from '@beecount/ui'
+import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
+import { localizeError } from '../i18n/errors'
 import {
   dispatchOpenDetailAccount,
   dispatchOpenDetailCategory,
@@ -86,6 +89,8 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
   const { token, logout, profileMe, isAdmin } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
   const { resolved, setMode } = useTheme()
+  const { locale } = useLocale()
+  const toast = useToast()
 
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS)
@@ -140,6 +145,39 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
     onClose()
     dispatchOpenNewTx()
   }, [onClose])
+
+  // 「导出 CSV」当月 / 当年 — 复用 active ledger,无 filter,date 用本地时间起算。
+  // dateTo 独占,因此传"次月/次年 1 日 00:00"包含整个 period。
+  const handleExportRange = useCallback(
+    async (range: 'month' | 'year') => {
+      if (!activeLedgerId) {
+        toast.error(t('export.csv.noLedger'))
+        return
+      }
+      onClose()
+      const now = new Date()
+      const dateFromDate =
+        range === 'month'
+          ? new Date(now.getFullYear(), now.getMonth(), 1)
+          : new Date(now.getFullYear(), 0, 1)
+      const dateToDate =
+        range === 'month'
+          ? new Date(now.getFullYear(), now.getMonth() + 1, 1)
+          : new Date(now.getFullYear() + 1, 0, 1)
+      try {
+        await downloadWorkspaceTransactionsCsv(token, {
+          ledgerId: activeLedgerId,
+          dateFrom: dateFromDate.toISOString(),
+          dateTo: dateToDate.toISOString(),
+          lang: locale,
+        })
+        toast.success(t('export.csv.success'))
+      } catch (err) {
+        toast.error(localizeError(err, t))
+      }
+    },
+    [activeLedgerId, locale, onClose, t, toast, token],
+  )
 
   // 「点击交易结果」— 跳到交易页 + 打开详情弹窗(从详情可二次进编辑)
   const handleSelectTransaction = useCallback(
@@ -324,6 +362,16 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
                 onOpenAnnualReport()
                 onClose()
               }}
+            />
+            <Item
+              icon={<Download className="h-4 w-4" />}
+              label={t('cmdk.action.exportMonth')}
+              onSelect={() => void handleExportRange('month')}
+            />
+            <Item
+              icon={<Download className="h-4 w-4" />}
+              label={t('cmdk.action.exportYear')}
+              onSelect={() => void handleExportRange('year')}
             />
             <Item
               icon={resolved === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
