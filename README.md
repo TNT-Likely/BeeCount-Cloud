@@ -62,6 +62,7 @@
 
 - 完整记账 UI(交易 / 账户 / 分类 / 标签 / 预算)
 - 响应式 Dashboard(与 App 观感一致,移动端友好)
+- **⌘K 命令面板 + AI 文档问答** — 任意页面 ⌘K(macOS)/ Ctrl+K 打开搜索;输入 `?xxx` 或选「问 AI」,基于官方文档 RAG 检索 + 用 App 配的 LLM 生成答案,自动贴 source 链接
 - **PWA 支持** — 浏览器地址栏的"安装"图标点一下,即可作为独立 app 装到桌面 / Dock,断网时离线读缓存
 - 三语 — 简体中文 / 繁體中文 / English
 - 深浅色主题 + 个性化主题色
@@ -126,7 +127,17 @@ services:
       - "8869:8080"
     volumes:
       - ./data:/data
+    environment:
+      # —— 可选:启用 ⌘K「AI 文档问答」(对官方文档做 RAG 检索)——
+      # 不填这把 key 也行,功能就走 fallback「跳官网搜文档」,其它功能完全不受影响。
+      # 默认走 SiliconFlow 免费 quota(月 10 万次问答足够小规模自托管),
+      # 注册 https://siliconflow.cn 拿 key 填进来即可。
+      EMBEDDING_BASE_URL: https://api.siliconflow.cn/v1
+      EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_API_KEY: ""        # ← 填你的 SiliconFlow key 启用 AI Q&A
 ```
+
+> 兼容的 embedding provider 完整列表(SiliconFlow / OpenAI / 智谱 / 阿里 / 火山 / Voyage / Mistral / Jina / Together / 自托管 Ollama...)+ 切换说明 见 [`.env.example`](./.env.example)。**关键约束**:`EMBEDDING_MODEL` 必须跟 docker image 里自带的 sqlite 索引 build 时一致(默认 `BAAI/bge-m3`),换 model 必须双侧同步重 build 索引。
 
 ### 2) 启动
 

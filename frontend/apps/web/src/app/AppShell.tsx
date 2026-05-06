@@ -14,6 +14,7 @@ import { usePrimaryColor } from '@beecount/ui'
 import type { AppSection } from '@beecount/web-features'
 
 import { ChangelogDialog } from '../components/ChangelogDialog'
+import { GlobalAskDialog } from '../components/cmdk-ai/GlobalAskDialog'
 import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
 import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
@@ -225,6 +226,7 @@ export function AppShell({ token, onLogout }: Props) {
           <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
           <GlobalEntityDialogs />
           <GlobalEditDialogs />
+          <GlobalAskDialog />
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
         </SyncSocketProvider>

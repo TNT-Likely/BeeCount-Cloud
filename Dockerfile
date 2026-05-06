@@ -23,6 +23,18 @@ ENV VITE_APP_VERSION=$VERSION
 RUN pnpm -C apps/web build
 
 
+# ===== Stage 1.5: docs index 拉取 =====
+# 从 BeeCount-Website 拉构建好的 RAG 索引(由 Website CI 维护)。
+# Website 在 docs 改动时已经 build 好 sqlite 提交回 main,Cloud 这边只 cp。
+# 详见 .docs/web-cmdk-ai-doc-search.md。
+FROM alpine/git:latest AS docs-index-fetcher
+ARG DOCS_INDEX_REPO=https://github.com/TNT-Likely/BeeCount-Website.git
+ARG DOCS_INDEX_BRANCH=main
+RUN git clone --depth 1 --branch ${DOCS_INDEX_BRANCH} ${DOCS_INDEX_REPO} /website || \
+    mkdir -p /website/data
+RUN ls /website/data 2>/dev/null || echo 'no docs index found (Website CI 未跑或 repo private,A1 文档 Q&A 将降级)'
+
+
 # ===== Stage 2: Python 运行环境 =====
 FROM python:3.12-slim
 
@@ -59,6 +71,9 @@ COPY scripts /app/scripts
 
 # 静态资源（前端构建产物）
 COPY --from=frontend-builder /workspace/frontend/apps/web/dist /app/static
+
+# RAG docs 索引(没拉到时是空目录,server 会优雅降级到 fallback 提示)
+COPY --from=docs-index-fetcher /website/data /app/data
 
 # 数据目录:所有持久化数据(DB / 附件 / 备份 / 头像)统一放 /data,
 # 容器部署直接挂一个 volume 到 /data 就能全量备份。本地开发走 config.py

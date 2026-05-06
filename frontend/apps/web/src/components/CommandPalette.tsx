@@ -35,6 +35,7 @@ import {
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
+import { dispatchOpenAsk } from '../lib/askDialogEvents'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
@@ -232,6 +233,16 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
     navigate(`/app/transactions?q=${encodeURIComponent(q)}`)
   }, [navigate, onClose, query])
 
+  // 用户主动选「问 AI」选项 → 关 ⌘K + dispatch 全局事件,GlobalAskDialog 接住打开
+  // 跟「新建交易」(GlobalEditDialogs)同模式 — AI 弹窗跟 ⌘K 解耦,不被 cmdk
+  // 渲染规则吞内容
+  const handleAskAi = useCallback(() => {
+    const q = query.trim().replace(/^\?+\s*/, '') // 兼容 `?xxx` 前缀输入
+    if (!q) return
+    onClose()
+    dispatchOpenAsk(q)
+  }, [query, onClose])
+
   if (!open) return null
 
   const hasQuery = query.trim().length > 0
@@ -280,6 +291,12 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
                 label={t('cmdk.action.searchInList', { q: query.trim() })}
                 hint={t('cmdk.hint.enterToSearch')}
                 onSelect={handleSearchInList}
+              />
+              <Item
+                icon={<Sparkles className="h-4 w-4 text-primary" />}
+                label={t('cmdk.action.askAi', { q: query.trim() })}
+                hint="?"
+                onSelect={handleAskAi}
               />
             </Group>
           )}

@@ -6,6 +6,31 @@ services:
       - "8869:8080"
     volumes:
       - ./data:/data
+    environment:
+      # ===== 必填:JWT secret(改成你自己的 32+ 字节强随机串)=====
+      # JWT_SECRET: change-me-please-32-bytes-strong-random
+
+      # ===== AI 文档 Q&A(可选)=====
+      # 配了就启用 ⌘K 「问 AI:xxx」(基于 BeeCount-Website 文档做 RAG)。
+      # 不配也不影响其它功能 — 用户点「问 AI」时 fallback 到「跳官网搜文档」。
+      #
+      # 默认走 SiliconFlow + BAAI/bge-m3(免费 quota cover 几十万次问答)。
+      # 注册 https://siliconflow.cn 拿 key 填到下面就行。
+      #
+      # 重要:这里的 EMBEDDING_MODEL 必须跟 BeeCount-Website 索引 build 时一致
+      # (向量空间对齐),否则检索结果错乱。docker image 自带的 sqlite 是
+      # BAAI/bge-m3 build 的,默认值不要动。
+      #
+      # 换其它 provider(OpenAI / 智谱 / 阿里 / Ollama 自托管 ...)需要重 build
+      # Website 索引,见 .docs/web-cmdk-ai-doc-search.md。
+      EMBEDDING_BASE_URL: https://api.siliconflow.cn/v1
+      EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_API_KEY: ""  # ← 填你的 SiliconFlow key 启用 AI 文档 Q&A
+
+      # ===== 其它常用环境变量(详见 docs/DEPLOYMENT.md)=====
+      # CORS_ORIGINS: "https://your-domain.com"
+      # REGISTRATION_ENABLED: "false"
+      # TOTP_ISSUER_NAME: "BeeCount"
 
 volumes:
   beecount_data:

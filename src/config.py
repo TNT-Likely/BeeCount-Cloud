@@ -5,7 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # `.env.local` 后加载,字段覆盖 `.env` 同名键。本地调试场景(临时切代理 /
+    # 关 SSL 校验 / 用别的 EMBEDDING_API_KEY)可以只改 .env.local 不污染 .env,
+    # 且 .env.local 已经在 .gitignore 里,不会误提交。
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".env.local"),
+        extra="ignore",
+    )
 
     app_name: str = "BeeCount Cloud"
     app_env: str = "development"
@@ -71,6 +77,24 @@ class Settings(BaseSettings):
     # 空字符串 = 不附加 image 参数。Google Authenticator 不支持这个参数。
     # 推荐值:'https://<your-host>/branding/logo.png'
     totp_image_url: str = Field(default="", alias="TOTP_IMAGE_URL")
+
+    # ===== AI 文档 Q&A(/api/v1/ai/ask)=====
+    # Server-side embedding key —— 用来把 user 的查询问题转向量,跟 docs sqlite
+    # 索引(用 BGE-M3 预算好的 1024 维向量)做 cosine 检索。
+    # 必须跟 BeeCount-Website build_docs_index.py 用同一个 embedding 模型
+    # (默认 BGE-M3),否则向量空间不对齐 → 检索结果错乱。
+    # 部署者自己注册 https://siliconflow.cn 拿一把(免费 quota cover 几百万次问答),
+    # 或换 OpenAI / 自托管 BGE。空 → /ai/ask 返 503 AI_EMBEDDING_UNAVAILABLE,
+    # 前端 fallback 到「跳官网搜文档」。
+    embedding_base_url: str = Field(
+        default="https://api.siliconflow.cn/v1", alias="EMBEDDING_BASE_URL",
+    )
+    embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
+    embedding_model: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL")
+    embedding_timeout: float = Field(default=10.0, alias="EMBEDDING_TIMEOUT")
+    # AI outbound HTTP SSL 校验。本地走自签根证书代理(MITM)调试时可临时关掉。
+    # 默认 true — 生产 / docker 部署千万别关,关了会被中间人篡改流量也不知。
+    ai_http_verify_ssl: bool = Field(default=True, alias="AI_HTTP_VERIFY_SSL")
 
     @property
     def cors_origin_list(self) -> list[str]:

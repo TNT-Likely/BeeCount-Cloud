@@ -62,6 +62,7 @@
 
 - Full bookkeeping UI (transactions / accounts / categories / tags / budgets)
 - Interactive dashboard (mobile-like, responsive)
+- **⌘K command palette + AI doc Q&A** — ⌘K (macOS) / Ctrl+K from anywhere; type `?xxx` or pick "Ask AI" to RAG-retrieve from official docs and stream an answer using your App-configured LLM, with source links auto-attached
 - **PWA support** — Click the install icon in your browser's address bar to install as a desktop app; works offline with cached data
 - Trilingual — 简体中文 / 繁體中文 / English
 - Dark / light mode with personalized primary color
@@ -126,7 +127,18 @@ services:
       - "8869:8080"
     volumes:
       - ./data:/data
+    environment:
+      # —— Optional: enable ⌘K "AI Doc Q&A" (RAG over official docs) ——
+      # Leaving the key empty is fine — the feature falls back to "open docs site
+      # search". All other features keep working regardless.
+      # Default uses SiliconFlow's free tier (~100k queries/month for self-hosters).
+      # Register at https://siliconflow.cn to grab a free key.
+      EMBEDDING_BASE_URL: https://api.siliconflow.cn/v1
+      EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_API_KEY: ""        # ← fill in your SiliconFlow key to enable AI Q&A
 ```
+
+> Full list of compatible embedding providers (SiliconFlow / OpenAI / Zhipu / Aliyun / Doubao / Voyage / Mistral / Jina / Together / self-hosted Ollama / ...) and switching notes — see [`.env.example`](./.env.example). **Key constraint**: `EMBEDDING_MODEL` must match the embedding model used to build the bundled sqlite index (default `BAAI/bge-m3`); switching models requires rebuilding the index on both sides.
 
 ### 2) Start
 
