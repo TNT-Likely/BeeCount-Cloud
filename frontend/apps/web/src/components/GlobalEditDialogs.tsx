@@ -28,7 +28,7 @@ import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
 import { localizeError } from '../i18n/errors'
-import { onOpenEditCategory, onOpenEditTx } from '../lib/txDialogEvents'
+import { onOpenEditCategory, onOpenEditTx, onOpenNewTx } from '../lib/txDialogEvents'
 
 /**
  * 全局编辑容器 — 任何页都能触发交易/分类编辑弹窗,不需要 navigate 到对应
@@ -49,7 +49,7 @@ export function GlobalEditDialogs() {
   const t = useT()
   const toast = useToast()
   const { token } = useAuth()
-  const { ledgers, currency } = useLedgers()
+  const { ledgers, currency, activeLedgerId } = useLedgers()
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
@@ -140,6 +140,30 @@ export function GlobalEditDialogs() {
       setEditTxOpen(true)
     })
   }, [loadRefsForLedger, writableLedgers])
+
+  // 监听全局 openNewTx 事件 — CmdK / CalendarPage / 任意页 dispatch 都接住,
+  // 不再要求触发方先 navigate 到 transactions 再 dispatch。
+  // prefill.happenedAt:CalendarPage 选中某日 + 点新增时填充;
+  // prefill.ledgerId:CalendarPage 把当前账本带过来;CmdK 不传走 active ledger。
+  useEffect(() => {
+    return onOpenNewTx(async (prefill) => {
+      const ledgerId =
+        prefill?.ledgerId ||
+        (activeLedgerId &&
+        writableLedgers.some((l) => l.ledger_id === activeLedgerId)
+          ? activeLedgerId
+          : writableLedgers[0]?.ledger_id) ||
+        ''
+      setEditTxLedgerId(ledgerId)
+      const defaults = txDefaults()
+      setEditTxForm({
+        ...defaults,
+        happened_at: prefill?.happenedAt || defaults.happened_at,
+      })
+      await loadRefsForLedger(ledgerId)
+      setEditTxOpen(true)
+    })
+  }, [loadRefsForLedger, writableLedgers, activeLedgerId])
 
   // ledger 切换(理论上编辑模式下 ledger 不可改,新建模式下才能切)
   const handleLedgerChange = useCallback(

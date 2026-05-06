@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
   BookOpen,
+  CalendarDays,
   CornerDownLeft,
   CreditCard,
   FileBarChart2,
@@ -133,17 +134,12 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
     [setActiveLedgerId, onClose],
   )
 
-  // 「新建交易」— 跳到交易页(若已在则保持)+ 派发事件触发弹窗
+  // 「新建交易」— GlobalEditDialogs 在 AppShell 顶层全局监听,任何页面都能直接
+  // 派发新建事件,不再需要先 navigate 到 /app/transactions。
   const handleNewTransaction = useCallback(() => {
     onClose()
-    if (window.location.pathname !== '/app/transactions') {
-      navigate('/app/transactions')
-    }
-    // navigate 是 sync,但 React mount 是 async — 用 setTimeout 让 TransactionsPage
-    // 的 useEffect 注册监听器后再 dispatch。50ms 是经验值,够 SPA 切换又不让用户感
-    // 知到延迟。如果已在 TransactionsPage,setTimeout(0) 也够。
-    setTimeout(() => dispatchOpenNewTx(), 50)
-  }, [navigate, onClose])
+    dispatchOpenNewTx()
+  }, [onClose])
 
   // 「点击交易结果」— 跳到交易页 + 打开详情弹窗(从详情可二次进编辑)
   const handleSelectTransaction = useCallback(
@@ -371,6 +367,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
           <Group heading={t('cmdk.group.navigation')}>
             <Item icon={<LayoutDashboard className="h-4 w-4" />} label={t('nav.overview')} onSelect={() => goto('overview')} />
             <Item icon={<Receipt className="h-4 w-4" />} label={t('nav.transactions')} onSelect={() => goto('transactions')} />
+            <Item icon={<CalendarDays className="h-4 w-4" />} label={t('nav.calendar')} onSelect={() => goto('calendar')} />
             <Item icon={<Wallet className="h-4 w-4" />} label={t('nav.accounts')} onSelect={() => goto('accounts')} />
             <Item icon={<FolderTree className="h-4 w-4" />} label={t('nav.categories')} onSelect={() => goto('categories')} />
             <Item icon={<Tag className="h-4 w-4" />} label={t('nav.tags')} onSelect={() => goto('tags')} />

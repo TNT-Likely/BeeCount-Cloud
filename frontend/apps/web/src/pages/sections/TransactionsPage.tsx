@@ -88,10 +88,7 @@ import {
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { localizeError } from '../../i18n/errors'
-import {
-  dispatchOpenDetailTx,
-  onOpenNewTx,
-} from '../../lib/txDialogEvents'
+import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 
@@ -1438,22 +1435,9 @@ export function TransactionsPage() {
     if (ids.length > 0) ensureIconsLoaded(ids)
   }, [route.section, categories, ensureIconsLoaded])
 
-  // CommandPalette 触发「新建交易」时本页 setForm + 开 Dialog。
-  // 编辑事件已交给 GlobalEditDialogs 全局监听处理(详情→编辑链可在任何页面工作)。
-  useEffect(() => {
-    return onOpenNewTx(() => {
-      setTxForm(txDefaults())
-      if (
-        activeLedgerId &&
-        txWriteLedgerOptions.some((option) => option.ledger_id === activeLedgerId)
-      ) {
-        setTxWriteLedgerId(activeLedgerId)
-      } else {
-        setTxWriteLedgerId(txWriteLedgerOptions[0]?.ledger_id || '')
-      }
-      setTxDialogOpen(true)
-    })
-  }, [activeLedgerId, txWriteLedgerOptions])
+  // 「新建交易」全局事件已交给 GlobalEditDialogs 处理(详情→编辑链 + 新建链
+  // 都在 AppShell 顶层,任何页面派发都能接住,不需要先 navigate 到本页)。
+  // 本页保留独立 dialog 状态供页面内 「+ 新建交易」按钮使用。
 
   useEffect(() => {
     return () => {

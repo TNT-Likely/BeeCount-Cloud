@@ -1,6 +1,6 @@
-import { MoreHorizontal, ScrollText, Search } from 'lucide-react'
+import { CalendarDays, MoreHorizontal, ScrollText, Search } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import {
   DropdownMenu,
@@ -9,13 +9,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  LanguageToggle,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  ThemeToggle,
   useT,
 } from '@beecount/ui'
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
@@ -221,43 +219,55 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
             ) : null}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-0 rounded-2xl border border-border/40 bg-accent/20 px-0.5 py-0.5 md:gap-2 md:px-2 md:py-1">
+          <div className="flex shrink-0 items-center gap-0 rounded-2xl border border-border/40 bg-accent/20 px-0.5 py-0.5 md:gap-1 md:px-1 md:py-1">
             <button
               type="button"
               title={t('cmdk.headerButton')}
               aria-label={t('cmdk.headerButton')}
               onClick={() => setPaletteOpen(true)}
-              className="hidden h-9 items-center gap-2 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary md:flex"
+              className="hidden h-8 items-center gap-2 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary md:flex"
             >
               <Search className="h-3.5 w-3.5" />
               <span>{t('cmdk.headerButton')}</span>
-              {/* 单 chip 「⌘ K」/「⌃ K」 — 符号 + 空格 + 字母,Apple 菜单同款 */}                                                                                                                                                   
-              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-semibold leading-none">                                                                                                                               
-                  {navigator.platform.includes('Mac') ? '⌘ K' : '⌃ K'}                                                                                                                                                                
-              </kbd>         
+              {/* 单 chip 「⌘ K」/「⌃ K」 — 符号 + 空格 + 字母,Apple 菜单同款 */}
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-semibold leading-none">
+                  {navigator.platform.includes('Mac') ? '⌘ K' : '⌃ K'}
+              </kbd>
             </button>
             <button
               type="button"
               title={t('cmdk.headerButton')}
               aria-label={t('cmdk.headerButton')}
               onClick={() => setPaletteOpen(true)}
-              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:h-9 md:w-9 md:hidden"
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:hidden"
             >
               <Search className="h-4 w-4" />
             </button>
+            {/* 日历视图入口 — 主导航不放(避免跟 transactions 重复语义),走 header 图标。
+             *  方案 C 调整(`web-feature-gap-2026-05.md`):header 留 Search / Calendar /
+             *  Logs(admin) / Avatar 四个,Theme / Language 这两个 set-once 偏好下沉到
+             *  AvatarDropdown(inline segmented 切换,不嵌子菜单)。
+             *  尺寸统一 h-8 w-8(32px),跟 avatar 一致;桌面 gap-0 让 icon 互相紧贴,
+             *  避免方形 icon 之间的视觉间距比 icon↔avatar 大。 */}
+            <Link
+              to="/app/calendar"
+              title={t('nav.calendar')}
+              aria-label={t('nav.calendar')}
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
+            >
+              <CalendarDays className="h-4 w-4" />
+            </Link>
             {isAdmin ? (
               <button
                 type="button"
                 title={t('logs.open')}
                 aria-label={t('logs.open')}
                 onClick={onOpenLogs}
-                className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:h-9 md:w-9"
+                className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
               >
                 <ScrollText className="h-4 w-4" />
               </button>
             ) : null}
-            <LanguageToggle />
-            <ThemeToggle />
             {profileMe?.email ? (
               <AvatarDropdown
                 profileMe={{

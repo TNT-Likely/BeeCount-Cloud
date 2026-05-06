@@ -763,18 +763,23 @@ def workspace_analytics(
         if end_at is not None:
             tx_query = tx_query.where(ReadTxProjection.happened_at < end_at)
 
+        # 用本地时区折算的日期算"记账天数",跟 _bucket_key 同步;否则东半球用户在
+        # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
+        from datetime import timedelta as _td
+
         for tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
             amt = float(amount or 0.0)
             transaction_count += 1
-            distinct_days_set.add(happened_at.strftime("%Y-%m-%d"))
+            local_for_day = happened_at + _td(minutes=tz_offset_minutes)
+            distinct_days_set.add(local_for_day.strftime("%Y-%m-%d"))
             if first_tx_at is None or happened_at < first_tx_at:
                 first_tx_at = happened_at
             if last_tx_at is None or happened_at > last_tx_at:
                 last_tx_at = happened_at
-            bucket = _bucket_key(scope, happened_at)
+            bucket = _bucket_key(scope, happened_at, tz_offset_minutes)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
             if tx_type_val == "income":
                 income_total += amt

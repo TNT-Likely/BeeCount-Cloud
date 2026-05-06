@@ -31,8 +31,18 @@ const DETAIL_TX_EVENT = 'bee:open-detail-tx'
 let editTxHandlerCount = 0
 let editCategoryHandlerCount = 0
 
-export function dispatchOpenNewTx() {
-  window.dispatchEvent(new CustomEvent(NEW_TX_EVENT))
+/**
+ * 打开"新建交易" dialog 的可选预填项。
+ * - happenedAt:ISO 8601 字符串,日历视图选中某一天后调用,prefill 到 happened_at 字段
+ * - ledgerId:目标账本(留空 = 用 active ledger)
+ */
+export type NewTxPrefill = {
+  happenedAt?: string
+  ledgerId?: string
+}
+
+export function dispatchOpenNewTx(prefill?: NewTxPrefill) {
+  window.dispatchEvent(new CustomEvent(NEW_TX_EVENT, { detail: prefill }))
 }
 
 export function dispatchOpenEditTx(tx: WorkspaceTransaction) {
@@ -47,9 +57,13 @@ export function hasEditTxHandler(): boolean {
   return editTxHandlerCount > 0
 }
 
-export function onOpenNewTx(handler: () => void): () => void {
-  window.addEventListener(NEW_TX_EVENT, handler)
-  return () => window.removeEventListener(NEW_TX_EVENT, handler)
+export function onOpenNewTx(handler: (prefill?: NewTxPrefill) => void): () => void {
+  const wrapped = (e: Event) => {
+    const detail = (e as CustomEvent<NewTxPrefill | undefined>).detail
+    handler(detail)
+  }
+  window.addEventListener(NEW_TX_EVENT, wrapped)
+  return () => window.removeEventListener(NEW_TX_EVENT, wrapped)
 }
 
 export function onOpenEditTx(

@@ -377,11 +377,27 @@ def _projection_totals(
     )
 
 
-def _bucket_key(scope: AnalyticsScope, happened_at: datetime) -> str:
+def _bucket_key(
+    scope: AnalyticsScope,
+    happened_at: datetime,
+    tz_offset_minutes: int = 0,
+) -> str:
+    """按用户本地时区把 happened_at 折成 month-bucket(YYYY-MM-DD)或 year-bucket(YYYY-MM)。
+
+    跟 `_analytics_range` 同一原因 —— UTC 会把 CST `2026-04-16 00:00` 当成 UTC
+    `2026-04-15 16:00`,落到 4/15 桶里;日历 / analytics 跟用户感知错位一天。
+    `tz_offset_minutes` 跟 `_analytics_range` 同符号(JavaScript
+    `-new Date().getTimezoneOffset()`),CST 传 +480。默认 0 走 UTC,跟老客户端
+    行为保持一致。
+    """
+    from datetime import timedelta
+
     normalized = _to_utc(happened_at)
+    # 偏移到用户本地时区(naive 化),strftime 就是本地日期
+    local = normalized + timedelta(minutes=tz_offset_minutes)
     if scope == "month":
-        return normalized.strftime("%Y-%m-%d")
-    return normalized.strftime("%Y-%m")
+        return local.strftime("%Y-%m-%d")
+    return local.strftime("%Y-%m")
 
 
 def _analytics_range(

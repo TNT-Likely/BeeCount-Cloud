@@ -4,10 +4,13 @@ import {
   BookOpen,
   Bot,
   Github,
+  Languages,
   LogOut,
+  Moon,
   ScrollText,
   Smartphone,
   Sparkles,
+  Sun,
   User,
   Users,
   Wallet,
@@ -15,7 +18,7 @@ import {
 } from 'lucide-react'
 
 import type { AppSection, NavItem } from '@beecount/web-features'
-import { useT } from '@beecount/ui'
+import { useLocale, useT, useTheme } from '@beecount/ui'
 
 // Settings 子项的 key → icon 映射。avatarMenuItems 动态传入,根据 item.key
 // 反查对应 icon。新增 settings 子页时在这里加一行即可。
@@ -68,6 +71,8 @@ export function AvatarDropdown({
   onOpenAnnualReport,
 }: Props) {
   const t = useT()
+  const { locale, setLocale } = useLocale()
+  const { mode: themeMode, setMode: setThemeMode } = useTheme()
 
   const avatarSrc = withAvatarCacheBust(profileMe.avatar_url, profileMe.avatar_version)
 
@@ -192,6 +197,53 @@ export function AvatarDropdown({
             {t('avatar.github')}
           </a>
 
+          {/* Preferences 组:主题 / 语言 — inline segmented control,
+              不收子菜单。原 AppHeader 的 Theme/Language 图标搬到这里。 */}
+          <Divider />
+          <GroupLabel>{t('avatar.group.preferences')}</GroupLabel>
+          <PreferenceRow icon={themeMode === 'dark' ? Moon : Sun} label={t('shell.theme')}>
+            <Segment
+              active={themeMode === 'system'}
+              onClick={() => setThemeMode('system')}
+              title={t('theme.system')}
+            >
+              {t('theme.systemShort')}
+            </Segment>
+            <Segment
+              active={themeMode === 'light'}
+              onClick={() => setThemeMode('light')}
+              title={t('theme.light')}
+            >
+              <Sun className="h-3 w-3" />
+            </Segment>
+            <Segment
+              active={themeMode === 'dark'}
+              onClick={() => setThemeMode('dark')}
+              title={t('theme.dark')}
+            >
+              <Moon className="h-3 w-3" />
+            </Segment>
+          </PreferenceRow>
+          <PreferenceRow icon={Languages} label={t('shell.language')}>
+            <Segment
+              active={locale === 'zh-CN'}
+              onClick={() => setLocale('zh-CN')}
+              title="简体中文"
+            >
+              简
+            </Segment>
+            <Segment
+              active={locale === 'zh-TW'}
+              onClick={() => setLocale('zh-TW')}
+              title="繁體中文"
+            >
+              繁
+            </Segment>
+            <Segment active={locale === 'en'} onClick={() => setLocale('en')} title="English">
+              EN
+            </Segment>
+          </PreferenceRow>
+
           {/* Actions:logout */}
           <Divider />
           <GroupLabel>{t('avatar.group.actions')}</GroupLabel>
@@ -263,6 +315,55 @@ function MenuButton({
     >
       {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" /> : null}
       <span className="flex-1 truncate">{children}</span>
+    </button>
+  )
+}
+
+/** 偏好行:左侧 icon + label,右侧 segmented buttons。padding / 排版跟 MenuButton 对齐。 */
+function PreferenceRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: LucideIcon
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-muted-foreground">
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="flex-1 truncate">{label}</span>
+      <div className="inline-flex items-center overflow-hidden rounded-md border border-border/60">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** segmented 单个段。active 高亮主题色,其余 muted。 */
+function Segment({
+  children,
+  active,
+  onClick,
+  title,
+}: {
+  children: React.ReactNode
+  active: boolean
+  onClick: () => void
+  title?: string
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`flex h-6 min-w-[26px] items-center justify-center px-1.5 text-[10px] font-medium transition-colors first:border-l-0 [&+button]:border-l [&+button]:border-border/60 ${
+        active
+          ? 'bg-primary/15 text-primary'
+          : 'bg-card text-muted-foreground hover:bg-muted'
+      }`}
+    >
+      {children}
     </button>
   )
 }

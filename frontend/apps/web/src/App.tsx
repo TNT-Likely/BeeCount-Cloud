@@ -27,6 +27,9 @@ const AdminUsersPage = lazy(() =>
 const BudgetsPage = lazy(() =>
   import('./pages/sections/BudgetsPage').then((m) => ({ default: m.BudgetsPage })),
 )
+const CalendarPage = lazy(() =>
+  import('./pages/sections/CalendarPage').then((m) => ({ default: m.CalendarPage })),
+)
 const CategoriesPage = lazy(() =>
   import('./pages/sections/CategoriesPage').then((m) => ({ default: m.CategoriesPage })),
 )
@@ -184,6 +187,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <TransactionsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="calendar"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <CalendarPage />
             </Suspense>
           }
         />
