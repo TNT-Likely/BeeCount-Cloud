@@ -2,6 +2,7 @@
   "name": "beecount-frontend",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.15.1",
   "scripts": {
     "build": "pnpm -r --filter ./apps/* build",
     "test": "pnpm -r --filter ./apps/* test",
