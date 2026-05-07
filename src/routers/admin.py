@@ -20,6 +20,7 @@ from ..ledger_access import (
 )
 from ..logging_ring import get_ring_buffer
 from ..models import (
+    AttachmentFile,
     AuditLog,
     BackupArtifact,
     BackupSnapshot,
@@ -44,6 +45,9 @@ from ..schemas import (
     AdminBackupUploadSnapshotRequest,
     AdminDeviceListOut,
     AdminDeviceOut,
+    AdminIntegrityIssue,
+    AdminIntegrityIssueSample,
+    AdminIntegrityScanOut,
     AdminLogEntryOut,
     AdminLogListOut,
     AdminOverviewOut,
@@ -497,6 +501,306 @@ def admin_overview(
             )
             or 0
         ),
+    )
+
+
+@router.get("/integrity/scan", response_model=AdminIntegrityScanOut)
+def integrity_scan(
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    _admin_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> AdminIntegrityScanOut:
+    """全局数据完整性扫描(只读)。
+
+    扫描内容(逐 ledger):
+      1. orphan_tx_category   — 交易引用了不存在的 category(category_sync_id 没匹配)
+      2. orphan_tx_account    — 同上 account
+      3. orphan_tx_from_account — transfer 的 from_account 没匹配
+      4. orphan_tx_to_account   — transfer 的 to_account 没匹配
+      5. future_tx            — happened_at > now(可能客户端时区乱)
+      6. zero_amount_tx       — amount == 0(理应被前端拦下)
+      7. unused_category      — 没有交易引用的分类(信息性,不一定是 bug)
+      8. unused_account       — 同上 account(信息性)
+      9. unused_tag           — 同上 tag(信息性)
+
+    没有自动修复,扫描只读。修问题用 admin 已有的 CRUD 接口或直接 SQL。
+    """
+    issues: list[AdminIntegrityIssue] = []
+    SAMPLE_LIMIT = 5
+    now_utc = datetime.now(timezone.utc)
+
+    # 拉所有 ledger + owner email
+    ledger_rows = db.execute(
+        select(Ledger.id, Ledger.name, User.email)
+        .join(User, User.id == Ledger.user_id)
+    ).all()
+
+    for ledger_id, ledger_name, owner_email in ledger_rows:
+        # ===== Orphan tx 系列 =====
+        # 1. category orphan: 严格定义 — tx 既没有 category_name(用户什么都看
+        # 不到),又有一个悬空的 category_sync_id。只要 category_name 有值,
+        # UI 能正常显示分类名,就不算"用户感知的孤儿"。
+        # 这条规则避免对跨账本迁移 / 历史数据的误报 — 它们 sync_id 可能悬空
+        # 但 name 仍能显示,不影响日常使用。
+        orphan_cat_rows = db.execute(
+            select(
+                ReadTxProjection.sync_id,
+                ReadTxProjection.category_name,
+                ReadTxProjection.category_sync_id,
+            )
+            .where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.tx_type != "transfer",  # 转账没分类
+                # category_name 为空(用户在 UI 上看不到分类)
+                or_(
+                    ReadTxProjection.category_name.is_(None),
+                    ReadTxProjection.category_name == "",
+                ),
+            )
+            .limit(SAMPLE_LIMIT * 20)
+        ).all()
+        if orphan_cat_rows:
+            issues.append(AdminIntegrityIssue(
+                issue_type="orphan_tx_category",
+                ledger_id=ledger_id,
+                ledger_name=ledger_name,
+                owner_email=owner_email,
+                count=len(orphan_cat_rows),
+                samples=[
+                    AdminIntegrityIssueSample(
+                        sync_id=row[0],
+                        label=f"{row[1] or '(无名)'}",
+                        extra={"category_sync_id": row[2]},
+                    )
+                    for row in orphan_cat_rows[:SAMPLE_LIMIT]
+                ],
+            ))
+
+        # 2. account orphan: 同 category — 只在 account_name 为空时才算 orphan
+        # (转账类型有自己的 from/to 字段,这里不管;非转账如果连 account_name
+        # 都没有,UI 会显示 "-" 占位,确实是孤儿)
+        orphan_acc_rows = db.execute(
+            select(
+                ReadTxProjection.sync_id,
+                ReadTxProjection.account_name,
+                ReadTxProjection.account_sync_id,
+            )
+            .where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.tx_type != "transfer",
+                or_(
+                    ReadTxProjection.account_name.is_(None),
+                    ReadTxProjection.account_name == "",
+                ),
+                # 排除掉 mobile 端允许的"无账户"交易(account_sync_id 也为空)
+                # 那是合法状态,不算孤儿
+                ReadTxProjection.account_sync_id.is_not(None),
+            )
+            .limit(SAMPLE_LIMIT * 20)
+        ).all()
+        if orphan_acc_rows:
+            issues.append(AdminIntegrityIssue(
+                issue_type="orphan_tx_account",
+                ledger_id=ledger_id,
+                ledger_name=ledger_name,
+                owner_email=owner_email,
+                count=len(orphan_acc_rows),
+                samples=[
+                    AdminIntegrityIssueSample(
+                        sync_id=row[0],
+                        label=f"{row[1] or '(无名)'}",
+                        extra={"account_sync_id": row[2]},
+                    )
+                    for row in orphan_acc_rows[:SAMPLE_LIMIT]
+                ],
+            ))
+
+        # 3+4. transfer 的 from/to account orphan — 同样只在 name 为空时
+        # 才算孤儿(转账必须有两端,name 缺失等于断了一条腿)
+        for col, sync_col, issue_type in (
+            (ReadTxProjection.from_account_name, "from_account_sync_id", "orphan_tx_from_account"),
+            (ReadTxProjection.to_account_name, "to_account_sync_id", "orphan_tx_to_account"),
+        ):
+            sync_attr = getattr(ReadTxProjection, sync_col)
+            rows = db.execute(
+                select(ReadTxProjection.sync_id, col, sync_attr)
+                .where(
+                    ReadTxProjection.ledger_id == ledger_id,
+                    ReadTxProjection.tx_type == "transfer",
+                    or_(col.is_(None), col == ""),
+                    sync_attr.is_not(None),
+                )
+                .limit(SAMPLE_LIMIT * 20)
+            ).all()
+            if rows:
+                issues.append(AdminIntegrityIssue(
+                    issue_type=issue_type,
+                    ledger_id=ledger_id,
+                    ledger_name=ledger_name,
+                    owner_email=owner_email,
+                    count=len(rows),
+                    samples=[
+                        AdminIntegrityIssueSample(
+                            sync_id=row[0],
+                            label=f"{row[1] or '(无名)'}",
+                            extra={sync_col: row[2]},
+                        )
+                        for row in rows[:SAMPLE_LIMIT]
+                    ],
+                ))
+
+        # 5. 未来 tx
+        future_rows = db.execute(
+            select(ReadTxProjection.sync_id, ReadTxProjection.happened_at, ReadTxProjection.note)
+            .where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.happened_at > now_utc,
+            )
+            .limit(SAMPLE_LIMIT * 20)
+        ).all()
+        if future_rows:
+            issues.append(AdminIntegrityIssue(
+                issue_type="future_tx",
+                ledger_id=ledger_id,
+                ledger_name=ledger_name,
+                owner_email=owner_email,
+                count=len(future_rows),
+                samples=[
+                    AdminIntegrityIssueSample(
+                        sync_id=row[0],
+                        label=row[2] or "(无备注)",
+                        extra={"happened_at": row[1].isoformat() if row[1] else None},
+                    )
+                    for row in future_rows[:SAMPLE_LIMIT]
+                ],
+            ))
+
+        # 6. 0 元 tx
+        zero_rows = db.execute(
+            select(ReadTxProjection.sync_id, ReadTxProjection.note, ReadTxProjection.tx_type)
+            .where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.amount == 0,
+            )
+            .limit(SAMPLE_LIMIT * 20)
+        ).all()
+        if zero_rows:
+            issues.append(AdminIntegrityIssue(
+                issue_type="zero_amount_tx",
+                ledger_id=ledger_id,
+                ledger_name=ledger_name,
+                owner_email=owner_email,
+                count=len(zero_rows),
+                samples=[
+                    AdminIntegrityIssueSample(
+                        sync_id=row[0],
+                        label=row[1] or "(无备注)",
+                        extra={"tx_type": row[2]},
+                    )
+                    for row in zero_rows[:SAMPLE_LIMIT]
+                ],
+            ))
+
+        # 9. 孤儿附件:AttachmentFile 行存在,但已经没有任何 tx/category 引用
+        # 通常 gc_orphan_attachments 在 tx/category 删除时同步清,但备份恢复 /
+        # 异常 commit 路径可能漏 — 这里扫出来,admin 可手动清理或写脚本批量删。
+        orphan_att_rows = db.execute(
+            select(
+                AttachmentFile.id,
+                AttachmentFile.file_name,
+                AttachmentFile.size_bytes,
+                AttachmentFile.created_at,
+            )
+            .where(
+                AttachmentFile.ledger_id == ledger_id,
+                # 扫两种引用:tx attachments_json + category icon
+                ~select(ReadTxProjection.sync_id)
+                .where(
+                    ReadTxProjection.ledger_id == ledger_id,
+                    or_(
+                        ReadTxProjection.attachments_json.like(
+                            text("'%\"cloudFileId\":\"' || attachment_files.id || '\"%'")
+                        ),
+                        ReadTxProjection.attachments_json.like(
+                            text("'%\"cloudFileId\": \"' || attachment_files.id || '\"%'")
+                        ),
+                    ),
+                )
+                .exists(),
+                ~select(ReadCategoryProjection.sync_id)
+                .where(
+                    ReadCategoryProjection.ledger_id == ledger_id,
+                    ReadCategoryProjection.icon_cloud_file_id == AttachmentFile.id,
+                )
+                .exists(),
+            )
+            .limit(SAMPLE_LIMIT * 20)
+        ).all()
+        if orphan_att_rows:
+            issues.append(AdminIntegrityIssue(
+                issue_type="orphan_attachment",
+                ledger_id=ledger_id,
+                ledger_name=ledger_name,
+                owner_email=owner_email,
+                count=len(orphan_att_rows),
+                samples=[
+                    AdminIntegrityIssueSample(
+                        sync_id=row[0],
+                        label=row[1] or "(未命名附件)",
+                        extra={
+                            "size_bytes": row[2],
+                            "created_at": row[3].isoformat() if row[3] else None,
+                        },
+                    )
+                    for row in orphan_att_rows[:SAMPLE_LIMIT]
+                ],
+            ))
+
+        # 7-9. 未引用的实体(信息性,不算 bug,但帮助 admin 找冗余数据)
+        for proj_model, proj_name_col, ref_col, issue_type in (
+            (ReadCategoryProjection, "name", ReadTxProjection.category_sync_id, "unused_category"),
+            (ReadAccountProjection, "name", ReadTxProjection.account_sync_id, "unused_account"),
+            (ReadTagProjection, "name", None, "unused_tag"),  # tag 在 tx 上是 string 形式存的,跳过
+        ):
+            if ref_col is None:
+                continue  # tag 引用关系比较复杂,先跳
+            unused_rows = db.execute(
+                select(
+                    proj_model.sync_id,
+                    getattr(proj_model, proj_name_col),
+                )
+                .where(
+                    proj_model.ledger_id == ledger_id,
+                    ~select(ref_col)
+                    .where(
+                        ReadTxProjection.ledger_id == ledger_id,
+                        ref_col == proj_model.sync_id,
+                    )
+                    .exists(),
+                )
+                .limit(SAMPLE_LIMIT * 20)
+            ).all()
+            if unused_rows:
+                issues.append(AdminIntegrityIssue(
+                    issue_type=issue_type,
+                    ledger_id=ledger_id,
+                    ledger_name=ledger_name,
+                    owner_email=owner_email,
+                    count=len(unused_rows),
+                    samples=[
+                        AdminIntegrityIssueSample(
+                            sync_id=row[0],
+                            label=row[1] or "(无名)",
+                        )
+                        for row in unused_rows[:SAMPLE_LIMIT]
+                    ],
+                ))
+
+    return AdminIntegrityScanOut(
+        scanned_at=now_utc,
+        ledgers_total=len(ledger_rows),
+        issues_total=sum(issue.count for issue in issues),
+        issues=issues,
     )
 
 

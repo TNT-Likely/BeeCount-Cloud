@@ -12,6 +12,7 @@ export type AppRoute =
 
 export const APP_SECTIONS: AppSection[] = [
   'transactions',
+  'calendar',
   'accounts',
   'categories',
   'tags',
@@ -23,7 +24,8 @@ export const APP_SECTIONS: AppSection[] = [
   'settings-ai',
   'settings-health',
   'settings-devices',
-  'admin-users'
+  'admin-users',
+  'admin-backup'
 ]
 
 export const DEFAULT_APP_SECTION: AppSection = 'transactions'
@@ -69,6 +71,8 @@ function parseRootSection(parts: string[]): AppSection {
   switch (raw) {
     case 'transactions':
       return 'transactions'
+    case 'calendar':
+      return 'calendar'
     case 'accounts':
       return 'accounts'
     case 'categories':
@@ -104,6 +108,8 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
   switch (raw) {
     case 'transactions':
       return 'transactions'
+    case 'calendar':
+      return 'calendar'
     case 'accounts':
       return 'accounts'
     case 'categories':
@@ -148,13 +154,16 @@ export function parseRoute(pathname: string): AppRoute {
     return { kind: 'app', ledgerId: '', section: parseWorkspaceSection(parts.slice(2)) }
   }
   if (parts[1] === 'admin') {
-    return { kind: 'app', ledgerId: '', section: parts[2] === 'users' ? 'admin-users' : DEFAULT_APP_SECTION }
+    if (parts[2] === 'users') return { kind: 'app', ledgerId: '', section: 'admin-users' }
+    if (parts[2] === 'backup') return { kind: 'app', ledgerId: '', section: 'admin-backup' }
+    return { kind: 'app', ledgerId: '', section: DEFAULT_APP_SECTION }
   }
   if (parts[1] === 'settings') {
     return { kind: 'app', ledgerId: '', section: parseSettingsSection(parts.slice(2)) }
   }
   if (
     parts[1] === 'transactions' ||
+    parts[1] === 'calendar' ||
     parts[1] === 'accounts' ||
     parts[1] === 'categories' ||
     parts[1] === 'tags' ||
@@ -162,6 +171,9 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'overview'
   ) {
     return { kind: 'app', ledgerId: '', section: parseRootSection(parts.slice(1)) }
+  }
+  if (parts[1] === 'import') {
+    return { kind: 'app', ledgerId: '', section: 'import' }
   }
 
   const ledgerId = decodeURIComponent(parts[1])
@@ -179,6 +191,8 @@ export function routePath(route: AppRoute): string {
   switch (route.section) {
     case 'transactions':
       return '/app/transactions'
+    case 'calendar':
+      return '/app/calendar'
     case 'accounts':
       return '/app/accounts'
     case 'categories':
@@ -203,5 +217,9 @@ export function routePath(route: AppRoute): string {
       return '/app/settings/devices'
     case 'admin-users':
       return '/app/admin/users'
+    case 'admin-backup':
+      return '/app/admin/backup'
+    case 'import':
+      return '/app/import'
   }
 }

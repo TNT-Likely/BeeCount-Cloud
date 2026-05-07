@@ -59,6 +59,51 @@ export function CategoryIcon({
       />
     )
   }
+  // iconType='custom' + 有 cloud file id + cache 里 entry 还是 undefined →
+  // **下载中**(AttachmentCache 区分:undefined=未尝试/in-flight,空串=已尝试
+  // 但 fail/non-image,blob URL=已加载完成)。这种情况下不要先渲 sync fallback
+  // 再切 img,中间帧会闪一下。返回透明占位,占住宽高不挪位。
+  if (
+    kind === 'custom' &&
+    cloudFileId &&
+    iconPreviewUrlByFileId &&
+    iconPreviewUrlByFileId[cloudFileId] === undefined
+  ) {
+    return (
+      <span
+        aria-hidden
+        style={{
+          display: 'inline-block',
+          width: size,
+          height: size,
+          ...style,
+        }}
+      />
+    )
+  }
+  // iconType='custom' 但既没有 cloud blob 也不是合法 URL —— 大概率是 app 端
+  // 上传时本地文件已经丢了(_uploadCategoryIcons 静默 skip),server 端
+  // icon_cloud_file_id 留空,或者 cache 已经下载失败(空串)。这种情况下用
+  // 'sync' 半透明字形作为"未同步"提示,跟默认 'category' 图标区分开。
+  if (kind === 'custom') {
+    return (
+      <span
+        aria-hidden
+        title="custom icon not synced"
+        className={`material-symbols-outlined ${className || ''}`.trim()}
+        style={{
+          fontSize: size,
+          lineHeight: 1,
+          color: color || 'currentColor',
+          opacity: 0.45,
+          fontVariationSettings: `'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' ${size}`,
+          ...style,
+        }}
+      >
+        sync
+      </span>
+    )
+  }
 
   const name = resolveMaterialIconName(normalized)
   return (

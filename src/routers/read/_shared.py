@@ -377,11 +377,27 @@ def _projection_totals(
     )
 
 
-def _bucket_key(scope: AnalyticsScope, happened_at: datetime) -> str:
+def _bucket_key(
+    scope: AnalyticsScope,
+    happened_at: datetime,
+    tz_offset_minutes: int = 0,
+) -> str:
+    """按用户本地时区把 happened_at 折成 month-bucket(YYYY-MM-DD)或 year-bucket(YYYY-MM)。
+
+    跟 `_analytics_range` 同一原因 —— UTC 会把 CST `2026-04-16 00:00` 当成 UTC
+    `2026-04-15 16:00`,落到 4/15 桶里;日历 / analytics 跟用户感知错位一天。
+    `tz_offset_minutes` 跟 `_analytics_range` 同符号(JavaScript
+    `-new Date().getTimezoneOffset()`),CST 传 +480。默认 0 走 UTC,跟老客户端
+    行为保持一致。
+    """
+    from datetime import timedelta
+
     normalized = _to_utc(happened_at)
+    # 偏移到用户本地时区(naive 化),strftime 就是本地日期
+    local = normalized + timedelta(minutes=tz_offset_minutes)
     if scope == "month":
-        return normalized.strftime("%Y-%m-%d")
-    return normalized.strftime("%Y-%m")
+        return local.strftime("%Y-%m-%d")
+    return local.strftime("%Y-%m")
 
 
 def _analytics_range(
@@ -442,6 +458,35 @@ def _analytics_range(
     start_local = datetime(year, 1, 1, tzinfo=tz)
     end_local = datetime(year + 1, 1, 1, tzinfo=tz)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), f"{year:04d}"
+
+
+# ---------------------------------------------------------------------------
+# CSV 导出辅助
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_CSV_NEEDS_QUOTE = (",", '"', "\n", "\r")
+_FILENAME_BAD = _re.compile(r'[\\/:*?"<>|\r\n]')
+
+
+def _csv_field(value: Any) -> str:
+    """RFC 4180 字段转义。None / "" → 空;含 , " \\n \\r → 双引号包裹 + 转义。"""
+    if value is None:
+        return ""
+    s = str(value)
+    if s == "":
+        return ""
+    if any(c in s for c in _CSV_NEEDS_QUOTE):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _sanitize_filename(name: str | None, max_len: int = 64) -> str:
+    """文件系统安全的文件名片段。Windows 上 / \\ : * ? \" < > | 都禁;两端空格点也清。"""
+    safe = _FILENAME_BAD.sub("_", (name or "").strip()) or "ledger"
+    safe = safe.strip(" .") or "ledger"
+    return safe[:max_len]
 
 
 # ---------------------------------------------------------------------------
@@ -523,4 +568,6 @@ __all__ = [
     '_projection_totals',
     '_bucket_key',
     '_analytics_range',
+    '_csv_field',
+    '_sanitize_filename',
 ]

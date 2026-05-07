@@ -102,3 +102,30 @@ def create_refresh_token(
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+
+
+def create_2fa_challenge_token(
+    user_id: str,
+    *,
+    expires_in_seconds: int = 300,
+    client_type: str = "app",
+) -> str:
+    """5 分钟短期 JWT,type=totp_challenge。用户输完 6 位码后回 /2fa/verify 兑换真 token。"""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "type": "totp_challenge",
+        "client_type": client_type,
+        "jti": uuid4().hex,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=expires_in_seconds)).timestamp()),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_2fa_challenge_token(token: str) -> dict:
+    """解码并校验 type=totp_challenge。过期 / 签名错 / 类型错都抛异常。"""
+    payload = decode_token(token)
+    if payload.get("type") != "totp_challenge":
+        raise ValueError("Invalid token type for 2FA challenge")
+    return payload

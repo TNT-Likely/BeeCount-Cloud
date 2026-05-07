@@ -1,6 +1,8 @@
 import { authedDelete, authedPatch, authedPost } from './http'
 import type {
   AccountPayload,
+  BudgetCreatePayload,
+  BudgetUpdatePayload,
   CategoryPayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
@@ -75,6 +77,49 @@ export async function deleteTransaction(
   )
 }
 
+export type BatchDeleteTxFailure = {
+  tx_id: string
+  reason: 'not_found' | 'permission_denied' | 'conflict'
+  message?: string | null
+}
+
+export type BatchDeleteTxResponse = {
+  ledger_id: string
+  base_change_id: number
+  new_change_id: number
+  server_timestamp: string
+  deleted_tx_ids: string[]
+  failed: BatchDeleteTxFailure[]
+}
+
+/**
+ * POST /write/ledgers/{id}/transactions/batch/delete — 批量删除交易。
+ *
+ * 设计:.docs/web-tx-batch-actions.md
+ * - 单次最多 200 条(server 上限)
+ * - 部分失败不阻断:返回 deleted_tx_ids + failed[]
+ * - 服务端走 snapshot 锁 + 一次 SyncChange broadcast,跨设备实时更新
+ */
+export async function batchDeleteTransactions(
+  token: string,
+  options: {
+    ledgerId: string
+    txIds: string[]
+    baseChangeId?: number
+    idempotencyKey?: string
+  }
+): Promise<BatchDeleteTxResponse> {
+  return authedPost<BatchDeleteTxResponse>(
+    `/write/ledgers/${encodeURIComponent(options.ledgerId)}/transactions/batch/delete`,
+    token,
+    {
+      tx_ids: options.txIds,
+      base_change_id: options.baseChangeId ?? 0,
+    },
+    options.idempotencyKey
+  )
+}
+
 export async function createAccount(
   token: string,
   ledgerId: string,
@@ -114,12 +159,62 @@ export async function deleteAccount(
   token: string,
   ledgerId: string,
   accountId: string,
-  baseChangeId: number
+  baseChangeId: number,
 ): Promise<WriteCommitMeta> {
+  // server 端 snapshot_mutator.delete_account 会 raise 如果账户还有任何关联
+  // 交易 —— 客户端必须先看 tx_count,>0 时直接拒绝,不要走删除流程。
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/accounts/${encodeURIComponent(accountId)}`,
     token,
-    { base_change_id: baseChangeId }
+    { base_change_id: baseChangeId },
+  )
+}
+
+export async function createBudget(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: BudgetCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateBudget(
+  token: string,
+  ledgerId: string,
+  budgetId: string,
+  baseChangeId: number,
+  payload: BudgetUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteBudget(
+  token: string,
+  ledgerId: string,
+  budgetId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    { base_change_id: baseChangeId },
   )
 }
 

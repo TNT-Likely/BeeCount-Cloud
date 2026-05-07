@@ -1,18 +1,28 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   Activity,
+  AlertTriangle,
+  ArrowRight,
   BookOpen,
   Database,
   FolderTree,
+  Info,
   Receipt,
   RefreshCcw,
+  RefreshCw,
   Tag,
   Users,
   Wallet,
   Wifi,
 } from 'lucide-react'
 
-import type { AdminHealth, AdminOverview } from '@beecount/api-client'
+import type {
+  AdminHealth,
+  AdminIntegrityIssue,
+  AdminIntegrityIssueSample,
+  AdminIntegrityScan,
+  AdminOverview,
+} from '@beecount/api-client'
 import {
   Button,
   Card,
@@ -26,7 +36,11 @@ import { useAuth } from '../../context/AuthContext'
 interface Props {
   adminHealth: AdminHealth | null
   adminOverview: AdminOverview | null
+  integrity: AdminIntegrityScan | null
+  integrityLoading: boolean
   onRefresh: () => void
+  onRefreshIntegrity: () => void
+  onJumpToSample: (issueType: string, sample: AdminIntegrityIssueSample) => void
 }
 
 /**
@@ -34,7 +48,15 @@ interface Props {
  * 顶部 hero:系统状态 + DB / 在线用户 / 时间。
  * 管理员可见下方使用概览 6 张统计卡。
  */
-export function SettingsHealthSection({ adminHealth, adminOverview, onRefresh }: Props) {
+export function SettingsHealthSection({
+  adminHealth,
+  adminOverview,
+  integrity,
+  integrityLoading,
+  onRefresh,
+  onRefreshIntegrity,
+  onJumpToSample,
+}: Props) {
   const t = useT()
   const { isAdmin } = useAuth()
   const healthy = adminHealth?.status === 'ok'
@@ -155,8 +177,213 @@ export function SettingsHealthSection({ adminHealth, adminOverview, onRefresh }:
           </CardContent>
         </Card>
       ) : null}
+
+      {/* Admin only:数据完整性扫描 */}
+      {isAdmin ? (
+        <IntegrityPanel
+          scan={integrity}
+          loading={integrityLoading}
+          onRefresh={onRefreshIntegrity}
+          onJumpToSample={onJumpToSample}
+          t={t}
+        />
+      ) : null}
     </div>
   )
+}
+
+/** 数据完整性扫描面板 - 嵌入在 health 页底部(admin only)。 */
+function IntegrityPanel({
+  scan,
+  loading,
+  onRefresh,
+  onJumpToSample,
+  t,
+}: {
+  scan: AdminIntegrityScan | null
+  loading: boolean
+  onRefresh: () => void
+  onJumpToSample: (issueType: string, sample: AdminIntegrityIssueSample) => void
+  t: (key: string, params?: Record<string, string | number>) => string
+}) {
+  const grouped = groupByIssueType(scan?.issues || [])
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Database className="h-4 w-4 text-primary" />
+          <h3 className="text-sm font-medium">{t('admin.integrity.title')}</h3>
+          {scan ? (
+            <span className="text-xs text-muted-foreground">
+              {t('admin.integrity.notice.done', {
+                ledgers: scan.ledgers_total,
+                issues: scan.issues_total,
+              })}
+            </span>
+          ) : null}
+        </div>
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
+          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          {loading ? t('admin.integrity.scanning') : t('admin.integrity.runScan')}
+        </Button>
+      </div>
+
+      {scan && scan.issues.length === 0 ? (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-center">
+          <p className="text-sm text-emerald-700 dark:text-emerald-400">
+            ✓ {t('admin.integrity.allClean')}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="space-y-3">
+        {grouped.map(({ type, total, issues }) => (
+          <Card key={type} className="bc-panel">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between gap-3 border-b border-border/40 pb-3">
+                <div className="flex items-center gap-2">
+                  {SEVERITY_BY_TYPE[type] === 'warn' ? (
+                    <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  ) : (
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <h4 className="text-sm font-semibold">
+                    {t(`admin.integrity.issue.${type}`)}
+                  </h4>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
+                  {total}
+                </span>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                {t(`admin.integrity.issue.${type}.help`)}
+              </p>
+              <div className="mt-3 space-y-2">
+                {issues.map((iss) => (
+                  <IssueRow
+                    key={`${iss.issue_type}-${iss.ledger_id}`}
+                    issue={iss}
+                    onJumpToSample={(sample) => onJumpToSample(iss.issue_type, sample)}
+                    t={t}
+                  />
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function IssueRow({
+  issue,
+  t,
+  onJumpToSample,
+}: {
+  issue: AdminIntegrityIssue
+  t: (key: string, params?: Record<string, string | number>) => string
+  onJumpToSample: (sample: AdminIntegrityIssueSample) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">
+            {issue.ledger_name || '(未命名账本)'}{' '}
+            {issue.owner_email ? (
+              <span className="text-xs text-muted-foreground">
+                · {issue.owner_email}
+              </span>
+            ) : null}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {t('admin.integrity.row.count', { count: issue.count })}
+          </div>
+        </div>
+        {issue.samples.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-xs text-primary hover:underline"
+          >
+            {expanded
+              ? t('admin.integrity.row.hideSamples')
+              : t('admin.integrity.row.showSamples')}
+          </button>
+        ) : null}
+      </div>
+      {expanded ? (
+        <div className="mt-2 space-y-1 border-t border-border/40 pt-2">
+          {issue.samples.map((sample) => (
+            <button
+              key={sample.sync_id}
+              type="button"
+              onClick={() => onJumpToSample(sample)}
+              className="group flex w-full items-center justify-between gap-2 rounded border border-border/40 bg-background px-2 py-1.5 text-left text-[11px] transition hover:border-primary/40 hover:bg-primary/5"
+              title={t('admin.integrity.row.jumpHint')}
+            >
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-medium text-foreground">
+                    {sample.label}
+                  </span>
+                  <span className="truncate font-mono text-muted-foreground">
+                    {sample.sync_id.slice(0, 8)}…
+                  </span>
+                </div>
+                {sample.extra ? (
+                  <div className="truncate font-mono text-[10px] text-muted-foreground/70">
+                    {Object.entries(sample.extra)
+                      .filter(([, v]) => v !== null && v !== undefined)
+                      .map(([k, v]) => `${k}: ${v}`)
+                      .join(' · ')}
+                  </div>
+                ) : null}
+              </div>
+              <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground transition group-hover:text-primary" />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function groupByIssueType(
+  issues: AdminIntegrityIssue[],
+): Array<{ type: string; total: number; issues: AdminIntegrityIssue[] }> {
+  const map = new Map<string, AdminIntegrityIssue[]>()
+  for (const iss of issues) {
+    const list = map.get(iss.issue_type) || []
+    list.push(iss)
+    map.set(iss.issue_type, list)
+  }
+  return Array.from(map.entries())
+    .map(([type, group]) => ({
+      type,
+      total: group.reduce((s, g) => s + g.count, 0),
+      issues: group,
+    }))
+    .sort((a, b) => {
+      const sa = SEVERITY_BY_TYPE[a.type] === 'warn' ? 1 : 0
+      const sb = SEVERITY_BY_TYPE[b.type] === 'warn' ? 1 : 0
+      return sb - sa || b.total - a.total
+    })
+}
+
+const SEVERITY_BY_TYPE: Record<string, 'warn' | 'info'> = {
+  orphan_tx_category: 'warn',
+  orphan_tx_account: 'warn',
+  orphan_tx_from_account: 'warn',
+  orphan_tx_to_account: 'warn',
+  future_tx: 'warn',
+  zero_amount_tx: 'warn',
+  orphan_attachment: 'warn',
+  unused_category: 'info',
+  unused_account: 'info',
+  unused_tag: 'info',
 }
 
 /** Health hero 下方的 meta 方块(DB / 在线 / 时间):icon chip + label + value。 */

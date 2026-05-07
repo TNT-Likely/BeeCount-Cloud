@@ -136,6 +136,77 @@ class AuthTokenResponse(BaseModel):
     scopes: list[str] = Field(default_factory=list)
 
 
+class AuthLoginResponse(BaseModel):
+    """统一登录响应:requires_2fa=False 时直接是 token,True 时返回 challenge。
+
+    设计思路:为了兼容老 App / 老 Web 客户端(只读 access_token 等字段),
+    所有字段都做成 Optional;新客户端先看 requires_2fa 字段决定走哪条分支。
+    """
+
+    requires_2fa: bool = False
+
+    # 2FA 未启用 / 已通过验证时填这些(等价老 AuthTokenResponse):
+    user: UserOut | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    expires_in: int | None = None
+    device_id: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+
+    # 2FA 启用且未通过验证时填这些:
+    challenge_token: str | None = None
+    available_methods: list[str] = Field(default_factory=list)
+
+
+class TwoFASetupResponse(BaseModel):
+    """启用 2FA 第一步:server 生成 secret,客户端拿去画 QR / 手输。"""
+
+    secret: str  # base32,Web 端可手动输入到 authenticator
+    qr_code_uri: str  # otpauth://...,Web 端用 qrcode 库渲染成图片
+    expires_in: int = 300  # 5 分钟内未 confirm 则 secret 仍可被覆盖重来
+
+
+class TwoFAConfirmRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=8)  # 允许带空格
+
+
+class TwoFAConfirmResponse(BaseModel):
+    enabled: bool
+    recovery_codes: list[str]  # 仅在这一刻明文返回,服务器只存 sha256
+
+
+class TwoFAStatusResponse(BaseModel):
+    enabled: bool
+    enabled_at: datetime | None = None
+
+
+class TwoFAVerifyRequest(BaseModel):
+    challenge_token: str
+    method: Literal["totp", "recovery_code"] = "totp"
+    code: str
+    # 登录时这些跟 login 一致,verify 通过后调 _issue_tokens 用
+    device_id: str | None = None
+    device_name: str | None = None
+    platform: str | None = None
+    app_version: str | None = None
+    os_version: str | None = None
+    device_model: str | None = None
+    client_type: Literal["app", "web"] = "app"
+
+
+class TwoFADisableRequest(BaseModel):
+    password: str
+    code: str  # TOTP 6 位码,确认本人操作
+
+
+class TwoFARegenerateRequest(BaseModel):
+    code: str  # 当前 TOTP 6 位码
+
+
+class TwoFARegenerateResponse(BaseModel):
+    recovery_codes: list[str]
+
+
 class DeviceOut(BaseModel):
     id: str
     name: str
@@ -338,6 +409,32 @@ class AdminLogEntryOut(BaseModel):
     device_id: str | None = None
 
 
+class AdminIntegrityIssueSample(BaseModel):
+    """整体性扫描:单条 issue 样本(完整 list 可能很长,只回 5 条 spot check)"""
+
+    sync_id: str
+    label: str
+    extra: dict[str, Any] | None = None
+
+
+class AdminIntegrityIssue(BaseModel):
+    """单类问题在某 ledger 下的统计"""
+
+    issue_type: str  # "orphan_tx_category" | "orphan_tx_account" | ...
+    ledger_id: str
+    ledger_name: str | None
+    owner_email: str | None
+    count: int
+    samples: list[AdminIntegrityIssueSample]
+
+
+class AdminIntegrityScanOut(BaseModel):
+    scanned_at: datetime
+    ledgers_total: int
+    issues_total: int
+    issues: list[AdminIntegrityIssue]
+
+
 class AdminLogListOut(BaseModel):
     items: list[AdminLogEntryOut]
     capacity: int
@@ -404,6 +501,14 @@ class ReadAccountOut(BaseModel):
     ledger_name: str | None = None
     created_by_user_id: str | None = None
     created_by_email: str | None = None
+    # 扩展字段(mobile sync_engine 一直在 push 这些,server 现在落库 + round-trip,
+    # web 编辑也能完整保存):
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = None
+    payment_due_day: int | None = None
+    bank_name: str | None = None
+    card_last_four: str | None = None
 
 
 class ReadCategoryOut(BaseModel):
@@ -477,7 +582,10 @@ class WorkspaceAccountOut(ReadAccountOut):
 
 
 class WorkspaceCategoryOut(ReadCategoryOut):
-    pass
+    # 跨账本按该分类聚合的笔数。Web 列表展示用,跟 tags 的 tx_count 对齐。
+    # 不带 expense/income total — 分类本身已经按 kind 区分(支出/收入),
+    # 累计金额可在分类详情页另行查询。None = 历史接口可选不提供。
+    tx_count: int | None = None
 
 
 class WorkspaceTagOut(ReadTagOut):
@@ -626,6 +734,13 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     account_type: str | None = None
     currency: str | None = None
     initial_balance: float | None = None
+    # 扩展字段:跟 mobile lib/data/db.dart Account 表对齐,跨端可编辑。
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = Field(default=None, ge=1, le=31)
+    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    bank_name: str | None = None
+    card_last_four: str | None = Field(default=None, max_length=8)
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -633,6 +748,28 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     account_type: str | None = None
     currency: str | None = None
     initial_balance: float | None = None
+    note: str | None = None
+    credit_limit: float | None = None
+    billing_day: int | None = Field(default=None, ge=1, le=31)
+    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    bank_name: str | None = None
+    card_last_four: str | None = Field(default=None, max_length=8)
+
+
+class WriteBudgetCreateRequest(WriteBaseRequest):
+    type: Literal["total", "category"]
+    category_id: str | None = None
+    amount: float = Field(gt=0)
+    period: Literal["monthly", "weekly", "yearly"] = "monthly"
+    start_day: int = Field(default=1, ge=1, le=28)
+    enabled: bool = True
+
+
+class WriteBudgetUpdateRequest(WriteBaseRequest):
+    amount: float | None = Field(default=None, gt=0)
+    period: Literal["monthly", "weekly", "yearly"] | None = None
+    start_day: int | None = Field(default=None, ge=1, le=28)
+    enabled: bool | None = None
 
 
 class WriteCategoryCreateRequest(WriteBaseRequest):
@@ -716,3 +853,134 @@ class AttachmentBatchExistsRequest(BaseModel):
 
 class AttachmentBatchExistsResponse(BaseModel):
     items: list[AttachmentExistsItem] = Field(default_factory=list)
+
+
+# ============================================================================
+# Backup schemas — Web UI 写入 / 读取请求和响应。详见 .docs/backup-rclone-plan.md
+# ============================================================================
+
+
+class BackupRemoteCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")
+    backend_type: str = Field(min_length=1, max_length=32)
+    # rclone 配置字段(类型不同而异):s3 用 access_key_id/secret_access_key/...;
+    # gdrive 用 client_id/client_secret/token。server 不在此校验具体字段,直接
+    # 交给 rclone — 写完后立刻调 `rclone lsd <name>:` 测连通性,失败回写
+    # last_test_error。
+    config: dict[str, str] = Field(default_factory=dict)
+    # 是否对 backup tarball 做 age passphrase 加密。开启时 age_passphrase 必填
+    # (一旦丢失,该 remote 上的所有备份永久不可恢复)。
+    encrypted: bool = False
+    age_passphrase: str | None = None
+
+
+class BackupRemoteUpdateRequest(BaseModel):
+    config: dict[str, str] | None = None
+    age_passphrase: str | None = None
+    # 用户在编辑时切换 encrypted 状态(开/关) — 必须能持久化。
+    encrypted: bool | None = None
+
+
+class BackupRemoteOut(BaseModel):
+    id: int
+    name: str
+    backend_type: str
+    encrypted: bool
+    config_summary: dict | None = None
+    last_test_at: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_error: str | None = None
+    created_at: datetime
+
+
+class BackupRemoteTestResponse(BaseModel):
+    ok: bool
+    error: str | None = None
+    listing: list[str] | None = None
+
+
+class BackupScheduleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    cron_expr: str = Field(min_length=1, max_length=64)
+    retention_days: int = Field(ge=1, le=3650, default=30)
+    include_attachments: bool = True
+    enabled: bool = True
+    remote_ids: list[int] = Field(min_length=1)
+
+
+class BackupScheduleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    cron_expr: str | None = Field(default=None, min_length=1, max_length=64)
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+    include_attachments: bool | None = None
+    enabled: bool | None = None
+    remote_ids: list[int] | None = None
+
+
+class BackupScheduleOut(BaseModel):
+    id: int
+    name: str
+    cron_expr: str
+    retention_days: int
+    include_attachments: bool
+    enabled: bool
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    remote_ids: list[int] = Field(default_factory=list)
+    created_at: datetime
+
+
+class BackupRunTargetOut(BaseModel):
+    id: int
+    remote_id: int
+    remote_name: str | None = None
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    bytes_transferred: int | None = None
+    error_message: str | None = None
+
+
+class BackupRunOut(BaseModel):
+    id: int
+    schedule_id: int | None = None
+    schedule_name: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: str
+    backup_filename: str | None = None
+    bytes_total: int | None = None
+    error_message: str | None = None
+    log_text: str | None = None
+    targets: list[BackupRunTargetOut] = Field(default_factory=list)
+
+
+class BackupRunListOut(BaseModel):
+    items: list[BackupRunOut]
+    total: int
+
+
+# ============================================================================
+# Restore schemas (PR3 用)
+# ============================================================================
+
+
+class BackupRestoreOut(BaseModel):
+    """`<DATA_DIR>/restore/<run_id>/status.json` 的读视图。"""
+
+    run_id: int
+    phase: str  # 'downloading' / 'extracting' / 'done' / 'failed'
+    started_at: datetime
+    finished_at: datetime | None = None
+    bytes_total: int | None = None
+    bytes_downloaded: int | None = None
+    error_message: str | None = None
+    extracted_path: str | None = None
+    source_remote_id: int | None = None
+    source_remote_name: str | None = None
+    backup_filename: str | None = None
+
+
+class BackupRestoreListOut(BaseModel):
+    items: list[BackupRestoreOut]

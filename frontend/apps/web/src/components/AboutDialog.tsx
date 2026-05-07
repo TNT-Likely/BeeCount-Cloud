@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUpRight, CheckCircle2, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowUpRight,
+  BookOpen,
+  CheckCircle2,
+  Cloud,
+  Github,
+  Smartphone,
+  Sparkles,
+} from 'lucide-react'
 
 import {
   Button,
@@ -7,23 +15,29 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  useT
+  useT,
 } from '@beecount/ui'
 
 /**
- * "更新日志"弹窗 —— 顶部对比当前版本 vs GitHub latest release,下方按发布倒序
- * 列出每个 release 的 tag / 日期 / body。滚动到底部自动加载更多(per_page=10)。
+ * 「关于 BeeCount」弹窗 —— 之前的「更新日志」+「GitHub 仓库」两条菜单合一。
  *
- * 数据源:GitHub REST `GET /repos/{owner}/{repo}/releases?per_page=10&page=N`,
- * 无 token 调用,公开仓库够用(限额 60/h/IP)。body 是 markdown,我们用一个
- * 极简的 renderer(标题 / 列表 / 代码块 / 链接)避免再引一整个 markdown 库。
+ * 信息层级:
+ *   1. 顶部:版本对比头(当前 vs latest release,有更新弹升级 CTA)
+ *   2. 中部:三个项目仓库快捷链接(移动端 / 云端 / 文档站)
+ *   3. 下部:Release 列表(滚动到底自动加载更多)
  *
- * 当前版本走 env var `VITE_APP_VERSION`(CI 构建时从 git tag 注入,见
- * apps/web/src/env.d.ts + vite.config.ts)。没注入时显示 "—"。
+ * 数据源仍是 GitHub REST `GET /repos/.../releases?per_page=10&page=N`,匿名调
+ * 用,公开仓够用(60/h/IP 限额)。release body 用本地极简 markdown renderer。
+ *
+ * 当前版本走 env var `VITE_APP_VERSION`(CI 构建时从 git tag 注入)。
  */
 
-const GITHUB_API_BASE = 'https://api.github.com/repos/TNT-Likely/BeeCount-Cloud'
-const GITHUB_RELEASES_URL = 'https://github.com/TNT-Likely/BeeCount-Cloud/releases'
+const REPO_OWNER = 'TNT-Likely'
+const REPO_CLOUD = 'BeeCount-Cloud' // 本仓 → release / changelog 数据源
+const REPO_APP = 'BeeCount'
+const REPO_DOCS = 'BeeCount-Website'
+const GITHUB_API_BASE = `https://api.github.com/repos/${REPO_OWNER}/${REPO_CLOUD}`
+const GITHUB_RELEASES_URL = `https://github.com/${REPO_OWNER}/${REPO_CLOUD}/releases`
 const PAGE_SIZE = 10
 
 interface GithubRelease {
@@ -42,7 +56,6 @@ interface Props {
   onOpenChange: (open: boolean) => void
 }
 
-/** 简化版 markdown → HTML(安全 escape + 基础语法),够 release body 用,不引 library。 */
 function renderMarkdownLite(md: string): string {
   const escape = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -81,14 +94,12 @@ function renderMarkdownLite(md: string): string {
       out.push('<div class="h-2"></div>')
       continue
     }
-    // Headings
     const h = /^(#{1,6})\s+(.*)$/.exec(trimmed)
     if (h) {
-      const level = Math.min(h[1].length, 3) + 2 // h3/h4/h5,避免破坏弹窗层级
+      const level = Math.min(h[1].length, 3) + 2
       out.push(`<h${level} class="mt-3 text-sm font-semibold">${escape(h[2])}</h${level}>`)
       continue
     }
-    // List item
     if (/^\s*[-*]\s+/.test(trimmed)) {
       const item = trimmed.replace(/^\s*[-*]\s+/, '')
       out.push(`<div class="ml-4 list-disc pl-1 text-[12px] leading-relaxed before:content-['•'] before:mr-2 before:text-muted-foreground">${inlineFormat(escape(item))}</div>`)
@@ -101,17 +112,14 @@ function renderMarkdownLite(md: string): string {
 }
 
 function inlineFormat(escaped: string): string {
-  // link [text](url)
   let out = escaped.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     '<a class="text-primary underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href="$2">$1</a>'
   )
-  // inline code `x`
   out = out.replace(
     /`([^`]+)`/g,
     '<code class="rounded bg-muted/60 px-1 py-0.5 text-[11px]">$1</code>'
   )
-  // bold **x**
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   return out
 }
@@ -122,14 +130,13 @@ function formatDate(iso: string | null): string {
     return new Date(iso).toLocaleDateString(undefined, {
       year: 'numeric',
       month: 'short',
-      day: 'numeric'
+      day: 'numeric',
     })
   } catch {
     return iso
   }
 }
 
-/** 粗略判断是否"有更新可用":semver-ish 比较,完全为空走字符串直比。 */
 function isNewerVersion(latest: string | null, current: string | null): boolean {
   if (!latest || !current) return false
   const strip = (s: string) => s.replace(/^v/i, '').trim()
@@ -146,13 +153,12 @@ function isNewerVersion(latest: string | null, current: string | null): boolean 
     const b = cp[i]
     if (a === b) continue
     if (typeof a === 'number' && typeof b === 'number') return a > b
-    // 混合型直接降级到字符串比较
     return String(a ?? '') > String(b ?? '')
   }
   return false
 }
 
-export function ChangelogDialog({ open, onOpenChange }: Props) {
+export function AboutDialog({ open, onOpenChange }: Props) {
   const t = useT()
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [page, setPage] = useState(1)
@@ -168,19 +174,43 @@ export function ChangelogDialog({ open, onOpenChange }: Props) {
   const latestVersion = latestRelease?.tag_name || null
   const hasNew = isNewerVersion(latestVersion, currentVersion)
 
+  const repos = useMemo(
+    () => [
+      {
+        key: 'app',
+        icon: Smartphone,
+        title: t('about.repos.app.title'),
+        desc: t('about.repos.app.desc'),
+        url: `https://github.com/${REPO_OWNER}/${REPO_APP}`,
+      },
+      {
+        key: 'cloud',
+        icon: Cloud,
+        title: t('about.repos.cloud.title'),
+        desc: t('about.repos.cloud.desc'),
+        url: `https://github.com/${REPO_OWNER}/${REPO_CLOUD}`,
+      },
+      {
+        key: 'docs',
+        icon: BookOpen,
+        title: t('about.repos.docs.title'),
+        desc: t('about.repos.docs.desc'),
+        url: `https://github.com/${REPO_OWNER}/${REPO_DOCS}`,
+      },
+    ],
+    [t],
+  )
+
   const loadPage = useCallback(async (p: number) => {
     setLoading(true)
     setError(null)
     try {
       const res = await fetch(
         `${GITHUB_API_BASE}/releases?per_page=${PAGE_SIZE}&page=${p}`,
-        {
-          headers: { Accept: 'application/vnd.github+json' }
-        }
+        { headers: { Accept: 'application/vnd.github+json' } },
       )
       if (!res.ok) throw new Error(`GitHub ${res.status}`)
       const data = (await res.json()) as GithubRelease[]
-      // 过滤 draft / prerelease — prerelease 仍展示,draft 一般外部看不到但保险
       const cleaned = data.filter((r) => !r.draft)
       setReleases((prev) => (p === 1 ? cleaned : [...prev, ...cleaned]))
       if (cleaned.length < PAGE_SIZE) setHasMore(false)
@@ -192,7 +222,6 @@ export function ChangelogDialog({ open, onOpenChange }: Props) {
     }
   }, [])
 
-  // 首次打开时加载第一页(已打开过一次后切关/开不重复拉,避免浪费 GitHub 限额)
   useEffect(() => {
     if (!open) return
     if (loadedOnceRef.current) return
@@ -204,13 +233,10 @@ export function ChangelogDialog({ open, onOpenChange }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden">
         <DialogHeader>
-          <DialogTitle>{t('changelog.title')}</DialogTitle>
+          <DialogTitle>{t('about.title')}</DialogTitle>
         </DialogHeader>
 
-        {/* 版本对比 header:左中右三栏 —— 当前版本 / 最新版本 / 状态 CTA。
-            - 已是最新:绿色 CheckCircle2 + "已是最新"
-            - 有新版本:琥珀色 Sparkles + "升级到 vX" 按钮,点击跳 GitHub release
-            - 版本信息不完整(如本地 dev 或 GitHub 拉失败):只显示版本号,不弹 CTA */}
+        {/* 版本对比 header */}
         <div
           className={`flex items-center gap-3 rounded-xl border px-4 py-3.5 transition ${
             hasNew
@@ -262,9 +288,42 @@ export function ChangelogDialog({ open, onOpenChange }: Props) {
           </div>
         </div>
 
+        {/* 项目仓库 —— 三栏卡片,点击外链 */}
+        <div className="mt-3">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Github className="h-3 w-3" />
+            {t('about.reposHeader')}
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {repos.map(({ key, icon: Icon, title, desc, url }) => (
+              <a
+                key={key}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex flex-col gap-1 rounded-lg border border-border/50 bg-card px-3 py-2.5 transition hover:border-primary/40 hover:bg-primary/5"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Icon className="h-3.5 w-3.5 text-primary" />
+                  <span className="text-[12px] font-semibold text-foreground">
+                    {title}
+                  </span>
+                  <ArrowUpRight className="ml-auto h-3 w-3 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
+                </div>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {desc}
+                </p>
+              </a>
+            ))}
+          </div>
+        </div>
+
         {/* Release 列表 */}
+        <div className="mt-3 mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {t('about.changelogHeader')}
+        </div>
         <div
-          className="-mr-2 max-h-[55vh] space-y-4 overflow-y-auto pr-2"
+          className="-mr-2 max-h-[40vh] space-y-3 overflow-y-auto pr-2"
           onScroll={(e) => {
             const el = e.currentTarget
             if (
@@ -319,7 +378,6 @@ export function ChangelogDialog({ open, onOpenChange }: Props) {
             </div>
           ))}
 
-          {/* 底部状态 */}
           <div className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground">
             {loading ? (
               <span>{t('changelog.loading')}</span>

@@ -3,10 +3,11 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 import { EmptyState, useT } from '@beecount/ui'
 
+import { buildTagColorMap } from '../lib/tagColorPalette'
+
 import {
   TransactionRow,
-  TransactionRowVariant,
-  buildTagColorMap
+  TransactionRowVariant
 } from './TransactionRow'
 
 interface Props {
@@ -34,10 +35,18 @@ interface Props {
    *  prop 是为了避免旧调用点报类型错误，内部不再消费。 */
   resolveAttachmentPreviewUrl?: (ref: AttachmentRef) => Promise<string | null>
   onClickTag?: (tagName: string) => void
+  /** 行整体点击 → 打开详情弹窗。透传给 TransactionRow。 */
+  onSelect?: (row: ReadTransaction) => void
   /** 外层列表 wrapper className，比如弹窗里加 max-h + overflow-y-auto。 */
   className?: string
   emptyTitle?: string
   emptyDescription?: string
+  /** 批量选择模式 —— 行首渲染 checkbox,点行切换选中。 */
+  selectionMode?: boolean
+  /** 已选 sync_id 集合(selectionMode=true 时生效)。 */
+  selectedIds?: Set<string>
+  /** 切换选中。event 透传给上层判断 shift / meta。row.id 是 sync_id。 */
+  onToggleSelect?: (row: ReadTransaction, event: React.MouseEvent) => void
 }
 
 /**
@@ -62,9 +71,13 @@ export function TransactionList({
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
   onClickTag,
+  onSelect,
   className,
   emptyTitle,
-  emptyDescription
+  emptyDescription,
+  selectionMode = false,
+  selectedIds,
+  onToggleSelect
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -127,6 +140,10 @@ export function TransactionList({
                 canManage={canManage}
                 onPreviewAttachment={onPreviewAttachment}
                 onClickTag={onClickTag}
+                onSelect={onSelect}
+                selectionMode={selectionMode}
+                selected={selectedIds?.has(row.id) ?? false}
+                onToggleSelect={onToggleSelect}
               />
             </li>
           ))}

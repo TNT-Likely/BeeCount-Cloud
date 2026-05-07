@@ -1,10 +1,36 @@
 export type LoginResponse = {
-  access_token: string
-  refresh_token: string
+  /** 2FA 已启用且未验证时为 true,其余字段除 challenge_token / available_methods 外都 undefined */
+  requires_2fa?: boolean
+  // 2FA 未启用 / 已验证时填这些(后端 AuthLoginResponse 见 .docs/2fa-design.md):
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  device_id?: string
+  scopes?: string[]
+  user?: { id: string; email: string; is_admin?: boolean }
+  // 2FA 启用且未验证时填这些:
+  challenge_token?: string
+  available_methods?: Array<'totp' | 'recovery_code'>
+}
+
+export type TwoFASetupResponse = {
+  secret: string
+  qr_code_uri: string
   expires_in: number
-  device_id: string
-  scopes: string[]
-  user: { id: string; email: string; is_admin?: boolean }
+}
+
+export type TwoFAConfirmResponse = {
+  enabled: boolean
+  recovery_codes: string[]
+}
+
+export type TwoFAStatusResponse = {
+  enabled: boolean
+  enabled_at: string | null
+}
+
+export type TwoFARegenerateResponse = {
+  recovery_codes: string[]
 }
 
 export type ProfileAppearance = {
@@ -15,6 +41,45 @@ export type ProfileAppearance = {
   /** 交易行是否显示时间 */
   show_transaction_time?: boolean
 }
+
+/**
+ * AI 服务商单条配置 —— 字段命名严格对齐 mobile `AIServiceProviderConfig.toJson()`,
+ * server 是透传 JSON,**不要** snake_case 化(mobile 期待 `textProviderId` /
+ * `apiKey` / `isBuiltIn` 这种命名)。
+ */
+export type AIProvider = {
+  id: string
+  name: string
+  isBuiltIn?: boolean
+  apiKey?: string
+  baseUrl?: string
+  textModel?: string
+  visionModel?: string
+  audioModel?: string
+  createdAt?: string // ISO 8601
+}
+
+export type AICapabilityBinding = {
+  textProviderId?: string | null
+  visionProviderId?: string | null
+  speechProviderId?: string | null
+}
+
+/**
+ * 完整 AI 配置 snapshot —— 跟 mobile `AIProviderManager.snapshotForSync()` 对齐。
+ * server 的 `ai_config_json` 列存的就是这个 shape 序列化后的字符串。
+ */
+export type AIConfig = {
+  providers?: AIProvider[]
+  binding?: AICapabilityBinding
+  custom_prompt?: string
+  strategy?: string
+  bill_extraction_enabled?: boolean
+  use_vision?: boolean
+}
+
+/** 内置「智谱GLM」provider id —— 跟 mobile `zhipuDefault.id` 对齐,删除 fallback 用。 */
+export const BUILTIN_PROVIDER_ID = 'zhipu_glm'
 
 export type ProfileMe = {
   user_id: string
@@ -130,6 +195,18 @@ export type ReadAccount = {
   ledger_name?: string | null
   created_by_user_id?: string | null
   created_by_email?: string | null
+  /** 备注,所有类型可填。null = 未填。 */
+  note?: string | null
+  /** 信用额度,仅 credit_card。 */
+  credit_limit?: number | null
+  /** 账单日(1-31),仅 credit_card。 */
+  billing_day?: number | null
+  /** 还款日(1-31),仅 credit_card。 */
+  payment_due_day?: number | null
+  /** 开户行,bank_card / credit_card 元信息。 */
+  bank_name?: string | null
+  /** 卡号后四位,bank_card / credit_card。 */
+  card_last_four?: string | null
 }
 
 export type ReadCategory = {
@@ -210,6 +287,9 @@ export type WorkspaceCategory = ReadCategory & {
   ledger_name: string | null
   created_by_user_id: string | null
   created_by_email: string | null
+  // 服务端按 category_sync_id 聚合的笔数,跨所有账本累加(跟 dedup 后的展
+  // 示口径一致)。None = 历史接口未提供。
+  tx_count?: number | null
 }
 
 export type WorkspaceTag = ReadTag & {
@@ -313,6 +393,28 @@ export type AdminHealth = {
   time: string
 }
 
+export type AdminIntegrityIssueSample = {
+  sync_id: string
+  label: string
+  extra?: Record<string, unknown> | null
+}
+
+export type AdminIntegrityIssue = {
+  issue_type: string
+  ledger_id: string
+  ledger_name: string
+  owner_email: string | null
+  count: number
+  samples: AdminIntegrityIssueSample[]
+}
+
+export type AdminIntegrityScan = {
+  scanned_at: string
+  ledgers_total: number
+  issues_total: number
+  issues: AdminIntegrityIssue[]
+}
+
 export type AdminSyncErrorItem = {
   id: number
   action: string
@@ -387,11 +489,35 @@ export type TxPayload = {
   attachments?: AttachmentRef[] | null
 }
 
+export type BudgetCreatePayload = {
+  type: 'total' | 'category'
+  /** category 预算必填,total 可省略;后端校验。 */
+  category_id?: string | null
+  amount: number
+  period?: 'monthly' | 'weekly' | 'yearly'
+  /** 起始日(1-28),默认 1。 */
+  start_day?: number
+  enabled?: boolean
+}
+
+export type BudgetUpdatePayload = {
+  amount?: number
+  period?: 'monthly' | 'weekly' | 'yearly'
+  start_day?: number
+  enabled?: boolean
+}
+
 export type AccountPayload = {
   name: string
   account_type?: string | null
   currency?: string | null
   initial_balance?: number | null
+  note?: string | null
+  credit_limit?: number | null
+  billing_day?: number | null
+  payment_due_day?: number | null
+  bank_name?: string | null
+  card_last_four?: string | null
 }
 
 export type CategoryPayload = {

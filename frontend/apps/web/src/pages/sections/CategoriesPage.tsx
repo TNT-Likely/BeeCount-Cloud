@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   createCategory,
   deleteCategory,
   fetchWorkspaceCategories,
+  fetchWorkspaceTags,
+  fetchWorkspaceTransactions,
   updateCategory,
   uploadAttachment,
   type ReadCategory,
+  type WorkspaceCategory,
+  type WorkspaceTag,
+  type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
 import {
@@ -17,6 +22,7 @@ import {
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../../app/useLedgerWrite'
+import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -40,9 +46,16 @@ export function CategoriesPage() {
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
   const { previewMap: iconPreviewByFileId, ensureLoadedMany } = useAttachmentCache()
 
-  const [rows, setRows] = usePageCache<ReadCategory[]>('categories:rows', [])
+  const [rows, setRows] = usePageCache<WorkspaceCategory[]>('categories:rows', [])
   const [form, setForm] = useState<CategoryForm>(categoryDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
+  // 编辑 dialog 受控开关 — CategoriesPanel 行编辑、CategoryDetailDialog 联动
+  // 编辑都通过这个 state 触发;由 panel 内部 onCreate/onEdit 也会切到 true。
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+
+  // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层)。本页只负责
+  // dispatch openDetailCategory 让全局打开;同时监听 openEditCategory
+  // 把 inline 编辑表单填上 + 打开。
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -78,6 +91,15 @@ export function CategoriesPage() {
     if (ids.length > 0) ensureLoadedMany(ids)
   }, [rows, ensureLoadedMany])
 
+  const txCountById = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const row of rows) {
+      if (!row.id) continue
+      out[row.id] = row.tx_count ?? 0
+    }
+    return out
+  }, [rows])
+
   const onSave = async (): Promise<boolean> => {
     if (!activeLedgerId) {
       toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
@@ -112,6 +134,28 @@ export function CategoriesPage() {
     }
   }
 
+  const enterEdit = useCallback((row: ReadCategory) => {
+    setForm({
+      editingId: row.id,
+      editingOwnerUserId: row.created_by_user_id || '',
+      name: row.name,
+      kind: row.kind,
+      level: String(row.level ?? ''),
+      sort_order: String(row.sort_order ?? ''),
+      icon: row.icon || '',
+      icon_type: row.icon_type || 'material',
+      custom_icon_path: row.custom_icon_path || '',
+      icon_cloud_file_id: row.icon_cloud_file_id || '',
+      icon_cloud_sha256: row.icon_cloud_sha256 || '',
+      parent_name: row.parent_name || '',
+    })
+    setEditDialogOpen(true)
+  }, [])
+
+  // 编辑分类的 openEditCategory 事件由 GlobalEditDialogs 全局接管,
+  // 不需要在本页再注册一份监听(否则会双开 dialog)。本页只在用户直接
+  // 点击行的「编辑」按钮时通过 onEdit prop 触发本页内置 dialog。
+
   const confirmDelete = async () => {
     if (!pendingDelete || !activeLedgerId) return
     try {
@@ -134,27 +178,50 @@ export function CategoriesPage() {
         form={form}
         rows={rows}
         iconPreviewUrlByFileId={iconPreviewByFileId}
+        txCountById={txCountById}
         canManage
+        dialogOpen={editDialogOpen}
+        onDialogOpenChange={setEditDialogOpen}
         onFormChange={setForm}
+        onCreate={() => setForm(categoryDefaults())}
         onSave={onSave}
         onReset={() => setForm(categoryDefaults())}
-        onEdit={(row) => {
-          setForm({
-            editingId: row.id,
-            editingOwnerUserId: row.created_by_user_id || '',
-            name: row.name,
-            kind: row.kind,
-            level: String(row.level ?? ''),
-            sort_order: String(row.sort_order ?? ''),
-            icon: row.icon || '',
-            icon_type: row.icon_type || 'material',
-            custom_icon_path: row.custom_icon_path || '',
-            icon_cloud_file_id: row.icon_cloud_file_id || '',
-            icon_cloud_sha256: row.icon_cloud_sha256 || '',
-            parent_name: row.parent_name || '',
-          })
+        onEdit={enterEdit}
+        onDelete={(row) => {
+          // 跟 mobile + AccountsPage 对齐:有关联交易 / 子分类 → 拒删,要求
+          // 用户先迁移这些数据。比"允许删除并 orphan 子分类/交易"更严格。
+          const ws =
+            (rows.find((r) => r.id === row.id) as WorkspaceCategory | undefined) ||
+            (row as WorkspaceCategory)
+          const txCount = ws.tx_count ?? 0
+          if (txCount > 0) {
+            toast.error(
+              t('categories.delete.blockedByTransactions', {
+                name: ws.name,
+                count: txCount,
+              }),
+              t('notice.error'),
+            )
+            return
+          }
+          const childCount = rows.filter(
+            (r) =>
+              r.id !== ws.id &&
+              r.parent_name === ws.name &&
+              r.kind === ws.kind,
+          ).length
+          if (childCount > 0) {
+            toast.error(
+              t('categories.delete.blockedByChildren', {
+                name: ws.name,
+                count: childCount,
+              }),
+              t('notice.error'),
+            )
+            return
+          }
+          setPendingDelete({ id: ws.id, name: ws.name })
         }}
-        onDelete={(row) => setPendingDelete({ id: row.id, name: row.name })}
         onUploadIcon={async (file) => {
           if (!activeLedgerId) {
             toast.error(t('accounts.error.ledgerRequired'), t('notice.error'))
@@ -182,6 +249,8 @@ export function CategoriesPage() {
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
       />
+      {/* CategoryDetailDialog 已迁到 GlobalEntityDialogs。本页 onClickCategory 现
+          dispatch openDetailCategory 让全局弹窗渲染。 */}
     </>
   )
 }

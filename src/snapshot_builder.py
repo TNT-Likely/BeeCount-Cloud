@@ -126,7 +126,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["createdByUserId"] = created_by
         items.append(item)
 
-    # Accounts
+    # Accounts —— 跟 mobile lib/data/db.dart Account 表对齐,所有 nullable 字段
+    # 落 snapshot 时只在非空才写 key(跟旧字段 acc_type/currency/initBal 同款短路),
+    # 减小 snapshot 体积 + mobile 端按 `payload.containsKey(...)` 判断是否覆盖。
     accounts: list[dict[str, Any]] = []
     acc_stmt = select(
         ReadAccountProjection.sync_id,
@@ -134,8 +136,26 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadAccountProjection.account_type,
         ReadAccountProjection.currency,
         ReadAccountProjection.initial_balance,
+        ReadAccountProjection.note,
+        ReadAccountProjection.credit_limit,
+        ReadAccountProjection.billing_day,
+        ReadAccountProjection.payment_due_day,
+        ReadAccountProjection.bank_name,
+        ReadAccountProjection.card_last_four,
     ).where(ReadAccountProjection.ledger_id == ledger_id)
-    for sid, name, acc_type, acc_ccy, init_bal in db.execute(acc_stmt).all():
+    for (
+        sid,
+        name,
+        acc_type,
+        acc_ccy,
+        init_bal,
+        note,
+        credit_limit,
+        billing_day,
+        payment_due_day,
+        bank_name,
+        card_last_four,
+    ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
             acc["type"] = acc_type
@@ -143,6 +163,18 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["currency"] = acc_ccy
         if init_bal is not None:
             acc["initialBalance"] = init_bal
+        if note:
+            acc["note"] = note
+        if credit_limit is not None:
+            acc["creditLimit"] = credit_limit
+        if billing_day is not None:
+            acc["billingDay"] = billing_day
+        if payment_due_day is not None:
+            acc["paymentDueDay"] = payment_due_day
+        if bank_name:
+            acc["bankName"] = bank_name
+        if card_last_four:
+            acc["cardLastFour"] = card_last_four
         accounts.append(acc)
 
     # Categories
@@ -200,6 +232,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         tags.append(t)
 
     # Budgets
+    # mobile sync_engine._applyBudgetChange 用 payload['ledgerSyncId'] 解析本地
+    # ledger int id(不像 tx 用 change.ledger_id 字段),所以 budget snapshot 必
+    # 须显式带这个字段;不带则 mobile 收到 change 后会因 localLedgerId==null 直接
+    # skip,web 改了 mobile 那边永远刷不出来。
     budgets: list[dict[str, Any]] = []
     bud_stmt = select(
         ReadBudgetProjection.sync_id,
@@ -211,7 +247,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadBudgetProjection.enabled,
     ).where(ReadBudgetProjection.ledger_id == ledger_id)
     for sid, btype, cat_sid, amt, period, start_day, enabled in db.execute(bud_stmt).all():
-        b: dict[str, Any] = {"syncId": sid}
+        b: dict[str, Any] = {"syncId": sid, "ledgerSyncId": ledger.external_id}
         if btype:
             b["type"] = btype
         if cat_sid:
@@ -226,6 +262,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         budgets.append(b)
 
     return {
+        # ledgerSyncId 给 mutator 用 —— 新建预算时要把它写进 budget payload,
+        # 让 mobile sync_engine._applyBudgetChange 能解析本地 ledger int id。
+        "ledgerSyncId": ledger.external_id,
         "ledgerName": ledger.name or ledger.external_id,
         "currency": ledger.currency or "CNY",
         "count": len(items),

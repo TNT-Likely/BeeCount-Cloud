@@ -46,6 +46,82 @@ def _to_float(raw: object) -> float:
     return 0.0
 
 
+def _to_optional_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _to_optional_int(raw: object) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _to_optional_str(raw: object) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
+# 扩展字段映射:web/server payload(snake_case) → snapshot(camelCase 跟 mobile
+# lib/data/db.dart Account 字段名对齐)。`apply` 只处理 payload 里 explicitly
+# 提供的 key —— 这样 update 时不传该字段就不动它,跟旧字段(name/account_type
+# /currency/initial_balance)的语义一致。
+_ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
+    # (payload_key, snapshot_key, kind)
+    ("note", "note", "str"),
+    ("credit_limit", "creditLimit", "float"),
+    ("billing_day", "billingDay", "int"),
+    ("payment_due_day", "paymentDueDay", "int"),
+    ("bank_name", "bankName", "str"),
+    ("card_last_four", "cardLastFour", "str"),
+)
+
+
+def _apply_account_optional_fields(account: dict, payload: dict) -> None:
+    """payload 里如果带这些 key 就写到 snapshot,空字符串 / None 视作 null。
+
+    update 路径调用同一函数:`payload` 不带某 key → 保留原值。带 key 但 value
+    是 None / 空串 → 显式清空(对应 mobile 编辑时把 note 清掉的场景)。
+    """
+    for payload_key, snapshot_key, kind in _ACCOUNT_OPTIONAL_FIELD_MAP:
+        if payload_key not in payload:
+            continue
+        raw = payload.get(payload_key)
+        if kind == "float":
+            account[snapshot_key] = _to_optional_float(raw)
+        elif kind == "int":
+            account[snapshot_key] = _to_optional_int(raw)
+        else:
+            account[snapshot_key] = _to_optional_str(raw)
+
+
 def _ensure_list(snapshot: dict, key: str) -> list[dict]:
     raw = snapshot.get(key)
     if not isinstance(raw, list):
@@ -352,6 +428,10 @@ def create_account(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "currency": str(payload.get("currency") or "") or None,
         "initialBalance": _to_float(payload.get("initial_balance")),
     }
+    # 扩展字段:跟 mobile lib/data/db.dart Account 表 schema 对齐(driftCamel:
+    # creditLimit / billingDay / paymentDueDay / bankName / cardLastFour /
+    # note)。前端 web 字段是 snake_case,这里转 camelCase 写入 snapshot。
+    _apply_account_optional_fields(account, payload)
     _mark_entity_actor(account, payload, create=True)
     accounts.append(account)
     return target, sync_id
@@ -381,6 +461,7 @@ def update_account(snapshot: dict, account_id: str, payload: dict) -> dict:
         account["currency"] = str(value) if value else None
     if "initial_balance" in payload:
         account["initialBalance"] = _to_float(payload.get("initial_balance"))
+    _apply_account_optional_fields(account, payload)
 
     new_name = str(account.get("name") or "").strip()
     if old_name and new_name and old_name != new_name:
@@ -401,6 +482,25 @@ def delete_account(snapshot: dict, account_id: str, payload: dict | None = None)
     idx, account = _find_by_sync_id(accounts, account_id, expected_prefix="acc")
     _assert_actor_can_modify(account, payload or {})
     old_name = str(account.get("name") or "").strip()
+    # 安全检查:任何关联交易都拒绝删除(用户决定:不要 warn-and-orphan 模式)。
+    # 客户端必须先把交易改/删/迁走,账户的 tx_count 回到 0 才允许删。
+    # mobile 自己走 sync_applier 路径不经过 snapshot_mutator,这条 guard 只对
+    # web write API 生效;mobile 现有行为(orphan)保留不变。
+    if old_name:
+        linked = sum(
+            1
+            for tx in _ensure_list(target, "items")
+            if (
+                tx.get("accountName") == old_name
+                or tx.get("fromAccountName") == old_name
+                or tx.get("toAccountName") == old_name
+            )
+        )
+        if linked > 0:
+            raise ValueError(
+                "write validation failed: account has linked transactions; "
+                f"reassign or delete the {linked} transactions first"
+            )
     accounts.pop(idx)
     if old_name:
         for tx in _ensure_list(target, "items"):
@@ -499,12 +599,33 @@ def delete_category(snapshot: dict, category_id: str, payload: dict | None = Non
     _assert_actor_can_modify(category, payload or {})
     old_name = str(category.get("name") or "").strip()
     old_kind = str(category.get("kind") or "").strip()
-    categories.pop(idx)
+    # 严格策略(跟 AccountsPage / mobile 对齐):有子分类或关联交易时拒绝删除,
+    # 要求用户先迁移这些数据。比"允许删除并 orphan"安全 — 避免误删导致一堆
+    # 无主交易污染 ledger。前端也有同款拦截,这里是兜底服务端校验防止旧客户
+    # 端 / 直接 API 调用绕过。
     if old_name and old_kind:
-        for tx in _ensure_list(target, "items"):
-            if tx.get("categoryName") == old_name and tx.get("categoryKind") == old_kind:
-                tx.pop("categoryName", None)
-                tx.pop("categoryKind", None)
+        child_count = sum(
+            1
+            for row in categories
+            if str(row.get("syncId") or "") != category_id
+            and str(row.get("parentName") or "").strip() == old_name
+            and str(row.get("kind") or "").strip() == old_kind
+        )
+        if child_count > 0:
+            raise ValueError(
+                f"write validation failed: category has {child_count} child categories"
+            )
+        tx_count = sum(
+            1
+            for tx in _ensure_list(target, "items")
+            if tx.get("categoryName") == old_name
+            and tx.get("categoryKind") == old_kind
+        )
+        if tx_count > 0:
+            raise ValueError(
+                f"write validation failed: category has {tx_count} transactions"
+            )
+    categories.pop(idx)
     return target
 
 
@@ -573,13 +694,139 @@ def delete_tag(snapshot: dict, tag_id: str, payload: dict | None = None) -> dict
     idx, tag = _find_by_sync_id(tags, tag_id, expected_prefix="tag")
     _assert_actor_can_modify(tag, payload or {})
     old_name = str(tag.get("name") or "").strip()
-    tags.pop(idx)
+
+    # 拦截关联交易:有交易引用此 tag 时禁止删除,让用户先把标签从交易里
+    # 摘掉(或删交易)再来删标签。之前是"静默把 tag 从所有引用它的 tx
+    # 里抽走",数据上可恢复但用户无感知,跟 app 行为(确认对话框 + 阻止)
+    # 不一致,容易误删。
+    # ValueError 由路由层抓出来翻译成 4xx 响应,error message 走 i18n。
     if old_name:
-        for tx in _ensure_list(target, "items"):
-            tx_tags = [name for name in _split_tags(tx.get("tags")) if name != old_name]
-            merged = _join_tags(tx_tags)
-            if merged is None:
-                tx.pop("tags", None)
-            else:
-                tx["tags"] = merged
+        in_use = sum(
+            1
+            for tx in _ensure_list(target, "items")
+            if old_name in _split_tags(tx.get("tags"))
+        )
+        if in_use > 0:
+            raise ValueError(
+                f"write validation failed: tag has {in_use} linked transactions"
+            )
+
+    tags.pop(idx)
+    return target
+
+
+# ============================================================================
+# Budgets —— 跟 mobile lib/data/db.dart Budget 表对齐:type / categoryId /
+# amount / period / startDay / enabled。snapshot 用 driftCamel(categoryId,
+# startDay)。type='total' 在每个账本只允许一条;'category' 同一 categoryId
+# 也只允许一条(对应 mobile budget_edit_page._saveBudget 的 unique check)。
+# ============================================================================
+
+
+def _normalize_budget_period(raw: object) -> str:
+    """空 / 无效时回退到 'monthly'(跟 mobile budget_repository 的 default 一致)。"""
+    s = str(raw or "").strip().lower()
+    if s in ("monthly", "weekly", "yearly"):
+        return s
+    return "monthly"
+
+
+def _normalize_budget_type(raw: object) -> str:
+    s = str(raw or "").strip().lower()
+    if s == "category":
+        return "category"
+    return "total"
+
+
+def create_budget(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    budgets = _ensure_list(target, "budgets")
+    btype = _normalize_budget_type(payload.get("type"))
+    category_id = _to_optional_str(payload.get("category_id"))
+    period = _normalize_budget_period(payload.get("period"))
+    # 唯一性:total 只一条;category 按 categoryId 唯一(对齐 mobile)。
+    if btype == "total":
+        if any(_normalize_budget_type(row.get("type")) == "total" for row in budgets):
+            raise ValueError("write validation failed: total budget already exists")
+    else:
+        if not category_id:
+            raise ValueError("write validation failed: category budget requires category_id")
+        if any(
+            _normalize_budget_type(row.get("type")) == "category"
+            and str(row.get("categoryId") or "") == category_id
+            for row in budgets
+        ):
+            raise ValueError("write validation failed: category budget already exists")
+    amount = _to_optional_float(payload.get("amount"))
+    if amount is None or amount <= 0:
+        raise ValueError("write validation failed: budget amount must be > 0")
+    start_day = _to_optional_int(payload.get("start_day"))
+    if start_day is None:
+        start_day = 1
+    if start_day < 1 or start_day > 28:
+        raise ValueError("write validation failed: start_day out of range")
+    sync_id = _new_sync_id("bgt")
+    enabled_raw = payload.get("enabled")
+    enabled = bool(enabled_raw) if enabled_raw is not None else True
+    # ledgerSyncId 必须显式带,mobile _applyBudgetChange 用它解析本地 ledger id;
+    # 不带则 mobile 永远 skip 这条 change。
+    ledger_sync_id = _to_optional_str(target.get("ledgerSyncId")) or _to_optional_str(
+        payload.get("ledger_sync_id")
+    )
+    budget = {
+        "syncId": sync_id,
+        "type": btype,
+        "categoryId": category_id if btype == "category" else None,
+        "amount": amount,
+        "period": period,
+        "startDay": start_day,
+        "enabled": enabled,
+    }
+    if ledger_sync_id:
+        budget["ledgerSyncId"] = ledger_sync_id
+    _mark_entity_actor(budget, payload, create=True)
+    budgets.append(budget)
+    return target, sync_id
+
+
+def update_budget(snapshot: dict, budget_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    budgets = _ensure_list(target, "budgets")
+    _, budget = _find_by_sync_id(budgets, budget_id, expected_prefix="bgt")
+    _assert_actor_can_modify(budget, payload)
+    # 历史 budget(snapshot_builder 从 projection 重建已经带 ledgerSyncId,但
+    # 老 SyncChange 里的 payload 可能没带)被 update 时,补齐 ledgerSyncId,
+    # 否则 mobile 收到这条 update change 还是因为缺 ledgerSyncId 直接 skip。
+    if "ledgerSyncId" not in budget:
+        ledger_sync_id = _to_optional_str(target.get("ledgerSyncId"))
+        if ledger_sync_id:
+            budget["ledgerSyncId"] = ledger_sync_id
+    if "amount" in payload:
+        amount = _to_optional_float(payload.get("amount"))
+        if amount is None or amount <= 0:
+            raise ValueError("write validation failed: budget amount must be > 0")
+        budget["amount"] = amount
+    if "period" in payload:
+        budget["period"] = _normalize_budget_period(payload.get("period"))
+    if "start_day" in payload:
+        start_day = _to_optional_int(payload.get("start_day"))
+        if start_day is None:
+            start_day = 1
+        if start_day < 1 or start_day > 28:
+            raise ValueError("write validation failed: start_day out of range")
+        budget["startDay"] = start_day
+    if "enabled" in payload:
+        budget["enabled"] = bool(payload.get("enabled"))
+    # 不允许改 type 和 categoryId(语义混乱:从 total 改成 category 等于
+    # 删一条新建一条,UI 走删除 + 新建路径更直观)。
+    _mark_entity_actor(budget, payload, create=False)
+    return target
+
+
+def delete_budget(snapshot: dict, budget_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    budgets = _ensure_list(target, "budgets")
+    idx, budget = _find_by_sync_id(budgets, budget_id, expected_prefix="bgt")
+    _assert_actor_can_modify(budget, payload or {})
+    budgets.pop(idx)
     return target

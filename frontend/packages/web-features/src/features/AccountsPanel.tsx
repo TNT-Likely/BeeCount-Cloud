@@ -21,7 +21,9 @@ import {
 import type { ReadAccount } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
+import { accountDefaults } from '../forms'
 
 type AssetGroup = {
   type: string
@@ -46,6 +48,8 @@ type MobileStyleAssetsProps = {
   onDelete?: (row: ReadAccount) => void
   /** 点卡片（非编辑/删除按钮）：外层用来打开"账户详情+交易列表"弹窗。 */
   onClickAccount?: (row: ReadAccount) => void
+  /** "新建账户"按钮回调 — 渲染在 stats 卡片下方,跟分组列表之间。 */
+  onCreate?: () => void
 }
 
 /**
@@ -60,7 +64,8 @@ function MobileStyleAssets({
   canManage,
   onEdit,
   onDelete,
-  onClickAccount
+  onClickAccount,
+  onCreate
 }: MobileStyleAssetsProps) {
   const t = useT()
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -82,6 +87,14 @@ function MobileStyleAssets({
           totalAbs={summary.assetTotal + summary.liabilityTotal}
         />
       </div>
+
+      {onCreate ? (
+        <div className="flex items-center justify-end">
+          <Button size="sm" disabled={!canManage} onClick={onCreate}>
+            {t('accounts.button.create')}
+          </Button>
+        </div>
+      ) : null}
 
       {/* 下面是分组 + 真实卡片风格的子项列表 */}
       <div className="space-y-4">
@@ -709,24 +722,40 @@ export function AccountsPanel({
       }))
   }, [rows, t])
 
+  // 顶部"新建账户"按钮 —— rows 空时也要显示,否则首次使用没法建账户。
+  // 复用现有 dialog,form 重置成 defaults 让 dialog 进入 create 模式。
+  const handleOpenCreate = () => {
+    onFormChange(accountDefaults())
+    setOpen(true)
+  }
+
   return (
     <>
       {/* 卡片式布局不再套 ListTableShell 的灰色 header；hero 已经自带标题级
-          视觉锚，再加一个"资产管理"横条显得冗余。 */}
+          视觉锚，再加一个"资产管理"横条显得冗余。
+          有数据时:button 在 stats 卡片下方(MobileStyleAssets 内部);
+          空数据时:把 button 显示在 EmptyState 上方,引导首次创建。 */}
       {rows.length === 0 ? (
-        <EmptyState
-          icon={
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                 strokeLinejoin="round">
-              <rect x="2" y="5" width="20" height="14" rx="2" />
-              <path d="M2 10h20" />
-              <path d="M6 15h4" />
-            </svg>
-          }
-          title={t('accounts.empty.title')}
-          description={t('accounts.empty.desc')}
-        />
+        <>
+          <div className="mb-3 flex items-center justify-end">
+            <Button size="sm" disabled={!canManage} onClick={handleOpenCreate}>
+              {t('accounts.button.create')}
+            </Button>
+          </div>
+          <EmptyState
+            icon={
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                   strokeLinejoin="round">
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <path d="M2 10h20" />
+                <path d="M6 15h4" />
+              </svg>
+            }
+            title={t('accounts.empty.title')}
+            description={t('accounts.empty.desc')}
+          />
+        </>
       ) : (
         <MobileStyleAssets
           groups={grouped}
@@ -738,11 +767,12 @@ export function AccountsPanel({
           }}
           onDelete={onDelete}
           onClickAccount={onClickAccount}
+          onCreate={handleOpenCreate}
         />
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{form.editingId ? t('accounts.button.update') : t('accounts.button.create')}</DialogTitle>
           </DialogHeader>
@@ -758,7 +788,33 @@ export function AccountsPanel({
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
                 <Label>{t('accounts.table.type')}</Label>
-                <Select value={form.account_type || 'cash'} onValueChange={(value) => onFormChange({ ...form, account_type: value })}>
+                {/* 编辑模式下:可交易类型不能改成估值类型(对齐 mobile
+                    account_edit_page disabled 逻辑)。新建时无限制。 */}
+                <Select
+                  value={form.account_type || 'cash'}
+                  onValueChange={(value) => {
+                    if (form.editingId) {
+                      const wasTradable = TRADABLE_TYPES.some((x) => x.value === form.account_type)
+                      const isValuation = VALUATION_TYPES.some((x) => x.value === value)
+                      if (wasTradable && isValuation) return
+                    }
+                    // 离开 credit_card → 清空信用卡专属字段
+                    const next: AccountForm = { ...form, account_type: value }
+                    if (form.account_type === 'credit_card' && value !== 'credit_card') {
+                      next.credit_limit = ''
+                      next.billing_day = ''
+                      next.payment_due_day = ''
+                    }
+                    // 离开 bank_card / credit_card → 清空银行卡元信息
+                    const wasBankOrCredit = form.account_type === 'bank_card' || form.account_type === 'credit_card'
+                    const isBankOrCredit = value === 'bank_card' || value === 'credit_card'
+                    if (wasBankOrCredit && !isBankOrCredit) {
+                      next.bank_name = ''
+                      next.card_last_four = ''
+                    }
+                    onFormChange(next)
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder={t('accounts.placeholder.type')} />
                   </SelectTrigger>
@@ -784,18 +840,13 @@ export function AccountsPanel({
               </div>
               <div className="space-y-1">
                 <Label>{t('accounts.table.currency')}</Label>
-                <Select value={form.currency || 'CNY'} onValueChange={(value) => onFormChange({ ...form, currency: value })}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('accounts.placeholder.currency')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="CNY">CNY</SelectItem>
-                    <SelectItem value="USD">USD</SelectItem>
-                    <SelectItem value="HKD">HKD</SelectItem>
-                    <SelectItem value="EUR">EUR</SelectItem>
-                    <SelectItem value="JPY">JPY</SelectItem>
-                  </SelectContent>
-                </Select>
+                {/* 复用 CurrencySelectorTrigger:点开后弹搜索 + 区域分组 dialog。
+                    页面层(AccountsPage)负责"已有交易则锁定币种"的判断,这里
+                    只是个普通选择器。 */}
+                <CurrencySelectorTrigger
+                  value={form.currency || 'CNY'}
+                  onChange={(code) => onFormChange({ ...form, currency: code })}
+                />
               </div>
             </div>
             <div className="space-y-1">
@@ -804,6 +855,93 @@ export function AccountsPanel({
                 placeholder={t('accounts.placeholder.initialBalance')}
                 value={form.initial_balance}
                 onChange={(e) => onFormChange({ ...form, initial_balance: e.target.value })}
+              />
+            </div>
+
+            {/* 信用卡专属:信用额度 + 账单日 + 还款日(对齐 mobile credit_card
+                section)。还款提醒是 mobile 本地 SharedPreferences 不走 server,
+                web 暂不支持。 */}
+            {form.account_type === 'credit_card' ? (
+              <div className="rounded-md border border-border/50 bg-muted/20 p-3 space-y-3">
+                <div className="text-xs font-semibold text-muted-foreground">
+                  {t('accounts.section.creditCard')}
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label>{t('accounts.field.creditLimit')}</Label>
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="0"
+                      value={form.credit_limit}
+                      onChange={(e) => onFormChange({ ...form, credit_limit: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>{t('accounts.field.billingDay')}</Label>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={31}
+                      placeholder="1-31"
+                      value={form.billing_day}
+                      onChange={(e) => onFormChange({ ...form, billing_day: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>{t('accounts.field.paymentDueDay')}</Label>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={31}
+                      placeholder="1-31"
+                      value={form.payment_due_day}
+                      onChange={(e) => onFormChange({ ...form, payment_due_day: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* 银行卡 / 信用卡 元信息:开户行 + 卡号后四位。 */}
+            {form.account_type === 'bank_card' || form.account_type === 'credit_card' ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <Label>{t('accounts.field.bankName')}</Label>
+                  <Input
+                    placeholder={t('accounts.field.bankNameHint')}
+                    value={form.bank_name}
+                    onChange={(e) => onFormChange({ ...form, bank_name: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>{t('accounts.field.cardLastFour')}</Label>
+                  <Input
+                    inputMode="numeric"
+                    maxLength={4}
+                    placeholder="****"
+                    value={form.card_last_four}
+                    onChange={(e) => {
+                      // 只接受数字,最多 4 位 — 跟 mobile 一致(maxLength: 4)
+                      const next = e.target.value.replace(/\D/g, '').slice(0, 4)
+                      onFormChange({ ...form, card_last_four: next })
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {/* 备注 — 所有类型可填。 */}
+            <div className="space-y-1">
+              <Label>{t('accounts.field.note')}</Label>
+              <textarea
+                className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder={t('accounts.field.noteHint')}
+                rows={3}
+                value={form.note}
+                onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
           </div>

@@ -1,6 +1,7 @@
 export type AppSection =
   | 'overview'
   | 'transactions'
+  | 'calendar'
   | 'accounts'
   | 'categories'
   | 'tags'
@@ -12,6 +13,8 @@ export type AppSection =
   | 'settings-devices'
   | 'settings-ai'
   | 'admin-users'
+  | 'admin-backup'
+  | 'import'
 
 export type NavItem = {
   key: AppSection
@@ -31,6 +34,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: 'overview', labelKey: 'nav.overview' },
       { key: 'transactions', labelKey: 'nav.transactions' },
+      // calendar 不放主导航(高频但不是"主视图"等级,跟 transactions 重复语义);
+      // 入口走 AppHeader 右上角图标 + ⌘K + AvatarDropdown 任一即可。
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
       { key: 'tags', labelKey: 'nav.tags' }

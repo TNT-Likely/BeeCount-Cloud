@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { useMemo, useState, type ChangeEvent } from 'react'
 
 import {
   Button,
@@ -16,6 +16,10 @@ import {
 import type { ReadTag } from '@beecount/api-client'
 
 import type { TagForm } from '../forms'
+import {
+  TAG_COLOR_PALETTE,
+  tagTextColorOn
+} from '../lib/tagColorPalette'
 
 type TagsPanelProps = {
   form: TagForm
@@ -25,6 +29,8 @@ type TagsPanelProps = {
   /** 按 tag.id 查询的统计（交易数/支出/收入），未传则不展开详情。 */
   statsById?: Record<string, { count: number; expense: number; income: number }>
   onFormChange: (next: TagForm) => void
+  /** 触发"新建"流程:外层负责把 form 重置成 tagDefaults() 并打开 dialog。 */
+  onCreate?: () => void
   onSave: () => Promise<boolean> | boolean
   onReset: () => void
   onEdit: (row: ReadTag) => void
@@ -33,6 +39,16 @@ type TagsPanelProps = {
   onClickTag?: (tag: ReadTag) => void
 }
 
+/**
+ * 标签管理面板。
+ *
+ * 这一版加了:
+ * - "新建标签" 按钮(顶部右上角,以及 EmptyState CTA)
+ * - 编辑/新建对话框里的 20 色调色板(`TAG_COLOR_PALETTE`,跟 app 一一对齐)
+ * - 前端查重:保存前先用现有 `rows`(workspace tags,已经按用户作用域查回)
+ *   检查同名,不让用户走完一圈 server 才报错。server 自身仍然兜底 dedup,
+ *   双重保险。
+ */
 export function TagsPanel({
   form,
   rows,
@@ -40,6 +56,7 @@ export function TagsPanel({
   showCreatorColumn = false,
   statsById,
   onFormChange,
+  onCreate,
   onSave,
   onReset,
   onEdit,
@@ -48,12 +65,65 @@ export function TagsPanel({
 }: TagsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  const [duplicateError, setDuplicateError] = useState<string | null>(null)
   const hasStats = Boolean(statsById)
   const fmt = (v: number) =>
     v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+  // 同名查重:把当前用户已有标签名字小写化收成 Set,提交时 O(1) 查。编辑模
+  // 式下排除自己 (form.editingId 对应的行) 以允许"改色不改名"。
+  // rows 是 fetchWorkspaceTags 返回的,已经按 current_user.id 过滤,所以这
+  // 里的 dedup 自然是"用户作用域"的,不是单账本作用域。
+  const existingNamesLower = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of rows) {
+      if (form.editingId && row.id === form.editingId) continue
+      const name = (row.name || '').trim().toLowerCase()
+      if (name) set.add(name)
+    }
+    return set
+  }, [rows, form.editingId])
+
+  const startCreate = () => {
+    if (!canManage) return
+    setDuplicateError(null)
+    onCreate?.()
+    setOpen(true)
+  }
+
+  const startEdit = (row: ReadTag) => {
+    setDuplicateError(null)
+    onEdit(row)
+    setOpen(true)
+  }
+
+  const handleSave = async () => {
+    const trimmed = form.name.trim()
+    if (!trimmed) {
+      setDuplicateError(t('tags.error.nameRequired'))
+      return
+    }
+    if (existingNamesLower.has(trimmed.toLowerCase())) {
+      setDuplicateError(t('tags.error.nameDuplicate'))
+      return
+    }
+    setDuplicateError(null)
+    const success = await onSave()
+    if (success) {
+      setOpen(false)
+    }
+  }
+
   return (
     <>
+      {/* 顶部操作条:右上角"新建标签"。即使 rows 为空也保留(EmptyState 那边
+          也会再放一个 CTA 按钮,两处都点都能创建)。 */}
+      {onCreate && canManage ? (
+        <div className="mb-4 flex justify-end">
+          <Button onClick={startCreate}>{t('tags.button.create')}</Button>
+        </div>
+      ) : null}
+
       {rows.length === 0 ? (
         <EmptyState
           icon={
@@ -66,6 +136,11 @@ export function TagsPanel({
           }
           title={t('tags.empty.title')}
           description={t('tags.empty.desc')}
+          action={
+            onCreate && canManage ? (
+              <Button onClick={startCreate}>{t('tags.button.create')}</Button>
+            ) : undefined
+          }
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -113,8 +188,7 @@ export function TagsPanel({
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation()
-                          onEdit(row)
-                          setOpen(true)
+                          startEdit(row)
                         }}
                       >
                         {t('common.edit')}
@@ -172,21 +246,88 @@ export function TagsPanel({
         </div>
       )}
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setDuplicateError(null)
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{form.editingId ? t('tags.button.update') : t('tags.button.create')}</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-3">
+          <div className="grid gap-4">
+            {/* 名称 */}
             <div className="space-y-1">
               <Label>{t('tags.table.name')}</Label>
               <Input
                 placeholder={t('tags.placeholder.name')}
                 value={form.name}
-                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                  // 用户输入时清掉错误提示,避免改完字还红着不放
+                  if (duplicateError) setDuplicateError(null)
                   onFormChange({ ...form, name: event.target.value })
-                }
+                }}
               />
+              {duplicateError ? (
+                <p className="text-xs text-destructive">{duplicateError}</p>
+              ) : null}
+            </div>
+
+            {/* 颜色选择器:20 色调色板,grid 布局排成两行 */}
+            <div className="space-y-2">
+              <Label>{t('tags.table.color')}</Label>
+              <div className="flex flex-wrap gap-2">
+                {TAG_COLOR_PALETTE.map((hex) => {
+                  const isSelected = form.color.toUpperCase() === hex.toUpperCase()
+                  const checkColor = tagTextColorOn(hex)
+                  return (
+                    <button
+                      key={hex}
+                      type="button"
+                      aria-label={hex}
+                      title={hex}
+                      onClick={() => onFormChange({ ...form, color: hex })}
+                      className={`flex h-9 w-9 items-center justify-center rounded-full transition-all ${
+                        isSelected
+                          ? 'scale-110 ring-2 ring-offset-2 ring-foreground ring-offset-background shadow-md'
+                          : 'hover:scale-105'
+                      }`}
+                      style={{ background: hex }}
+                    >
+                      {isSelected ? (
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke={checkColor}
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      ) : null}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* 预览:用当前选的 color + name 渲染一个 hashtag 徽章,所见即所得 */}
+            <div className="space-y-1">
+              <Label>{t('tags.preview')}</Label>
+              <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-card/60 px-3 py-2">
+                <span
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-sm font-bold text-white shadow-sm"
+                  style={{ background: form.color || '#94a3b8' }}
+                >
+                  #
+                </span>
+                <span className="text-sm font-medium">
+                  {form.name.trim() || t('tags.placeholder.name')}
+                </span>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -194,6 +335,7 @@ export function TagsPanel({
               variant="outline"
               onClick={() => {
                 onReset()
+                setDuplicateError(null)
                 setOpen(false)
               }}
             >
@@ -201,12 +343,7 @@ export function TagsPanel({
             </Button>
             <Button
               disabled={!canManage}
-              onClick={async () => {
-                const success = await onSave()
-                if (success) {
-                  setOpen(false)
-                }
-              }}
+              onClick={() => void handleSave()}
             >
               {form.editingId ? t('tags.button.update') : t('tags.button.create')}
             </Button>

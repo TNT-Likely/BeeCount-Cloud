@@ -9,8 +9,30 @@ email-validator>=2.2.0
 passlib>=1.7.4
 PyJWT>=2.9.0
 python-multipart>=0.0.9
+# APScheduler: in-process 定时任务调度器,backup 模块用 BackgroundScheduler
+# 跑每日备份。BackgroundScheduler 用线程池,避免 rclone subprocess 长任务
+# 阻塞 FastAPI 事件循环。
+apscheduler>=3.10.4
+# pyzipper: AES-256 加密 zip(WinZip AES extension)。stdlib zipfile
+# 只支持破掉的 ZipCrypto,不安全。pyzipper 是 stdlib zipfile 的 drop-in
+# 子类,加密/解密 API 完全一致。
+# macOS Archive Utility / Keka / 7-Zip / The Unarchiver / WinRAR 都
+# 原生支持,用户双击 → 弹密码框 → 解压。
+pyzipper>=0.3.6
+# pyotp: RFC 6238 TOTP 实现,2FA 6 位码生成 / 校验。纯 Python 无系统依赖。
+pyotp>=2.9.0
+# cryptography: Fernet 对称加密,用 JWT_SECRET 派生 key 保护 totp_secret 落库。
+cryptography>=42.0.0
 pytest>=8.3.2
 httpx>=0.27.0
+# numpy: AI 文档 Q&A(/api/v1/ai/ask)的 cosine similarity 检索。
+# 索引 200-300 chunks,完全在内存里跑,几毫秒;不上 sqlite-vss 避免 native 依赖。
+numpy>=1.26.0
+# openpyxl: 账本数据导入支持 .xlsx 文件(用户从支付宝 / 微信网银 / 银行
+# 下载的常见格式之一)。read-only 模式 + iter_rows 流式读取,大文件 OK。
+# 国内网络若拉不到包(`No matching distribution found`),换 PyPI 镜像即可:
+#   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple openpyxl
+openpyxl>=3.0
 ruff>=0.5.5
 mypy>=1.11.1
 types-PyYAML>=6.0.12.20240311

@@ -316,6 +316,12 @@ def list_accounts(
             ledger_name=ledger_name,
             created_by_user_id=None,
             created_by_email=None,
+            note=row.note,
+            credit_limit=row.credit_limit,
+            billing_day=row.billing_day,
+            payment_due_day=row.payment_due_day,
+            bank_name=row.bank_name,
+            card_last_four=row.card_last_four,
         )
         for row in rows
     ]

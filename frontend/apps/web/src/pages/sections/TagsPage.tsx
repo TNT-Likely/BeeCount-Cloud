@@ -18,7 +18,7 @@ import {
   type TagForm,
 } from '@beecount/web-features'
 
-import { TagDetailDialog } from '../../components/dialogs/TagDetailDialog'
+import { dispatchOpenDetailTag } from '../../lib/txDialogEvents'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -44,11 +44,8 @@ export function TagsPage() {
   const [form, setForm] = useState<TagForm>(tagDefaults())
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
 
-  const [detail, setDetail] = useState<ReadTag | null>(null)
-  const [detailTx, setDetailTx] = useState<WorkspaceTransaction[]>([])
-  const [detailTotal, setDetailTotal] = useState(0)
-  const [detailOffset, setDetailOffset] = useState(0)
-  const [detailLoading, setDetailLoading] = useState(false)
+  // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只 dispatch
+  // openDetailTag 事件,弹窗在全局渲染。
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -127,33 +124,6 @@ export function TagsPage() {
     }
   }
 
-  const loadDetailPage = useCallback(
-    async (tagSyncId: string, offset: number) => {
-      setDetailLoading(true)
-      try {
-        const page = await fetchWorkspaceTransactions(token, {
-          tagSyncId,
-          limit: TAG_DETAIL_PAGE_SIZE,
-          offset,
-        })
-        setDetailTx((prev) => (offset === 0 ? page.items : [...prev, ...page.items]))
-        setDetailTotal(page.total)
-        setDetailOffset(offset + page.items.length)
-      } catch (err) {
-        notifyError(err)
-      } finally {
-        setDetailLoading(false)
-      }
-    },
-    [token, notifyError]
-  )
-
-  const closeDetail = () => {
-    setDetail(null)
-    setDetailTx([])
-    setDetailTotal(0)
-    setDetailOffset(0)
-  }
 
   return (
     <>
@@ -163,6 +133,7 @@ export function TagsPage() {
         canManage
         statsById={tagStatsById}
         onFormChange={setForm}
+        onCreate={() => setForm(tagDefaults())}
         onSave={onSave}
         onReset={() => setForm(tagDefaults())}
         onEdit={(row) => {
@@ -173,26 +144,22 @@ export function TagsPage() {
             color: row.color || '#F59E0B',
           })
         }}
-        onDelete={(row) => setPendingDelete({ id: row.id, name: row.name })}
-        onClickTag={(row) => {
-          setDetail(row)
-          setDetailTx([])
-          setDetailTotal(0)
-          setDetailOffset(0)
-          void loadDetailPage(row.id, 0)
+        onDelete={(row) => {
+          // 关联交易 > 0 直接拦,不让走 confirm dialog,跟 app 端行为对齐。
+          // server 也有兜底校验(snapshot_mutator.delete_tag)防止漏网。
+          const linkedCount = tagStatsById[row.id]?.count ?? 0
+          if (linkedCount > 0) {
+            toast.error(
+              t('tags.error.hasTransactions').replace('{count}', String(linkedCount)),
+              t('notice.error')
+            )
+            return
+          }
+          setPendingDelete({ id: row.id, name: row.name })
         }}
+        onClickTag={(row) => dispatchOpenDetailTag(row as WorkspaceTag)}
       />
-      <TagDetailDialog
-        tag={detail}
-        transactions={detailTx}
-        total={detailTotal}
-        offset={detailOffset}
-        loading={detailLoading}
-        tags={rows}
-        tagStatsById={tagStatsById}
-        onClose={closeDetail}
-        onLoadMore={(id, offset) => void loadDetailPage(id, offset)}
-      />
+      {/* TagDetailDialog 已迁到 GlobalEntityDialogs */}
       <ConfirmDialog
         open={!!pendingDelete}
         title={t('confirm.deleteTag.title')}

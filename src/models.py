@@ -33,6 +33,33 @@ class User(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # 2FA(TOTP)。详见 .docs/2fa-design.md。
+    # null = 未启用 / 未 setup。totp_enabled=False 但 secret 不为空 = setup 流程
+    # 中途用户没 confirm,可以重新走 /setup 覆盖。
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_enabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class RecoveryCode(Base):
+    """2FA 一次性恢复码。启用 2FA 时一次生成 10 个,sha256 hash 存库。"""
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -338,6 +365,15 @@ class ReadAccountProjection(Base):
     account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
     initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 跟 mobile lib/data/db.dart Account 表对齐的扩展字段。mobile sync_engine
+    # 一直在 push 这些字段,server 之前丢弃 — 现在 round-trip 全保留,这样 web
+    # 编辑也能完整保存。
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -410,3 +446,118 @@ Index(
     ReadBudgetProjection.ledger_id,
     ReadBudgetProjection.category_sync_id,
 )
+
+
+# ============================================================================
+# Backup —— 备份配置 + 定时任务 + 历史。详见 .docs/backup-rclone-plan.md。
+# 5 张表:remote / schedule / schedule_remote(M2M) / run / run_target(per-target)
+# ============================================================================
+
+
+class BackupRemote(Base):
+    """rclone 远端配置。每条对应 rclone.conf 里一段 [name],可以是底层 backend
+    (s3 / gdrive / ...)或 crypt 装饰层。`encrypted=True` 表示这条是 crypt 套
+    在另一条 backend 之上,实际备份目标都用 crypt 远端 —— 底层 backend 通常不
+    单独被 schedule 引用,只是给 crypt 当宿主。"""
+
+    __tablename__ = "backup_remotes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    backend_type: Mapped[str] = mapped_column(String(32))  # 's3' / 'gdrive' / 'crypt' / ...
+    encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
+    config_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_backup_remote_user_name"),
+    )
+
+
+class BackupSchedule(Base):
+    __tablename__ = "backup_schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    cron_expr: Mapped[str] = mapped_column(String(64))  # 5-field crontab
+    retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    include_attachments: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class BackupScheduleRemote(Base):
+    """schedule ↔ remote 多对多 —— 一个 schedule 可以 fan-out 推到多个 remote
+    做冗余备份。"""
+
+    __tablename__ = "backup_schedule_remotes"
+
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("backup_schedules.id", ondelete="CASCADE"), primary_key=True
+    )
+    remote_id: Mapped[int] = mapped_column(
+        ForeignKey("backup_remotes.id", ondelete="RESTRICT"), primary_key=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BackupRun(Base):
+    """单次备份运行记录。一次 run 对应一份 tar.gz,可能并行推到 N 个 remote
+    (每个 remote 一条 BackupRunTarget 子状态)。"""
+
+    __tablename__ = "backup_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    schedule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("backup_schedules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'running' / 'succeeded' / 'partial' / 'failed' / 'canceled'
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    backup_filename: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BackupRunTarget(Base):
+    """每次 run 对每个 target remote 的 push 状态。fan-out 场景用,partial
+    成功时哪个 remote 失败的写在这里。"""
+
+    __tablename__ = "backup_run_targets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("backup_runs.id", ondelete="CASCADE"), index=True
+    )
+    remote_id: Mapped[int] = mapped_column(
+        ForeignKey("backup_remotes.id"), index=True
+    )
+    # 'pending' / 'running' / 'succeeded' / 'failed'
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bytes_transferred: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,6 +1,6 @@
-import { MoreHorizontal, ScrollText } from 'lucide-react'
-import { useMemo } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import {
   DropdownMenu,
@@ -9,25 +9,34 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  LanguageToggle,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  ThemeToggle,
   useT,
 } from '@beecount/ui'
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
 import { useAuth } from '../context/AuthContext'
+
+// CommandPalette + AnnualReportLauncher 都不在首屏关键路径,只在用户主动
+// 打开时才需要,懒加载省 ~150KB(framer-motion / cmdk / 年度报告整包)
+const CommandPalette = lazy(() =>
+  import('../components/CommandPalette').then((m) => ({ default: m.CommandPalette })),
+)
+const AnnualReportLauncher = lazy(() =>
+  import('../components/dashboard/AnnualReportEntry').then((m) => ({
+    default: m.AnnualReportLauncher,
+  })),
+)
 import { useLedgers } from '../context/LedgersContext'
 import { parseRoute, routePath } from '../state/router'
 
 interface Props {
   onOpenLogs: () => void
-  onOpenChangelog: () => void
+  onOpenAbout: () => void
 }
 
 /**
@@ -41,12 +50,30 @@ interface Props {
  * 导航通过 react-router `useNavigate`,当前高亮依据 `useLocation().pathname`
  * 反解析到 AppSection。
  */
-export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
+export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
   const { profileMe, isAdmin, logout } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
+  const [annualReportOpen, setAnnualReportOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // Cmd+K (Mac) / Ctrl+K (其他) 打开命令面板
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+        return
+      }
+      if (e.key === 'Escape' && paletteOpen) {
+        setPaletteOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [paletteOpen])
 
   const currentSection: AppSection = useMemo(() => {
     const parsed = parseRoute(location.pathname)
@@ -79,21 +106,23 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
   }
 
   return (
-    <div className="sticky top-0 z-50 px-4 pb-2 pt-3 md:px-6 md:pt-4">
-      <header className="card px-3 md:px-5">
-        <div className="flex h-14 items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+    <div className="sticky top-0 z-50 px-2 pb-2 pt-3 md:px-6 md:pt-4">
+      <header className="card px-2 md:px-5">
+        <div className="flex h-14 items-center justify-between gap-2 md:gap-3">
+          <div className="flex min-w-0 items-center gap-1.5 md:gap-2.5">
             <button
               type="button"
               onClick={() => goToSection('overview')}
-              className="flex items-center gap-2.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex items-center gap-1.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-2.5"
               aria-label={t('shell.goHome')}
             >
-              <img alt={t('shell.appName')} className="h-8 w-8 shrink-0" src="/branding/logo.svg" />
-              <div className="flex flex-col leading-tight md:flex-row md:items-baseline md:gap-1.5">
-                <p className="text-[15px] font-bold text-foreground">{t('shell.appName')}</p>
+              <img alt={t('shell.appName')} className="h-7 w-7 shrink-0 md:h-8 md:w-8" src="/branding/logo.svg" />
+              <div className="flex flex-col leading-none md:flex-row md:items-baseline md:gap-1.5 md:leading-tight">
+                <p className="whitespace-nowrap text-[13px] font-bold text-foreground md:text-[15px]">
+                  {t('shell.appName')}
+                </p>
                 <span
-                  className="font-mono text-[10px] text-muted-foreground/70"
+                  className="mt-0.5 font-mono text-[9px] text-muted-foreground/70 md:mt-0 md:text-[10px]"
                   title={`BeeCount Cloud v${__APP_VERSION__}`}
                 >
                   v{__APP_VERSION__}
@@ -113,7 +142,19 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
                   ))}
                 </SelectContent>
               </Select>
-            ) : null}
+            ) : (
+              // 用户首次登录(自部署 admin)时还没账本,把账本选择器位置换成
+              // 「+ 新建账本」CTA。点击跳 /app/ledgers?create=1,LedgersPage
+              // 检测到 query 自动打开新建 dialog。
+              <button
+                type="button"
+                onClick={() => navigate('/app/ledgers?create=1')}
+                className="ml-1 hidden h-8 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-3 text-xs font-medium text-primary transition hover:bg-primary/20 md:inline-flex"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('shell.ledger.empty')}
+              </button>
+            )}
           </div>
 
           <nav className="hidden flex-1 items-center justify-center gap-1 md:flex">
@@ -190,20 +231,55 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
             ) : null}
           </nav>
 
-          <div className="flex items-center gap-2 rounded-2xl border border-border/40 bg-accent/20 px-2 py-1">
+          <div className="flex shrink-0 items-center gap-0 rounded-2xl border border-border/40 bg-accent/20 px-0.5 py-0.5 md:gap-1 md:px-1 md:py-1">
+            <button
+              type="button"
+              title={t('cmdk.headerButton')}
+              aria-label={t('cmdk.headerButton')}
+              onClick={() => setPaletteOpen(true)}
+              className="hidden h-8 items-center gap-2 rounded-md px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary md:flex"
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span>{t('cmdk.headerButton')}</span>
+              {/* 单 chip 「⌘ K」/「⌃ K」 — 符号 + 空格 + 字母,Apple 菜单同款 */}
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[12px] font-semibold leading-none">
+                  {navigator.platform.includes('Mac') ? '⌘ K' : '⌃ K'}
+              </kbd>
+            </button>
+            <button
+              type="button"
+              title={t('cmdk.headerButton')}
+              aria-label={t('cmdk.headerButton')}
+              onClick={() => setPaletteOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary md:hidden"
+            >
+              <Search className="h-4 w-4" />
+            </button>
+            {/* 日历视图入口 — 主导航不放(避免跟 transactions 重复语义),走 header 图标。
+             *  方案 C 调整(`web-feature-gap-2026-05.md`):header 留 Search / Calendar /
+             *  Logs(admin) / Avatar 四个,Theme / Language 这两个 set-once 偏好下沉到
+             *  AvatarDropdown(inline segmented 切换,不嵌子菜单)。
+             *  尺寸统一 h-8 w-8(32px),跟 avatar 一致;桌面 gap-0 让 icon 互相紧贴,
+             *  避免方形 icon 之间的视觉间距比 icon↔avatar 大。 */}
+            <Link
+              to="/app/calendar"
+              title={t('nav.calendar')}
+              aria-label={t('nav.calendar')}
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
+            >
+              <CalendarDays className="h-4 w-4" />
+            </Link>
             {isAdmin ? (
               <button
                 type="button"
                 title={t('logs.open')}
                 aria-label={t('logs.open')}
                 onClick={onOpenLogs}
-                className="flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
+                className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
               >
                 <ScrollText className="h-4 w-4" />
               </button>
             ) : null}
-            <LanguageToggle />
-            <ThemeToggle />
             {profileMe?.email ? (
               <AvatarDropdown
                 profileMe={{
@@ -217,14 +293,15 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
                 avatarMenuItems={avatarMenuItems}
                 onNavigate={goToSection}
                 onLogout={logout}
-                onOpenChangelog={onOpenChangelog}
+                onOpenAbout={onOpenAbout}
+                onOpenAnnualReport={() => setAnnualReportOpen(true)}
               />
             ) : null}
           </div>
         </div>
 
-        {ledgers.length > 0 ? (
-          <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
+        <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
+          {ledgers.length > 0 ? (
             <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
               <SelectTrigger className="h-8 flex-1 border-border/50 bg-background/60 text-xs">
                 <SelectValue placeholder={t('shell.ledger')} />
@@ -237,9 +314,37 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
                 ))}
               </SelectContent>
             </Select>
-          </div>
-        ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={() => navigate('/app/ledgers?create=1')}
+              className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-3 text-xs font-medium text-primary transition hover:bg-primary/20"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t('shell.ledger.empty')}
+            </button>
+          )}
+        </div>
       </header>
+      {/* 只在 open 时挂载 — 既保证 lazy chunk 不在首屏拉,又让组件内部
+          useEffect/state 跟弹窗生命周期严格绑定,关闭时彻底卸载 */}
+      {annualReportOpen ? (
+        <Suspense fallback={null}>
+          <AnnualReportLauncher
+            open={annualReportOpen}
+            onClose={() => setAnnualReportOpen(false)}
+          />
+        </Suspense>
+      ) : null}
+      {paletteOpen ? (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={paletteOpen}
+            onClose={() => setPaletteOpen(false)}
+            onOpenAnnualReport={() => setAnnualReportOpen(true)}
+          />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

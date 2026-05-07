@@ -137,17 +137,44 @@ async def update_ledger_meta(
     if replay:
         return replay
 
-    if "ledger_name" in payload:
-        ledger.name = payload["ledger_name"]
-    if "currency" in payload:
-        ledger.currency = payload["currency"]
-
+    # mutate 在 _commit_write 内部跑,在 snapshot_builder 之后。
+    # ledger.name / ledger.currency 必须延迟到 mutate 里改,否则 snapshot
+    # _builder 读已经新值 → prev/next 一样 → diff 检测不到任何变更。
+    # 同时显式 emit 一条 'ledger' SyncChange,因为 _emit_entity_diffs 只覆盖
+    # items/accounts/categories/tags/budgets,不 diff 顶层 ledgerName/currency
+    # —— 不显式 emit 的话 mobile _applyLedgerChange 永远收不到变更。
     def mutate(snapshot: dict) -> tuple[dict, str]:
         next_snapshot = ensure_snapshot_v2(snapshot)
+        new_name: str | None = None
+        new_currency: str | None = None
         if "ledger_name" in payload:
-            next_snapshot["ledgerName"] = payload["ledger_name"]
+            new_name = payload["ledger_name"]
+            next_snapshot["ledgerName"] = new_name
+            ledger.name = new_name
         if "currency" in payload:
-            next_snapshot["currency"] = payload["currency"]
+            new_currency = payload["currency"]
+            next_snapshot["currency"] = new_currency
+            ledger.currency = new_currency
+        # 显式 emit ledger meta change(action=upsert,跟 create_ledger 同款
+        # payload 字段)。mobile _applyLedgerChange 用 ledgerName/currency 写
+        # 本地 ledgers 表。
+        if new_name is not None or new_currency is not None:
+            change_payload: dict = {}
+            change_payload["ledgerName"] = ledger.name
+            change_payload["currency"] = ledger.currency
+            row_change = SyncChange(
+                user_id=current_user.id,
+                ledger_id=ledger.id,
+                entity_type="ledger",
+                entity_sync_id=ledger.external_id,
+                action="upsert",
+                payload_json=change_payload,
+                updated_at=_utcnow(),
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(row_change)
+            db.flush()
         return next_snapshot, ledger.external_id
 
     return await _commit_write(

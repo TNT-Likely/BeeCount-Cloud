@@ -46,5 +46,37 @@ export default defineConfig({
         changeOrigin: true
       }
     }
-  }
+  },
+  build: {
+    // 单 chunk 默认 500KB 警告。我们走 manualChunks + lazy 路由,目标首屏
+    // < 500KB,但年度报告整包(framer-motion + html-to-image + qrcode + 12 屏)
+    // 会超 500KB,这种"按需加载"的大块容忍它,提升 chunkSizeWarningLimit。
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        // 用 function 形式匹配 module id(transitive deps 也能命中),
+        // 静态对象形式只能写当前 app 的 direct deps,框架库都是 transitive
+        // 会触发 "Could not resolve entry module" 错误。
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          // React 核心:每个页都用,长期可缓存
+          if (
+            /[/\\]node_modules[/\\](react|react-dom|react-router|react-router-dom)[/\\]/.test(id) ||
+            /[/\\]node_modules[/\\]\.pnpm[/\\](react|react-dom|react-router|react-router-dom)@/.test(id)
+          ) {
+            return 'react-vendor'
+          }
+          // Recharts(~250KB)+ d3-* 依赖。只 OverviewPage 等少量页用
+          if (/[/\\](recharts|d3-[a-z]+)[/\\]/.test(id)) return 'recharts'
+          // framer-motion(年度报告 + 部分动画)~150KB
+          if (/[/\\]framer-motion[/\\]/.test(id)) return 'framer-motion'
+          // 海报导出(只年度报告 / 分享场景)
+          if (/[/\\](html-to-image|qrcode)[/\\]/.test(id)) return 'poster'
+          // cmdk(命令面板)
+          if (/[/\\]cmdk[/\\]/.test(id)) return 'cmdk'
+          return undefined
+        },
+      },
+    },
+  },
 })
