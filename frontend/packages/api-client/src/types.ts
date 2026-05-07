@@ -42,6 +42,45 @@ export type ProfileAppearance = {
   show_transaction_time?: boolean
 }
 
+/**
+ * AI 服务商单条配置 —— 字段命名严格对齐 mobile `AIServiceProviderConfig.toJson()`,
+ * server 是透传 JSON,**不要** snake_case 化(mobile 期待 `textProviderId` /
+ * `apiKey` / `isBuiltIn` 这种命名)。
+ */
+export type AIProvider = {
+  id: string
+  name: string
+  isBuiltIn?: boolean
+  apiKey?: string
+  baseUrl?: string
+  textModel?: string
+  visionModel?: string
+  audioModel?: string
+  createdAt?: string // ISO 8601
+}
+
+export type AICapabilityBinding = {
+  textProviderId?: string | null
+  visionProviderId?: string | null
+  speechProviderId?: string | null
+}
+
+/**
+ * 完整 AI 配置 snapshot —— 跟 mobile `AIProviderManager.snapshotForSync()` 对齐。
+ * server 的 `ai_config_json` 列存的就是这个 shape 序列化后的字符串。
+ */
+export type AIConfig = {
+  providers?: AIProvider[]
+  binding?: AICapabilityBinding
+  custom_prompt?: string
+  strategy?: string
+  bill_extraction_enabled?: boolean
+  use_vision?: boolean
+}
+
+/** 内置「智谱GLM」provider id —— 跟 mobile `zhipuDefault.id` 对齐,删除 fallback 用。 */
+export const BUILTIN_PROVIDER_ID = 'zhipu_glm'
+
 export type ProfileMe = {
   user_id: string
   email: string

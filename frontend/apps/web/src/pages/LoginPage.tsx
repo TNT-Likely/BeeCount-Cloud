@@ -1,4 +1,5 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
+import { HelpCircle, X } from 'lucide-react'
 
 import {
   ApiError,
@@ -19,6 +20,8 @@ import {
   useT
 } from '@beecount/ui'
 import { localizeError } from '../i18n/errors'
+
+const HINT_DISMISSED_KEY = 'login_initial_password_hint_dismissed'
 
 type LoginPageProps = {
   onLoggedIn: (token: string) => void
@@ -187,7 +190,15 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="login-password">{t('login.password')}</Label>
+                    <div className="flex items-center gap-1.5">
+                      <Label htmlFor="login-password">{t('login.password')}</Label>
+                      {/* (?) 图标 hover 出 hint —— 即便用户关掉了下方提示卡,仍
+                          能从这里查到初始密码出处。Tooltip 仅是 native title,
+                          需要包裹 button(span 上的 title 在某些浏览器里 SVG
+                          区域不触发 hover);同时点击 toggle 出可见浮窗作为
+                          兜底,移动端 / 触屏没有 hover 时也能查看。 */}
+                      <PasswordHintTrigger />
+                    </div>
                     <Input
                       id="login-password"
                       type="password"
@@ -196,6 +207,12 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
                       onChange={(e) => setPassword(e.target.value)}
                     />
                   </div>
+                  {/* 初次部署的用户经常不知道初始密码哪里来 — 自部署 server 在
+                      首次启动时会把 admin 账号 + 密码打到 docker log,同时
+                      也写入容器内 `var/initial_admin_password` 文件。提示卡
+                      显示在密码框下方,带 × 关闭按钮,关闭后写 localStorage,
+                      下次不再显示。 */}
+                  <InitialPasswordHint />
                   <Button className="w-full" type="submit" disabled={loading}>
                     {loading ? '…' : t('login.submit')}
                   </Button>
@@ -212,6 +229,105 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * (?) 图标 — hover 显示 native title;点击 toggle 一个临时浮窗,移动端没
+ * hover 也能看;再点别处 / 自身关闭。比 Tooltip 组件可靠,因为后者只是 span
+ * 的 title 在 SVG hit area 上某些浏览器不一定触发。
+ */
+function PasswordHintTrigger() {
+  const t = useT()
+  const [open, setOpen] = useState(false)
+  const hint = t('login.initialPasswordHint') as string
+
+  // 点弹窗外部 / Esc 关闭
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    const onDoc = () => setOpen(false)
+    window.addEventListener('keydown', onKey)
+    // 用 setTimeout + capture=false,避免本次点击直接被 onDoc 捕获关掉
+    const tid = window.setTimeout(() => document.addEventListener('click', onDoc), 0)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('click', onDoc)
+      window.clearTimeout(tid)
+    }
+  }, [open])
+
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        title={hint}
+        aria-label={hint}
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        className="rounded-full p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <span
+          role="tooltip"
+          onClick={(e) => e.stopPropagation()}
+          className="absolute left-1/2 top-full z-10 mt-1.5 w-[280px] -translate-x-1/2 rounded-md border border-border/60 bg-popover px-3 py-2 text-[11px] leading-relaxed text-foreground shadow-lg"
+        >
+          {hint}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+/**
+ * 初始密码引导 —— 自部署 server 首次启动时,admin 账号 + 密码会:
+ *  1) 打到 docker-compose / docker logs 输出
+ *  2) 写到容器 `var/initial_admin_password` 文件
+ *
+ * 很多用户初次访问 web 不知道这件事,反复来问"哪里注册"。这条提示只显示
+ * 在登录态(2FA challenge 切走后不显示),× 关闭后写 localStorage,下次
+ * 访问不再展示。即便关掉,密码 label 旁的 (?) 图标 hover 仍能看见同款
+ * 文案,信息不会彻底丢失。
+ */
+function InitialPasswordHint() {
+  const t = useT()
+  const [dismissed, setDismissed] = useState(true)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setDismissed(window.localStorage.getItem(HINT_DISMISSED_KEY) === '1')
+  }, [])
+
+  if (dismissed) return null
+
+  const close = () => {
+    setDismissed(true)
+    try {
+      window.localStorage.setItem(HINT_DISMISSED_KEY, '1')
+    } catch {
+      // 用户禁了 localStorage —— 本次会话内消失也算
+    }
+  }
+
+  return (
+    <div className="relative rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 pr-8 text-[11px] leading-relaxed text-foreground">
+      <button
+        type="button"
+        onClick={close}
+        className="absolute right-1.5 top-1.5 rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+        aria-label={t('common.close') as string}
+      >
+        <X className="h-3 w-3" />
+      </button>
+      {t('login.initialPasswordHint')}
     </div>
   )
 }

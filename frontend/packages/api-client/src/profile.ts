@@ -1,6 +1,6 @@
 import { API_BASE, authedGet, authedPatch, resolveApiUrl } from './http'
 import { extractApiError } from './errors'
-import type { ProfileAppearance, ProfileMe } from './types'
+import type { AIConfig, ProfileAppearance, ProfileMe } from './types'
 
 export async function fetchProfileMe(token: string): Promise<ProfileMe> {
   const profile = await authedGet<ProfileMe>('/profile/me', token)
@@ -27,6 +27,11 @@ export async function patchProfileMe(
     theme_primary_color?: string
     /** 外观偏好(header_decoration_style / compact_amount / show_transaction_time)。 */
     appearance?: ProfileAppearance
+    /** AI 配置整体替换 —— **整体**替换语义,server 直接覆盖。调用方必须先读
+     *  当前 profile.ai_config,merge 后整体推,否则 mobile-only 字段
+     *  (custom_prompt / strategy / bill_extraction_enabled / use_vision)
+     *  会被默认值覆盖。见 lib/aiConfigMerge.ts。 */
+    ai_config?: AIConfig | Record<string, any>
   }
 ): Promise<ProfileMe> {
   const profile = await authedPatch<ProfileMe>('/profile/me', token, payload)
