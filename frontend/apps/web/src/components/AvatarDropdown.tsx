@@ -3,11 +3,10 @@ import {
   Archive,
   BookOpen,
   Bot,
-  Github,
+  Info,
   Languages,
   LogOut,
   Moon,
-  ScrollText,
   Smartphone,
   Sparkles,
   Sun,
@@ -37,7 +36,7 @@ const SETTINGS_ICONS: Record<string, LucideIcon> = {
  *   - Tools:预算 / 账本
  *   - Settings:个人资料 / AI / 健康 / 设备(通过 avatarMenuItems 动态传入)
  *   - Admin(仅 isAdmin):用户管理
- *   - Info:更新日志 / GitHub 仓库外链
+ *   - Info:关于(版本对比 + 仓库链接 + 更新日志,合并自旧的「更新日志」+「GitHub 仓库」)
  *   - Actions:退出登录
  *
  * 行为:跟原 inline 实现一致 —— pure CSS group-hover + focus-within,
@@ -56,7 +55,7 @@ interface Props {
   avatarMenuItems: NavItem[]
   onNavigate: (section: AppSection) => void
   onLogout: () => void
-  onOpenChangelog: () => void
+  onOpenAbout: () => void
   onOpenAnnualReport: () => void
 }
 
@@ -67,7 +66,7 @@ export function AvatarDropdown({
   avatarMenuItems,
   onNavigate,
   onLogout,
-  onOpenChangelog,
+  onOpenAbout,
   onOpenAnnualReport,
 }: Props) {
   const t = useT()
@@ -181,21 +180,12 @@ export function AvatarDropdown({
             </>
           ) : null}
 
-          {/* Info 组:更新日志 / GitHub */}
+          {/* Info 组:关于 —— 合并旧的「更新日志」+「GitHub 仓库」两条菜单 */}
           <Divider />
           <GroupLabel>{t('avatar.group.info')}</GroupLabel>
-          <MenuButton icon={ScrollText} onClick={onOpenChangelog}>
-            {t('avatar.changelog')}
+          <MenuButton icon={Info} onClick={onOpenAbout}>
+            {t('avatar.about')}
           </MenuButton>
-          <a
-            className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
-            href="https://github.com/TNT-Likely/BeeCount-Cloud"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Github className="h-3.5 w-3.5" />
-            {t('avatar.github')}
-          </a>
 
           {/* Preferences 组:主题 / 语言 — inline segmented control,
               不收子菜单。原 AppHeader 的 Theme/Language 图标搬到这里。 */}

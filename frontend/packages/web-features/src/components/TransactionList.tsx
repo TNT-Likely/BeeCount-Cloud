@@ -41,6 +41,12 @@ interface Props {
   className?: string
   emptyTitle?: string
   emptyDescription?: string
+  /** 批量选择模式 —— 行首渲染 checkbox,点行切换选中。 */
+  selectionMode?: boolean
+  /** 已选 sync_id 集合(selectionMode=true 时生效)。 */
+  selectedIds?: Set<string>
+  /** 切换选中。event 透传给上层判断 shift / meta。row.id 是 sync_id。 */
+  onToggleSelect?: (row: ReadTransaction, event: React.MouseEvent) => void
 }
 
 /**
@@ -68,7 +74,10 @@ export function TransactionList({
   onSelect,
   className,
   emptyTitle,
-  emptyDescription
+  emptyDescription,
+  selectionMode = false,
+  selectedIds,
+  onToggleSelect
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -132,6 +141,9 @@ export function TransactionList({
                 onPreviewAttachment={onPreviewAttachment}
                 onClickTag={onClickTag}
                 onSelect={onSelect}
+                selectionMode={selectionMode}
+                selected={selectedIds?.has(row.id) ?? false}
+                onToggleSelect={onToggleSelect}
               />
             </li>
           ))}

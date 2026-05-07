@@ -17,7 +17,7 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 
-import { Download, SlidersHorizontal } from 'lucide-react'
+import { CheckSquare, Download, SlidersHorizontal } from 'lucide-react'
 
 import {
   useToast,
@@ -47,6 +47,7 @@ import {
 import {
   ApiError,
   batchAttachmentExists,
+  batchDeleteTransactions,
   downloadAttachment,
   uploadAttachment,
   type AttachmentRef,
@@ -89,6 +90,8 @@ import {
 } from '@beecount/web-features'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
+import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
+import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
@@ -379,6 +382,15 @@ export function TransactionsPage() {
       setSearchParams(next, { replace: true })
     }
   }, [listQuery, searchParams, setSearchParams])
+  // 批量选择模式 —— 桌面端独占。entry 按钮 + toolbar 都用 hidden md:flex
+  // CSS gating,小屏既不暴露入口也无法切换。Esc 退出 + 当前页 ledger 切换
+  // 时自动清空。lastClickIndex 用于 ⇧ + Click 范围选(Gmail 风格)。
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set())
+  const lastClickIndexRef = useRef<number | null>(null)
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
+  const [batchSaving, setBatchSaving] = useState(false)
+
   const [adminUserStatusFilter, setAdminUserStatusFilter] = useState<'enabled' | 'disabled' | 'all'>('enabled')
   // devicesWindowDays state 已迁到 SettingsDevicesPage。
   // activeLedgerId / setActiveLedgerId 由 AppShell 提供(useLedgers 已在
@@ -1478,6 +1490,158 @@ export function TransactionsPage() {
 
   const showTxFilter = route.section === 'transactions'
 
+  // ──────────────── 批量选择 ────────────────
+  // 切账本 / 离开交易页 / 修改 filter 时清空 selection,避免选中态横跨上下文
+  // 后用户操作错对象。dataset 变了再保留 selection 没意义。
+  useEffect(() => {
+    setSelectionMode(false)
+    setSelectedTxIds(new Set())
+    lastClickIndexRef.current = null
+  }, [route.section, activeLedgerId])
+
+  // 当前可见行(分页 / 当前 page),用于「全选当前页」+ 范围选 ⇧ + Click
+  const visibleTxIds = useMemo(() => transactions.map((t) => t.id), [transactions])
+  const allVisibleSelected =
+    selectionMode &&
+    visibleTxIds.length > 0 &&
+    visibleTxIds.every((id) => selectedTxIds.has(id))
+
+  const enterSelection = useCallback((seedId?: string) => {
+    setSelectionMode(true)
+    if (seedId) setSelectedTxIds(new Set([seedId]))
+    else setSelectedTxIds(new Set())
+    lastClickIndexRef.current = null
+  }, [])
+
+  const exitSelection = useCallback(() => {
+    setSelectionMode(false)
+    setSelectedTxIds(new Set())
+    lastClickIndexRef.current = null
+  }, [])
+
+  const handleToggleSelect = useCallback(
+    (row: ReadTransaction, event: React.MouseEvent) => {
+      const id = row.id
+      const idx = visibleTxIds.indexOf(id)
+      const isShift = event.shiftKey && lastClickIndexRef.current !== null && idx >= 0
+      const isMeta = event.metaKey || event.ctrlKey
+
+      setSelectedTxIds((prev) => {
+        const next = new Set(prev)
+        if (isShift) {
+          // 范围选:从 lastClickIndex 到 idx,全部加入(GitHub / Gmail 风格)
+          const start = Math.min(lastClickIndexRef.current!, idx)
+          const end = Math.max(lastClickIndexRef.current!, idx)
+          for (let i = start; i <= end; i++) {
+            const vid = visibleTxIds[i]
+            if (vid) next.add(vid)
+          }
+        } else if (isMeta) {
+          // 增量切换 —— 仅当前行
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+        } else {
+          // 普通点击 → 切换当前行
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+        }
+        return next
+      })
+      if (idx >= 0 && !isShift) lastClickIndexRef.current = idx
+    },
+    [visibleTxIds],
+  )
+
+  const toggleSelectAllVisible = useCallback(() => {
+    if (allVisibleSelected) {
+      setSelectedTxIds((prev) => {
+        const next = new Set(prev)
+        for (const id of visibleTxIds) next.delete(id)
+        return next
+      })
+    } else {
+      setSelectedTxIds((prev) => {
+        const next = new Set(prev)
+        for (const id of visibleTxIds) next.add(id)
+        return next
+      })
+    }
+  }, [allVisibleSelected, visibleTxIds])
+
+  // Esc 退出选择模式
+  useEffect(() => {
+    if (!selectionMode) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') exitSelection()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectionMode, exitSelection])
+
+  const selectedTxList = useMemo(
+    () => transactions.filter((t) => selectedTxIds.has(t.id)),
+    [transactions, selectedTxIds],
+  )
+  // 已选合计金额:支出 - 收入(转账中性,不计入展示)。
+  const selectedTotalAmount = useMemo(() => {
+    let sum = 0
+    for (const t of selectedTxList) {
+      if (t.tx_type === 'expense') sum -= Number(t.amount) || 0
+      else if (t.tx_type === 'income') sum += Number(t.amount) || 0
+    }
+    return sum
+  }, [selectedTxList])
+
+  const handleBatchExport = useCallback(async () => {
+    if (!activeLedgerId) return
+    if (selectedTxIds.size === 0) return
+    setBatchSaving(true)
+    try {
+      await downloadWorkspaceTransactionsCsv(token, {
+        ledgerId: activeLedgerId,
+        txIds: Array.from(selectedTxIds),
+        lang: locale,
+      })
+      toast.success(t('export.csv.success'))
+    } catch (err) {
+      toast.error(localizeError(err, t))
+    } finally {
+      setBatchSaving(false)
+    }
+  }, [activeLedgerId, selectedTxIds, token, locale, t, toast])
+
+  const handleBatchDeleteConfirm = useCallback(async () => {
+    if (!activeLedgerId) return
+    if (selectedTxIds.size === 0) return
+    setBatchSaving(true)
+    try {
+      const result = await batchDeleteTransactions(token, {
+        ledgerId: activeLedgerId,
+        txIds: Array.from(selectedTxIds),
+      })
+      const deleted = result.deleted_tx_ids.length
+      const failed = result.failed.length
+      if (failed > 0) {
+        toast.error(
+          t('txBatch.deleteResult.partial', {
+            deleted,
+            failed,
+          }) as string,
+        )
+      } else {
+        toast.success(t('txBatch.deleteResult.ok', { count: deleted }))
+      }
+      setBatchDeleteOpen(false)
+      exitSelection()
+      void onRefresh()
+    } catch (err) {
+      toast.error(localizeError(err, t))
+    } finally {
+      setBatchSaving(false)
+    }
+  }, [activeLedgerId, selectedTxIds, token, t, toast, exitSelection])
+  // ──────────────────────────────────────────
+
   return (
     <>
         <div className="space-y-4 pb-20 md:pb-0">
@@ -1518,6 +1682,21 @@ export function TransactionsPage() {
                   ) : null}
                 </div>
                 <div className="ml-auto flex items-center gap-2">
+                {/* 「批量选择」入口 — 桌面端独占,小屏完全不渲染。点击进选择
+                    模式,toolbar 出现,行首加 checkbox。设计:.docs/web-tx-batch-actions.md */}
+                {canWriteTx && !selectionMode ? (
+                  <Tooltip content={t('txBatch.entryTooltip')}>
+                    <Button
+                      aria-label={t('txBatch.entryTooltip') as string}
+                      className="hidden h-9 md:inline-flex"
+                      size="icon"
+                      variant="outline"
+                      onClick={() => enterSelection()}
+                    >
+                      <CheckSquare className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                ) : null}
                 {/* 「导出 CSV」按钮 — 跟新建按钮做一组,布局对称。
                     复用当前 txFilterApplied 全部字段(date / type / q / amount /
                     category/tag/account syncId)— 所见即所得。 */}
@@ -1596,7 +1775,22 @@ export function TransactionsPage() {
                 ) : null}
                 </div>
               </div>
+              {selectionMode ? (
+                <SelectionToolbar
+                  selectedCount={selectedTxIds.size}
+                  totalCount={txTotal}
+                  allVisibleSelected={allVisibleSelected}
+                  saving={batchSaving}
+                  onToggleAllVisible={toggleSelectAllVisible}
+                  onDelete={() => setBatchDeleteOpen(true)}
+                  onExport={handleBatchExport}
+                  onExit={exitSelection}
+                />
+              ) : null}
               <TransactionsPanel
+                selectionMode={selectionMode}
+                selectedIds={selectedTxIds}
+                onToggleSelect={handleToggleSelect}
                 form={txForm}
                 rows={transactions}
                 total={txTotal}
@@ -1670,6 +1864,14 @@ export function TransactionsPage() {
                   // 派发全局 detail 事件,弹窗由 GlobalEntityDialogs 渲染
                   dispatchOpenDetailTx(row as WorkspaceTransaction)
                 }}
+              />
+              <BatchDeleteDialog
+                open={batchDeleteOpen}
+                count={selectedTxIds.size}
+                totalAmount={selectedTotalAmount}
+                saving={batchSaving}
+                onConfirm={handleBatchDeleteConfirm}
+                onClose={() => setBatchDeleteOpen(false)}
               />
             </div>
           ) : null}

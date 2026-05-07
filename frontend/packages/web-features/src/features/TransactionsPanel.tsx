@@ -78,6 +78,10 @@ type TransactionsPanelProps = {
    *  让全局 edit 容器(GlobalEditTxDialog)能复用 panel 内置的所有字段渲染 +
    *  picker 联动逻辑,不必从头实现。 */
   dialogOnlyMode?: boolean
+  /** 批量选择模式 —— 透传到 TransactionList。 */
+  selectionMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (row: ReadTransaction, event: React.MouseEvent) => void
 }
 
 type AttachmentCarouselCellProps = {
@@ -248,7 +252,10 @@ export function TransactionsPanel({
   onEdit,
   onDelete,
   onSelect,
-  dialogOnlyMode
+  dialogOnlyMode,
+  selectionMode = false,
+  selectedIds,
+  onToggleSelect
 }: TransactionsPanelProps) {
   const t = useT()
   const open = dialogOpen
@@ -350,6 +357,9 @@ export function TransactionsPanel({
             onSelect={onSelect}
             onPreviewAttachment={onPreviewAttachment}
             resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onToggleSelect={onToggleSelect}
           />
           <Pagination
             page={page}

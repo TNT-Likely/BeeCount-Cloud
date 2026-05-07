@@ -227,6 +227,10 @@ def export_workspace_transactions_csv(
     account_name: str | None = Query(default=None),
     q: str | None = Query(default=None),
     tx_sync_id: str | None = Query(default=None),
+    tx_ids: list[str] | None = Query(
+        default=None,
+        description="按 sync_id 集合导出(批量选中场景);传入则忽略其它过滤参数",
+    ),
     tag_sync_id: str | None = Query(default=None),
     category_sync_id: str | None = Query(default=None),
     account_sync_id: str | None = Query(default=None),
@@ -313,48 +317,57 @@ def export_workspace_transactions_csv(
     else:
         query = query.where(false_literal())
 
-    # 复用 list endpoint 的所有 filter 条件
-    if tx_type:
-        query = query.where(ReadTxProjection.tx_type == tx_type)
-    if account_name:
-        pattern = f"%{account_name}%"
-        query = query.where(or_(
-            ReadTxProjection.account_name.ilike(pattern),
-            ReadTxProjection.from_account_name.ilike(pattern),
-            ReadTxProjection.to_account_name.ilike(pattern),
-        ))
-    if tx_sync_id:
-        query = query.where(ReadTxProjection.sync_id == tx_sync_id)
-    if tag_sync_id:
-        query = query.where(
-            ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
-        )
-    if category_sync_id:
-        query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
-    if account_sync_id:
-        query = query.where(or_(
-            ReadTxProjection.account_sync_id == account_sync_id,
-            ReadTxProjection.from_account_sync_id == account_sync_id,
-            ReadTxProjection.to_account_sync_id == account_sync_id,
-        ))
-    if q:
-        pattern = f"%{q}%"
-        query = query.where(or_(
-            ReadTxProjection.note.ilike(pattern),
-            ReadTxProjection.category_name.ilike(pattern),
-            ReadTxProjection.account_name.ilike(pattern),
-            ReadTxProjection.from_account_name.ilike(pattern),
-            ReadTxProjection.to_account_name.ilike(pattern),
-            ReadTxProjection.tags_csv.ilike(pattern),
-        ))
-    if amount_min is not None:
-        query = query.where(ReadTxProjection.amount >= amount_min)
-    if amount_max is not None:
-        query = query.where(ReadTxProjection.amount <= amount_max)
-    if date_from is not None:
-        query = query.where(ReadTxProjection.happened_at >= date_from)
-    if date_to is not None:
-        query = query.where(ReadTxProjection.happened_at < date_to)
+    # tx_ids 模式:批量选中导出走 sync_id IN (...) 直接限定,忽略其它 filter
+    # —— 用户已经显式选好了行,日期 / q 等参数再叠加只会让 CSV 比预期少几条
+    # 这种反直觉行为。ledger 限定仍生效,跨 ledger 的 sync_id 不会越权。
+    if tx_ids:
+        cleaned_ids = [s for s in (s.strip() for s in tx_ids) if s]
+        if cleaned_ids:
+            query = query.where(ReadTxProjection.sync_id.in_(cleaned_ids))
+        else:
+            query = query.where(false_literal())
+    else:
+        if tx_type:
+            query = query.where(ReadTxProjection.tx_type == tx_type)
+        if account_name:
+            pattern = f"%{account_name}%"
+            query = query.where(or_(
+                ReadTxProjection.account_name.ilike(pattern),
+                ReadTxProjection.from_account_name.ilike(pattern),
+                ReadTxProjection.to_account_name.ilike(pattern),
+            ))
+        if tx_sync_id:
+            query = query.where(ReadTxProjection.sync_id == tx_sync_id)
+        if tag_sync_id:
+            query = query.where(
+                ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
+            )
+        if category_sync_id:
+            query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
+        if account_sync_id:
+            query = query.where(or_(
+                ReadTxProjection.account_sync_id == account_sync_id,
+                ReadTxProjection.from_account_sync_id == account_sync_id,
+                ReadTxProjection.to_account_sync_id == account_sync_id,
+            ))
+        if q:
+            pattern = f"%{q}%"
+            query = query.where(or_(
+                ReadTxProjection.note.ilike(pattern),
+                ReadTxProjection.category_name.ilike(pattern),
+                ReadTxProjection.account_name.ilike(pattern),
+                ReadTxProjection.from_account_name.ilike(pattern),
+                ReadTxProjection.to_account_name.ilike(pattern),
+                ReadTxProjection.tags_csv.ilike(pattern),
+            ))
+        if amount_min is not None:
+            query = query.where(ReadTxProjection.amount >= amount_min)
+        if amount_max is not None:
+            query = query.where(ReadTxProjection.amount <= amount_max)
+        if date_from is not None:
+            query = query.where(ReadTxProjection.happened_at >= date_from)
+        if date_to is not None:
+            query = query.where(ReadTxProjection.happened_at < date_to)
 
     query = query.order_by(
         ReadTxProjection.happened_at.desc(),

@@ -238,6 +238,9 @@ export type DownloadCsvOptions = {
   lang?: string
   /** 当 server 没给 Content-Disposition filename 时的 fallback 文件名 */
   fallbackFilename?: string
+  /** 批量选中场景:按 sync_id 集合导出。传入则忽略其它 filter 参数。
+   *  上限跟 batch delete 一致(200)。 */
+  txIds?: string[]
 }
 
 /**
@@ -257,18 +260,24 @@ export async function downloadWorkspaceTransactionsCsv(
 ): Promise<void> {
   const query = new URLSearchParams()
   query.set('ledger_id', options.ledgerId)
-  if (options.dateFrom) query.set('date_from', options.dateFrom)
-  if (options.dateTo) query.set('date_to', options.dateTo)
-  if (options.txType) query.set('tx_type', options.txType)
-  if (options.q) query.set('q', options.q)
-  if (options.accountName) query.set('account_name', options.accountName)
-  if (options.accountSyncId) query.set('account_sync_id', options.accountSyncId)
-  if (options.categorySyncId) query.set('category_sync_id', options.categorySyncId)
-  if (options.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
-  if (typeof options.amountMin === 'number')
-    query.set('amount_min', `${options.amountMin}`)
-  if (typeof options.amountMax === 'number')
-    query.set('amount_max', `${options.amountMax}`)
+  // 批量选中导出:走 sync_id IN(...) 直接限定;server 端会忽略其它 filter,
+  // 这里也尽量不发,避免 URL 噪声 + 防误解读。
+  if (options.txIds && options.txIds.length > 0) {
+    for (const id of options.txIds) query.append('tx_ids', id)
+  } else {
+    if (options.dateFrom) query.set('date_from', options.dateFrom)
+    if (options.dateTo) query.set('date_to', options.dateTo)
+    if (options.txType) query.set('tx_type', options.txType)
+    if (options.q) query.set('q', options.q)
+    if (options.accountName) query.set('account_name', options.accountName)
+    if (options.accountSyncId) query.set('account_sync_id', options.accountSyncId)
+    if (options.categorySyncId) query.set('category_sync_id', options.categorySyncId)
+    if (options.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
+    if (typeof options.amountMin === 'number')
+      query.set('amount_min', `${options.amountMin}`)
+    if (typeof options.amountMax === 'number')
+      query.set('amount_max', `${options.amountMax}`)
+  }
   const tzOffset =
     typeof options.tzOffsetMinutes === 'number'
       ? options.tzOffsetMinutes

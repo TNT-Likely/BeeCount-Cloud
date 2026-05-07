@@ -36,7 +36,7 @@ import { parseRoute, routePath } from '../state/router'
 
 interface Props {
   onOpenLogs: () => void
-  onOpenChangelog: () => void
+  onOpenAbout: () => void
 }
 
 /**
@@ -50,7 +50,7 @@ interface Props {
  * 导航通过 react-router `useNavigate`,当前高亮依据 `useLocation().pathname`
  * 反解析到 AppSection。
  */
-export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
+export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
@@ -281,7 +281,7 @@ export function AppHeader({ onOpenLogs, onOpenChangelog }: Props) {
                 avatarMenuItems={avatarMenuItems}
                 onNavigate={goToSection}
                 onLogout={logout}
-                onOpenChangelog={onOpenChangelog}
+                onOpenAbout={onOpenAbout}
                 onOpenAnnualReport={() => setAnnualReportOpen(true)}
               />
             ) : null}

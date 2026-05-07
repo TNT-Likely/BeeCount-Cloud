@@ -13,7 +13,7 @@ import {
 import { usePrimaryColor } from '@beecount/ui'
 import type { AppSection } from '@beecount/web-features'
 
-import { ChangelogDialog } from '../components/ChangelogDialog'
+import { AboutDialog } from '../components/AboutDialog'
 import { GlobalAskDialog } from '../components/cmdk-ai/GlobalAskDialog'
 import { GlobalParseTxDialog } from '../components/cmdk-ai/GlobalParseTxDialog'
 import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
@@ -43,7 +43,7 @@ interface Props {
  *   2. 管理 activeLedgerId per-user localStorage 持久化
  *   3. 提供 AuthProvider + LedgersProvider
  *   4. 渲染 AppLayout + AppHeader + <Outlet /> + MobileBottomNav
- *   5. 挂 LogsDialog / ChangelogDialog(全局 dialog,任意 section 都能开)
+ *   5. 挂 LogsDialog / AboutDialog(全局 dialog,任意 section 都能开)
  *
  * 各 section Page 只渲染 content,切换时 shell / header / dialog 不 unmount。
  */
@@ -57,7 +57,7 @@ export function AppShell({ token, onLogout }: Props) {
   const [isAdmin, setIsAdmin] = useState(false)
   const [isAdminResolved, setIsAdminResolved] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
-  const [changelogOpen, setChangelogOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
   const sessionUserId = useMemo(() => jwtUserId(token), [token])
 
   const activeLedgerStorageKey = useMemo(
@@ -211,7 +211,7 @@ export function AppShell({ token, onLogout }: Props) {
             header={
               <AppHeader
                 onOpenLogs={() => setLogsOpen(true)}
-                onOpenChangelog={() => setChangelogOpen(true)}
+                onOpenAbout={() => setAboutOpen(true)}
               />
             }
           >
@@ -224,7 +224,7 @@ export function AppShell({ token, onLogout }: Props) {
             />
           </AppLayout>
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
-          <ChangelogDialog open={changelogOpen} onOpenChange={setChangelogOpen} />
+          <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
           <GlobalEntityDialogs />
           <GlobalEditDialogs />
           <GlobalAskDialog />

@@ -77,6 +77,49 @@ export async function deleteTransaction(
   )
 }
 
+export type BatchDeleteTxFailure = {
+  tx_id: string
+  reason: 'not_found' | 'permission_denied' | 'conflict'
+  message?: string | null
+}
+
+export type BatchDeleteTxResponse = {
+  ledger_id: string
+  base_change_id: number
+  new_change_id: number
+  server_timestamp: string
+  deleted_tx_ids: string[]
+  failed: BatchDeleteTxFailure[]
+}
+
+/**
+ * POST /write/ledgers/{id}/transactions/batch/delete — 批量删除交易。
+ *
+ * 设计:.docs/web-tx-batch-actions.md
+ * - 单次最多 200 条(server 上限)
+ * - 部分失败不阻断:返回 deleted_tx_ids + failed[]
+ * - 服务端走 snapshot 锁 + 一次 SyncChange broadcast,跨设备实时更新
+ */
+export async function batchDeleteTransactions(
+  token: string,
+  options: {
+    ledgerId: string
+    txIds: string[]
+    baseChangeId?: number
+    idempotencyKey?: string
+  }
+): Promise<BatchDeleteTxResponse> {
+  return authedPost<BatchDeleteTxResponse>(
+    `/write/ledgers/${encodeURIComponent(options.ledgerId)}/transactions/batch/delete`,
+    token,
+    {
+      tx_ids: options.txIds,
+      base_change_id: options.baseChangeId ?? 0,
+    },
+    options.idempotencyKey
+  )
+}
+
 export async function createAccount(
   token: string,
   ledgerId: string,
