@@ -3,10 +3,11 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 import { EmptyState, useT } from '@beecount/ui'
 
+import { buildTagColorMap } from '../lib/tagColorPalette'
+
 import {
   TransactionRow,
-  TransactionRowVariant,
-  buildTagColorMap
+  TransactionRowVariant
 } from './TransactionRow'
 
 interface Props {

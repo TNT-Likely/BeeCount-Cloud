@@ -45,6 +45,43 @@ export function pickRandomTagColor(): string {
 }
 
 /**
+ * 构造 `tagName.lowercase → color` 字典。
+ * 入参可以是任意带 `name` / `color` 字段的对象数组(WorkspaceTag / ReadTag 通用)。
+ * 跨组件渲染 tag chip 都要这张表,所以集中在这里避免每个调用站点重写。
+ */
+export function buildTagColorMap(
+  tags: ReadonlyArray<{ name?: string | null; color?: string | null }> | null | undefined
+): Map<string, string> {
+  const map = new Map<string, string>()
+  if (!tags) return map
+  for (const tag of tags) {
+    const name = tag.name?.trim()
+    const color = tag.color?.trim()
+    if (name && color) {
+      map.set(name.toLowerCase(), color)
+    }
+  }
+  return map
+}
+
+/**
+ * 标签 outline 风格 chip 的内联样式 —— 文字用 tag 主色,边框 40% (66) 半透,
+ * 背景 10% (1a) 半透。给定颜色的标准化 chip 视觉,跨组件统一来源。
+ *
+ * 没色(传 null/空)→ 返回 undefined,让调用方走默认 border 色。
+ */
+export function tagChipOutlineStyle(
+  color: string | null | undefined
+): { color: string; borderColor: string; background: string } | undefined {
+  if (!color) return undefined
+  return {
+    color,
+    borderColor: `${color}66`,
+    background: `${color}1a`
+  }
+}
+
+/**
  * 根据背景色亮度判断对比文字应该用黑还是白。
  * Luminance 阈值 0.6 跟 app 端 `_isLightColor` 对齐。
  */

@@ -15,6 +15,7 @@ import type { AppSection } from '@beecount/web-features'
 
 import { ChangelogDialog } from '../components/ChangelogDialog'
 import { GlobalAskDialog } from '../components/cmdk-ai/GlobalAskDialog'
+import { GlobalParseTxDialog } from '../components/cmdk-ai/GlobalParseTxDialog'
 import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
 import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
@@ -227,6 +228,7 @@ export function AppShell({ token, onLogout }: Props) {
           <GlobalEntityDialogs />
           <GlobalEditDialogs />
           <GlobalAskDialog />
+          <GlobalParseTxDialog />
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
         </SyncSocketProvider>

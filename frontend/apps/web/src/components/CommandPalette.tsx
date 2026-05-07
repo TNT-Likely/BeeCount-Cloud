@@ -5,10 +5,12 @@ import {
   ArrowRight,
   BookOpen,
   CalendarDays,
+  Camera,
   CornerDownLeft,
   CreditCard,
   Download,
   FileBarChart2,
+  FileText,
   FolderTree,
   Hash,
   LayoutDashboard,
@@ -36,6 +38,7 @@ import {
   type WorkspaceTransaction,
 } from '@beecount/api-client'
 import { dispatchOpenAsk } from '../lib/askDialogEvents'
+import { dispatchOpenParseTxImage, dispatchOpenParseTxText } from '../lib/parseTxEvents'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
@@ -70,6 +73,13 @@ const EMPTY_RESULTS: SearchResults = {
   tags: [],
 }
 
+// cmdk 受控 value 用的稳定 key —— 不要用 label(随 i18n 变就解钩了),也别
+// 用 hint(prefix 的 hint 文案会变)。固定字符串才能跨语言钉住默认高亮。
+const VAL_SEARCH_IN_LIST = '__action__search-in-list'
+const VAL_ASK_AI = '__action__ask-ai'
+const VAL_AI_BILLING_TEXT = '__action__ai-billing-text'
+const VAL_AI_BILLING_IMAGE = '__action__ai-billing-image'
+
 /**
  * 全局命令面板 — Cmd+K (Mac) / Ctrl+K (其他) 触发。
  *
@@ -96,33 +106,48 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS)
   const [searching, setSearching] = useState(false)
+  // cmdk 受控 value —— 用来钉默认高亮(回车命中)的项。仅在「粘贴」场景下
+  // 主动设置成 AI 记账;其它情况留空,cmdk 自动选第一项(=「搜索交易」)。
+  const [activeValue, setActiveValue] = useState<string>('')
+  // 当前 query 是不是从粘贴来的 —— 决定是否把默认动作切到 AI 记账。手动
+  // 敲键盘的搜索词不应该被这条规则影响(用户多数时候用搜索)。query 变空
+  // 时(用户清空 / 改写后没内容)就重置回 false。
+  const [pastedText, setPastedText] = useState(false)
 
-  // 关闭时清空 query
+  // 关闭时清空
   useEffect(() => {
     if (!open) {
       setQuery('')
       setResults(EMPTY_RESULTS)
+      setActiveValue('')
+      setPastedText(false)
     }
   }, [open])
 
+  // query 完全清空 → 重置 paste 标记;否则只要还有内容,继续视为「来自粘贴」
+  // (用户可能在粘贴的内容上微调,不应该把高亮切回搜索)。
+  useEffect(() => {
+    if (!query) setPastedText(false)
+  }, [query])
+
   // debounce 搜索
+  const trimmedQuery = query.trim()
   useEffect(() => {
     if (!open) return
-    const trimmed = query.trim()
-    if (trimmed.length < 2) {
+    if (trimmedQuery.length < 2) {
       setResults(EMPTY_RESULTS)
       setSearching(false)
       return
     }
     setSearching(true)
     const handler = setTimeout(() => {
-      void runSearch(token, activeLedgerId, trimmed).then((r) => {
+      void runSearch(token, activeLedgerId, trimmedQuery).then((r) => {
         setResults(r)
         setSearching(false)
       })
     }, 250)
     return () => clearTimeout(handler)
-  }, [query, open, token, activeLedgerId])
+  }, [trimmedQuery, open, token, activeLedgerId])
 
   const goto = useCallback(
     (section: AppSection) => {
@@ -227,25 +252,88 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
 
   // 「带搜索词去交易列表」— Enter 默认动作
   const handleSearchInList = useCallback(() => {
-    const q = query.trim()
+    const q = trimmedQuery
     if (!q) return
     onClose()
     navigate(`/app/transactions?q=${encodeURIComponent(q)}`)
-  }, [navigate, onClose, query])
+  }, [navigate, onClose, trimmedQuery])
 
   // 用户主动选「问 AI」选项 → 关 ⌘K + dispatch 全局事件,GlobalAskDialog 接住打开
   // 跟「新建交易」(GlobalEditDialogs)同模式 — AI 弹窗跟 ⌘K 解耦,不被 cmdk
   // 渲染规则吞内容
   const handleAskAi = useCallback(() => {
-    const q = query.trim().replace(/^\?+\s*/, '') // 兼容 `?xxx` 前缀输入
+    const q = trimmedQuery.replace(/^\?+\s*/, '') // 兼容 `?xxx` 前缀输入
     if (!q) return
     onClose()
     dispatchOpenAsk(q)
-  }, [query, onClose])
+  }, [trimmedQuery, onClose])
+
+  // B2 截图记账 — pending image 由 ⌘V handler 写入
+  // 用户先看到 input 旁有图片标识 + default actions 多一条「AI 记账(图片)」
+  // → 主动点 / 回车选 → dispatch 进 Dialog
+  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  // 关闭时清空
+  useEffect(() => {
+    if (!open) setPendingImage(null)
+  }, [open])
+
+  // ⌘V 监听:图片拦下来当 pending(图片没法显示在 input);文字不拦,
+  // 让浏览器默认行为(进 input)。同时对文字 paste 标记 pastedText=true,
+  // 用来把默认高亮切到「AI 记账」(普通敲键盘搜索不应被影响)。
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile()
+          if (blob) {
+            e.preventDefault()
+            setPendingImage(blob)
+            return
+          }
+        }
+      }
+      // 文字 paste:不拦截,但记下来,默认动作切 AI 记账
+      const pastedString = e.clipboardData?.getData('text')
+      if (pastedString && pastedString.trim().length > 0) {
+        setPastedText(true)
+      }
+    }
+    document.addEventListener('paste', handler)
+    return () => document.removeEventListener('paste', handler)
+  }, [open])
+
+  // 「AI 记账」单一入口 — 根据 pendingImage / query 决定 image / text 路径
+  const handleAiBilling = useCallback(() => {
+    if (pendingImage) {
+      onClose()
+      dispatchOpenParseTxImage(pendingImage)
+      return
+    }
+    if (trimmedQuery) {
+      onClose()
+      dispatchOpenParseTxText(trimmedQuery)
+    }
+  }, [pendingImage, trimmedQuery, onClose])
+
+  // 默认高亮项的 cmdk value:粘贴场景钉到 AI 记账,其它情况留空让 cmdk
+  // 自动选第一项(=「搜索交易」)。手动敲键盘搜索是高频路径,不应被打断。
+  useEffect(() => {
+    if (!open) return
+    if (pendingImage) {
+      setActiveValue(VAL_AI_BILLING_IMAGE)
+    } else if (pastedText && trimmedQuery) {
+      setActiveValue(VAL_AI_BILLING_TEXT)
+    } else {
+      setActiveValue('')
+    }
+  }, [open, pendingImage, pastedText, trimmedQuery])
 
   if (!open) return null
 
-  const hasQuery = query.trim().length > 0
+  const hasQuery = trimmedQuery.length > 0
   const hasSearchResults =
     results.transactions.length > 0 ||
     results.categories.length > 0 ||
@@ -261,6 +349,8 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
         label="Command Menu"
         shouldFilter={false}
         loop
+        value={activeValue}
+        onValueChange={setActiveValue}
         className="w-full max-w-xl overflow-hidden rounded-xl border border-border/60 bg-popover shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -273,6 +363,20 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             className="h-12 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             autoFocus
           />
+          {pendingImage && (
+            <button
+              type="button"
+              onClick={() => setPendingImage(null)}
+              className="flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20"
+              title={t('cmdk.pendingImage.remove')}
+            >
+              <Camera className="h-3 w-3" />
+              <span className="max-w-[80px] truncate">
+                {pendingImage.name || 'screenshot'}
+              </span>
+              <span className="ml-0.5 text-primary/60">×</span>
+            </button>
+          )}
           <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             ESC
           </kbd>
@@ -283,21 +387,50 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             {searching ? t('cmdk.searching') : t('cmdk.empty')}
           </Command.Empty>
 
-          {/* === 1. 默认动作:始终最顶部,输入时第一个被高亮(回车直跳) === */}
-          {hasQuery && (
+          {/* === 1. 默认动作 === Enter 命中 = 第一项。普通输入时第一项是
+              「搜索交易」(用户高频路径);粘贴图片 / 文字时上面的 effect
+              把 cmdk activeValue 钉到 AI 记账,Enter 改命中 AI 记账。 */}
+          {(hasQuery || pendingImage) && (
             <Group heading={t('cmdk.group.default')}>
-              <Item
-                icon={<Search className="h-4 w-4" />}
-                label={t('cmdk.action.searchInList', { q: query.trim() })}
-                hint={t('cmdk.hint.enterToSearch')}
-                onSelect={handleSearchInList}
-              />
-              <Item
-                icon={<Sparkles className="h-4 w-4 text-primary" />}
-                label={t('cmdk.action.askAi', { q: query.trim() })}
-                hint="?"
-                onSelect={handleAskAi}
-              />
+              {hasQuery && !pendingImage && (
+                <Item
+                  value={VAL_SEARCH_IN_LIST}
+                  icon={<Search className="h-4 w-4" />}
+                  label={t('cmdk.action.searchInList', { q: trimmedQuery })}
+                  hint={t('cmdk.hint.enterToSearch')}
+                  onSelect={handleSearchInList}
+                />
+              )}
+              {hasQuery && !pendingImage && (
+                <Item
+                  value={VAL_ASK_AI}
+                  icon={<Sparkles className="h-4 w-4 text-primary" />}
+                  label={t('cmdk.action.askAi', { q: trimmedQuery })}
+                  hint="?"
+                  onSelect={handleAskAi}
+                />
+              )}
+              {pendingImage ? (
+                <Item
+                  value={VAL_AI_BILLING_IMAGE}
+                  icon={<Camera className="h-4 w-4 text-primary" />}
+                  label={t('cmdk.action.aiBillingImage', {
+                    name: pendingImage.name || 'screenshot',
+                  })}
+                  hint={t('cmdk.hint.enterToBill')}
+                  onSelect={handleAiBilling}
+                />
+              ) : (
+                hasQuery && (
+                  <Item
+                    value={VAL_AI_BILLING_TEXT}
+                    icon={<FileText className="h-4 w-4 text-primary" />}
+                    label={t('cmdk.action.aiBillingText', { q: trimmedQuery })}
+                    hint={t('cmdk.hint.enterToBill')}
+                    onSelect={handleAiBilling}
+                  />
+                )
+              )}
             </Group>
           )}
 
@@ -358,7 +491,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
           )}
 
           {/* 输入了但没结果(且不在 loading)— 提示走默认动作或调整 */}
-          {hasQuery && !hasSearchResults && !searching && query.trim().length >= 2 && (
+          {hasQuery && !hasSearchResults && !searching && trimmedQuery.length >= 2 && (
             <div className="px-3 py-3 text-[11px] text-muted-foreground">
               {t('cmdk.hint.noResults')}
             </div>
@@ -482,6 +615,7 @@ function Item({
   hint,
   shortcut,
   active,
+  value,
   onSelect,
 }: {
   icon: React.ReactNode
@@ -489,12 +623,15 @@ function Item({
   hint?: string
   shortcut?: string
   active?: boolean
+  /** cmdk value:外层 `<Command value=...>` 受控时,用这个钉默认高亮项;
+   *  没传则 fallback 到 `${label} ${hint}`。 */
+  value?: string
   onSelect: () => void
 }) {
   return (
     <Command.Item
       onSelect={onSelect}
-      value={`${label} ${hint || ''}`}
+      value={value ?? `${label} ${hint || ''}`}
       className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-foreground aria-selected:bg-accent ${
         active ? 'text-primary' : ''
       }`}

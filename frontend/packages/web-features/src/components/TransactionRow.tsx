@@ -2,6 +2,7 @@ import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@bee
 import { useT } from '@beecount/ui'
 
 import { CategoryIcon } from './CategoryIcon'
+import { TagChip } from './TagChip'
 
 export type TransactionRowVariant = 'default' | 'compact'
 
@@ -189,33 +190,14 @@ export function TransactionRow({
           ) : null}
 
           {row.tags_list && row.tags_list.length > 0
-            ? row.tags_list.map((tagName) => {
-                const color = tagColorByName?.get(tagName.trim().toLowerCase())
-                const style = color
-                  ? {
-                      color,
-                      borderColor: `${color}66`,
-                      background: `${color}1a`
-                    }
-                  : undefined
-                const clickable = Boolean(onClickTag)
-                return (
-                  <span
-                    key={tagName}
-                    className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${
-                      clickable ? 'cursor-pointer hover:brightness-110' : ''
-                    }`}
-                    style={style}
-                    onClick={(event) => {
-                      if (!clickable) return
-                      event.stopPropagation()
-                      onClickTag?.(tagName)
-                    }}
-                  >
-                    {tagName}
-                  </span>
-                )
-              })
+            ? row.tags_list.map((tagName) => (
+                <TagChip
+                  key={tagName}
+                  name={tagName}
+                  color={tagColorByName?.get(tagName.trim().toLowerCase())}
+                  onClick={onClickTag}
+                />
+              ))
             : null}
 
           {hasAttachments && firstAttachment ? (
@@ -236,20 +218,6 @@ export function TransactionRow({
       </div>
     </div>
   )
-}
-
-/**
- * 把 tag 数组 → lowercase-keyed color map 的小工具。外部可以一次算完复用给
- * TransactionList / TransactionRow，不必每个 row 算一遍。
- */
-export function buildTagColorMap(tags: Array<Pick<ReadTag, 'name' | 'color'>>): Map<string, string> {
-  const map = new Map<string, string>()
-  for (const tag of tags) {
-    if (tag.color) {
-      map.set(tag.name.trim().toLowerCase(), tag.color)
-    }
-  }
-  return map
 }
 
 function formatDateTime(value: string | null | undefined): string {

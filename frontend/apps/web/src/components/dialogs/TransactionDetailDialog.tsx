@@ -1,4 +1,5 @@
-import type { WorkspaceTransaction } from '@beecount/api-client'
+import { useMemo } from 'react'
+import type { WorkspaceTag, WorkspaceTransaction } from '@beecount/api-client'
 import {
   Button,
   Dialog,
@@ -8,12 +9,15 @@ import {
   DialogTitle,
   useT,
 } from '@beecount/ui'
+import { buildTagColorMap, TagChip } from '@beecount/web-features'
 import { Calendar, Edit3, Hash, Tag, User, Wallet } from 'lucide-react'
 
 interface Props {
   tx: WorkspaceTransaction | null
   /** 当前用户对该交易是否有写权限(决定 edit 按钮是否启用) */
   canManage?: boolean
+  /** ledger tags 列表 — 用于按 name 查 color 给 chip 上色,跟 TransactionRow 一致 */
+  tags?: WorkspaceTag[]
   onClose: () => void
   onEdit: (tx: WorkspaceTransaction) => void
 }
@@ -32,10 +36,14 @@ interface Props {
 export function TransactionDetailDialog({
   tx,
   canManage = true,
+  tags,
   onClose,
   onEdit,
 }: Props) {
   const t = useT()
+
+  // tag name(lowercased)→ color 字典,跟 TransactionRow 用同样模式
+  const tagColorByName = useMemo(() => buildTagColorMap(tags), [tags])
 
   const open = Boolean(tx)
   const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
@@ -121,12 +129,11 @@ export function TransactionDetailDialog({
                   value={
                     <div className="flex flex-wrap justify-end gap-1">
                       {tagsList.map((name) => (
-                        <span
+                        <TagChip
                           key={name}
-                          className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[11px]"
-                        >
-                          {name}
-                        </span>
+                          name={name}
+                          color={tagColorByName.get(name.trim().toLowerCase())}
+                        />
                       ))}
                     </div>
                   }

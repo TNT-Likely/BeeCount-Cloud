@@ -72,8 +72,17 @@ export function GlobalEntityDialogs() {
 
   // 监听 tx detail
   useEffect(() => {
-    return onOpenDetailTx((next) => setTx(next))
-  }, [])
+    return onOpenDetailTx((next) => {
+      setTx(next)
+      // 顺手拉一份 tags 字典,详情弹窗里的 tag chip 要按 color 渲染
+      if (tagsDict.length === 0) {
+        void fetchWorkspaceTags(token, { limit: 500 })
+          .then(setTagsDict)
+          .catch(() => undefined)
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
 
   const loadAccountTxs = useCallback(
     async (accountName: string, offset: number) => {
@@ -204,6 +213,7 @@ export function GlobalEntityDialogs() {
     <>
       <TransactionDetailDialog
         tx={tx}
+        tags={tagsDict}
         onClose={() => setTx(null)}
         onEdit={handleEditTx}
       />

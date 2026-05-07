@@ -11,12 +11,21 @@ from .docs_index import DocsIndex, get_docs_index, reset_docs_index_cache
 from .provider_client import (
     ChatProviderConfig,
     ChatProviderError,
+    JsonParseFailedError,
     NoChatProviderError,
+    NoVisionProviderError,
+    call_chat_json,
     embed_query,
+    get_user_custom_prompt,
     resolve_chat_provider,
+    resolve_vision_provider,
     stream_chat_completion,
 )
-from .prompts import build_ask_messages
+from .prompts import (
+    build_ask_messages,
+    build_parse_tx_image_messages,
+    build_parse_tx_text_messages,
+)
 
 __all__ = [
     "DocsIndex",
@@ -24,9 +33,16 @@ __all__ = [
     "reset_docs_index_cache",
     "ChatProviderConfig",
     "ChatProviderError",
+    "JsonParseFailedError",
     "NoChatProviderError",
+    "NoVisionProviderError",
+    "call_chat_json",
     "embed_query",
+    "get_user_custom_prompt",
     "resolve_chat_provider",
+    "resolve_vision_provider",
     "stream_chat_completion",
     "build_ask_messages",
+    "build_parse_tx_image_messages",
+    "build_parse_tx_text_messages",
 ]

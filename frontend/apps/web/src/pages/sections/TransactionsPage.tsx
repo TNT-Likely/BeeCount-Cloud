@@ -357,6 +357,19 @@ export function TransactionsPage() {
     },
     []
   )
+  // URL → state 同步:CmdK / 其它入口 navigate 到 `?q=xxx` 时,如果当前页
+  // 已挂载(useState 初值不会重跑),需要在这里把 URL 的 q 写入 listQuery,
+  // 否则搜索结果对了但输入框还是空的(用户感知就是"搜索框没填上")。
+  // 只在 URL 有非空 q 时同步 — URL 被清掉时不要把输入框也清空(用户可能
+  // 正在打字)。
+  useEffect(() => {
+    const urlQ = searchParams.get('q')
+    if (urlQ && urlQ !== listQuery) {
+      setListQueryRaw(urlQ)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
   // 用户手动输入 -> 清掉 URL 上的 q 参数,避免刷新后又自动回到旧预填值。
   // 只在 URL 里当前有 q 且跟 state 不一致时触发一次删除。
   useEffect(() => {
@@ -755,13 +768,18 @@ export function TransactionsPage() {
     txFilterRestoreInProgressRef.current = true
     const stored = parseStoredTxFilter(window.localStorage.getItem(txFilterPersistKey))
     const nextFilter = stored ?? defaultTxFilter()
-    setListQuery(nextFilter.q)
-    setTxFilterApplied(nextFilter)
-    setTxFilterDraft(nextFilter)
+    // URL `?q=xxx` 优先 —— 从 CmdK / Overview TopCategory 跳过来时 URL 带的
+    // 搜索词必须落到输入框,不能被 localStorage 里的旧值盖掉。
+    const urlQ = searchParams.get('q')
+    const effectiveQ = urlQ && urlQ.trim().length > 0 ? urlQ : nextFilter.q
+    setListQuery(effectiveQ)
+    setTxFilterApplied({ ...nextFilter, q: effectiveQ })
+    setTxFilterDraft({ ...nextFilter, q: effectiveQ })
     setTxPage(1)
     queueMicrotask(() => {
       txFilterRestoreInProgressRef.current = false
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.section, txFilterPersistKey])
 
   useEffect(() => {
