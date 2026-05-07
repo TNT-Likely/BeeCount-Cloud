@@ -1,4 +1,4 @@
-import { CalendarDays, MoreHorizontal, ScrollText, Search } from 'lucide-react'
+import { CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
@@ -142,7 +142,19 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                   ))}
                 </SelectContent>
               </Select>
-            ) : null}
+            ) : (
+              // 用户首次登录(自部署 admin)时还没账本,把账本选择器位置换成
+              // 「+ 新建账本」CTA。点击跳 /app/ledgers?create=1,LedgersPage
+              // 检测到 query 自动打开新建 dialog。
+              <button
+                type="button"
+                onClick={() => navigate('/app/ledgers?create=1')}
+                className="ml-1 hidden h-8 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-3 text-xs font-medium text-primary transition hover:bg-primary/20 md:inline-flex"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('shell.ledger.empty')}
+              </button>
+            )}
           </div>
 
           <nav className="hidden flex-1 items-center justify-center gap-1 md:flex">
@@ -288,8 +300,8 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
           </div>
         </div>
 
-        {ledgers.length > 0 ? (
-          <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
+        <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
+          {ledgers.length > 0 ? (
             <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
               <SelectTrigger className="h-8 flex-1 border-border/50 bg-background/60 text-xs">
                 <SelectValue placeholder={t('shell.ledger')} />
@@ -302,8 +314,17 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 ))}
               </SelectContent>
             </Select>
-          </div>
-        ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={() => navigate('/app/ledgers?create=1')}
+              className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-3 text-xs font-medium text-primary transition hover:bg-primary/20"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t('shell.ledger.empty')}
+            </button>
+          )}
+        </div>
       </header>
       {/* 只在 open 时挂载 — 既保证 lazy chunk 不在首屏拉,又让组件内部
           useEffect/state 跟弹窗生命周期严格绑定,关闭时彻底卸载 */}

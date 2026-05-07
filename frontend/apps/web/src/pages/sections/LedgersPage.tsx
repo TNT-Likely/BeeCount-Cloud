@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   createLedger,
@@ -37,6 +38,19 @@ export function LedgersPage() {
   const [createForm, setCreateForm] = useState<LedgerForm>(defaultForm)
   const [editing, setEditing] = useState<ReadLedger | null>(null)
   const [editForm, setEditForm] = useState<LedgerForm>(defaultForm)
+
+  // ?create=1 自动打开新建弹窗 —— header 端"无账本"CTA 跳过来时省一次点击
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('create') === '1') {
+      setCreateForm(defaultForm)
+      setCreateOpen(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('create')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const notifyError = (err: unknown) => toast.error(localizeError(err, t), t('notice.error'))
   const notifySuccess = (msg: string) => toast.success(msg, t('notice.success'))

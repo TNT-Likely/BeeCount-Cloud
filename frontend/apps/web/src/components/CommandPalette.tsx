@@ -9,6 +9,7 @@ import {
   CornerDownLeft,
   CreditCard,
   Download,
+  Upload,
   FileBarChart2,
   FileText,
   FolderTree,
@@ -524,6 +525,14 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
               onSelect={() => void handleExportRange('year')}
             />
             <Item
+              icon={<Upload className="h-4 w-4" />}
+              label={t('cmdk.action.importLedger')}
+              onSelect={() => {
+                onClose()
+                navigate('/app/import')
+              }}
+            />
+            <Item
               icon={resolved === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               label={
                 resolved === 'dark'
@@ -628,23 +637,34 @@ function Item({
   value?: string
   onSelect: () => void
 }) {
+  // 选中态:`bg-accent` 在暗黑 + 黄主题色下是淡黄色,前景 `text-foreground`(淡灰)
+  // 在淡黄底上几乎看不清。强制选中时用 `text-accent-foreground`(shadcn 配对色,
+  // 自动适配深底色),子元素 hint / kbd / icon 也跟着变(group-aria-selected)。
   return (
     <Command.Item
       onSelect={onSelect}
       value={value ?? `${label} ${hint || ''}`}
-      className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-foreground aria-selected:bg-accent ${
+      className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground ${
         active ? 'text-primary' : ''
       }`}
     >
-      <span className="text-muted-foreground">{icon}</span>
+      <span className="text-muted-foreground group-aria-selected:text-accent-foreground/80">
+        {icon}
+      </span>
       <span className="flex-1 truncate">{label}</span>
-      {hint && <span className="shrink-0 text-[11px] text-muted-foreground">{hint}</span>}
+      {hint && (
+        <span className="shrink-0 text-[11px] text-muted-foreground group-aria-selected:text-accent-foreground/80">
+          {hint}
+        </span>
+      )}
       {shortcut && (
-        <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground group-aria-selected:bg-accent-foreground/15 group-aria-selected:text-accent-foreground">
           {shortcut}
         </kbd>
       )}
-      {active && <ArrowRight className="h-3 w-3 text-primary" />}
+      {active && (
+        <ArrowRight className="h-3 w-3 text-primary group-aria-selected:text-accent-foreground" />
+      )}
     </Command.Item>
   )
 }

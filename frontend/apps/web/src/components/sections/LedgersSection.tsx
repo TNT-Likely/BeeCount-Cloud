@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
-import { TrendingDown, TrendingUp, Users } from 'lucide-react'
+import { Pencil, TrendingDown, TrendingUp, Upload, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
@@ -63,20 +64,39 @@ export function LedgersSection({ onEdit, onCreate }: Props) {
           {ledgers.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('ledgers.empty')}</p>
           ) : (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {ledgers.map((ledger) => (
-                <LedgerCard
-                  key={ledger.ledger_id}
-                  ledger={ledger}
-                  isActive={activeLedgerId === ledger.ledger_id}
-                  onEdit={() => onEdit(ledger)}
-                  roleLabel={roleLabelOf(ledger.role, t)}
-                />
-              ))}
-            </div>
+            <LedgerGrid ledgers={ledgers} activeLedgerId={activeLedgerId} onEdit={onEdit} />
           )}
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function LedgerGrid({
+  ledgers,
+  activeLedgerId,
+  onEdit,
+}: {
+  ledgers: ReadLedger[]
+  activeLedgerId: string | null
+  onEdit: (ledger: ReadLedger) => void
+}) {
+  const t = useT()
+  const navigate = useNavigate()
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {ledgers.map((ledger) => (
+        <LedgerCard
+          key={ledger.ledger_id}
+          ledger={ledger}
+          isActive={activeLedgerId === ledger.ledger_id}
+          onEdit={() => onEdit(ledger)}
+          onImport={() =>
+            navigate(`/app/import?ledger=${encodeURIComponent(ledger.ledger_id)}`)
+          }
+          roleLabel={roleLabelOf(ledger.role, t)}
+        />
+      ))}
     </div>
   )
 }
@@ -112,18 +132,26 @@ interface LedgerCardProps {
   isActive: boolean
   roleLabel: string
   onEdit: () => void
+  onImport: () => void
 }
 
-function LedgerCard({ ledger, isActive, roleLabel, onEdit }: LedgerCardProps) {
+function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport }: LedgerCardProps) {
   const t = useT()
   const accent = accentFor(ledger.ledger_name || '?')
   const initial = (ledger.ledger_name || '?').trim().slice(0, 1).toUpperCase()
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onEdit}
-      className={`group relative overflow-hidden rounded-2xl border text-left transition hover:-translate-y-0.5 hover:shadow-lg ${
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onEdit()
+        }
+      }}
+      className={`group relative cursor-pointer overflow-hidden rounded-2xl border text-left transition hover:-translate-y-0.5 hover:shadow-lg ${
         isActive
           ? 'border-primary/60 shadow-md ring-1 ring-primary/20'
           : 'border-border/60'
@@ -160,9 +188,26 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit }: LedgerCardProps) {
                 ) : null}
               </div>
             </div>
-            <span className="mt-1 shrink-0 rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
-              {t('common.edit')}
-            </span>
+            <div className="flex shrink-0 items-center gap-1">
+              {/* 导入数据入口 — 跳 /app/import?ledger=<id> 把当前账本作为目标
+                  预选。stopPropagation 防止冒泡触发外层 onClick(编辑) */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onImport()
+                }}
+                title={t('ledgers.action.import') as string}
+                aria-label={t('ledgers.action.import') as string}
+                className="rounded bg-background/80 p-1 text-muted-foreground transition hover:bg-primary/15 hover:text-primary"
+              >
+                <Upload className="h-3 w-3" />
+              </button>
+              <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
+                <Pencil className="mr-0.5 inline h-2.5 w-2.5" />
+                {t('common.edit')}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -225,7 +270,7 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit }: LedgerCardProps) {
           </div>
         </div>
       </div>
-    </button>
+    </div>
   )
 }
 

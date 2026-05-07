@@ -186,7 +186,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             ) : null}
           </Field>
 
-          <Field label={t('ai.editor.providers.field.apiKey')} required>
+          <Field label={t('ai.providers.field.apiKey')} required>
             <Input
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
@@ -198,7 +198,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             />
           </Field>
 
-          <Field label={t('ai.editor.providers.field.baseUrl')} required>
+          <Field label={t('ai.providers.field.baseUrl')} required>
             <Input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
@@ -210,7 +210,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
 
           {/* model 行 —— 每行右侧 ProviderTestButton */}
           <ModelFieldWithTest
-            label={t('ai.editor.providers.field.textModel')}
+            label={t('ai.providers.field.textModel')}
             value={textModel}
             onChange={setTextModel}
             disabled={saving}
@@ -221,7 +221,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             onResult={(cap, r) => setTestResults((prev) => ({ ...prev, [cap]: r }))}
           />
           <ModelFieldWithTest
-            label={t('ai.editor.providers.field.visionModel')}
+            label={t('ai.providers.field.visionModel')}
             value={visionModel}
             onChange={setVisionModel}
             disabled={saving}
@@ -232,7 +232,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             onResult={(cap, r) => setTestResults((prev) => ({ ...prev, [cap]: r }))}
           />
           <ModelFieldWithTest
-            label={t('ai.editor.providers.field.audioModel')}
+            label={t('ai.providers.field.audioModel')}
             value={audioModel}
             onChange={setAudioModel}
             disabled={saving}
@@ -251,7 +251,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
                     passed: runAllSummary.passed,
                     total: runAllSummary.tested,
                   })
-                : t('ai.editor.test.runAll')}
+                : t('ai.editor.test.runAllHint')}
             </span>
             <Button
               type="button"

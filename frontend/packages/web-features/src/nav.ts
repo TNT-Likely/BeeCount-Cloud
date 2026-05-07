@@ -14,6 +14,7 @@ export type AppSection =
   | 'settings-ai'
   | 'admin-users'
   | 'admin-backup'
+  | 'import'
 
 export type NavItem = {
   key: AppSection

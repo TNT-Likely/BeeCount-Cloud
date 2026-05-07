@@ -172,6 +172,9 @@ export function parseRoute(pathname: string): AppRoute {
   ) {
     return { kind: 'app', ledgerId: '', section: parseRootSection(parts.slice(1)) }
   }
+  if (parts[1] === 'import') {
+    return { kind: 'app', ledgerId: '', section: 'import' }
+  }
 
   const ledgerId = decodeURIComponent(parts[1])
   return {
@@ -216,5 +219,7 @@ export function routePath(route: AppRoute): string {
       return '/app/admin/users'
     case 'admin-backup':
       return '/app/admin/backup'
+    case 'import':
+      return '/app/import'
   }
 }

@@ -54,6 +54,9 @@ const SettingsProfilePage = lazy(() =>
 const TagsPage = lazy(() =>
   import('./pages/sections/TagsPage').then((m) => ({ default: m.TagsPage })),
 )
+const ImportPage = lazy(() =>
+  import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
+)
 
 /** 路由切换时的 Suspense fallback。section 切换通常 < 200ms,加个轻量
  *  loading shell 避免白屏闪烁。 */
@@ -235,6 +238,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <TagsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="import"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ImportPage />
             </Suspense>
           }
         />
