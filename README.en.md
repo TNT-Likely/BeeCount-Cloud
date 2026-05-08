@@ -1,11 +1,9 @@
-# BeeCount Cloud
+# BeeCount Cloud &nbsp; [中文](./README.md)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
 [![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
 
 **Self-hosted sync cloud for the [BeeCount](https://github.com/TNT-Likely/BeeCount) personal accounting app.** Keep iOS / Android / Web books on one ledger you fully own — no ads, no subscription, no third-party lock-in.
-
-🌐 **Language**: [中文](./README.md) | [English](./README.en.md)
 
 ![BeeCount Cloud Web console](./docs/screenshot-en.png)
 
