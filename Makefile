@@ -2,7 +2,6 @@
 
 setup-backend:
 	python3 -m venv .venv
-	. .venv/bin/activate && pip install --upgrade pip
 	. .venv/bin/activate && pip install -r requirements.txt
 	@if [ ! -f .env ]; then cp .env.example .env; fi
 
@@ -60,6 +59,12 @@ wipe-local:
 	@pkill -f "python.*server\.py" 2>/dev/null || true
 	@pkill -f "uvicorn server:app" 2>/dev/null || true
 	@rm -f beecount.db
-	@find data -depth -mindepth 1 -not -name '.gitkeep' -delete 2>/dev/null || true
-	@echo "✓ wiped: beecount.db + data/*"
+	# data/ 下 docs-index.*.sqlite 是构建产物(从 BeeCount-Website 拷贝过来,
+	# 几 MB,不该被 wipe 当作业务脏数据清掉 — 删了会导致 AI 文档搜索报
+	# AI_DOCS_INDEX_EMPTY,要重新拷贝)。其他业务文件全清。
+	@find data -depth -mindepth 1 \
+		-not -name '.gitkeep' \
+		-not -name 'docs-index.*.sqlite' \
+		-delete 2>/dev/null || true
+	@echo "✓ wiped: beecount.db + data/* (docs-index.*.sqlite preserved)"
 	@echo "next: make migrate && make seed-demo && make dev-api"

@@ -93,19 +93,18 @@ def _require_ledger(
     ledger_external_id: str,
     is_admin: bool,
 ) -> tuple[Ledger, None]:
-    """Resolve a ledger for the caller. Admin bypasses ownership check.
+    """Resolve a ledger for the caller.
 
     Returns ``(ledger, None)`` — the second slot used to hold a LedgerMember
     row and is retained for back-compat with callers that destructure.
-    """
-    if is_admin:
-        ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
-        if ledger is None:
-            raise HTTPException(status_code=404, detail="Ledger not found")
-        if _is_ledger_deleted(db, ledger_id=ledger.id):
-            raise HTTPException(status_code=404, detail="Ledger not found")
-        return ledger, None
 
+    `is_admin` 参数保留兼容上游签名,但**不再触发跨用户旁路** —— 历史上 admin
+    分支只按 external_id 查会随机命中第一行(Ledger.external_id 是
+    (user_id, external_id) 复合唯一,不是全局唯一),导致 admin 通过 mobile
+    访问时把自己的数据错挂到其他用户的同 external_id 账本。admin 跨用户访问
+    需求应该通过专门的管理后台 endpoint(带显式 user_id 参数)实现。
+    """
+    del is_admin  # 历史参数,不再用作旁路
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user_id,

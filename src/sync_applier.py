@@ -194,9 +194,16 @@ _UPSERT_DISPATCH: dict[str, Callable] = {
 
 
 # Delete 路径:每个 entity 自己的 projection 行 + 可能的附加资源(tx 附件 /
-# category 自定义图标)。handler 签名统一成 ``(db, ledger_id, sync_id) -> None``,
-# 内部决定要不要做附加 GC。
-def _delete_tx(db: Session, ledger_id: str, sync_id: str) -> None:
+# category 自定义图标)。handler 签名统一成
+# ``(db, ledger_id, sync_id, user_id) -> None``,内部决定要不要做附加 GC,
+# 以及是否对 user-global entity 做跨 ledger fanout。
+#
+# user-global entity (account / category / tag) 在 `read_*_projection` 表里
+# 每个 ledger 各存一份(snapshot fullPush 时 fanout 进当前 ledger)。如果
+# delete 只按传入的 ledger_id 删,其他 ledger 的 projection 行残留 →
+# web 切到那些账本就能看到"幽灵分类/账户/标签"。所以这里对 user-global
+# entity 用 user_id 跨 ledger 删 projection。
+def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     # 先收集附件 fileId(删行后 attachments_json 就没了)再删 tx,然后 GC
     # 孤立附件。共享引用(同图多 tx)的会自动保留。
     tx_file_ids = projection.collect_tx_attachment_fileids(
@@ -208,24 +215,37 @@ def _delete_tx(db: Session, ledger_id: str, sync_id: str) -> None:
     )
 
 
-def _delete_category(db: Session, ledger_id: str, sync_id: str) -> None:
+def _delete_category(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     # 分类自定义图标走 attachment_files。删分类前取自己 + 子分类的
     # icon_cloud_file_id,删完 GC 孤立图标附件。
+    # user-global:跨当前用户所有 ledger 删 read_category_projection。
     cat_file_ids = projection.collect_category_icon_fileids(
         db, ledger_id=ledger_id, sync_id=sync_id,
     )
-    projection.delete_category(db, ledger_id=ledger_id, sync_id=sync_id)
+    projection.delete_category_user_global(db, user_id=user_id, sync_id=sync_id)
     projection.gc_orphan_attachments(
         db, ledger_id=ledger_id, file_ids=cat_file_ids,
     )
 
 
-_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
+def _delete_account(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    # user-global:跨当前用户所有 ledger 删 read_account_projection。
+    del ledger_id  # 不再用作过滤,签名保留兼容 dispatch
+    projection.delete_account_user_global(db, user_id=user_id, sync_id=sync_id)
+
+
+def _delete_tag(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    # user-global:跨当前用户所有 ledger 删 read_tag_projection。
+    del ledger_id
+    projection.delete_tag_user_global(db, user_id=user_id, sync_id=sync_id)
+
+
+_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
-    "account": lambda db, lid, sid: projection.delete_account(db, ledger_id=lid, sync_id=sid),
+    "account": _delete_account,
     "category": _delete_category,
-    "tag": lambda db, lid, sid: projection.delete_tag(db, ledger_id=lid, sync_id=sid),
-    "budget": lambda db, lid, sid: projection.delete_budget(db, ledger_id=lid, sync_id=sid),
+    "tag": _delete_tag,
+    "budget": lambda db, lid, sid, uid: projection.delete_budget(db, ledger_id=lid, sync_id=sid),
 }
 
 
@@ -389,7 +409,7 @@ def apply_change_to_projection(
     if change.action == "delete":
         handler = _DELETE_DISPATCH.get(change.entity_type)
         if handler is not None:
-            handler(db, ledger_id, sync_id)
+            handler(db, ledger_id, sync_id, ledger_owner_id)
         return
 
     # --- upsert --------------------------------------------------------- #

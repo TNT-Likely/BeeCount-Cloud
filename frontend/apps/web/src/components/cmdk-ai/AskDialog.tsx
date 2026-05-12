@@ -267,7 +267,7 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
                     href={s.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                    className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground transition hover:bg-primary/15 hover:text-primary"
                   >
                     <ExternalLink className="h-3 w-3 shrink-0" />
                     <span className="truncate">

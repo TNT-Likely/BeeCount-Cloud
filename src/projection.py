@@ -398,6 +398,39 @@ def delete_tag(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadTagProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
+# ----- user-global entity 跨 ledger 删除 -----------------------------------
+# account / category / tag 是 user-global,在每个 ledger 的 projection 表里
+# 各 fanout 一份(snapshot fullPush 时塞进对应 ledger)。delete 时必须按
+# user_id 跨 ledger 删,否则其他 ledger 的 projection 行会残留,web 切到那些
+# 账本看会看到"幽灵分类/账户/标签"。详见 sync_applier._delete_category 等
+# 调用点的注释。
+def delete_category_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+    db.execute(
+        delete(ReadCategoryProjection).where(
+            ReadCategoryProjection.user_id == user_id,
+            ReadCategoryProjection.sync_id == sync_id,
+        )
+    )
+
+
+def delete_account_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+    db.execute(
+        delete(ReadAccountProjection).where(
+            ReadAccountProjection.user_id == user_id,
+            ReadAccountProjection.sync_id == sync_id,
+        )
+    )
+
+
+def delete_tag_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+    db.execute(
+        delete(ReadTagProjection).where(
+            ReadTagProjection.user_id == user_id,
+            ReadTagProjection.sync_id == sync_id,
+        )
+    )
+
+
 def delete_budget(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadBudgetProjection, ledger_id=ledger_id, sync_id=sync_id)
 

@@ -6,6 +6,18 @@ from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
+
+def _dedupe_by_sync_id(rows):
+    """跨 ledger 同 sync_id 取一份。用 dict 顺序保留:第一次见到 sync_id 时
+    收下,后续重复跳过 —— 上游 SQL 已经按 `source_change_id DESC` 排序,所以
+    第一份就是最新的。"""
+    seen: dict[str, object] = {}
+    for r in rows:
+        if r.sync_id not in seen:
+            seen[r.sync_id] = r
+    return list(seen.values())
+
+
 @router.get("/ledgers", response_model=list[ReadLedgerOut])
 def list_ledgers(
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -84,13 +96,28 @@ def get_ledger_stats(
 
     tx_count = _count(ReadTxProjection)
     budget_count = _count(ReadBudgetProjection)
-    account_count = _count(ReadAccountProjection)
-    category_count = _count(ReadCategoryProjection)
-    tag_count = _count(ReadTagProjection)
+    # account / category / tag 是 user-global —— "per-ledger count" 在这里
+    # 没意义,跟 total 同口径:COUNT DISTINCT sync_id WHERE user_id。下面的
+    # _count_distinct_sync 之后会复用同一份。
+    def _count_distinct_sync_for(model) -> int:
+        return int(db.scalar(
+            select(func.count(func.distinct(model.sync_id)))
+            .where(model.user_id == current_user.id)
+        ) or 0)
 
+    account_count = _count_distinct_sync_for(ReadAccountProjection)
+    category_count = _count_distinct_sync_for(ReadCategoryProjection)
+    tag_count = _count_distinct_sync_for(ReadTagProjection)
+
+    # 附件计数按 attachment_kind 区分:
+    #   - attachment_count / attachment_total: tx 附件(挂在 ledger 上)
+    #   - category_attachment_total: 分类自定义图标(user-global,无 ledger)
+    # 老数据(0006 migration 前)已经在 migration 里按 read_category_projection
+    # 的引用反向标记到 category_icon kind,这里直接按 kind 过滤即可。
     attachment_count = db.scalar(
         select(func.count(AttachmentFile.id)).where(
-            AttachmentFile.ledger_id == ledger.id
+            AttachmentFile.ledger_id == ledger.id,
+            AttachmentFile.attachment_kind == "transaction",
         )
     ) or 0
 
@@ -122,7 +149,19 @@ def get_ledger_stats(
     attachment_total = int(
         db.scalar(
             select(func.count(AttachmentFile.id)).where(
-                AttachmentFile.ledger_id.in_(user_ledger_ids_subq)
+                AttachmentFile.ledger_id.in_(user_ledger_ids_subq),
+                AttachmentFile.attachment_kind == "transaction",
+            )
+        )
+        or 0
+    )
+
+    # 分类自定义图标是 user-global,按 user_id + kind 算总数(不分账本)。
+    category_attachment_total = int(
+        db.scalar(
+            select(func.count(AttachmentFile.id)).where(
+                AttachmentFile.user_id == current_user.id,
+                AttachmentFile.attachment_kind == "category_icon",
             )
         )
         or 0
@@ -133,6 +172,7 @@ def get_ledger_stats(
         "transaction_total": tx_total,
         "attachment_count": int(attachment_count),
         "attachment_total": attachment_total,
+        "category_attachment_total": category_attachment_total,
         "budget_count": budget_count,
         "budget_total": budget_total,
         "account_count": account_count,
@@ -299,11 +339,22 @@ def list_accounts(
     )
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    rows = db.scalars(
-        select(ReadAccountProjection)
-        .where(ReadAccountProjection.ledger_id == ledger.id)
-        .order_by(ReadAccountProjection.name.asc())
-    ).all()
+    # account / category / tag 是 user-global,读端按 user_id 列出该用户的
+    # **唯一一份**(同 sync_id 在不同 ledger 的 projection 中可能有多行残留 —
+    # snapshot fullPush 时按 ledger fanout,delete 已修复为跨 ledger 删,
+    # 但存量数据可能仍有重复)。这里用 _dedupe_by_sync_id 去重,优先取
+    # source_change_id 最大(最新)的一份。
+    rows = _dedupe_by_sync_id(
+        db.scalars(
+            select(ReadAccountProjection)
+            .where(ReadAccountProjection.user_id == current_user.id)
+            .order_by(
+                ReadAccountProjection.sync_id.asc(),
+                ReadAccountProjection.source_change_id.desc(),
+            )
+        ).all()
+    )
+    rows.sort(key=lambda r: (r.name or "").lower())
     return [
         ReadAccountOut(
             id=row.sync_id,
@@ -343,15 +394,22 @@ def list_categories(
     )
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    rows = db.scalars(
-        select(ReadCategoryProjection)
-        .where(ReadCategoryProjection.ledger_id == ledger.id)
-        .order_by(
-            ReadCategoryProjection.kind.asc(),
-            ReadCategoryProjection.sort_order.asc(),
-            ReadCategoryProjection.name.asc(),
-        )
-    ).all()
+    # user-global,跨 ledger 同 sync_id 去重(优先最新 source_change_id 那份)
+    rows = _dedupe_by_sync_id(
+        db.scalars(
+            select(ReadCategoryProjection)
+            .where(ReadCategoryProjection.user_id == current_user.id)
+            .order_by(
+                ReadCategoryProjection.sync_id.asc(),
+                ReadCategoryProjection.source_change_id.desc(),
+            )
+        ).all()
+    )
+    rows.sort(key=lambda r: (
+        r.kind or "",
+        r.sort_order or 0,
+        (r.name or "").lower(),
+    ))
     return [
         ReadCategoryOut(
             id=row.sync_id,
@@ -395,15 +453,24 @@ def list_budgets(
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
 
-    # category name 来自 projection 的 category_name 列 JOIN(SQLAlchemy ORM
-    # 做 LEFT JOIN + aliased,确保 category 被删除时也能 fallback None)
+    # category name 来自 projection,user-global 维度查询(同 sync_id 跨 ledger
+    # 重复时取最新一份 —— SQL 按 source_change_id DESC 排,字典写入用第一个胜出)
     cat_rows = db.execute(
         select(
             ReadCategoryProjection.sync_id,
             ReadCategoryProjection.name,
-        ).where(ReadCategoryProjection.ledger_id == ledger.id)
+            ReadCategoryProjection.source_change_id,
+        )
+        .where(ReadCategoryProjection.user_id == current_user.id)
+        .order_by(
+            ReadCategoryProjection.sync_id.asc(),
+            ReadCategoryProjection.source_change_id.desc(),
+        )
     ).all()
-    cat_name_by_sync: dict[str, str] = {r.sync_id: (r.name or "").strip() for r in cat_rows}
+    cat_name_by_sync: dict[str, str] = {}
+    for r in cat_rows:
+        if r.sync_id not in cat_name_by_sync:
+            cat_name_by_sync[r.sync_id] = (r.name or "").strip()
 
     # 展示前做两步脏数据过滤(来自早期同步 bug 遗留):
     #   1) 分类预算但 category_sync_id 为空 —— 孤儿
@@ -457,11 +524,18 @@ def list_tags(
     )
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    rows = db.scalars(
-        select(ReadTagProjection)
-        .where(ReadTagProjection.ledger_id == ledger.id)
-        .order_by(ReadTagProjection.name.asc())
-    ).all()
+    # user-global,同 sync_id 跨 ledger 去重
+    rows = _dedupe_by_sync_id(
+        db.scalars(
+            select(ReadTagProjection)
+            .where(ReadTagProjection.user_id == current_user.id)
+            .order_by(
+                ReadTagProjection.sync_id.asc(),
+                ReadTagProjection.source_change_id.desc(),
+            )
+        ).all()
+    )
+    rows.sort(key=lambda r: (r.name or "").lower())
     return [
         ReadTagOut(
             id=row.sync_id,

@@ -225,13 +225,24 @@ class AttachmentFile(Base):
     __tablename__ = "attachment_files"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    # ledger_id 对 'transaction' kind 必填,对 'category_icon' kind 为 NULL
+    # (分类自定义图标是 user-global,不绑账本)。
+    ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True, nullable=True,
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     storage_path: Mapped[str] = mapped_column(String(1024))
+    # 区分附件类型:
+    #   'transaction' (默认) - 交易附件,挂在某个 ledger 下,storage path
+    #       含 ledger 维度
+    #   'category_icon' - 分类自定义图标,user-global,storage path 不含 ledger
+    attachment_kind: Mapped[str] = mapped_column(
+        String(32), default="transaction", nullable=False, server_default="transaction",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 

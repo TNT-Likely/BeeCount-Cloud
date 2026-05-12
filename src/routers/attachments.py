@@ -49,12 +49,12 @@ def _resolve_ledger(
     roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
     forbidden_detail: str | None = None,  # noqa: ARG001 — no role hierarchy anymore
 ) -> tuple[Ledger, None]:
-    if current_user.is_admin:
-        ledger = db.scalar(select(Ledger).where(Ledger.external_id == ledger_external_id))
-        if ledger is None:
-            raise HTTPException(status_code=404, detail="Ledger not found")
-        return ledger, None
-
+    # admin 走跟普通用户一样的 (user_id, external_id) 查询。
+    # 历史上 admin 分支只用 external_id 查会随机命中第一行 —— Ledger.external_id
+    # 不是全局唯一,是 (user_id, external_id) 复合唯一,admin 用户从 mobile 上传
+    # 时会把自己的附件错挂到其他用户的同 external_id 账本上。
+    # admin 的跨用户特权应该通过专门的管理后台 endpoint(带显式 user_id 参数)
+    # 实现,不该在 mobile 共用的 endpoint 里影响数据所属判定。
     ledger = db.scalar(
         select(Ledger).where(
             Ledger.external_id == ledger_external_id,
@@ -186,6 +186,76 @@ def batch_exists(
     return AttachmentBatchExistsResponse(items=items)
 
 
+@router.post("/category-icons/upload", response_model=AttachmentUploadOut)
+async def upload_category_icon(
+    file: UploadFile = File(...),
+    _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AttachmentUploadOut:
+    """分类自定义图标上传专用 endpoint。
+
+    跟 `/upload` 的区别:
+      - 不需要 ledger_id 参数(分类是 user-global,跨账本共享)
+      - 落库的 AttachmentFile 行 ledger_id=NULL, attachment_kind='category_icon'
+      - 存储路径不含 ledger 维度:
+        `<root>/<user_id>/category-icons/<sha256[:2]>/<uuid>_<safe_name>`
+      - 去重 key 是 (user_id, sha256),同一用户上传同图标不会复制存储
+
+    历史上分类图标走通用 `/upload` + ledger_id 路径,每个账本各上传一份,
+    `attachment_files` 表里同 sha256 出现 N 行(N=用户账本数)。新 endpoint
+    去掉这个倍数膨胀。
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Attachment file is empty")
+    max_bytes = get_settings().attachment_max_upload_bytes
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail="Attachment upload too large")
+
+    sha256 = hashlib.sha256(data).hexdigest()
+    existing = db.scalar(
+        select(AttachmentFile).where(
+            AttachmentFile.user_id == current_user.id,
+            AttachmentFile.attachment_kind == "category_icon",
+            AttachmentFile.sha256 == sha256,
+        )
+    )
+    if existing is not None:
+        logger.info(
+            "attachments.category_icon.dedup sha256=%s size=%d user=%s",
+            sha256, len(data), current_user.id,
+        )
+        return _to_upload_out(existing, ledger_external_id="")
+
+    safe_name = _safe_file_name(file.filename or "category_icon.png")
+    storage_name = f"{uuid4().hex}_{safe_name}"
+    # 路径:user_id/category-icons/<sha256[:2]>/...,不含 ledger 维度
+    storage_dir = _attachment_root() / current_user.id / "category-icons" / sha256[:2]
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage_path = storage_dir / storage_name
+    storage_path.write_bytes(data)
+
+    row = AttachmentFile(
+        ledger_id=None,
+        user_id=current_user.id,
+        sha256=sha256,
+        size_bytes=len(data),
+        mime_type=file.content_type,
+        file_name=safe_name,
+        storage_path=str(storage_path),
+        attachment_kind="category_icon",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info(
+        "attachments.category_icon.upload file=%s size=%d sha256=%s user=%s",
+        safe_name, len(data), sha256, current_user.id,
+    )
+    return _to_upload_out(row, ledger_external_id="")
+
+
 @router.get("/{file_id}")
 def download_attachment(
     file_id: str,
@@ -197,15 +267,29 @@ def download_attachment(
     if row is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
+    # 权限校验:
+    # 1) admin 直接通过(管理后台需求)
+    # 2) row.ledger_id 为 NULL(category_icon 类型) → 校验 row.user_id == current_user.id
+    # 3) row.ledger_id 非 NULL → 校验该 ledger 属于 current_user
     if not current_user.is_admin:
-        ledger = db.scalar(
-            select(Ledger).where(
-                Ledger.id == row.ledger_id,
-                Ledger.user_id == current_user.id,
+        if row.ledger_id is None:
+            if row.user_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Attachment access forbidden",
+                )
+        else:
+            ledger = db.scalar(
+                select(Ledger).where(
+                    Ledger.id == row.ledger_id,
+                    Ledger.user_id == current_user.id,
+                )
             )
-        )
-        if ledger is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Attachment access forbidden")
+            if ledger is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Attachment access forbidden",
+                )
 
     path = Path(row.storage_path)
     if not path.exists() or not path.is_file():

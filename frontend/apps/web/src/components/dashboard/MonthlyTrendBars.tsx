@@ -76,8 +76,19 @@ export function MonthlyTrendBars({ data }: Props) {
                   wrapperStyle={{ fontSize: 11 }}
                   formatter={(v: string) => (v === 'income' ? t('home.trendBars.income') : t('home.trendBars.expense'))}
                 />
-                <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="expense" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                {/* fill 用 styles.css 暴露的 --income-rgb / --expense-rgb,
+                    跟随用户的 income/expense 配色偏好(暗黑/亮模式 & "收入是
+                    红色"开关都在 .dark/.light 切换 token 时生效) */}
+                <Bar
+                  dataKey="income"
+                  fill="rgb(var(--income-rgb))"
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar
+                  dataKey="expense"
+                  fill="rgb(var(--expense-rgb))"
+                  radius={[4, 4, 0, 0]}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
