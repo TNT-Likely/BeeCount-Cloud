@@ -631,10 +631,12 @@ const zhTW = {
   'home.monthDonut.uncategorized': '未分類',
   'home.monthDonut.other': '其他',
 
-  'home.trendBars.title': '近 6 期收支',
+  'home.trendBars.title': '月度收支走勢',
   'home.trendBars.empty': '暫無交易資料',
   'home.trendBars.income': '收入',
   'home.trendBars.expense': '支出',
+  'home.trendBars.balance': '淨額',
+  'home.trendBars.range': '{count} 期',
   'home.trendBars.10kUnit': '萬',
 
   'home.assetComp.title': '資產組成',

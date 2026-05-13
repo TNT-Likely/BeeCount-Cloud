@@ -632,10 +632,12 @@ const en = {
   'home.monthDonut.uncategorized': 'Uncategorized',
   'home.monthDonut.other': 'Other',
 
-  'home.trendBars.title': 'Last 6 periods',
+  'home.trendBars.title': 'Monthly trend',
   'home.trendBars.empty': 'No data',
   'home.trendBars.income': 'Income',
   'home.trendBars.expense': 'Expense',
+  'home.trendBars.balance': 'Net',
+  'home.trendBars.range': '{count}M',
   'home.trendBars.10kUnit': 'k',
 
   'home.assetComp.title': 'Asset composition',

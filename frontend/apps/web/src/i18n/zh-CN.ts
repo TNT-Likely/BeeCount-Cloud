@@ -257,10 +257,12 @@ const zhCN = {
   'home.monthDonut.other': '其他',
 
   // MonthlyTrendBars
-  'home.trendBars.title': '近 6 期收支',
+  'home.trendBars.title': '月度收支走势',
   'home.trendBars.empty': '暂无交易数据',
   'home.trendBars.income': '收入',
   'home.trendBars.expense': '支出',
+  'home.trendBars.balance': '净额',
+  'home.trendBars.range': '{count} 期',
   'home.trendBars.10kUnit': '万',
 
   // AssetCompositionDonut
