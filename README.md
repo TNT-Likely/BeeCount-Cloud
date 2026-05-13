@@ -7,6 +7,8 @@
 
 ![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
 
+> 🤖 **新:用 LLM 直接管理账本** — BeeCount Cloud 内置 [MCP](https://count.beejz.com/docs/mcp) server,在 Claude Desktop / Cursor / Cline 里跟 LLM 自然语言对话就能查询交易、记账、改预算。👉 **[查看 MCP 文档](https://count.beejz.com/docs/mcp)**
+
 ---
 
 ## 🤔 为什么选 BeeCount Cloud

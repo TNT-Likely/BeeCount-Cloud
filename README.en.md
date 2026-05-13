@@ -7,6 +7,8 @@
 
 ![BeeCount Cloud Web console](./docs/screenshot-en.png)
 
+> 🤖 **New: drive your ledger from an LLM** — BeeCount Cloud ships a built-in [MCP](https://count.beejz.com/en/docs/mcp) server. Query transactions, log expenses, tweak budgets right inside Claude Desktop / Cursor / Cline. 👉 **[Read the MCP docs](https://count.beejz.com/en/docs/mcp)**
+
 ---
 
 ## 🤔 Why BeeCount Cloud
