@@ -41,6 +41,7 @@ import {
 import { dispatchOpenAsk } from '../lib/askDialogEvents'
 import { dispatchOpenParseTxImage, dispatchOpenParseTxText } from '../lib/parseTxEvents'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
+import { VoiceInputButton } from './cmdk-ai/VoiceInputButton'
 
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
@@ -363,6 +364,17 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             placeholder={t('cmdk.placeholder')}
             className="h-12 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             autoFocus
+          />
+          <VoiceInputButton
+            lang={
+              locale === 'zh-CN'
+                ? 'zh-CN'
+                : locale === 'zh-TW'
+                  ? 'zh-TW'
+                  : 'en-US'
+            }
+            onInterim={(text) => setQuery(text)}
+            onFinal={(text) => setQuery(text)}
           />
           {pendingImage && (
             <button

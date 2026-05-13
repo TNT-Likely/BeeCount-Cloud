@@ -112,6 +112,15 @@ const zhTW = {
 
   // Command Palette (Cmd+K)
   'cmdk.placeholder': '搜尋交易 / 跳轉 / 執行操作 ...',
+  'voice.tooltip.start': '點擊說話 — 把語音填進輸入框',
+  'voice.tooltip.stop': '停止錄音',
+  'voice.tooltip.denied': '麥克風權限被拒,去瀏覽器設定開啟',
+  'voice.tooltip.unsupported': '目前瀏覽器不支援語音輸入',
+  'voice.error.denied': '麥克風權限被拒,請到瀏覽器網址列左側圖示開啟',
+  'voice.error.noMic': '沒偵測到麥克風裝置',
+  'voice.error.network': '語音辨識需要連網,網路似乎有問題',
+  'voice.error.unknown': '語音辨識失敗,請重試',
+  'voice.error.unsupported': '目前瀏覽器不支援語音輸入,請改用 Chrome / Edge / Safari',
   'cmdk.searching': '搜尋中...',
   'cmdk.empty': '輸入關鍵字開始搜尋,或選擇下方快捷操作',
   'txBatch.entryTooltip': '批量選擇',
@@ -699,7 +708,6 @@ const zhTW = {
   'home.trendBars.income': '收入',
   'home.trendBars.expense': '支出',
   'home.trendBars.balance': '淨額',
-  'home.trendBars.range': '{count} 期',
   'home.trendBars.10kUnit': '萬',
 
   'home.assetComp.title': '資產組成',

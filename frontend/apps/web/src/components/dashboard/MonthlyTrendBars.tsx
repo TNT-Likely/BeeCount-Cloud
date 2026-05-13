@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   Bar,
   CartesianGrid,
@@ -23,35 +23,34 @@ interface Props {
   data: SeriesItem[]
 }
 
-type RangeOption = 6 | 12 | 24
+// 固定取最近 N 个月。原来有 6 / 12 / 24 期切换,但 server.series 通常只
+// 返当年数据,切到 24 期没新内容,反而让用户疑惑"按钮没用",直接拿掉。
+// 12 是"完整年度"的天然窗口,看得到季节性又不拥挤。
+const TREND_WINDOW = 12
 
 /**
- * 月度收支走势 — 支持切换 6 / 12 / 24 期,叠加一条净额折线,直观看出某个月
- * 是真的赚到了还是入不敷出。
+ * 月度收支走势 — 最近 12 期柱图,叠加净额折线,直观看出某个月是赚到了还是
+ * 入不敷出。
  *
  * 数据源是后端已经聚合好的 `analyticsData.series`(YYYY-MM bucket),前端只
  * 切片 + 计算 balance(不依赖 server.balance 字段,保险用 income-expense 算)。
  */
 export function MonthlyTrendBars({ data }: Props) {
   const t = useT()
-  const [range, setRange] = useState<RangeOption>(12)
 
   const slice = useMemo(() => {
-    // 取最近 N 期。balance 如果 server 没给就用 income - expense 算。
-    const tail = data.slice(-range)
+    const tail = data.slice(-TREND_WINDOW)
     return tail.map((d) => ({
       ...d,
       balance: Number.isFinite(d.balance) ? d.balance : (d.income ?? 0) - (d.expense ?? 0),
     }))
-  }, [data, range])
+  }, [data])
 
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 
-  // 12 / 24 期时 x 轴标签会挤 — 用月份末位作为 tick,完整 bucket 在 tooltip 看。
+  // 12 期 x 轴 label 直接用月份末位(MM),完整 bucket 由 tooltip 提供
   const xTickFormatter = (bucket: string): string => {
-    if (range <= 6) return bucket
-    // YYYY-MM → 取 MM,或者把 YYYY 也截短
     const parts = bucket.split('-')
     if (parts.length >= 2) return parts.slice(1).join('-')
     return bucket
@@ -59,9 +58,8 @@ export function MonthlyTrendBars({ data }: Props) {
 
   return (
     <Card className="bc-panel overflow-hidden">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+      <CardHeader>
         <CardTitle className="text-base">{t('home.trendBars.title')}</CardTitle>
-        <RangeToggle value={range} onChange={setRange} />
       </CardHeader>
       <CardContent>
         {slice.length === 0 ? (
@@ -78,7 +76,7 @@ export function MonthlyTrendBars({ data }: Props) {
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
                   stroke="hsl(var(--border))"
                   tickFormatter={xTickFormatter}
-                  interval={range >= 24 ? 1 : 0}
+                  interval={0}
                 />
                 <YAxis
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
@@ -144,41 +142,5 @@ export function MonthlyTrendBars({ data }: Props) {
         )}
       </CardContent>
     </Card>
-  )
-}
-
-/**
- * 期数切换按钮组 — 6 / 12 / 24 三档,模仿 segmented control。
- * 6 期是"近半年快速一瞥",12 期是"完整年度",24 期是"两年趋势 / 同比"。
- */
-function RangeToggle({
-  value,
-  onChange,
-}: {
-  value: RangeOption
-  onChange: (v: RangeOption) => void
-}) {
-  const t = useT()
-  const options: RangeOption[] = [6, 12, 24]
-  return (
-    <div className="inline-flex items-center rounded-md border border-border/60 bg-muted/40 p-0.5 text-[11px]">
-      {options.map((opt) => {
-        const active = opt === value
-        return (
-          <button
-            key={opt}
-            type="button"
-            onClick={() => onChange(opt)}
-            className={`rounded px-2.5 py-1 transition ${
-              active
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t('home.trendBars.range', { count: opt })}
-          </button>
-        )
-      })}
-    </div>
   )
 }

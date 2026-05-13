@@ -262,7 +262,6 @@ const zhCN = {
   'home.trendBars.income': '收入',
   'home.trendBars.expense': '支出',
   'home.trendBars.balance': '净额',
-  'home.trendBars.range': '{count} 期',
   'home.trendBars.10kUnit': '万',
 
   // AssetCompositionDonut
@@ -534,6 +533,15 @@ const zhCN = {
 
   // Command Palette (Cmd+K)
   'cmdk.placeholder': '搜索交易 / 跳转 / 执行操作 ...',
+  'voice.tooltip.start': '点击说话 — 把语音填进输入框',
+  'voice.tooltip.stop': '停止录音',
+  'voice.tooltip.denied': '麦克风权限被拒,去浏览器设置开启',
+  'voice.tooltip.unsupported': '当前浏览器不支持语音输入',
+  'voice.error.denied': '麦克风权限被拒,请到浏览器地址栏左侧图标开启',
+  'voice.error.noMic': '没检测到麦克风设备',
+  'voice.error.network': '语音识别需要联网,网络似乎有问题',
+  'voice.error.unknown': '语音识别失败,请重试',
+  'voice.error.unsupported': '当前浏览器不支持语音输入,请用 Chrome / Edge / Safari',
   'cmdk.searching': '搜索中...',
   'cmdk.empty': '输入关键词开始搜索,或选择下方快捷操作',
   // 交易列表批量操作(桌面端独占)

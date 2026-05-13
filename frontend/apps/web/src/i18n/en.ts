@@ -112,6 +112,15 @@ const en = {
 
   // Command Palette (Cmd+K)
   'cmdk.placeholder': 'Search, jump, run a command...',
+  'voice.tooltip.start': 'Click to dictate — fill the input by voice',
+  'voice.tooltip.stop': 'Stop recording',
+  'voice.tooltip.denied': 'Microphone blocked — enable it in browser settings',
+  'voice.tooltip.unsupported': 'Voice input is not supported in this browser',
+  'voice.error.denied': 'Microphone permission denied. Click the icon in your address bar to allow it.',
+  'voice.error.noMic': 'No microphone detected',
+  'voice.error.network': 'Speech recognition needs network; check your connection',
+  'voice.error.unknown': 'Speech recognition failed, please retry',
+  'voice.error.unsupported': 'Voice input is not supported here. Try Chrome / Edge / Safari.',
   'cmdk.searching': 'Searching...',
   'cmdk.empty': 'Type to search or pick a quick action below',
   'txBatch.entryTooltip': 'Bulk select',
@@ -700,7 +709,6 @@ const en = {
   'home.trendBars.income': 'Income',
   'home.trendBars.expense': 'Expense',
   'home.trendBars.balance': 'Net',
-  'home.trendBars.range': '{count}M',
   'home.trendBars.10kUnit': 'k',
 
   'home.assetComp.title': 'Asset composition',
