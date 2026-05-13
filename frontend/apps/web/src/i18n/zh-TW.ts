@@ -385,6 +385,17 @@ const zhTW = {
   'settings.pats.revoke.title': '撤銷 Token',
   'settings.pats.revoke.confirm': '撤銷「{name}」?使用它的 LLM 客戶端會立即失效。',
   'settings.pats.revoke.success': 'Token 已撤銷',
+
+  // ============ MCP Call History ============
+  'settings.mcpCalls.title': '呼叫紀錄',
+  'settings.mcpCalls.subtitleShort': '保留 30 天的 MCP tool 呼叫紀錄',
+  'settings.mcpCalls.empty': '還沒有呼叫紀錄。LLM 客戶端連上後這裡會自動出現歷史。',
+  'settings.mcpCalls.totalCount': '共 {total} 筆',
+  'settings.mcpCalls.filter.all': '全部',
+  'settings.mcpCalls.filter.ok': '成功',
+  'settings.mcpCalls.filter.error': '失敗',
+  'settings.mcpCalls.clientDeleted': '已刪除',
+  'common.previous': '上一頁',
   'settings.pats.delete.title': '刪除 Token',
 
   // ============ Backup admin ============

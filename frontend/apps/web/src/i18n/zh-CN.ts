@@ -808,6 +808,17 @@ const zhCN = {
   'settings.pats.revoke.title': '撤销 Token',
   'settings.pats.revoke.confirm': '撤销 "{name}"?使用它的 LLM 客户端会立即失效。',
   'settings.pats.revoke.success': 'Token 已撤销',
+
+  // ============ MCP Call History ============
+  'settings.mcpCalls.title': '调用历史',
+  'settings.mcpCalls.subtitleShort': '保留 30 天的 MCP tool 调用记录',
+  'settings.mcpCalls.empty': '还没有调用记录。LLM 客户端连上后这里会自动出现历史。',
+  'settings.mcpCalls.totalCount': '共 {total} 条',
+  'settings.mcpCalls.filter.all': '全部',
+  'settings.mcpCalls.filter.ok': '成功',
+  'settings.mcpCalls.filter.error': '失败',
+  'settings.mcpCalls.clientDeleted': '已删除',
+  'common.previous': '上一页',
   'settings.pats.delete.title': '删除 Token',
 
   // ============ Backup admin ============

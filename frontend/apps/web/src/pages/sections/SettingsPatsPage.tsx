@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   createPat,
+  listMcpCalls,
   listPats,
   revokePat,
   updatePat,
+  type MCPCallItem,
   type PatCreateResponse,
   type PatListItem,
   type PatScope,
@@ -32,7 +34,7 @@ import {
   useToast,
 } from '@beecount/ui'
 import { ConfirmDialog } from '@beecount/web-features'
-import { Copy, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
+import { CheckCircle2, Copy, History, KeyRound, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
 // Copy 仅创建弹窗里复制完整 token 用;行内不放"复制 prefix"按钮 —— 完整
 // token 服务端只存 sha256 不可恢复(同 GitHub PAT 设计),只能复制 prefix
 // 反而误导用户以为能拿来配置客户端。需要完整 token 的话撤销重建。
@@ -227,6 +229,8 @@ export function SettingsPatsPage() {
           )}
         </CardContent>
       </Card>
+
+      <CallHistoryCard />
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
@@ -507,5 +511,164 @@ function StatusBadge({
     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${cls}`}>
       {children}
     </span>
+  )
+}
+
+
+// ============================================================================
+// MCP 调用历史卡片
+//
+// 跟 PAT 列表是同一个用户偏好面板,纵向堆叠两张卡片;不做独立路由,因为
+// 它跟 "开发者" 这个概念高度耦合(都是 MCP 客户端的售后)。30 天 retention
+// 由 server 后台任务维护,前端无需关心。
+// ============================================================================
+
+const HISTORY_PAGE_SIZE = 25
+const HISTORY_STATUS_FILTERS = ['all', 'ok', 'error'] as const
+type HistoryStatusFilter = (typeof HISTORY_STATUS_FILTERS)[number]
+
+function CallHistoryCard() {
+  const t = useT()
+  const toast = useToast()
+  const { token } = useAuth()
+
+  const [items, setItems] = useState<MCPCallItem[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(0)
+  const [statusFilter, setStatusFilter] = useState<HistoryStatusFilter>('all')
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await listMcpCalls(token, {
+        limit: HISTORY_PAGE_SIZE,
+        offset: page * HISTORY_PAGE_SIZE,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+      })
+      setItems(res.items)
+      setTotal(res.total)
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setLoading(false)
+    }
+  }, [token, page, statusFilter, toast, t])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const totalPages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE))
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <History className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-base font-semibold">{t('settings.mcpCalls.title')}</h2>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              {t('settings.mcpCalls.subtitleShort')}
+            </span>
+          </div>
+          <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v as HistoryStatusFilter); setPage(0) }}>
+            <SelectTrigger className="h-8 w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('settings.mcpCalls.filter.all')}</SelectItem>
+              <SelectItem value="ok">{t('settings.mcpCalls.filter.ok')}</SelectItem>
+              <SelectItem value="error">{t('settings.mcpCalls.filter.error')}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {loading ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">{t('common.loading')}</div>
+        ) : items.length === 0 ? (
+          <div className="rounded-md border border-dashed py-10 text-center text-sm text-muted-foreground">
+            {t('settings.mcpCalls.empty')}
+          </div>
+        ) : (
+          <>
+            <ul className="divide-y divide-border">
+              {items.map((it) => (
+                <CallRow key={it.id} call={it} />
+              ))}
+            </ul>
+            {total > HISTORY_PAGE_SIZE ? (
+              <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                <span>{t('settings.mcpCalls.totalCount', { total })}</span>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                    {t('common.previous')}
+                  </Button>
+                  <span>
+                    {page + 1} / {totalPages}
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
+                    {t('common.next')}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function CallRow({ call }: { call: MCPCallItem }) {
+  const t = useT()
+  const isOk = call.status === 'ok'
+  // Server 已做完 JOIN + 降级,前端只用 client_label + client_active
+  const labelTooltip = call.pat_prefix ?? undefined
+  const showDeletedBadge = !call.client_active && call.client_label != null
+
+  return (
+    <li className="grid grid-cols-[auto_1fr_auto] gap-x-3 gap-y-1 py-3">
+      <div className="flex h-5 items-center">
+        {isOk ? (
+          <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <XCircle className="h-4 w-4 text-destructive" />
+        )}
+      </div>
+      <div className="min-w-0 space-y-0.5">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <code className="text-sm font-medium text-foreground">{call.tool_name}</code>
+          {call.client_label ? (
+            <span
+              className={`rounded-full px-2 py-px text-[11px] ${
+                showDeletedBadge
+                  ? 'bg-muted text-muted-foreground line-through'
+                  : 'bg-muted text-muted-foreground'
+              }`}
+              title={labelTooltip}
+            >
+              {call.client_label}
+              {showDeletedBadge ? ` · ${t('settings.mcpCalls.clientDeleted')}` : ''}
+            </span>
+          ) : null}
+        </div>
+        {call.args_summary ? (
+          <div className="truncate text-xs text-muted-foreground" title={call.args_summary}>
+            {call.args_summary}
+          </div>
+        ) : null}
+        {call.error_message ? (
+          <div className="text-xs text-destructive">{call.error_message}</div>
+        ) : null}
+      </div>
+      <div className="flex h-5 items-center gap-2 self-start text-[11px] text-muted-foreground">
+        <span className="tabular-nums">{call.duration_ms}ms</span>
+        <span>·</span>
+        <span>{new Date(call.called_at).toLocaleString()}</span>
+        {call.client_ip ? <span className="hidden sm:inline">· {call.client_ip}</span> : null}
+      </div>
+    </li>
   )
 }

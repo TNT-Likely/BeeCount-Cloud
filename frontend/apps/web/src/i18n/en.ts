@@ -386,6 +386,17 @@ const en = {
   'settings.pats.revoke.title': 'Revoke token',
   'settings.pats.revoke.confirm': 'Revoke "{name}"? Any LLM client using it will stop working immediately.',
   'settings.pats.revoke.success': 'Token revoked',
+
+  // ============ MCP Call History ============
+  'settings.mcpCalls.title': 'Call history',
+  'settings.mcpCalls.subtitleShort': '30-day history of MCP tool calls',
+  'settings.mcpCalls.empty': 'No calls yet. History appears here automatically once an LLM client connects.',
+  'settings.mcpCalls.totalCount': '{total} total',
+  'settings.mcpCalls.filter.all': 'All',
+  'settings.mcpCalls.filter.ok': 'Success',
+  'settings.mcpCalls.filter.error': 'Failure',
+  'settings.mcpCalls.clientDeleted': 'deleted',
+  'common.previous': 'Previous',
   'settings.pats.delete.title': 'Delete token',
 
   // ============ Backup admin ============

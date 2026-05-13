@@ -160,7 +160,7 @@ def test_pat_with_future_expires_at_resolves(monkeypatch) -> None:
         class _FakeReq:
             client = None
 
-        user, scopes = _resolve_pat_sync(plaintext, _FakeReq())
+        user, scopes, _meta = _resolve_pat_sync(plaintext, _FakeReq())
         # 这两个属性读取过去会因为 commit-expire + expunge 触发 DetachedInstanceError
         assert user.email == "future@x"
         assert user.is_enabled is True

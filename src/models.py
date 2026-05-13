@@ -151,6 +151,56 @@ Index(
 )
 
 
+class MCPCallLog(Base):
+    """每一次 MCP tool 调用的审计记录。给 Web 设置页"调用历史"用,也帮助用户
+    debug 自己写的 LLM agent。
+
+    **不**记录 args / result 的完整内容(交易备注可能含隐私) — 只存元数据:
+      - tool_name + status + duration_ms → "Claude 今天调了 list_transactions 12 次,
+        都成功"
+      - args_summary 是结构化字段的脱敏摘要,例如 `tx_type=expense, amount=38, ...`,
+        最多 200 字 — 帮回忆"我让它做了啥",不留 note 之类的自由文本
+      - error 出错时存 truncated message
+
+    保留期 30 天,过期由 APScheduler 定时清(同 backup 用同一套调度器)。
+    """
+
+    __tablename__ = "mcp_call_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # PAT 可能事后被删,pat_id 用 SET NULL 保住历史(知道是 LLM 调的,只是不
+    # 知道哪个 token —— 删 token 也是用户主动行为,失去关联本就预期)
+    pat_id: Mapped[str | None] = mapped_column(
+        ForeignKey("personal_access_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # token 删了但 prefix 还在,UI 列表能显示"来自 bcmcp_xxx 的调用"
+    pat_prefix: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 缓存当时 PAT 的用户起名(如 "Claude Desktop"),比 prefix 友好;
+    # 即便日后 PAT 改名 / 删除,历史里仍能看到调用方身份
+    pat_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(64), index=True)
+    # 'ok' | 'error'
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    # 出错时存 error.__class__.__name__ + truncated str(error),最多 500 字
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    args_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    called_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+Index(
+    "ix_mcp_call_user_time",
+    MCPCallLog.user_id,
+    MCPCallLog.called_at.desc(),
+)
+
+
 class Device(Base):
     __tablename__ = "devices"
 

@@ -23,7 +23,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
-from .routers import admin_backup, two_factor
+from .routers import admin_backup, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
 from .mcp import server as mcp_server
@@ -155,6 +155,11 @@ app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["w
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
 app.include_router(pats.router, prefix=f"{settings.api_prefix}/profile/pats", tags=["pats"])
+app.include_router(
+    mcp_calls.router,
+    prefix=f"{settings.api_prefix}/profile/mcp-calls",
+    tags=["mcp-calls"],
+)
 app.mount(f"{settings.api_prefix}/mcp", mcp_server.app)
 app.include_router(ai_router.router, prefix=f"{settings.api_prefix}/ai", tags=["ai"])
 app.include_router(
@@ -231,3 +236,50 @@ async def _stop_backup_scheduler() -> None:  # noqa: B008
         get_scheduler().shutdown()
     except Exception:
         logging.getLogger(__name__).exception("scheduler shutdown failed")
+
+
+# ============================================================================
+# MCP call log retention — 每 24h 清一次 > 30 天的行,跟 APScheduler 解耦,
+# 用纯 asyncio loop 避免额外依赖。loop 首次睡 24h 再跑,意味着冷启动后第一
+# 次清理是次日;不影响测试(test 进程秒级退出,任务永远不触发)。
+# ============================================================================
+
+
+_MCP_LOG_RETENTION_DAYS = 30
+
+
+@app.on_event("startup")
+async def _start_mcp_log_retention() -> None:  # noqa: B008
+    import asyncio
+
+    async def _loop() -> None:
+        while True:
+            await asyncio.sleep(24 * 3600)
+            try:
+                await asyncio.to_thread(_prune_mcp_logs)
+            except Exception:
+                logging.getLogger(__name__).exception("mcp log retention failed")
+
+    app.state.mcp_log_retention_task = asyncio.create_task(_loop())
+
+
+def _prune_mcp_logs() -> None:
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete
+
+    from .models import MCPCallLog
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_MCP_LOG_RETENTION_DAYS)
+    with SessionLocal() as db:
+        result = db.execute(delete(MCPCallLog).where(MCPCallLog.called_at < cutoff))
+        db.commit()
+        deleted = result.rowcount or 0
+        if deleted:
+            logging.getLogger(__name__).info("mcp: retention deleted %d old call logs", deleted)
+
+
+@app.on_event("shutdown")
+async def _stop_mcp_log_retention() -> None:  # noqa: B008
+    task = getattr(app.state, "mcp_log_retention_task", None)
+    if task is not None and not task.done():
+        task.cancel()

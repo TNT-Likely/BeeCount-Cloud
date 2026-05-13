@@ -71,3 +71,62 @@ export async function updatePat(
 export async function revokePat(token: string, patId: string): Promise<void> {
   await authedDelete<void>(`/profile/pats/${patId}`, token)
 }
+
+// ---------------------------------------------------------------------------
+// MCP 调用历史 — 由 server.py `_logged_call` 在每个 tool call 完成后异步写入
+// MCPCallLog 表。30 天保留期由 server 后台 task 维护。
+// ---------------------------------------------------------------------------
+
+export interface MCPCallItem {
+  id: number
+  tool_name: string
+  /** 'ok' | 'error' */
+  status: string
+  error_message: string | null
+  /** 脱敏后的关键参数摘要,例如 "amount=38, tx_type=expense";note 之类敏感字段不进入 */
+  args_summary: string | null
+  duration_ms: number
+  pat_id: string | null
+  pat_prefix: string | null
+  /**
+   * Server 已经做完降级逻辑的客户端显示名:
+   *   1. PAT 还在 → 当前 name(支持改名实时同步)
+   *   2. PAT 已删 → 调用当时缓存的名字
+   *   3. 都没有 → prefix
+   * 前端只渲染这个字段,不再自己挑。
+   */
+  client_label: string | null
+  /** PAT 还在不在;false 时 UI 可加"(已删除)"角标 */
+  client_active: boolean
+  client_ip: string | null
+  /** ISO 时间(带 UTC +00:00),前端按本地 toLocaleString 显示 */
+  called_at: string
+}
+
+export interface MCPCallListResponse {
+  total: number
+  items: MCPCallItem[]
+}
+
+export interface ListMcpCallsQuery {
+  limit?: number
+  offset?: number
+  tool_name?: string
+  /** 'ok' | 'error' */
+  status?: string
+  pat_id?: string
+}
+
+export async function listMcpCalls(
+  token: string,
+  q: ListMcpCallsQuery = {}
+): Promise<MCPCallListResponse> {
+  const params = new URLSearchParams()
+  if (q.limit != null) params.set('limit', String(q.limit))
+  if (q.offset != null) params.set('offset', String(q.offset))
+  if (q.tool_name) params.set('tool_name', q.tool_name)
+  if (q.status) params.set('status', q.status)
+  if (q.pat_id) params.set('pat_id', q.pat_id)
+  const qs = params.toString()
+  return authedGet<MCPCallListResponse>(`/profile/mcp-calls${qs ? `?${qs}` : ''}`, token)
+}

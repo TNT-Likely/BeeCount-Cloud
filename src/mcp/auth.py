@@ -51,13 +51,17 @@ class PATAuthMiddleware:
             return
 
         try:
-            user, scopes = _resolve_pat_sync(token, request)
+            user, scopes, pat_meta = _resolve_pat_sync(token, request)
         except _AuthError as exc:
             await self._reject(send, exc.code, exc.detail)
             return
 
         scope["bc_mcp_user"] = user
         scope["bc_mcp_scopes"] = scopes
+        scope["bc_mcp_pat_id"] = pat_meta["id"]
+        scope["bc_mcp_pat_prefix"] = pat_meta["prefix"]
+        scope["bc_mcp_pat_name"] = pat_meta["name"]
+        scope["bc_mcp_client_ip"] = pat_meta["client_ip"]
         await self.app(scope, receive, send)
 
     @staticmethod
@@ -79,9 +83,15 @@ class _AuthError(Exception):
         self.detail = detail
 
 
-def _resolve_pat_sync(token: str, request: Request) -> tuple[User, set[str]]:
+def _resolve_pat_sync(
+    token: str, request: Request
+) -> tuple[User, set[str], dict[str, Any]]:
     """跟 deps._resolve_pat 同逻辑,但用同步 Session(MCP middleware 在 ASGI
-    层,不走 FastAPI Depends)。"""
+    层,不走 FastAPI Depends)。
+
+    返回 `(user, scopes, pat_meta)`,其中 pat_meta 含 id/prefix/client_ip,
+    用于后续 tool 调用审计日志(MCPCallLog)。
+    """
     import hashlib
     import hmac
 
@@ -128,7 +138,13 @@ def _resolve_pat_sync(token: str, request: Request) -> tuple[User, set[str]]:
         # refresh,把 attribute 重新填回内存。
         db.refresh(user)
         db.expunge(user)
-        return user, scopes
+        pat_meta = {
+            "id": row.id,
+            "prefix": row.prefix,
+            "name": row.name,
+            "client_ip": client_ip,
+        }
+        return user, scopes, pat_meta
 
 
 def get_mcp_user_from_context(ctx: Any) -> User:
@@ -162,3 +178,17 @@ def require_mcp_scope(ctx: Any, required: str) -> None:
     scopes = get_mcp_scopes_from_context(ctx)
     if required not in scopes:
         raise PermissionError(f"PAT missing required scope: {required}")
+
+
+def get_mcp_call_meta_from_context(ctx: Any) -> dict[str, Any]:
+    """拿 PATAuthMiddleware 注入的"这次调用属于哪个 PAT / 哪个 IP"元数据,
+    给 MCPCallLog 写入用。"""
+    request = ctx.request_context.request
+    if request is None:
+        return {}
+    return {
+        "pat_id": request.scope.get("bc_mcp_pat_id"),
+        "pat_prefix": request.scope.get("bc_mcp_pat_prefix"),
+        "pat_name": request.scope.get("bc_mcp_pat_name"),
+        "client_ip": request.scope.get("bc_mcp_client_ip"),
+    }
