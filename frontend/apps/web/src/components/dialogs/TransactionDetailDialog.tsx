@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
-import type { WorkspaceTag, WorkspaceTransaction } from '@beecount/api-client'
+import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { AttachmentRef, WorkspaceTag, WorkspaceTransaction } from '@beecount/api-client'
 import {
   Button,
   Dialog,
@@ -10,7 +11,9 @@ import {
   useT,
 } from '@beecount/ui'
 import { buildTagColorMap, TagChip } from '@beecount/web-features'
-import { Calendar, Edit3, Hash, Tag, User, Wallet } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, Edit3, Hash, ImageOff, Tag, User, Wallet, X } from 'lucide-react'
+
+import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 
 interface Props {
   tx: WorkspaceTransaction | null
@@ -140,17 +143,7 @@ export function TransactionDetailDialog({
                 />
               ) : null}
               {attachments.length > 0 ? (
-                <DetailRow
-                  icon={<span aria-hidden>📎</span>}
-                  label={t('detail.transaction.attachments')}
-                  value={
-                    <span className="text-xs text-muted-foreground">
-                      {t('detail.transaction.attachmentsCount', {
-                        count: attachments.length,
-                      })}
-                    </span>
-                  }
-                />
+                <AttachmentRow attachments={attachments} />
               ) : null}
               {tx.created_by_email ? (
                 <DetailRow
@@ -212,4 +205,223 @@ function formatDateTime(value: string | null | undefined): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mi = String(d.getMinutes()).padStart(2, '0')
   return `${d.getFullYear()}-${mm}-${dd} ${hh}:${mi}`
+}
+
+/**
+ * 附件展示行 — 缩略图 grid + 点开切换到大图覆盖层。
+ *
+ * 复用全局 AttachmentCache(同 fileId 进程内只下载一次,blob URL 缓存),所以
+ * 在交易列表 / 详情弹窗 / 分类详情等多处场景都不会重复下载。
+ *
+ * cloudFileId 缺失的附件(还在 mobile 端没上传完)显示占位灰块 + 文件名,
+ * 不抢眼但能看出来。
+ */
+function AttachmentRow({ attachments }: { attachments: AttachmentRef[] }) {
+  const t = useT()
+  const { previewMap, ensureLoadedMany } = useAttachmentCache()
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null)
+
+  // 列表渲染时把所有有 cloudFileId 的附件触发后台下载(去重,只跑一次)
+  const fileIds = useMemo(
+    () =>
+      attachments
+        .map((a) => a.cloudFileId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    [attachments],
+  )
+  useEffect(() => {
+    if (fileIds.length === 0) return
+    ensureLoadedMany(fileIds)
+  }, [fileIds, ensureLoadedMany])
+
+  // 仅有 cloudFileId 的附件可被预览(没有 cloudFileId = 还没上传到 server)
+  const previewables = useMemo(
+    () =>
+      attachments.filter(
+        (a) => typeof a.cloudFileId === 'string' && a.cloudFileId.trim().length > 0,
+      ),
+    [attachments],
+  )
+
+  return (
+    <>
+      <div className="flex flex-col gap-2 py-3">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span aria-hidden>📎</span>
+          <span>{t('detail.transaction.attachments')}</span>
+          <span className="text-[11px] text-muted-foreground/70">
+            {t('detail.transaction.attachmentsCount', { count: attachments.length })}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          {attachments.map((att, i) => {
+            const fileId = att.cloudFileId?.trim() || ''
+            const blobUrl = fileId ? previewMap[fileId] : undefined
+            const previewableIndex = previewables.findIndex(
+              (p) => (p.cloudFileId || '').trim() === fileId && fileId !== '',
+            )
+            const canPreview = previewableIndex >= 0 && Boolean(blobUrl)
+            return (
+              <button
+                key={`${fileId || att.fileName || 'pending'}-${i}`}
+                type="button"
+                disabled={!canPreview}
+                onClick={() => canPreview && setPreviewIndex(previewableIndex)}
+                className={`relative aspect-square overflow-hidden rounded-md border border-border/60 bg-muted/40 transition ${
+                  canPreview
+                    ? 'cursor-pointer hover:border-primary hover:shadow-md'
+                    : 'cursor-default'
+                }`}
+                title={att.originalName || att.fileName}
+              >
+                {blobUrl ? (
+                  <img
+                    src={blobUrl}
+                    alt={att.originalName || att.fileName}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                ) : blobUrl === '' ? (
+                  // 已探测过但不是图片 / 下载失败
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted-foreground/60">
+                    <ImageOff className="h-5 w-5" />
+                    <span className="line-clamp-1 px-1 text-[9px]">
+                      {att.originalName || att.fileName}
+                    </span>
+                  </div>
+                ) : (
+                  // 还在加载 / 未上传(cloudFileId 缺失)
+                  <div className="flex h-full w-full items-center justify-center">
+                    <div className="h-5 w-5 animate-pulse rounded-full bg-muted-foreground/30" />
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      {previewIndex !== null ? (
+        <AttachmentLightbox
+          attachments={previewables}
+          startIndex={previewIndex}
+          onClose={() => setPreviewIndex(null)}
+        />
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * 全屏大图覆盖层 — 跟 TransactionsPage 的预览弹窗体验对齐。
+ * 自带 prev/next 切换、Esc / 点击空白处关闭。
+ * blob URL 同样从 AttachmentCache 取(同 cache 共享),不重复下载。
+ */
+function AttachmentLightbox({
+  attachments,
+  startIndex,
+  onClose,
+}: {
+  attachments: AttachmentRef[]
+  startIndex: number
+  onClose: () => void
+}) {
+  const { previewMap } = useAttachmentCache()
+  const [index, setIndex] = useState(startIndex)
+
+  // Esc 关闭 + 左右箭头切换 — 全屏 lightbox 的标准操作
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose()
+      } else if (e.key === 'ArrowLeft' && index > 0) {
+        setIndex((i) => i - 1)
+      } else if (e.key === 'ArrowRight' && index < attachments.length - 1) {
+        setIndex((i) => i + 1)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [index, attachments.length, onClose])
+
+  const current = attachments[index]
+  const fileId = current?.cloudFileId?.trim() || ''
+  const url = fileId ? previewMap[fileId] : undefined
+  const fileName = current?.originalName || current?.fileName || ''
+
+  // 必须 Portal 到 document.body — TransactionDetailDialog 用的 Radix Dialog
+  // 内部带 transform(用于居中动画),会创造新的 CSS containing block,导致
+  // `fixed inset-0` 元素被困在 Dialog 大小内,看起来"大图只在弹窗里"。
+  // Portal 把节点挂到 body,跳出 Dialog 的 containing block,真正占满 viewport。
+  if (typeof document === 'undefined') return null
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4"
+      // 仅当**点击点恰好是这个 div 本身**(也就是黑色空白区域)才关闭。
+      // 子元素冒泡上来的 click 不会触发 — e.target 是子元素,e.currentTarget
+      // 是这个 div,两者不等就跳过。这是 React 模态框的标准模式,不依赖
+      // stopPropagation,也不被 disabled button 的浏览器行为坑(disabled button
+      // 在某些浏览器里 click 事件会绕过 button 直接冒泡到祖先,普通
+      // stopPropagation 拦不住)。
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20"
+        aria-label="Close preview"
+      >
+        <X className="h-5 w-5" />
+      </button>
+
+      {attachments.length > 1 ? (
+        <>
+          <button
+            type="button"
+            disabled={index === 0}
+            onClick={() => setIndex((i) => i - 1)}
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 disabled:opacity-30"
+            aria-label="Previous"
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+          <button
+            type="button"
+            disabled={index === attachments.length - 1}
+            onClick={() => setIndex((i) => i + 1)}
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 disabled:opacity-30"
+            aria-label="Next"
+          >
+            <ChevronRight className="h-6 w-6" />
+          </button>
+        </>
+      ) : null}
+
+      <div className="flex max-h-full max-w-full flex-col items-center gap-3">
+        {url ? (
+          <img
+            src={url}
+            alt={fileName}
+            className="max-h-[85vh] max-w-[90vw] rounded object-contain"
+          />
+        ) : (
+          <div className="flex h-64 w-64 items-center justify-center text-white/60">
+            <div className="h-8 w-8 animate-pulse rounded-full bg-white/30" />
+          </div>
+        )}
+        <div className="flex items-center gap-3 text-xs text-white/80">
+          <span className="line-clamp-1 max-w-[60vw]">{fileName}</span>
+          {attachments.length > 1 ? (
+            <span className="rounded bg-white/10 px-2 py-0.5">
+              {index + 1} / {attachments.length}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
 }

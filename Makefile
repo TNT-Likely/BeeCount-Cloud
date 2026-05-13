@@ -8,6 +8,14 @@ setup-backend:
 migrate:
 	. .venv/bin/activate && alembic upgrade head
 
+
+#   env -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u NODE_EXTRA_CA_CERTS \
+#       -u AWS_CA_BUNDLE \
+#       HTTPS_PROXY=http://192.168.3.202:7890 \
+#       HTTP_PROXY=http://192.168.3.202:7890 \
+#       ALL_PROXY=http://192.168.3.202:7890 \
+#       make dev-api
+#
 dev-api: setup-backend migrate
 	# --host 0.0.0.0 必要：模拟器/手机经 WiFi 用 IP 访问时才能连进来。
 	# uvicorn 默认绑 127.0.0.1，会导致 "Connection refused"。
