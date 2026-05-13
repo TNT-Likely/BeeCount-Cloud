@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Info,
+  Key,
   Languages,
   LogOut,
   Moon,
@@ -26,6 +27,7 @@ const SETTINGS_ICONS: Record<string, LucideIcon> = {
   'settings-ai': Bot,
   'settings-health': Activity,
   'settings-devices': Smartphone,
+  'settings-developer': Key,
 }
 
 /**

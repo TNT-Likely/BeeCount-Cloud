@@ -22,10 +22,11 @@ from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
-from .routers import admin, attachments, auth, devices, profile, read, sync, write, ws
+from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
 from .routers import admin_backup, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
+from .mcp import server as mcp_server
 from .websocket_manager import WSConnectionManager
 
 # 日志配置提前 —— stdout handler 必须在 ensure_admin() 之前就绪,
@@ -102,6 +103,39 @@ def prometheus_metrics() -> str:
     return metrics.render_prometheus()
 
 
+# OAuth 2.0 Protected Resource Metadata(RFC 9728) — MCP 2025-06-18 spec 要求。
+# Claude Code / Cursor 等客户端连 MCP server 之前会探测这个 endpoint,期望拿
+# 一个**可解析**的 JSON 决定走 OAuth 还是直接用 Bearer。我们用静态 PAT,
+# 没 OAuth server,所以返回 `authorization_servers=[]` + `bearer_methods_
+# supported=["header"]`,告诉客户端"直接用 Authorization header 上的 Bearer
+# 就行"。注意:即便不用 OAuth,这个 endpoint 也必须存在 — 否则客户端拿到
+# FastAPI 默认 404(`{"detail":"Not Found"}`)会因为 schema 不匹配 (缺
+# `error` 字段) 整个握手抛 ZodError 报错。
+#
+# 同时为 `/.well-known/oauth-protected-resource/{path:path}` 提供同样响应:
+# 部分 SDK 会按 `oauth-protected-resource/<resource_path>` 形式探测。
+from fastapi import Request as _Request
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@app.get(
+    "/.well-known/oauth-protected-resource/{_resource_path:path}",
+    include_in_schema=False,
+)
+def oauth_protected_resource_metadata(request: _Request, _resource_path: str = "") -> dict:
+    # 用 request.base_url 拼 resource canonical URI(尊重反代的 X-Forwarded-Host
+    # / X-Forwarded-Proto,只要前面 uvicorn 启了 --proxy-headers)。退一步即使
+    # base_url 是 `http://127.0.0.1:8080/`,也不影响 SDK 解析。
+    base = str(request.base_url).rstrip("/")
+    resource = f"{base}{settings.api_prefix}/mcp"
+    return {
+        "resource": resource,
+        "authorization_servers": [],
+        "bearer_methods_supported": ["header"],
+        "resource_documentation": "https://github.com/TNT-Likely/BeeCount-Cloud/blob/main/docs/MCP.md",
+    }
+
+
 app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["auth"])
 app.include_router(
     two_factor.router,
@@ -120,6 +154,8 @@ app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["rea
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
+app.include_router(pats.router, prefix=f"{settings.api_prefix}/profile/pats", tags=["pats"])
+app.mount(f"{settings.api_prefix}/mcp", mcp_server.app)
 app.include_router(ai_router.router, prefix=f"{settings.api_prefix}/ai", tags=["ai"])
 app.include_router(
     import_router.router,

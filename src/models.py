@@ -110,6 +110,47 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PersonalAccessToken(Base):
+    """长期 token,专供外部 LLM 客户端(Claude Desktop / Cursor / Cline)通过
+    MCP 协议访问账本数据用。跟 access token / refresh token 完全独立:
+
+    - access token:60 分钟过期,refresh 流复杂,LLM 客户端做不到
+    - refresh token:绑 device,跨 LLM 客户端不通用
+    - **PAT**:用户主动创建 → 自定义过期(默认 90 天 / 永久)→ 可独立撤销
+      → 单独 scope(`mcp:read` / `mcp:write`),不污染 web/app 路径
+
+    Token 明文格式 `bcmcp_<32 字节 base64url>`,只在创建时返回一次,之后表
+    里只存 sha256。`prefix` 前 16 字符明文供列表展示用。详见
+    .docs/mcp-server-design.md。
+    """
+
+    __tablename__ = "personal_access_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    # sha256 hex = 64 字符,加 hash 算法标识可扩展到 128
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # 前 16 字符明文(如 `bcmcp_a1b2c3d4`)给列表展示用,识别哪个是哪个
+    prefix: Mapped[str] = mapped_column(String(32), index=True)
+    # JSON 数组:["mcp:read"] / ["mcp:write"] / 两者
+    scopes_json: Mapped[str] = mapped_column(Text, default="[]")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index(
+    "ix_pat_user_active",
+    PersonalAccessToken.user_id,
+    PersonalAccessToken.revoked_at,
+)
+
+
 class Device(Base):
     __tablename__ = "devices"
 

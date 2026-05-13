@@ -64,6 +64,13 @@ async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     throw await extractApiError(res)
   }
+  // 204 No Content 或 Content-Length: 0 的响应 (DELETE 撤销/删除 PAT 这种)
+  // 没有 body,直接 `res.json()` 会抛 `Unexpected end of JSON input`。返
+  // `undefined as T` —— 调用方签名是 `Promise<void>` 时 OK,期望 JSON
+  // 的调用方本来就不会发出 204 请求。
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T
+  }
   return res.json()
 }
 

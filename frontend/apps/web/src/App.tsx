@@ -45,6 +45,9 @@ const SettingsAiPage = lazy(() =>
 const SettingsDevicesPage = lazy(() =>
   import('./pages/sections/SettingsDevicesPage').then((m) => ({ default: m.SettingsDevicesPage })),
 )
+const SettingsPatsPage = lazy(() =>
+  import('./pages/sections/SettingsPatsPage').then((m) => ({ default: m.SettingsPatsPage })),
+)
 const SettingsHealthPage = lazy(() =>
   import('./pages/sections/SettingsHealthPage').then((m) => ({ default: m.SettingsHealthPage })),
 )
@@ -302,6 +305,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <SettingsDevicesPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings/developer"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SettingsPatsPage />
             </Suspense>
           }
         />

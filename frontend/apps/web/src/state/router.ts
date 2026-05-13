@@ -24,6 +24,7 @@ export const APP_SECTIONS: AppSection[] = [
   'settings-ai',
   'settings-health',
   'settings-devices',
+  'settings-developer',
   'admin-users',
   'admin-backup'
 ]
@@ -60,6 +61,8 @@ function parseSettingsSection(parts: string[]): AppSection {
       return 'settings-health'
     case 'devices':
       return 'settings-devices'
+    case 'developer':
+      return 'settings-developer'
     default:
       return DEFAULT_APP_SECTION
   }
@@ -97,6 +100,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'settings-health'
     case 'settings/devices':
       return 'settings-devices'
+    case 'settings/developer':
+      return 'settings-developer'
     default:
       return DEFAULT_APP_SECTION
   }
@@ -130,6 +135,8 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'settings-health'
     case 'settings/devices':
       return 'settings-devices'
+    case 'settings/developer':
+      return 'settings-developer'
     default:
       return DEFAULT_APP_SECTION
   }
@@ -215,6 +222,8 @@ export function routePath(route: AppRoute): string {
       return '/app/settings/health'
     case 'settings-devices':
       return '/app/settings/devices'
+    case 'settings-developer':
+      return '/app/settings/developer'
     case 'admin-users':
       return '/app/admin/users'
     case 'admin-backup':

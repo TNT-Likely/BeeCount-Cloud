@@ -307,6 +307,7 @@ docker run -p 8080:8080 -v beecount_data:/data \
 - [Migration & Rollback](./docs/MIGRATION.md)
 - [Observability](./docs/OBSERVABILITY.md)
 - [Sync Architecture](./docs/SYNC_ARCHITECTURE.md)
+- [MCP server (LLM integration)](./docs/MCP.en.md) — Claude Desktop / Cursor / Cline talk to your ledgers via a PAT
 - Runtime OpenAPI / Swagger UI: visit `http://your-domain.com/docs`
 
 ---
