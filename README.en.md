@@ -7,6 +7,8 @@
 
 ![BeeCount Cloud Web console](./docs/screenshot-en.png)
 
+> 🤖 **New: drive your ledger from an LLM** — BeeCount Cloud ships a built-in [MCP](https://count.beejz.com/en/docs/mcp) server. Query transactions, log expenses, tweak budgets right inside Claude Desktop / Cursor / Cline. 👉 **[Read the MCP docs](https://count.beejz.com/en/docs/mcp)**
+
 ---
 
 ## 🤔 Why BeeCount Cloud
@@ -307,6 +309,7 @@ docker run -p 8080:8080 -v beecount_data:/data \
 - [Migration & Rollback](./docs/MIGRATION.md)
 - [Observability](./docs/OBSERVABILITY.md)
 - [Sync Architecture](./docs/SYNC_ARCHITECTURE.md)
+- [MCP server (LLM integration)](./docs/MCP.en.md) — Claude Desktop / Cursor / Cline talk to your ledgers via a PAT
 - Runtime OpenAPI / Swagger UI: visit `http://your-domain.com/docs`
 
 ---

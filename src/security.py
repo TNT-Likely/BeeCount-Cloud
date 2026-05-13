@@ -1,4 +1,6 @@
 import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -14,6 +16,21 @@ SCOPE_APP_WRITE = "app_write"
 SCOPE_WEB_READ = "web_read"
 SCOPE_WEB_WRITE = "web_write"
 SCOPE_OPS_WRITE = "ops_write"
+# MCP 专用 scope。PAT 创建时用户选这两个之一或两个都选。MCP server 的
+# read tools 要求 `mcp:read`,write tools 要求 `mcp:write`。详见 .docs/mcp-
+# server-design.md。
+SCOPE_MCP_READ = "mcp:read"
+SCOPE_MCP_WRITE = "mcp:write"
+
+# PAT token 明文前缀,识别"这是 BeeCount MCP token"。跟 GitHub PAT `ghp_` /
+# OpenAI `sk-` 同惯例,方便用户和 secret scanner 识别。
+PAT_PREFIX = "bcmcp_"
+# Token 主体随机字节数。32 字节 base64url 后约 43 字符,加 PAT_PREFIX 共 ~49,
+# 熵 256 bit 远超暴力破解。
+PAT_RANDOM_BYTES = 32
+# 列表展示用前缀长度(明文,含 PAT_PREFIX),如 `bcmcp_a1b2c3d4`,共 14 字符。
+# 既能识别 PAT 类型,又能区分用户的多个 token,但还不够撞库。
+PAT_DISPLAY_PREFIX_LEN = 14
 
 
 def hash_password(password: str) -> str:
@@ -129,3 +146,43 @@ def decode_2fa_challenge_token(token: str) -> dict:
     if payload.get("type") != "totp_challenge":
         raise ValueError("Invalid token type for 2FA challenge")
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# PAT (Personal Access Token) — 长期 token 给 MCP / 外部 LLM 客户端用。
+# 详见 .docs/mcp-server-design.md。
+# --------------------------------------------------------------------------- #
+
+
+def generate_pat() -> tuple[str, str, str]:
+    """生成新 PAT。
+
+    返回 `(plaintext, token_hash, display_prefix)`:
+      - plaintext:`bcmcp_<base64url 32 字节>`,**仅返回一次**给用户,不存表
+      - token_hash:sha256 hex,存表用
+      - display_prefix:前 14 字符(如 `bcmcp_a1b2c3d4`),列表展示用
+
+    不用 PBKDF2 / bcrypt 是因为校验路径需要常数时间且很快(MCP 每次 tool
+    call 都跑一次),sha256 + timing-safe compare 足够安全 — token 本身已是
+    256 bit 熵的随机串,不像密码需要抗暴力破解。
+    """
+    raw = secrets.token_urlsafe(PAT_RANDOM_BYTES)
+    plaintext = f"{PAT_PREFIX}{raw}"
+    token_hash = hash_token(plaintext)
+    display_prefix = plaintext[:PAT_DISPLAY_PREFIX_LEN]
+    return plaintext, token_hash, display_prefix
+
+
+def looks_like_pat(token: str) -> bool:
+    """快速判断一个 token 字符串看着像不像 PAT。
+
+    用在 Auth header 路由分流上 — `Authorization: Bearer <token>` 同时接受
+    JWT access token 和 PAT,看前缀决定走哪条校验路径,避免给每个请求都做
+    两遍解码。
+    """
+    return token.startswith(PAT_PREFIX)
+
+
+def verify_pat_hash(provided_token: str, stored_hash: str) -> bool:
+    """常数时间比较 PAT hash,防 timing attack 推测正确 hash。"""
+    return hmac.compare_digest(hash_token(provided_token), stored_hash)

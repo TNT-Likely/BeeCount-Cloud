@@ -11,6 +11,7 @@ export type AppSection =
   | 'settings-appearance'
   | 'settings-health'
   | 'settings-devices'
+  | 'settings-developer'
   | 'settings-ai'
   | 'admin-users'
   | 'admin-backup'
@@ -53,7 +54,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'settings-profile', labelKey: 'nav.profile' },
       { key: 'settings-ai', labelKey: 'nav.ai' },
       { key: 'settings-health', labelKey: 'nav.health' },
-      { key: 'settings-devices', labelKey: 'nav.devices' }
+      { key: 'settings-devices', labelKey: 'nav.devices' },
+      // PAT / MCP 管理 — 给 LLM 客户端发长期 token 的地方。
+      { key: 'settings-developer', labelKey: 'nav.developer' }
     ]
   }
   // admin-users 不进顶部导航，只在头像 hover 下拉菜单里对 admin 用户展示。

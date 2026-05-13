@@ -7,6 +7,8 @@
 
 ![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
 
+> 🤖 **新:用 LLM 直接管理账本** — BeeCount Cloud 内置 [MCP](https://count.beejz.com/docs/mcp) server,在 Claude Desktop / Cursor / Cline 里跟 LLM 自然语言对话就能查询交易、记账、改预算。👉 **[查看 MCP 文档](https://count.beejz.com/docs/mcp)**
+
 ---
 
 ## 🤔 为什么选 BeeCount Cloud
@@ -306,6 +308,7 @@ docker run -p 8080:8080 -v beecount_data:/data \
 - [迁移与回滚](./docs/MIGRATION.md)
 - [可观测性](./docs/OBSERVABILITY.md)
 - [同步架构](./docs/SYNC_ARCHITECTURE.md)
+- [MCP server(LLM 集成)](./docs/MCP.md) — Claude Desktop / Cursor / Cline 通过 PAT 直接操作账本([English](./docs/MCP.en.md))
 - 运行时 OpenAPI / Swagger UI: 访问 `http://your-domain.com/docs`
 
 ---
