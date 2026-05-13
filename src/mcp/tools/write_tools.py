@@ -119,8 +119,9 @@ async def create_transaction(
             _lookup_account_sync_id(db, user.id, account)
         ledger_external_id = led.external_id
         ledger_name = led.name
+        led_internal_id = led.id  # 出 with 块后 led 会 detach,提前取值
         mcp_tag_missing = _is_tag_missing_in_ledger(
-            db, user_id=user.id, ledger_id=led.id, tag_name=_MCP_DEFAULT_TAG,
+            db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
         )
 
     # 标签管理页是从 ReadTagProjection 读的 —— 只往 tx.tags_csv 写 "MCP" 不够,
@@ -149,6 +150,14 @@ async def create_transaction(
     # 始终注入 MCP 默认标签;跟 LLM 传的 tags 并集去重,顺序保持 LLM 给的在前
     final_tags = _merge_default_tag(tags)
     body["tags"] = final_tags
+    # 同时把对应 sync_id 也喂给 server —— 两个字段一起填,Tags 详情弹窗
+    # (走 tag_sync_ids_json 精确过滤)才能找到这笔 tx。
+    with SessionLocal() as db:
+        tag_ids = _lookup_tag_sync_ids(
+            db, user_id=user.id, ledger_id=led_internal_id, names=final_tags,
+        )
+    if tag_ids:
+        body["tag_ids"] = tag_ids
 
     settings = get_settings()
     path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions"
@@ -416,6 +425,40 @@ def _is_tag_missing_in_ledger(
         )
     )
     return existing is None
+
+
+def _lookup_tag_sync_ids(
+    db, *, user_id: str, ledger_id: str, names: list[str]
+) -> list[str]:
+    """把 tag 名字解析成 sync_id(同 ledger)。没找到的名字直接丢弃。
+
+    write router 接收 `tags` (CSV name) 时只填 tx.tags_csv,**不会**自动反查
+    sync_id 填 tx.tag_sync_ids_json。导致 Tags 详情弹窗(用 tag_sync_ids_json
+    精确过滤)看不到通过 name 创建的 tx。MCP 这里显式查一次 sync_id 一起传,
+    两边索引都喂饱。
+    """
+    if not names:
+        return []
+    rows = db.execute(
+        select(ReadTagProjection.name, ReadTagProjection.sync_id).where(
+            ReadTagProjection.user_id == user_id,
+            ReadTagProjection.ledger_id == ledger_id,
+            ReadTagProjection.name.in_(names),
+        )
+    ).all()
+    # 同一 name 同 ledger 应当唯一,但稳妥起见去重
+    by_name: dict[str, str] = {}
+    for n, sid in rows:
+        by_name.setdefault(n, sid)
+    # 保持 names 的输入顺序
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in names:
+        sid = by_name.get(n)
+        if sid and sid not in seen:
+            out.append(sid)
+            seen.add(sid)
+    return out
 
 
 async def _ensure_mcp_tag(user: User, ledger_external_id: str) -> None:
