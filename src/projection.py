@@ -22,11 +22,12 @@ from sqlalchemy.orm import Session
 
 from .models import (
     AttachmentFile,
-    ReadAccountProjection,
+    Ledger,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,20 +217,21 @@ def upsert_tx(
     new_file_ids = _extract_tx_cloud_file_ids(attachments_json)
     removed = prev_file_ids - new_file_ids
     if removed:
-        gc_orphan_attachments(db, ledger_id=ledger_id, file_ids=removed)
+        gc_orphan_attachments(db, user_id=user_id, file_ids=removed)
 
 
 def upsert_account(
     db: Session,
     *,
-    ledger_id: str,
     user_id: str,
     source_change_id: int,
     payload: dict[str, Any],
 ) -> None:
+    """user-global account upsert。PK=(user_id, sync_id),跟账本无关。"""
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
+
     # 扩展字段读 snapshot 的 camelCase key,空 / NaN 转 None。这些字段是
     # nullable 的(老 snapshot 没这些 key 时落 None,前端展示空)。
     def _opt_float(raw: Any) -> float | None:
@@ -249,9 +251,8 @@ def upsert_account(
             return None
 
     values = {
-        "ledger_id": ledger_id,
-        "sync_id": sync_id,
         "user_id": user_id,
+        "sync_id": sync_id,
         "name": _as_str(payload.get("name")),
         "account_type": _as_str(payload.get("type")),
         "currency": _as_str(payload.get("currency")),
@@ -264,38 +265,36 @@ def upsert_account(
         "card_last_four": _as_str(payload.get("cardLastFour")),
         "source_change_id": source_change_id,
     }
-    _upsert(db, ReadAccountProjection, ("ledger_id", "sync_id"), values)
+    _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)
 
 
 def upsert_category(
     db: Session,
     *,
-    ledger_id: str,
     user_id: str,
     source_change_id: int,
     payload: dict[str, Any],
 ) -> None:
+    """user-global category upsert。PK=(user_id, sync_id),跟账本无关。"""
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
 
     # 取 prev icon_cloud_file_id —— upsert 后跟 new 比对,若变更则 GC 旧 attachment。
-    # 跟 upsert_tx 的模式对齐(line 214-219):防止用户在 web 点 "remove 自定义图标"
-    # 后旧 cloud blob 永远成孤儿。
+    # 防止用户在 web 点 "remove 自定义图标" 后旧 cloud blob 永远成孤儿。
     prev_icon_file_id: str | None = None
     prev_row = db.scalar(
-        select(ReadCategoryProjection.icon_cloud_file_id).where(
-            ReadCategoryProjection.ledger_id == ledger_id,
-            ReadCategoryProjection.sync_id == sync_id,
+        select(UserCategoryProjection.icon_cloud_file_id).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == sync_id,
         )
     )
     if prev_row:
         prev_icon_file_id = prev_row.strip() if isinstance(prev_row, str) else None
 
     values = {
-        "ledger_id": ledger_id,
-        "sync_id": sync_id,
         "user_id": user_id,
+        "sync_id": sync_id,
         "name": _as_str(payload.get("name")),
         "kind": _as_str(payload.get("kind")),
         "level": _as_int(payload.get("level"), default=0) if payload.get("level") is not None else None,
@@ -310,37 +309,35 @@ def upsert_category(
         "parent_name": _as_str(payload.get("parentName")),
         "source_change_id": source_change_id,
     }
-    _upsert(db, ReadCategoryProjection, ("ledger_id", "sync_id"), values)
+    _upsert(db, UserCategoryProjection, ("user_id", "sync_id"), values)
 
     # 如果 prev_icon_file_id 跟新值不一样(包括清空、换图),且 prev 不是空,
-    # 把旧 fileId 交给 gc_orphan_attachments —— 内部会查 projection 是否还有
-    # 别的引用,真孤儿才删 AttachmentFile + 物理文件,被共用的(理论上不该
-    # 发生但保险)会留着。
+    # 把旧 fileId 交给 gc_orphan_attachments —— 真孤儿才删 AttachmentFile +
+    # 物理文件,被共用的会留着。
     new_icon_file_id = _as_str(payload.get("iconCloudFileId")) or None
     if prev_icon_file_id and prev_icon_file_id != new_icon_file_id:
-        gc_orphan_attachments(db, ledger_id=ledger_id, file_ids=[prev_icon_file_id])
+        gc_orphan_attachments(db, user_id=user_id, file_ids=[prev_icon_file_id])
 
 
 def upsert_tag(
     db: Session,
     *,
-    ledger_id: str,
     user_id: str,
     source_change_id: int,
     payload: dict[str, Any],
 ) -> None:
+    """user-global tag upsert。PK=(user_id, sync_id),跟账本无关。"""
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
     values = {
-        "ledger_id": ledger_id,
-        "sync_id": sync_id,
         "user_id": user_id,
+        "sync_id": sync_id,
         "name": _as_str(payload.get("name")),
         "color": _as_str(payload.get("color")),
         "source_change_id": source_change_id,
     }
-    _upsert(db, ReadTagProjection, ("ledger_id", "sync_id"), values)
+    _upsert(db, UserTagProjection, ("user_id", "sync_id"), values)
 
 
 def upsert_budget(
@@ -386,47 +383,32 @@ def delete_tx(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadTxProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
-def delete_account(db: Session, *, ledger_id: str, sync_id: str) -> None:
-    delete_entity(db, ReadAccountProjection, ledger_id=ledger_id, sync_id=sync_id)
-
-
-def delete_category(db: Session, *, ledger_id: str, sync_id: str) -> None:
-    delete_entity(db, ReadCategoryProjection, ledger_id=ledger_id, sync_id=sync_id)
-
-
-def delete_tag(db: Session, *, ledger_id: str, sync_id: str) -> None:
-    delete_entity(db, ReadTagProjection, ledger_id=ledger_id, sync_id=sync_id)
-
-
-# ----- user-global entity 跨 ledger 删除 -----------------------------------
-# account / category / tag 是 user-global,在每个 ledger 的 projection 表里
-# 各 fanout 一份(snapshot fullPush 时塞进对应 ledger)。delete 时必须按
-# user_id 跨 ledger 删,否则其他 ledger 的 projection 行会残留,web 切到那些
-# 账本看会看到"幽灵分类/账户/标签"。详见 sync_applier._delete_category 等
-# 调用点的注释。
-def delete_category_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+def delete_account(db: Session, *, user_id: str, sync_id: str) -> None:
+    """user-global account delete。PK=(user_id, sync_id)。"""
     db.execute(
-        delete(ReadCategoryProjection).where(
-            ReadCategoryProjection.user_id == user_id,
-            ReadCategoryProjection.sync_id == sync_id,
+        delete(UserAccountProjection).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == sync_id,
         )
     )
 
 
-def delete_account_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+def delete_category(db: Session, *, user_id: str, sync_id: str) -> None:
+    """user-global category delete。PK=(user_id, sync_id)。"""
     db.execute(
-        delete(ReadAccountProjection).where(
-            ReadAccountProjection.user_id == user_id,
-            ReadAccountProjection.sync_id == sync_id,
+        delete(UserCategoryProjection).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == sync_id,
         )
     )
 
 
-def delete_tag_user_global(db: Session, *, user_id: str, sync_id: str) -> None:
+def delete_tag(db: Session, *, user_id: str, sync_id: str) -> None:
+    """user-global tag delete。PK=(user_id, sync_id)。"""
     db.execute(
-        delete(ReadTagProjection).where(
-            ReadTagProjection.user_id == user_id,
-            ReadTagProjection.sync_id == sync_id,
+        delete(UserTagProjection).where(
+            UserTagProjection.user_id == user_id,
+            UserTagProjection.sync_id == sync_id,
         )
     )
 
@@ -445,17 +427,18 @@ def delete_budget(db: Session, *, ledger_id: str, sync_id: str) -> None:
 def rename_cascade_account(
     db: Session,
     *,
-    ledger_id: str,
+    user_id: str,
     account_sync_id: str,
     new_name: str | None,
 ) -> None:
+    """account 是 user-global,rename 时刷遍该用户所有 ledger 的 read_tx_projection。"""
     from sqlalchemy import update
 
-    # account_name / fromAccountName / toAccountName 三个引用点都要刷
+    # 一次 UPDATE 用 user_id 圈定范围;不再循环 ledger。
     db.execute(
         update(ReadTxProjection)
         .where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             ReadTxProjection.account_sync_id == account_sync_id,
         )
         .values(account_name=new_name)
@@ -463,7 +446,7 @@ def rename_cascade_account(
     db.execute(
         update(ReadTxProjection)
         .where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             ReadTxProjection.from_account_sync_id == account_sync_id,
         )
         .values(from_account_name=new_name)
@@ -471,7 +454,7 @@ def rename_cascade_account(
     db.execute(
         update(ReadTxProjection)
         .where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             ReadTxProjection.to_account_sync_id == account_sync_id,
         )
         .values(to_account_name=new_name)
@@ -481,11 +464,12 @@ def rename_cascade_account(
 def rename_cascade_category(
     db: Session,
     *,
-    ledger_id: str,
+    user_id: str,
     category_sync_id: str,
     new_name: str | None,
     new_kind: str | None = None,
 ) -> None:
+    """category 是 user-global,rename 时刷遍该用户所有 ledger 的 read_tx_projection。"""
     from sqlalchemy import update
 
     values: dict[str, Any] = {"category_name": new_name}
@@ -494,7 +478,7 @@ def rename_cascade_category(
     db.execute(
         update(ReadTxProjection)
         .where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             ReadTxProjection.category_sync_id == category_sync_id,
         )
         .values(**values)
@@ -504,16 +488,14 @@ def rename_cascade_category(
 def rename_cascade_tag(
     db: Session,
     *,
-    ledger_id: str,
+    user_id: str,
     tag_sync_id: str,
     old_name: str,
     new_name: str,
 ) -> None:
-    """Tag rename 走 tags_csv 字符串替换。
-    snapshot 里的逻辑是按 tagIds 列表精确定位,我们这里没有直接按 tag_sync_id
-    查 tx 的索引,但可以通过 tag_sync_ids_json 走 LIKE 查到涉及的 tx,再更新
-    tags_csv。用 Python 做字符串替换比纯 SQL 的 REPLACE 更安全(避免 name
-    是别的 tag 的 substring 时误伤)。
+    """Tag rename 走 tags_csv 字符串替换。tag 是 user-global,刷该用户所有 tx 行。
+    用 Python 做字符串替换比纯 SQL 的 REPLACE 更安全(避免 name 是别的 tag 的
+    substring 时误伤)。
     """
     from sqlalchemy import select as sql_select
 
@@ -523,7 +505,7 @@ def rename_cascade_tag(
     like_pat = f'%"{tag_sync_id}"%'
     rows = db.scalars(
         sql_select(ReadTxProjection).where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             ReadTxProjection.tag_sync_ids_json.like(like_pat),
         )
     ).all()
@@ -541,13 +523,9 @@ def rename_cascade_tag(
 # --------------------------------------------------------------------------- #
 
 def _truncate_ledger(db: Session, ledger_id: str) -> None:
-    for model in (
-        ReadTxProjection,
-        ReadAccountProjection,
-        ReadCategoryProjection,
-        ReadTagProjection,
-        ReadBudgetProjection,
-    ):
+    """清掉该 ledger 的 ledger-scoped projection。user-global(account/
+    category/tag)是 per-user 表,不按 ledger 清,**不在此处处理**。"""
+    for model in (ReadTxProjection, ReadBudgetProjection):
         db.execute(delete(model).where(model.ledger_id == ledger_id))
 
 
@@ -559,7 +537,10 @@ def rebuild_from_snapshot(
     snapshot: dict[str, Any],
     source_change_id: int,
 ) -> None:
-    """按 snapshot 权威源,把该 ledger 的 5 张 projection 清零再填一遍。
+    """按 snapshot 权威源,把该 ledger 的 ledger-scoped projection 清零再填。
+    user-global(account/category/tag)是 per-user 表,**upsert 不清空** —— 同
+    user 跨 ledger rebuild 多次也是幂等的(同 sync_id 的 row 被相同值覆盖)。
+
     用于:alembic 回填、admin restore_backup、脏数据救急脚本。
     """
     _truncate_ledger(db, ledger_id)
@@ -577,7 +558,6 @@ def rebuild_from_snapshot(
         if isinstance(item, dict):
             upsert_account(
                 db,
-                ledger_id=ledger_id,
                 user_id=user_id,
                 source_change_id=source_change_id,
                 payload=item,
@@ -586,7 +566,6 @@ def rebuild_from_snapshot(
         if isinstance(item, dict):
             upsert_category(
                 db,
-                ledger_id=ledger_id,
                 user_id=user_id,
                 source_change_id=source_change_id,
                 payload=item,
@@ -595,7 +574,6 @@ def rebuild_from_snapshot(
         if isinstance(item, dict):
             upsert_tag(
                 db,
-                ledger_id=ledger_id,
                 user_id=user_id,
                 source_change_id=source_change_id,
                 payload=item,
@@ -697,14 +675,14 @@ def _extract_tx_cloud_file_ids(attachments_json: str | None) -> set[str]:
     return out
 
 
-def _fileid_still_referenced(db: Session, *, ledger_id: str, file_id: str) -> bool:
-    """某个 AttachmentFile 在 projection 里还有引用吗?
+def _fileid_still_referenced(db: Session, *, user_id: str, file_id: str) -> bool:
+    """某个 AttachmentFile 在该用户的 projection 里还有引用吗?
 
     扫:
       - read_tx_projection.attachments_json LIKE '%"cloudFileId":"<id>"%' (JSON
         字段名是 cloudFileId)。两种空格变体都 match,防备 client / server 序列
-        化习惯差异
-      - read_category_projection.icon_cloud_file_id = <id>
+        化习惯差异。tx 是 ledger-scoped,但带 user_id denorm 列。
+      - user_category_projection.icon_cloud_file_id = <id>(per-user 表)
     """
     pat_no_space = f'%"cloudFileId":"{file_id}"%'
     pat_with_space = f'%"cloudFileId": "{file_id}"%'
@@ -712,7 +690,7 @@ def _fileid_still_referenced(db: Session, *, ledger_id: str, file_id: str) -> bo
         select(func.count())
         .select_from(ReadTxProjection)
         .where(
-            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.user_id == user_id,
             or_(
                 ReadTxProjection.attachments_json.like(pat_no_space),
                 ReadTxProjection.attachments_json.like(pat_with_space),
@@ -724,10 +702,10 @@ def _fileid_still_referenced(db: Session, *, ledger_id: str, file_id: str) -> bo
 
     cat_hit = db.scalar(
         select(func.count())
-        .select_from(ReadCategoryProjection)
+        .select_from(UserCategoryProjection)
         .where(
-            ReadCategoryProjection.ledger_id == ledger_id,
-            ReadCategoryProjection.icon_cloud_file_id == file_id,
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.icon_cloud_file_id == file_id,
         )
     )
     return bool(cat_hit)
@@ -736,17 +714,19 @@ def _fileid_still_referenced(db: Session, *, ledger_id: str, file_id: str) -> bo
 def gc_orphan_attachments(
     db: Session,
     *,
-    ledger_id: str,
+    user_id: str,
     file_ids: Iterable[str | None],
 ) -> int:
-    """对给定 fileId 集合,若 projection 里无任何引用 → 删 AttachmentFile 行 +
-    unlink 物理文件。返回实际清掉的条数(日志/测试用)。
+    """对给定 fileId 集合,若该用户 projection 里无任何引用 → 删 AttachmentFile
+    行 + unlink 物理文件。返回实际清掉的条数(日志/测试用)。
 
     **调用契约**:必须在目标 tx/category 的 projection 行**已经删掉**之后调用。
     否则会把正在用的 blob 误删。事务边界由调用方管(两个修改应在同一事务 commit)。
 
-    Scope 到单 ledger:AttachmentFile 自身带 ledger_id,引用检查也限到同 ledger,
-    不用担心跨账本污染。
+    Scope 到单 user:AttachmentFile 自身带 user_id,引用检查也限到同 user
+    (跨 ledger 的 tx 都看,因为 tx 用 user_id denorm 列;category 是 per-user)。
+    比老版本"按 ledger_id 过滤"更准:category_icon 的 AttachmentFile.ledger_id
+    本来就是 NULL,老版本 GC 永远 miss 这类附件 —— 本次顺手修复。
 
     物理文件 unlink 失败只 warn 不抛 —— DB 行已删是事实,磁盘残留可后续清理
     脚本补扫。
@@ -761,13 +741,13 @@ def gc_orphan_attachments(
             continue
         seen.add(file_id)
 
-        if _fileid_still_referenced(db, ledger_id=ledger_id, file_id=file_id):
+        if _fileid_still_referenced(db, user_id=user_id, file_id=file_id):
             continue
 
         att = db.scalar(
             select(AttachmentFile).where(
                 AttachmentFile.id == file_id,
-                AttachmentFile.ledger_id == ledger_id,
+                AttachmentFile.user_id == user_id,
             )
         )
         if att is None:
@@ -785,15 +765,15 @@ def gc_orphan_attachments(
                 p.unlink()
         except OSError as exc:
             logger.warning(
-                "attachment gc unlink failed ledger=%s file=%s path=%s err=%s",
-                ledger_id, file_id, storage_path, exc,
+                "attachment gc unlink failed user=%s file=%s path=%s err=%s",
+                user_id, file_id, storage_path, exc,
             )
 
         cleaned += 1
 
     if cleaned:
         logger.info(
-            "attachment gc ledger=%s cleaned=%d", ledger_id, cleaned,
+            "attachment gc user=%s cleaned=%d", user_id, cleaned,
         )
     return cleaned
 
@@ -813,16 +793,17 @@ def collect_tx_attachment_fileids(
 
 
 def collect_category_icon_fileids(
-    db: Session, *, ledger_id: str, sync_id: str,
+    db: Session, *, user_id: str, sync_id: str,
 ) -> set[str]:
-    """在 category projection 删之前取 icon_cloud_file_id + 所有 parent=sync_id
-    子分类的 icon_cloud_file_id。级联删父分类时会同步带走子分类。"""
+    """在 user_category_projection 删之前取 icon_cloud_file_id + 所有
+    parent=sync_id 子分类的 icon_cloud_file_id。级联删父分类时会同步带走子分类。
+    category 是 user-global,scope 改成 user_id。"""
     out: set[str] = set()
     # 自身
     self_icon = db.scalar(
-        select(ReadCategoryProjection.icon_cloud_file_id).where(
-            ReadCategoryProjection.ledger_id == ledger_id,
-            ReadCategoryProjection.sync_id == sync_id,
+        select(UserCategoryProjection.icon_cloud_file_id).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == sync_id,
         )
     )
     if isinstance(self_icon, str) and self_icon.strip():
@@ -831,16 +812,16 @@ def collect_category_icon_fileids(
     # 串起来,见 upsert_category 的 parent_name 字段)。这里不走级联删,仅提取
     # icon。调用方如果要真级联删子分类,另外安排。
     own_name = db.scalar(
-        select(ReadCategoryProjection.name).where(
-            ReadCategoryProjection.ledger_id == ledger_id,
-            ReadCategoryProjection.sync_id == sync_id,
+        select(UserCategoryProjection.name).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == sync_id,
         )
     )
     if isinstance(own_name, str) and own_name:
         child_icons = db.scalars(
-            select(ReadCategoryProjection.icon_cloud_file_id).where(
-                ReadCategoryProjection.ledger_id == ledger_id,
-                ReadCategoryProjection.parent_name == own_name,
+            select(UserCategoryProjection.icon_cloud_file_id).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.parent_name == own_name,
             )
         ).all()
         for icon in child_icons:

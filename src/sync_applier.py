@@ -10,34 +10,30 @@
 3. **复现 + 测试**:业务逻辑脱离 FastAPI 之后,单元测试可以直接构造
    ``SyncChange`` 对象 + 手造 session 跑,不用再过 TestClient。
 
-## 架构概览
+## 架构概览(user-global 重构后)
 
-Push 路径跟 projection 的交互只有两个接触点:
+Push 路径跟 projection 的交互按 scope 分两条:
 
-    /sync/push (router) → apply_change_to_projection(change) → projection.upsert_*
+    /sync/push (router)
+        ├─ scope='ledger' → apply_change_to_projection(change)      → projection.upsert_tx/budget
+        └─ scope='user'   → apply_user_change_to_projection(change) → projection.upsert_account/category/tag
 
-每个 entity type 背后都有三张"表"维护它的行为:
+每条路径都有自己的三张"表"驱动 dispatch:
 
-- ``_MERGE_SPECS``        : entity_type → (projection model + payload 字段映射)
-                            用来读"现有行",把旧字段补到增量 payload 的缺失位。
-- ``_UPSERT_DISPATCH``    : entity_type → projection.upsert_* 函数。
-                            merge 完成后真正往 DB 写哪张表。
-- ``_DELETE_DISPATCH``    : entity_type → projection.delete_* 函数。
-                            delete action 按 entity 类型清理对应 projection
-                            行 + 附带资源(附件 / 自定义图标)。
+- ledger-scope:``_LEDGER_MERGE_SPECS`` / ``_LEDGER_UPSERT_DISPATCH`` / ``_LEDGER_DELETE_DISPATCH``
+- user-scope: ``_USER_MERGE_SPECS`` / ``_USER_UPSERT_DISPATCH`` / ``_USER_DELETE_DISPATCH``
 
-三张表必须**同步**增删。新加 entity 只登记其中两张就会在测试 / assert 时
-爆出 KeyError。2026-04 踩过的 ``_merge_with_existing_budget`` 里
-``from .models`` 写错的 bug,根因就是 merge 逻辑 5 个函数 copy-paste,新增
-entity 时容易只动一两处。改成表驱动后再也复现不了同类问题。
+新加 entity 只登记其中两张会在测试 / assert 时爆出 KeyError(2026-04 踩过
+的 copy-paste bug 在表驱动后已复现不了)。
 
 ## Rename cascade 的位置
 
-account / category / tag 三种 **user-global** 实体有个特殊动作:name 变了
-之后,ReadTxProjection 里的冗余列(account_name / category_name / tags_csv)
-也要一起刷。detect 写在 ``apply_change_to_projection`` 里(不是 merge 里),
-因为它必须在 upsert 当前实体 *之前* 跑 —— cascade 用的是 SQL 单条 UPDATE
-匹配**旧名**,upsert 之后旧名就丢了。
+account / category / tag 是 user-global 实体,name 变了之后 ReadTxProjection
+里的冗余列(account_name / category_name / tags_csv)要一起刷。detect 写在
+``apply_user_change_to_projection`` 里(不在 merge 里),因为它必须在 upsert
+当前实体 *之前* 跑 —— cascade 用的是 SQL 单条 UPDATE 匹配**旧名**,upsert
+之后旧名就丢了。范围是该用户的所有 ledger(单条 SQL WHERE user_id=X,不再
+循环 ledger)。
 """
 
 from __future__ import annotations
@@ -51,12 +47,12 @@ from sqlalchemy.orm import Session
 from . import projection
 from .models import (
     Ledger,
-    ReadAccountProjection,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
     SyncChange,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
 )
 from .services.category_icon import resolve_icon_by_name
 
@@ -64,6 +60,10 @@ from .services.category_icon import resolve_icon_by_name
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
 # 比如 ``ledger_snapshot`` 是 sync_changes 里的元数据行,不走这条路径)。
 INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger"}
+
+# user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
+# 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
+USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag"}
 
 
 # --------------------------------------------------------------------------- #
@@ -113,8 +113,9 @@ class _MergeSpec:
         self.fields = fields
 
 
-_MERGE_SPECS: dict[str, _MergeSpec] = {
-    "account": _MergeSpec(ReadAccountProjection, [
+# user-scope merge specs:用 (user_id, sync_id) 当主键检 existing row。
+_USER_MERGE_SPECS: dict[str, _MergeSpec] = {
+    "account": _MergeSpec(UserAccountProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
         ("type", "account_type"),
@@ -129,7 +130,7 @@ _MERGE_SPECS: dict[str, _MergeSpec] = {
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
     ]),
-    "category": _MergeSpec(ReadCategoryProjection, [
+    "category": _MergeSpec(UserCategoryProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
         ("kind", "kind"),
@@ -142,11 +143,16 @@ _MERGE_SPECS: dict[str, _MergeSpec] = {
         ("iconCloudSha256", "icon_cloud_sha256"),
         ("parentName", "parent_name"),
     ]),
-    "tag": _MergeSpec(ReadTagProjection, [
+    "tag": _MergeSpec(UserTagProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
         ("color", "color"),
     ]),
+}
+
+
+# ledger-scope merge specs:用 (ledger_id, sync_id) 当主键检 existing row。
+_LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
     "budget": _MergeSpec(ReadBudgetProjection, [
         ("syncId", "sync_id"),
         ("type", "budget_type"),
@@ -180,29 +186,30 @@ _MERGE_SPECS: dict[str, _MergeSpec] = {
 }
 
 
-# 按 entity_type 分派到对应的 projection upsert 函数。跟 _MERGE_SPECS 互为
-# 表兄弟 —— merge 负责读回补齐字段,这张表负责"合并完的 payload 写到哪个
-# projection 表"。新增 entity 忘记登记会在 apply 时 KeyError(有测试覆盖),
-# 比以前散在 if/elif 里漏掉一个分支安全。
-_UPSERT_DISPATCH: dict[str, Callable] = {
+# user-scope upsert dispatch:apply_user_change_to_projection 用。
+_USER_UPSERT_DISPATCH: dict[str, Callable] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
+}
+
+
+# ledger-scope upsert dispatch:apply_change_to_projection 用。
+_LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "budget": projection.upsert_budget,
     "transaction": projection.upsert_tx,
 }
 
 
-# Delete 路径:每个 entity 自己的 projection 行 + 可能的附加资源(tx 附件 /
-# category 自定义图标)。handler 签名统一成
-# ``(db, ledger_id, sync_id, user_id) -> None``,内部决定要不要做附加 GC,
-# 以及是否对 user-global entity 做跨 ledger fanout。
+# Delete 路径分两组。
 #
-# user-global entity (account / category / tag) 在 `read_*_projection` 表里
-# 每个 ledger 各存一份(snapshot fullPush 时 fanout 进当前 ledger)。如果
-# delete 只按传入的 ledger_id 删,其他 ledger 的 projection 行残留 →
-# web 切到那些账本就能看到"幽灵分类/账户/标签"。所以这里对 user-global
-# entity 用 user_id 跨 ledger 删 projection。
+# ledger-scope:tx / budget,handler 签名 ``(db, ledger_id, sync_id, user_id)``。
+# user-scope:account / category / tag,handler 签名 ``(db, user_id, sync_id)``。
+#
+# tx 删除时附带 GC tx 附件(走 user_id scope —— attachment GC 已重构);
+# category 删除时附带 GC icon 附件(同样 user_id scope)。
+
+
 def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     # 先收集附件 fileId(删行后 attachments_json 就没了)再删 tx,然后 GC
     # 孤立附件。共享引用(同图多 tx)的会自动保留。
@@ -211,41 +218,31 @@ def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     )
     projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
     projection.gc_orphan_attachments(
-        db, ledger_id=ledger_id, file_ids=tx_file_ids,
+        db, user_id=user_id, file_ids=tx_file_ids,
     )
 
 
-def _delete_category(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
-    # 分类自定义图标走 attachment_files。删分类前取自己 + 子分类的
-    # icon_cloud_file_id,删完 GC 孤立图标附件。
-    # user-global:跨当前用户所有 ledger 删 read_category_projection。
+def _delete_user_category(db: Session, user_id: str, sync_id: str) -> None:
+    # 删 user_category_projection 行,再 GC 自身 + 子分类的图标附件。
     cat_file_ids = projection.collect_category_icon_fileids(
-        db, ledger_id=ledger_id, sync_id=sync_id,
+        db, user_id=user_id, sync_id=sync_id,
     )
-    projection.delete_category_user_global(db, user_id=user_id, sync_id=sync_id)
+    projection.delete_category(db, user_id=user_id, sync_id=sync_id)
     projection.gc_orphan_attachments(
-        db, ledger_id=ledger_id, file_ids=cat_file_ids,
+        db, user_id=user_id, file_ids=cat_file_ids,
     )
 
 
-def _delete_account(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
-    # user-global:跨当前用户所有 ledger 删 read_account_projection。
-    del ledger_id  # 不再用作过滤,签名保留兼容 dispatch
-    projection.delete_account_user_global(db, user_id=user_id, sync_id=sync_id)
-
-
-def _delete_tag(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
-    # user-global:跨当前用户所有 ledger 删 read_tag_projection。
-    del ledger_id
-    projection.delete_tag_user_global(db, user_id=user_id, sync_id=sync_id)
-
-
-_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
+_LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
-    "account": _delete_account,
-    "category": _delete_category,
-    "tag": _delete_tag,
     "budget": lambda db, lid, sid, uid: projection.delete_budget(db, ledger_id=lid, sync_id=sid),
+}
+
+
+_USER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
+    "account": lambda db, uid, sid: projection.delete_account(db, user_id=uid, sync_id=sid),
+    "category": _delete_user_category,
+    "tag": lambda db, uid, sid: projection.delete_tag(db, user_id=uid, sync_id=sid),
 }
 
 
@@ -258,56 +255,57 @@ _DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
 # 旧名就丢了。
 
 
-def _detect_and_run_rename_cascade(
+def _detect_and_run_rename_cascade_user(
     db: Session,
     *,
     entity_type: str,
-    ledger_id: str,
+    user_id: str,
     sync_id: str,
     payload: dict,
 ) -> None:
-    """探测 name 变化,若变了则走一条 SQL UPDATE 刷 tx projection。"""
+    """user-global rename cascade:探测 name 变化,刷遍该用户所有 ledger 的
+    read_tx_projection denorm 列。account / category / tag 三种。"""
     new_name = str(payload.get("name") or "").strip()
     if not new_name:
         return
 
     if entity_type == "account":
         prev_row = db.scalar(
-            select(ReadAccountProjection).where(
-                ReadAccountProjection.ledger_id == ledger_id,
-                ReadAccountProjection.sync_id == sync_id,
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == user_id,
+                UserAccountProjection.sync_id == sync_id,
             )
         )
         old_name = (prev_row.name or "").strip() if prev_row is not None else ""
         if old_name and old_name != new_name:
             projection.rename_cascade_account(
-                db, ledger_id=ledger_id, account_sync_id=sync_id, new_name=new_name,
+                db, user_id=user_id, account_sync_id=sync_id, new_name=new_name,
             )
     elif entity_type == "category":
         prev_row = db.scalar(
-            select(ReadCategoryProjection).where(
-                ReadCategoryProjection.ledger_id == ledger_id,
-                ReadCategoryProjection.sync_id == sync_id,
+            select(UserCategoryProjection).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.sync_id == sync_id,
             )
         )
         old_name = (prev_row.name or "").strip() if prev_row is not None else ""
         if old_name and old_name != new_name:
             projection.rename_cascade_category(
-                db, ledger_id=ledger_id, category_sync_id=sync_id,
+                db, user_id=user_id, category_sync_id=sync_id,
                 new_name=new_name,
                 new_kind=str(payload.get("kind") or "").strip() or None,
             )
     elif entity_type == "tag":
         prev_row = db.scalar(
-            select(ReadTagProjection).where(
-                ReadTagProjection.ledger_id == ledger_id,
-                ReadTagProjection.sync_id == sync_id,
+            select(UserTagProjection).where(
+                UserTagProjection.user_id == user_id,
+                UserTagProjection.sync_id == sync_id,
             )
         )
         old_name = (prev_row.name or "").strip() if prev_row is not None else ""
         if old_name and old_name != new_name:
             projection.rename_cascade_tag(
-                db, ledger_id=ledger_id, tag_sync_id=sync_id,
+                db, user_id=user_id, tag_sync_id=sync_id,
                 old_name=old_name, new_name=new_name,
             )
 
@@ -317,32 +315,9 @@ def _detect_and_run_rename_cascade(
 # --------------------------------------------------------------------------- #
 
 
-def merge_with_existing(
-    db: Session,
-    entity_type: str,
-    ledger_id: str,
-    sync_id: str,
-    payload: dict,
-) -> dict:
-    """查 projection 已有行,把 payload 里缺的 / None 的字段用旧值补齐。
-
-    对 mobile 的增量 push 很关键 —— 只带 diff 的 payload 如果被直接 upsert,
-    其它字段会被默认值覆盖。合并后才能用于 ``projection.upsert_*``。
-
-    entity_type 未登记在 _MERGE_SPECS 时(比如 'ledger' 自己),直接返回
-    payload 不做处理,让调用方自己定夺。
-    """
-    spec = _MERGE_SPECS.get(entity_type)
-    if spec is None:
-        return payload
-    existing = db.scalar(
-        select(spec.model).where(
-            spec.model.ledger_id == ledger_id,
-            spec.model.sync_id == sync_id,
-        )
-    )
-    if existing is None:
-        return payload
+def _merge_from_spec(spec: _MergeSpec, existing, payload: dict) -> dict:
+    """从 existing row + spec.fields 构造 base dict,再把 payload 里非 None 的
+    字段叠加上来。两条 merge 路径(ledger / user)共用这段。"""
     base: dict = {}
     for spec_tuple in spec.fields:
         if len(spec_tuple) == 3:
@@ -357,6 +332,52 @@ def merge_with_existing(
     return {**base, **{k: v for k, v in payload.items() if v is not None}}
 
 
+def merge_with_existing(
+    db: Session,
+    entity_type: str,
+    ledger_id: str,
+    sync_id: str,
+    payload: dict,
+) -> dict:
+    """**ledger-scope** merge:查 projection 已有行,把 payload 里缺的 / None 的
+    字段用旧值补齐。entity_type 未登记在 _LEDGER_MERGE_SPECS 时(比如 'ledger'
+    自己),直接返回 payload 不做处理。"""
+    spec = _LEDGER_MERGE_SPECS.get(entity_type)
+    if spec is None:
+        return payload
+    existing = db.scalar(
+        select(spec.model).where(
+            spec.model.ledger_id == ledger_id,
+            spec.model.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    return _merge_from_spec(spec, existing, payload)
+
+
+def merge_with_existing_user(
+    db: Session,
+    entity_type: str,
+    user_id: str,
+    sync_id: str,
+    payload: dict,
+) -> dict:
+    """**user-scope** merge:查 user_*_projection 已有行,补齐缺失字段。"""
+    spec = _USER_MERGE_SPECS.get(entity_type)
+    if spec is None:
+        return payload
+    existing = db.scalar(
+        select(spec.model).where(
+            spec.model.user_id == user_id,
+            spec.model.sync_id == sync_id,
+        )
+    )
+    if existing is None:
+        return payload
+    return _merge_from_spec(spec, existing, payload)
+
+
 # --------------------------------------------------------------------------- #
 # Top-level entry                                                              #
 # --------------------------------------------------------------------------- #
@@ -369,23 +390,29 @@ def apply_change_to_projection(
     ledger_owner_id: str,
     change: SyncChange,
 ) -> None:
-    """把一条 SyncChange 投到 projection 上(调用方负责事务边界)。
+    """把一条 **ledger-scope** SyncChange 投到 projection 上。
+    (user-global 走 ``apply_user_change_to_projection``。)
 
-    方案 B 之后这是 push 路径保持 projection 和 sync_changes 一致的**唯一**
-    挂点 —— 不再写 ledger_snapshot 行。流程:
+    流程:
 
       1. ledger entity:更新 Ledger 表的 name / currency(snapshot 已废弃)。
       2. delete action:按 entity 类型清理对应 projection 行 + 附加资源。
       3. upsert action:
          a. parse payload → dict,注入 syncId
-         b. (user-global 名字改了时)先走 rename_cascade_* 刷 tx projection
-         c. merge_with_existing 把 payload 缺失 / None 的字段补齐
-         d. (分类且 icon 空时)拉 byName 兜底
-         e. _UPSERT_DISPATCH 写入对应 projection 表
+         b. merge_with_existing 把 payload 缺失 / None 的字段补齐
+         c. _LEDGER_UPSERT_DISPATCH 写入对应 projection 表
 
     ``change.change_id`` 作为 ``source_change_id`` 写进行,诊断用:后续要是
     发现某行数据不对,查这一列能定位是哪次 materialize 落的。
+
+    防御性:若 entity_type 是 user-global(category/account/tag),调用方走错
+    路径 — 抛 AssertionError 让 caller 修(应该走 apply_user_change_to_projection)。
     """
+    assert change.entity_type not in USER_GLOBAL_ENTITY_TYPES, (
+        f"apply_change_to_projection 收到 user-global entity {change.entity_type},"
+        f"应该走 apply_user_change_to_projection(change_id={change.change_id})"
+    )
+
     # --- ledger entity(特殊:不是 projection 表,直接改 Ledger) --------- #
     if change.entity_type == "ledger":
         if change.action == "delete":
@@ -407,7 +434,7 @@ def apply_change_to_projection(
 
     # --- delete --------------------------------------------------------- #
     if change.action == "delete":
-        handler = _DELETE_DISPATCH.get(change.entity_type)
+        handler = _LEDGER_DELETE_DISPATCH.get(change.entity_type)
         if handler is not None:
             handler(db, ledger_id, sync_id, ledger_owner_id)
         return
@@ -418,18 +445,64 @@ def apply_change_to_projection(
         return
     payload.setdefault("syncId", sync_id)
 
-    # rename cascade 必须先于 upsert 当前实体 —— 用的是"旧名" match tx 行。
-    if change.entity_type in {"account", "category", "tag"}:
-        _detect_and_run_rename_cascade(
+    if change.entity_type in _LEDGER_MERGE_SPECS:
+        merged = merge_with_existing(db, change.entity_type, ledger_id, sync_id, payload)
+        _LEDGER_UPSERT_DISPATCH[change.entity_type](
             db,
-            entity_type=change.entity_type,
             ledger_id=ledger_id,
-            sync_id=sync_id,
-            payload=payload,
+            user_id=ledger_owner_id,
+            source_change_id=change.change_id,
+            payload=merged,
         )
 
-    if change.entity_type in _MERGE_SPECS:
-        merged = merge_with_existing(db, change.entity_type, ledger_id, sync_id, payload)
+
+def apply_user_change_to_projection(
+    db: Session,
+    *,
+    user_id: str,
+    change: SyncChange,
+) -> None:
+    """把一条 **user-scope** SyncChange 投到 user_*_projection 上。
+
+    流程跟 ledger-scope 对偶,但:
+      - 主键查 / 写都按 (user_id, sync_id),跟账本无关
+      - rename cascade 也按 user_id 跨该用户所有 ledger 刷 read_tx_projection
+
+    防御性:entity_type 必须在 USER_GLOBAL_ENTITY_TYPES,否则 caller 错路径。
+    """
+    assert change.entity_type in USER_GLOBAL_ENTITY_TYPES, (
+        f"apply_user_change_to_projection 收到非 user-global entity "
+        f"{change.entity_type}(change_id={change.change_id})"
+    )
+
+    sync_id = change.entity_sync_id
+
+    # --- delete --------------------------------------------------------- #
+    if change.action == "delete":
+        handler = _USER_DELETE_DISPATCH.get(change.entity_type)
+        if handler is not None:
+            handler(db, user_id, sync_id)
+        return
+
+    # --- upsert --------------------------------------------------------- #
+    payload = _parse_payload(change.payload_json)
+    if payload is None:
+        return
+    payload.setdefault("syncId", sync_id)
+
+    # rename cascade 必须先于 upsert 当前实体 —— 用的是"旧名" match tx 行。
+    _detect_and_run_rename_cascade_user(
+        db,
+        entity_type=change.entity_type,
+        user_id=user_id,
+        sync_id=sync_id,
+        payload=payload,
+    )
+
+    if change.entity_type in _USER_MERGE_SPECS:
+        merged = merge_with_existing_user(
+            db, change.entity_type, user_id, sync_id, payload,
+        )
         # 分类 icon 兜底:老 App(Flutter 3.0 及之前)可能推空 icon 的 category。
         # 写进 projection 前按分类名字 byName 推一次,跟 alembic 0002 backfill
         # 对齐,避免 web 端继续看到兜底图。Flutter 3.0.1 做完 write-time
@@ -438,10 +511,9 @@ def apply_change_to_projection(
             icon_val = merged.get("icon") if isinstance(merged, dict) else None
             if icon_val is None or (isinstance(icon_val, str) and not icon_val.strip()):
                 merged = {**merged, "icon": resolve_icon_by_name(merged.get("name"))}
-        _UPSERT_DISPATCH[change.entity_type](
+        _USER_UPSERT_DISPATCH[change.entity_type](
             db,
-            ledger_id=ledger_id,
-            user_id=ledger_owner_id,
+            user_id=user_id,
             source_change_id=change.change_id,
             payload=merged,
         )

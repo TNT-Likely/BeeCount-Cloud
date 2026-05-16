@@ -17,12 +17,12 @@ from sqlalchemy.orm import Session
 
 from .models import (
     Ledger,
-    ReadAccountProjection,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
     SyncChange,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
 )
 
 
@@ -43,6 +43,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
     调用点:`/sync/full`、`_commit_write` 取 prev 快照做 diff、admin debug。
     """
     ledger_id = ledger.id
+    user_id = ledger.user_id
 
     # Items —— SQL Core,按列顺序取 tuple,比 ORM 快 3 倍
     items: list[dict[str, Any]] = []
@@ -126,23 +127,23 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["createdByUserId"] = created_by
         items.append(item)
 
-    # Accounts —— 跟 mobile lib/data/db.dart Account 表对齐,所有 nullable 字段
-    # 落 snapshot 时只在非空才写 key(跟旧字段 acc_type/currency/initBal 同款短路),
-    # 减小 snapshot 体积 + mobile 端按 `payload.containsKey(...)` 判断是否覆盖。
+    # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
+     # 的账户都铺出来:mobile 早期版本依赖 snapshot.accounts 完整 — 用户多账本
+     # 时数据一致(同一份 accounts 拷贝到每个账本的 snapshot)。
     accounts: list[dict[str, Any]] = []
     acc_stmt = select(
-        ReadAccountProjection.sync_id,
-        ReadAccountProjection.name,
-        ReadAccountProjection.account_type,
-        ReadAccountProjection.currency,
-        ReadAccountProjection.initial_balance,
-        ReadAccountProjection.note,
-        ReadAccountProjection.credit_limit,
-        ReadAccountProjection.billing_day,
-        ReadAccountProjection.payment_due_day,
-        ReadAccountProjection.bank_name,
-        ReadAccountProjection.card_last_four,
-    ).where(ReadAccountProjection.ledger_id == ledger_id)
+        UserAccountProjection.sync_id,
+        UserAccountProjection.name,
+        UserAccountProjection.account_type,
+        UserAccountProjection.currency,
+        UserAccountProjection.initial_balance,
+        UserAccountProjection.note,
+        UserAccountProjection.credit_limit,
+        UserAccountProjection.billing_day,
+        UserAccountProjection.payment_due_day,
+        UserAccountProjection.bank_name,
+        UserAccountProjection.card_last_four,
+    ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
         name,
@@ -177,23 +178,23 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["cardLastFour"] = card_last_four
         accounts.append(acc)
 
-    # Categories
+    # Categories —— 同 accounts,user-global per-user。
     categories: list[dict[str, Any]] = []
     cat_stmt = select(
-        ReadCategoryProjection.sync_id,
-        ReadCategoryProjection.name,
-        ReadCategoryProjection.kind,
-        ReadCategoryProjection.level,
-        ReadCategoryProjection.sort_order,
-        ReadCategoryProjection.icon,
-        ReadCategoryProjection.icon_type,
-        ReadCategoryProjection.custom_icon_path,
-        ReadCategoryProjection.icon_cloud_file_id,
-        ReadCategoryProjection.icon_cloud_sha256,
-        ReadCategoryProjection.parent_name,
-    ).where(ReadCategoryProjection.ledger_id == ledger_id).order_by(
-        ReadCategoryProjection.sort_order.asc(),
-        ReadCategoryProjection.name.asc(),
+        UserCategoryProjection.sync_id,
+        UserCategoryProjection.name,
+        UserCategoryProjection.kind,
+        UserCategoryProjection.level,
+        UserCategoryProjection.sort_order,
+        UserCategoryProjection.icon,
+        UserCategoryProjection.icon_type,
+        UserCategoryProjection.custom_icon_path,
+        UserCategoryProjection.icon_cloud_file_id,
+        UserCategoryProjection.icon_cloud_sha256,
+        UserCategoryProjection.parent_name,
+    ).where(UserCategoryProjection.user_id == user_id).order_by(
+        UserCategoryProjection.sort_order.asc(),
+        UserCategoryProjection.name.asc(),
     )
     for (sid, name, kind, level, sort_order, icon, icon_type,
          custom_icon, icon_fid, icon_sha, parent) in db.execute(cat_stmt).all():
@@ -218,13 +219,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             cat["parentName"] = parent
         categories.append(cat)
 
-    # Tags
+    # Tags —— user-global per-user。
     tags: list[dict[str, Any]] = []
     tag_stmt = select(
-        ReadTagProjection.sync_id,
-        ReadTagProjection.name,
-        ReadTagProjection.color,
-    ).where(ReadTagProjection.ledger_id == ledger_id).order_by(ReadTagProjection.name.asc())
+        UserTagProjection.sync_id,
+        UserTagProjection.name,
+        UserTagProjection.color,
+    ).where(UserTagProjection.user_id == user_id).order_by(UserTagProjection.name.asc())
     for sid, name, color in db.execute(tag_stmt).all():
         t: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if color:

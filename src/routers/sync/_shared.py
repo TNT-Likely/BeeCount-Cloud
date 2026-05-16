@@ -45,7 +45,12 @@ from ...schemas import (
     SyncPushResponse,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_READ
-from ...sync_applier import apply_change_to_projection, INDIVIDUAL_ENTITY_TYPES
+from ...sync_applier import (
+    apply_change_to_projection,
+    apply_user_change_to_projection,
+    INDIVIDUAL_ENTITY_TYPES,
+    USER_GLOBAL_ENTITY_TYPES,
+)
 from ... import snapshot_builder, snapshot_cache
 
 logger = logging.getLogger(__name__)
@@ -109,7 +114,9 @@ __all__ = [
     'SCOPE_APP_WRITE',
     'SCOPE_WEB_READ',
     'apply_change_to_projection',
+    'apply_user_change_to_projection',
     'INDIVIDUAL_ENTITY_TYPES',
+    'USER_GLOBAL_ENTITY_TYPES',
     'snapshot_builder',
     'snapshot_cache',
     'logger',

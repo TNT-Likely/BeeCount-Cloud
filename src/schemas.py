@@ -221,12 +221,20 @@ class DeviceOut(BaseModel):
 
 
 class SyncChangeIn(BaseModel):
-    ledger_id: str
+    # user-global change(category/account/tag)在新协议下不依附 ledger,这里
+    # 允许 None。老 mobile 会发当前 ledger_id —— server 按 entity_type 强制
+    # 路由(参考 .docs/user-global-refactor/plan.md §3.2),不依赖 client 一定
+    # 填对。
+    ledger_id: str | None = None
     entity_type: str
     entity_sync_id: str
     action: SyncAction
     payload: dict[str, Any]
     updated_at: datetime
+    # 'user' = category/account/tag 等 user-global 资源(server 端 SyncChange.scope)
+    # 'ledger' = budget/transaction/ledger 等 ledger-scoped
+    # 老 mobile 不发该字段;server 兜底按 entity_type 推断,不依赖 client 一定填对。
+    scope: str | None = None
 
 
 class SyncPushRequest(BaseModel):
@@ -245,6 +253,9 @@ class SyncPushResponse(BaseModel):
 
 class SyncChangeOut(BaseModel):
     change_id: int
+    # user-scope change(scope='user')的 ledger_id 是 sentinel '__user_global__';
+    # ledger-scope 是真实账本 external_id。mobile 按 scope 字段决定 apply 路径,
+    # ledger_id 仅做日志 / cursor 标识。
     ledger_id: str
     entity_type: str
     entity_sync_id: str
@@ -252,6 +263,8 @@ class SyncChangeOut(BaseModel):
     payload: dict[str, Any]
     updated_at: datetime
     updated_by_device_id: str | None
+    # 'user' / 'ledger'。SyncChange.scope 直接 round-trip。
+    scope: str = "ledger"
 
 
 class SyncPullResponse(BaseModel):
@@ -638,6 +651,35 @@ class WorkspaceAnalyticsCategoryRankOut(BaseModel):
     tx_count: int
 
 
+class WorkspaceAnalyticsAnomalyAttributionOut(BaseModel):
+    """异常月份的归因 — 某分类在该月超出"该分类其他月份中位数"的部分。"""
+
+    category_name: str
+    amount: float  # 该分类在异常月的总支出
+    # 该分类在其他月份的中位数(本月独有时为 0)
+    median_others: float
+    # amount / median_others;median_others=0(本月独有)时为 None,前端显示"本月独有"。
+    multiplier: float | None = None
+
+
+class WorkspaceAnalyticsAnomalyMonthOut(BaseModel):
+    """异常月份 — expense 显著高于已发生月份的 baseline。算法见
+    `.docs/dashboard-anomaly-budget/plan.md`:
+      baseline = median(已发生月份的 expense)
+      异常判定:expense > baseline × 1.2 AND expense - baseline > ¥200
+    """
+
+    bucket: str  # "2026-05"
+    expense: float
+    baseline: float
+    # (expense - baseline) / baseline,前端展示百分比
+    deviation_pct: float
+    # top 1-2 个归因分类,按 diff 降序
+    top_attributions: list[WorkspaceAnalyticsAnomalyAttributionOut] = Field(
+        default_factory=list
+    )
+
+
 class WorkspaceAnalyticsRangeOut(BaseModel):
     scope: AnalyticsScope
     metric: AnalyticsMetric
@@ -650,6 +692,8 @@ class WorkspaceAnalyticsOut(BaseModel):
     summary: WorkspaceAnalyticsSummaryOut
     series: list[WorkspaceAnalyticsSeriesItemOut] = Field(default_factory=list)
     category_ranks: list[WorkspaceAnalyticsCategoryRankOut] = Field(default_factory=list)
+    # 仅在 scope=year 填;月份数 < 3 时返回空 list(baseline 不稳)。
+    anomaly_months: list[WorkspaceAnalyticsAnomalyMonthOut] = Field(default_factory=list)
     range: WorkspaceAnalyticsRangeOut
 
 

@@ -34,9 +34,9 @@ from ...models import (
     AttachmentFile,
     AuditLog,
     Ledger,
-    ReadTagProjection,
     SyncPushIdempotency,
     User,
+    UserTagProjection,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 from ...services.ai.image_cache import consume_image
@@ -349,10 +349,11 @@ def _resolve_or_make_ai_tag_name(db: Session, ledger: Ledger, locale: str) -> st
     - 已经有 mobile 创建的 `AI记账` → web 复用同名(ILIKE 命中)
     - 完全没有 → 按当前 locale 起名(zh:AI记账 / zh-TW:AI記帳 / en:AI)
     """
+    # tag 是 user-global,跨 ledger 查同用户的 AI 标签即可。
     rows = db.scalars(
-        select(ReadTagProjection)
-        .where(ReadTagProjection.ledger_id == ledger.id)
-        .where(ReadTagProjection.name.ilike("%AI%"))
+        select(UserTagProjection)
+        .where(UserTagProjection.user_id == ledger.user_id)
+        .where(UserTagProjection.name.ilike("%AI%"))
     ).all()
     for r in rows:
         if r.name and "AI" in r.name.upper():

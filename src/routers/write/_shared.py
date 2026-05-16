@@ -66,6 +66,7 @@ from ...schemas import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 from ... import projection, snapshot_builder, snapshot_cache
+from ...sync_applier import USER_GLOBAL_ENTITY_TYPES
 from ...snapshot_mutator import (
     create_account,
     create_budget,
@@ -129,17 +130,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-_PROJECTION_UPSERTERS: dict[str, Any] = {
+# 拆成两套 dispatcher:user-global(签名 user_id)和 ledger-scope(签名 ledger_id)。
+# user-global entity 在 SyncChange / projection 两层都不依附 ledger,详见
+# .docs/user-global-refactor/plan.md。
+_USER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
-    "transaction": projection.upsert_tx,
-    "budget": projection.upsert_budget,
 }
-_PROJECTION_DELETERS: dict[str, Any] = {
+_USER_PROJECTION_DELETERS: dict[str, Any] = {
     "account": projection.delete_account,
     "category": projection.delete_category,
     "tag": projection.delete_tag,
+}
+_LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
+    "transaction": projection.upsert_tx,
+    "budget": projection.upsert_budget,
+}
+_LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
     "transaction": projection.delete_tx,
     "budget": projection.delete_budget,
 }
@@ -214,12 +222,39 @@ def _diff_entity_list(
     """
     prev_map = {e["syncId"]: e for e in prev_list if "syncId" in e}
     next_map = {e["syncId"]: e for e in next_list if "syncId" in e}
-    upsert_fn = _PROJECTION_UPSERTERS.get(entity_type)
-    delete_fn = _PROJECTION_DELETERS.get(entity_type)
+    is_user_global = entity_type in USER_GLOBAL_ENTITY_TYPES
 
     # bulk 队列:(entity_type, "upsert"/"delete", sync_id, payload_json)
     # 只收 cascade-only tx —— 它们不需要 source_change_id 回读
     bulk_upsert_rows: list[dict[str, Any]] = []
+
+    # SyncChange row 公共字段构造。user-global 不挂 ledger,user_id 是真请求方。
+    def _make_change_row(action: str, sync_id: str, payload: Any) -> SyncChange:
+        if is_user_global:
+            return SyncChange(
+                user_id=current_user.id,
+                ledger_id=None,
+                scope="user",
+                entity_type=entity_type,
+                entity_sync_id=sync_id,
+                action=action,
+                payload_json=payload,
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+        return SyncChange(
+            user_id=ledger.user_id,
+            ledger_id=ledger.id,
+            scope="ledger",
+            entity_type=entity_type,
+            entity_sync_id=sync_id,
+            action=action,
+            payload_json=payload,
+            updated_at=now,
+            updated_by_device_id=device_id,
+            updated_by_user_id=current_user.id,
+        )
 
     for sync_id, entity in next_map.items():
         prev_entity = prev_map.get(sync_id)
@@ -231,9 +266,11 @@ def _diff_entity_list(
                 and _tx_diff_only_cascade(prev_entity, entity)
             )
             if is_cascade_only:
+                # tx 是 ledger-scope,bulk 路径下直接写 ledger 字段
                 bulk_upsert_rows.append({
                     "user_id": ledger.user_id,
                     "ledger_id": ledger.id,
+                    "scope": "ledger",
                     "entity_type": entity_type,
                     "entity_sync_id": sync_id,
                     "action": "upsert",
@@ -244,28 +281,29 @@ def _diff_entity_list(
                 })
                 continue
             # 普通路径:insert + flush 取 change_id,再走 projection upsert
-            change_row = SyncChange(
-                user_id=ledger.user_id,
-                ledger_id=ledger.id,
-                entity_type=entity_type,
-                entity_sync_id=sync_id,
-                action="upsert",
-                payload_json=entity,
-                updated_at=now,
-                updated_by_device_id=device_id,
-                updated_by_user_id=current_user.id,
-            )
+            change_row = _make_change_row("upsert", sync_id, entity)
             db.add(change_row)
             db.flush()
             emitted_ids.append(change_row.change_id)
-            if upsert_fn is not None:
-                upsert_fn(
-                    db,
-                    ledger_id=ledger.id,
-                    user_id=ledger.user_id,
-                    source_change_id=change_row.change_id,
-                    payload=entity,
-                )
+            if is_user_global:
+                fn = _USER_PROJECTION_UPSERTERS.get(entity_type)
+                if fn is not None:
+                    fn(
+                        db,
+                        user_id=current_user.id,
+                        source_change_id=change_row.change_id,
+                        payload=entity,
+                    )
+            else:
+                fn = _LEDGER_PROJECTION_UPSERTERS.get(entity_type)
+                if fn is not None:
+                    fn(
+                        db,
+                        ledger_id=ledger.id,
+                        user_id=ledger.user_id,
+                        source_change_id=change_row.change_id,
+                        payload=entity,
+                    )
 
     for sync_id in prev_map:
         if sync_id not in next_map:
@@ -280,28 +318,24 @@ def _diff_entity_list(
                 )
             elif entity_type == "category":
                 gc_file_ids = projection.collect_category_icon_fileids(
-                    db, ledger_id=ledger.id, sync_id=sync_id,
+                    db, user_id=current_user.id, sync_id=sync_id,
                 )
 
-            change_row = SyncChange(
-                user_id=ledger.user_id,
-                ledger_id=ledger.id,
-                entity_type=entity_type,
-                entity_sync_id=sync_id,
-                action="delete",
-                payload_json={},
-                updated_at=now,
-                updated_by_device_id=device_id,
-                updated_by_user_id=current_user.id,
-            )
+            change_row = _make_change_row("delete", sync_id, {})
             db.add(change_row)
             db.flush()
             emitted_ids.append(change_row.change_id)
-            if delete_fn is not None:
-                delete_fn(db, ledger_id=ledger.id, sync_id=sync_id)
+            if is_user_global:
+                fn = _USER_PROJECTION_DELETERS.get(entity_type)
+                if fn is not None:
+                    fn(db, user_id=current_user.id, sync_id=sync_id)
+            else:
+                fn = _LEDGER_PROJECTION_DELETERS.get(entity_type)
+                if fn is not None:
+                    fn(db, ledger_id=ledger.id, sync_id=sync_id)
             if gc_file_ids:
                 projection.gc_orphan_attachments(
-                    db, ledger_id=ledger.id, file_ids=gc_file_ids,
+                    db, user_id=current_user.id, file_ids=gc_file_ids,
                 )
 
     # Bulk flush cascade-only rows
@@ -359,19 +393,20 @@ def _emit_entity_diffs(
                       "tag", emitted_ids)
 
     # Rename cascade via SQL batch,放在 tx diff 之前 —— 保证 tx diff 跳过的
-    # cascade 行已经被刷新过。
+    # cascade 行已经被刷新过。user-global 重构后 rename_cascade_* 按 user_id
+    # 跨该用户所有 ledger 刷 read_tx_projection。
     for sync_id, _old, new_name, _kind in account_renames:
         projection.rename_cascade_account(
-            db, ledger_id=ledger.id, account_sync_id=sync_id, new_name=new_name,
+            db, user_id=current_user.id, account_sync_id=sync_id, new_name=new_name,
         )
     for sync_id, _old, new_name, new_kind in category_renames:
         projection.rename_cascade_category(
-            db, ledger_id=ledger.id, category_sync_id=sync_id,
+            db, user_id=current_user.id, category_sync_id=sync_id,
             new_name=new_name, new_kind=new_kind,
         )
     for sync_id, old, new, _ in tag_renames:
         projection.rename_cascade_tag(
-            db, ledger_id=ledger.id, tag_sync_id=sync_id,
+            db, user_id=current_user.id, tag_sync_id=sync_id,
             old_name=old, new_name=new,
         )
 
@@ -539,7 +574,7 @@ async def _commit_write_fast_tx(
         db.flush()
         projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
         projection.gc_orphan_attachments(
-            db, ledger_id=ledger.id, file_ids=tx_file_ids,
+            db, user_id=ledger.user_id, file_ids=tx_file_ids,
         )
     else:
         # Upsert:merge payload 到 prev_item
@@ -981,8 +1016,10 @@ __all__ = [
     '_OWNER_ONLY_ROLES',
     '_WRITE_RESPONSES',
     '_utcnow',
-    '_PROJECTION_UPSERTERS',
-    '_PROJECTION_DELETERS',
+    '_USER_PROJECTION_UPSERTERS',
+    '_USER_PROJECTION_DELETERS',
+    '_LEDGER_PROJECTION_UPSERTERS',
+    '_LEDGER_PROJECTION_DELETERS',
     '_TX_CASCADE_FIELDS',
     '_tx_diff_only_cascade',
     '_collect_renames',

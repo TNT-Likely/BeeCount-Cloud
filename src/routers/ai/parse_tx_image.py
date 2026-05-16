@@ -28,9 +28,9 @@ from ...database import get_db
 from ...deps import get_current_user, require_any_scopes
 from ...models import (
     Ledger,
-    ReadAccountProjection,
-    ReadCategoryProjection,
     User,
+    UserAccountProjection,
+    UserCategoryProjection,
     UserProfile,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
@@ -198,9 +198,10 @@ def _load_ledger_context(
     if not ledger_int_ids:
         return [], []
 
+    # category 是 user-global,按 user_id 拉(跨 ledger 统一)。
     cat_rows = db.scalars(
-        select(ReadCategoryProjection).where(
-            ReadCategoryProjection.ledger_id.in_(ledger_int_ids)
+        select(UserCategoryProjection).where(
+            UserCategoryProjection.user_id == user_id
         )
     ).all()
     # 「有子分类的父类」**不能被选作交易分类**(产品规则跟 mobile 一致 —
@@ -224,8 +225,8 @@ def _load_ledger_context(
 
     accts = [
         a.name for a in db.scalars(
-            select(ReadAccountProjection).where(
-                ReadAccountProjection.ledger_id.in_(ledger_int_ids)
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == user_id
             )
         ).all()
         if a.name

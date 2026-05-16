@@ -248,7 +248,17 @@ class SyncChange(Base):
         autoincrement=True,
     )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    # scope='user' 时 ledger_id 为 NULL(user-global change 不依附任何账本);
+    # scope='ledger' 时必填,指向具体账本。alembic 0010 把这列从 NOT NULL 改 nullable。
+    ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # 'user' = category/account/tag 等 user-global 资源;
+    # 'ledger' = budget/transaction/ledger/ledger_snapshot 等 ledger-scoped。
+    # mobile 老协议不发 scope → server 按 entity_type 兜底改写。
+    scope: Mapped[str] = mapped_column(
+        String(8), default="ledger", server_default="ledger", index=True
+    )
     entity_type: Mapped[str] = mapped_column(String(64), index=True)
     entity_sync_id: Mapped[str] = mapped_column(String(255), index=True)
     action: Mapped[str] = mapped_column(String(16), index=True)
@@ -257,7 +267,7 @@ class SyncChange(Base):
     updated_by_device_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     updated_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
-    ledger: Mapped[Ledger] = relationship(back_populates="changes")
+    ledger: Mapped[Ledger | None] = relationship(back_populates="changes")
 
 
 Index("idx_sync_changes_user_cursor", SyncChange.user_id, SyncChange.change_id)
@@ -267,6 +277,13 @@ Index(
     SyncChange.ledger_id,
     SyncChange.entity_type,
     SyncChange.entity_sync_id,
+    SyncChange.change_id,
+)
+# user-scope pull cursor:`GET /sync/pull?ledger_external_id=__user_global__` 用
+Index(
+    "idx_sync_changes_user_scope_cursor",
+    SyncChange.user_id,
+    SyncChange.scope,
     SyncChange.change_id,
 )
 
@@ -453,42 +470,21 @@ Index(
 )
 
 
-class ReadAccountProjection(Base):
-    __tablename__ = "read_account_projection"
+# ============================================================================
+# User-scope projection tables —— user-global 资源(category/account/tag)的
+# 真·per-user 物化视图。PK=(user_id, sync_id),跟账本完全无关。详见
+# .docs/user-global-refactor/plan.md。alembic 0010 同时 drop 老 read_*_projection
+# 三张表。
+# ============================================================================
 
-    ledger_id: Mapped[str] = mapped_column(
-        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+
+class UserCategoryProjection(Base):
+    __tablename__ = "user_category_projection"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # 跟 mobile lib/data/db.dart Account 表对齐的扩展字段。mobile sync_engine
-    # 一直在 push 这些字段,server 之前丢弃 — 现在 round-trip 全保留,这样 web
-    # 编辑也能完整保存。
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
-
-
-class ReadCategoryProjection(Base):
-    __tablename__ = "read_category_projection"
-
-    ledger_id: Mapped[str] = mapped_column(
-        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
-    )
-    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     level: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -503,22 +499,39 @@ class ReadCategoryProjection(Base):
 
 
 Index(
-    "ix_read_cat_ledger_kind",
-    ReadCategoryProjection.ledger_id,
-    ReadCategoryProjection.kind,
+    "ix_user_cat_kind",
+    UserCategoryProjection.user_id,
+    UserCategoryProjection.kind,
 )
 
 
-class ReadTagProjection(Base):
-    __tablename__ = "read_tag_projection"
+class UserAccountProjection(Base):
+    __tablename__ = "user_account_projection"
 
-    ledger_id: Mapped[str] = mapped_column(
-        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class UserTagProjection(Base):
+    __tablename__ = "user_tag_projection"
+
     user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)

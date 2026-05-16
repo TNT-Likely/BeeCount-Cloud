@@ -6,11 +6,13 @@ import {
   fetchWorkspaceAnalytics,
   fetchWorkspaceLedgerCounts,
   fetchWorkspaceTags,
+  type ReadBudget,
   type WorkspaceAccount,
   type WorkspaceAnalytics,
   type WorkspaceLedgerCounts,
   type WorkspaceTag,
 } from '@beecount/api-client'
+import { fetchBudgetsWithUsage, type BudgetUsage } from '@beecount/web-features'
 
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
@@ -71,6 +73,13 @@ export function OverviewPage() {
     `overview:${bucket}:ledgerCounts`,
     null
   )
+  const [budgets, setBudgets] = usePageCache<ReadBudget[]>(
+    `overview:${bucket}:budgets`,
+    []
+  )
+  const [budgetUsageById, setBudgetUsageById] = usePageCache<
+    Record<string, BudgetUsage>
+  >(`overview:${bucket}:budgetUsage`, {})
 
   const loadAccountsAndTags = useCallback(async () => {
     try {
@@ -84,6 +93,28 @@ export function OverviewPage() {
       // dashboard 静默降级
     }
   }, [token])
+
+  const loadBudgets = useCallback(async () => {
+    if (!activeLedgerId) {
+      setBudgets([])
+      setBudgetUsageById({})
+      return
+    }
+    try {
+      const { budgets: b, usageById } = await fetchBudgetsWithUsage(
+        token,
+        activeLedgerId,
+      )
+      setBudgets(b)
+      setBudgetUsageById(usageById)
+    } catch {
+      // 静默降级 — 预算面板空时整卡片不显示,失败也走同分支
+      setBudgets([])
+      setBudgetUsageById({})
+    }
+    // setBudgets / setBudgetUsageById 是 usePageCache 返回的稳定 setter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeLedgerId])
 
   const loadAnalytics = useCallback(async () => {
     const now = new Date()
@@ -160,10 +191,16 @@ export function OverviewPage() {
     void loadAnalytics()
   }, [loadAnalytics])
 
-  // mobile 端或其它 tab 写入后 WS / poller 推事件时重拉 analytics + 账户 + 标签。
+  useEffect(() => {
+    void loadBudgets()
+  }, [loadBudgets])
+
+  // mobile 端或其它 tab 写入后 WS / poller 推事件时重拉 analytics + 账户 +
+  // 标签 + 预算。budget 跟随 tx 变化(used 是 tx 累加)。
   useSyncRefresh(() => {
     void loadAnalytics()
     void loadAccountsAndTags()
+    void loadBudgets()
   })
 
   return (
@@ -180,6 +217,8 @@ export function OverviewPage() {
       analyticsData={analyticsData}
       analyticsIncomeRanks={analyticsIncomeRanks}
       ledgerCounts={ledgerCounts}
+      budgets={budgets}
+      budgetUsageById={budgetUsageById}
       onJumpToTransactionsWithQuery={(q) => {
         // 把关键词(通常是分类名)作为 URL query 传过去,TransactionsPage
         // 在 useState 初始化时会读取 `?q=` 填到 listQuery。

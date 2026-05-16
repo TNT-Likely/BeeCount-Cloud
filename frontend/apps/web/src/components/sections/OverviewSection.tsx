@@ -1,4 +1,5 @@
 import type {
+  ReadBudget,
   WorkspaceAccount,
   WorkspaceAnalytics,
   WorkspaceAnalyticsSeriesItem,
@@ -7,6 +8,7 @@ import type {
   WorkspaceTag
 } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
+import type { BudgetUsage } from '@beecount/web-features'
 
 import { useLedgers } from '../../context/LedgersContext'
 import { HomeHero } from '../dashboard/HomeHero'
@@ -32,6 +34,9 @@ interface Props {
   analyticsData: WorkspaceAnalytics | null
   analyticsIncomeRanks: WorkspaceAnalytics['category_ranks']
   ledgerCounts: WorkspaceLedgerCounts | null
+  /** 当前账本预算 + 各 budget 当周期 used。空数组 → BudgetUsagePanel 不显示。 */
+  budgets: ReadBudget[]
+  budgetUsageById: Record<string, BudgetUsage>
   onJumpToTransactionsWithQuery: (query: string) => void
 }
 
@@ -60,10 +65,18 @@ export function OverviewSection({
   analyticsData,
   analyticsIncomeRanks,
   ledgerCounts,
+  budgets,
+  budgetUsageById,
   onJumpToTransactionsWithQuery,
 }: Props) {
   const t = useT()
   const { ledgers, activeLedgerId, currency } = useLedgers()
+
+  // 预算 + 异常归因被合并进 HomeHero 顶部 chip(hover 出详情),不再独占
+  // 卡片占首页空间。月份够算 baseline 的判定跟 server 算法一致(已发生月份 ≥ 3)。
+  const yearOccurredMonths = (analyticsData?.series || []).filter(
+    (s) => s.expense > 0,
+  ).length
 
   return (
     <div className="space-y-4">
@@ -77,6 +90,10 @@ export function OverviewSection({
         allSummary={allTimeSummary || undefined}
         allSeries={allTimeSeries}
         ledgerCounts={ledgerCounts || undefined}
+        budgets={budgets}
+        budgetUsageById={budgetUsageById}
+        anomalyMonths={analyticsData?.anomaly_months || []}
+        hasEnoughMonthsForAnomaly={yearOccurredMonths >= 3}
       />
 
       <HomeHabitStats

@@ -40,7 +40,11 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
   }, [yearSeries, t])
 
   return (
-    <Card className="bc-panel overflow-hidden">
+    // overflow-visible:tooltip 通过 -translate-y-full 向上展开会越出 Card 边界,
+    // overflow-hidden 会把顶行(1-6 月)的 tooltip clip 掉,只剩底边像被截断的卡片
+    // 漂出来(2026-05-16 用户上报)。bc-panel 圆角靠 border-radius,跟 overflow
+    // 无关,改 visible 不破圆角。
+    <Card className="bc-panel overflow-visible">
       <CardHeader className="flex flex-row items-end justify-between">
         <CardTitle className="text-base">
           {t('home.heatmap.title').replace('{year}', String(data.year))}
@@ -69,8 +73,11 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                   isCurrent ? 'border-primary ring-1 ring-primary/40' : 'border-border/40'
                 }`}
                 style={{ background: bg }}
-                title={`${row.monthLabel} · ${t('home.heatmap.tooltipExpense').replace('{value}', row.expense.toFixed(2))}`}
               >
+                {/* 之前还挂了 title={...} 做 native 兜底,但 native tooltip + CSS
+                    tooltip 同时出现会重叠两个气泡,视觉很乱(用户上报)。CSS 已经
+                    显示完整 4 行(月名 + 收入 + 支出 + 结余),native title 是冗余,
+                    去掉。 */}
                 <span
                   className={`text-[11px] font-semibold leading-tight ${
                     pct > 0.5 ? 'text-white' : 'text-foreground'
@@ -92,8 +99,10 @@ export function HomeYearHeatmap({ yearSeries, currency = 'CNY' }: Props) {
                   <span className="text-[11px] leading-tight text-muted-foreground">—</span>
                 )}
 
-                {/* hover 详情 tooltip(纯 CSS,避免额外依赖)*/}
-                <div className="pointer-events-none absolute -top-1 left-1/2 z-10 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
+                {/* hover 详情 tooltip(纯 CSS,避免额外依赖)。z-30 保证 Card 间
+                    并排时 tooltip 在另一张 Card 之上(默认 z 时被旁边 donut card
+                    的内容遮)。 */}
+                <div className="pointer-events-none absolute -top-1 left-1/2 z-30 hidden w-max -translate-x-1/2 -translate-y-full rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] shadow-lg group-hover:block">
                   <div className="font-semibold">{row.monthLabel}</div>
                   <div className="text-income">
                     {t('home.heatmap.tooltipIncome').replace('{value}', row.income.toFixed(2))}

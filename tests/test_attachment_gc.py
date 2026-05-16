@@ -23,9 +23,9 @@ from src.database import Base
 from src.models import (
     AttachmentFile,
     Ledger,
-    ReadCategoryProjection,
     ReadTxProjection,
     User,
+    UserCategoryProjection,
 )
 from src.projection import gc_orphan_attachments, upsert_tx
 
@@ -76,7 +76,7 @@ def test_gc_removes_orphan_file(tmp_path):
         db.add(att)
         db.commit()
 
-        n = gc_orphan_attachments(db, ledger_id="L1", file_ids={"f-orphan"})
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-orphan"})
         db.commit()
 
         assert n == 1
@@ -109,7 +109,7 @@ def test_gc_preserves_tx_referenced_file(tmp_path):
         )
         db.commit()
 
-        n = gc_orphan_attachments(db, ledger_id="L1", file_ids={"f-shared"})
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-shared"})
         db.commit()
 
         assert n == 0
@@ -125,10 +125,10 @@ def test_gc_preserves_category_icon_referenced_file(tmp_path):
         att, path = _make_attachment(tmp_path, "f-iconshared")
         db.add(att)
         db.add(
-            ReadCategoryProjection(
-                ledger_id="L1",
-                sync_id="cat-other",  # 不是我们在删的那个分类
+            UserCategoryProjection(
+                # PK 是 (user_id, sync_id),user-global 不挂 ledger
                 user_id="U1",
+                sync_id="cat-other",
                 name="other-cat",
                 kind="expense",
                 icon="custom-icon",
@@ -139,7 +139,7 @@ def test_gc_preserves_category_icon_referenced_file(tmp_path):
         )
         db.commit()
 
-        n = gc_orphan_attachments(db, ledger_id="L1", file_ids={"f-iconshared"})
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-iconshared"})
         db.commit()
 
         assert n == 0
@@ -152,7 +152,7 @@ def test_gc_skips_missing_attachment_file(tmp_path):
     with session_factory() as db:
         _seed_ledger(db)
         # 不插 AttachmentFile
-        n = gc_orphan_attachments(db, ledger_id="L1", file_ids={"f-nonexistent"})
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-nonexistent"})
         db.commit()
         assert n == 0
 
@@ -170,7 +170,7 @@ def test_gc_unlink_failure_still_deletes_row(tmp_path, caplog):
         os.unlink(path)
         assert not path.exists()
 
-        n = gc_orphan_attachments(db, ledger_id="L1", file_ids={"f-nofile"})
+        n = gc_orphan_attachments(db, user_id="U1", file_ids={"f-nofile"})
         db.commit()
         assert n == 1
         assert db.get(AttachmentFile, "f-nofile") is None
@@ -347,11 +347,11 @@ def test_gc_dedup_and_empty_input(tmp_path):
 
         # 重复 + None
         n = gc_orphan_attachments(
-            db, ledger_id="L1", file_ids=["f-dup", None, "f-dup", "", "  "]
+            db, user_id="U1", file_ids=["f-dup", None, "f-dup", "", "  "]
         )
         db.commit()
         assert n == 1  # 只清 1 次,不重复
 
         # 空输入 → 0
-        assert gc_orphan_attachments(db, ledger_id="L1", file_ids=set()) == 0
-        assert gc_orphan_attachments(db, ledger_id="L1", file_ids=[]) == 0
+        assert gc_orphan_attachments(db, user_id="U1", file_ids=set()) == 0
+        assert gc_orphan_attachments(db, user_id="U1", file_ids=[]) == 0

@@ -22,7 +22,6 @@ from src.database import Base, get_db
 from src.main import app
 from src.models import (
     Ledger,
-    ReadCategoryProjection,
     ReadTxProjection,
     User,
 )
