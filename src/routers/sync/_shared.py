@@ -23,6 +23,7 @@ from ...concurrency import lock_ledger_for_materialize
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
 from ...ledger_access import (
+    ensure_owner_member,
     get_accessible_ledger_by_external_id,
     list_accessible_ledgers,
 )
@@ -90,6 +91,7 @@ __all__ = [
     'get_current_user',
     'require_any_scopes',
     'require_scopes',
+    'ensure_owner_member',
     'get_accessible_ledger_by_external_id',
     'list_accessible_ledgers',
     'metrics',

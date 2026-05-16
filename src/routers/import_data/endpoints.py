@@ -640,18 +640,20 @@ def _user_stub(user_id: str):
 
 
 def _resolve_target_ledger(db: Session, user: User, ledger_external_id: str) -> Ledger:
+    # CSV 导入会写 tx,Owner 或 Editor 都可以。Viewer / outsider → 404。
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user.id,
         ledger_external_id=ledger_external_id,
+        roles={"owner", "editor"},
     )
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error_code": "IMPORT_LEDGER_NOT_FOUND"},
         )
-    # row 是 (Ledger, None) tuple,跟历史 ledger_member 解构兼容
-    ledger, _member = row
+    # row 是 (Ledger, role_str) tuple
+    ledger, _role = row
     return ledger
 
 

@@ -26,11 +26,13 @@ from ...config import get_settings
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
 from ...ledger_access import (
+    accessible_ledger_ids_subquery,
     get_accessible_ledger_by_external_id,
 )
 from ...models import (
     AttachmentFile,
     Ledger,
+    LedgerMember,
     ReadAccountProjection,
     ReadBudgetProjection,
     ReadCategoryProjection,
@@ -515,9 +517,11 @@ __all__ = [
     'get_current_user',
     'require_any_scopes',
     'require_scopes',
+    'accessible_ledger_ids_subquery',
     'get_accessible_ledger_by_external_id',
     'AttachmentFile',
     'Ledger',
+    'LedgerMember',
     'ReadAccountProjection',
     'ReadBudgetProjection',
     'ReadCategoryProjection',

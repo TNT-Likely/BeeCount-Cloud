@@ -291,9 +291,13 @@ async def create_tx_batch(
         current_user.id, auto_tag_names, attachment_file_id,
     )
 
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本 fan-out:批量创建推给所有成员
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": new_change_id,

@@ -235,8 +235,55 @@ class Ledger(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")
+    members: Mapped[list["LedgerMember"]] = relationship(
+        back_populates="ledger",
+        cascade="all, delete-orphan",
+    )
 
 
+class LedgerMember(Base):
+    """谁能访问哪个账本 + 角色 (owner/editor;viewer 远期)。"""
+
+    __tablename__ = "ledger_members"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    invited_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    ledger: Mapped[Ledger] = relationship(back_populates="members")
+
+
+Index("ix_ledger_members_user_id", LedgerMember.user_id)
+Index("ix_ledger_members_ledger_id", LedgerMember.ledger_id)
+
+
+class LedgerInvite(Base):
+    """待接受的邀请。6 位明文 code,一次性,默认 24h 失效。"""
+
+    __tablename__ = "ledger_invites"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    invited_by: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    target_role: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class SyncChange(Base):

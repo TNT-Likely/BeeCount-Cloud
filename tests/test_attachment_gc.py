@@ -42,10 +42,12 @@ def _make_db():
 
 def _seed_ledger(db, ledger_id="L1", user_id="U1"):
     db.add(User(id=user_id, email="u@example.com", password_hash="h"))
-    db.add(
-        Ledger(id=ledger_id, user_id=user_id, external_id="ext", name="L", currency="CNY")
-    )
+    ledger = Ledger(id=ledger_id, user_id=user_id, external_id="ext", name="L", currency="CNY")
+    db.add(ledger)
     db.flush()
+    # 共享账本 Phase 1:创建账本同时必须建 owner member 行,否则后续 access 失败。
+    from src.ledger_access import ensure_owner_member
+    ensure_owner_member(db, ledger=ledger)
 
 
 def _make_attachment(tmp_path: Path, file_id: str, ledger_id: str = "L1", user_id: str = "U1"):

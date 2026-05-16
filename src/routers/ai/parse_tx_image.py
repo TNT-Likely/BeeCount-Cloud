@@ -179,20 +179,29 @@ def _load_ledger_context(
 ) -> tuple[list[str], list[str]]:
     """取当前账本的 category / account 名字列表(给 LLM hint)。
 
-    没传 ledger_id → 跨账本聚合所有用户可见的(让 LLM 至少有现成名字可选)。
+    没传 ledger_id → 跨账本聚合所有 caller 可见(含共享)账本的名字。
+    共享账本 Phase 1:Editor 看的 hint 是 Owner 的命名空间(因为 tx 必须挂在
+    Owner 的 category/account 里);用 accessible_ledger_ids_subquery 自动覆盖。
     """
+    from ...ledger_access import (
+        accessible_ledger_ids_subquery,
+        get_accessible_ledger_by_external_id,
+    )
     if ledger_id:
-        ledger = db.scalar(
-            select(Ledger).where(
-                Ledger.external_id == ledger_id, Ledger.user_id == user_id,
-            )
+        row = get_accessible_ledger_by_external_id(
+            db, user_id=user_id, ledger_external_id=ledger_id,
         )
-        if ledger is None:
+        if row is None:
             return [], []
+        ledger, _role = row
         ledger_int_ids = [ledger.id]
     else:
         ledger_int_ids = [
-            l.id for l in db.scalars(select(Ledger).where(Ledger.user_id == user_id)).all()
+            l.id for l in db.scalars(
+                select(Ledger).where(
+                    Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id))
+                )
+            ).all()
         ]
 
     if not ledger_int_ids:

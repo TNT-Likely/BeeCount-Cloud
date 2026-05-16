@@ -24,29 +24,42 @@ def list_ledgers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ReadLedgerOut]:
+    # 共享账本 Phase 1:JOIN ledger_members 一次性拿 (ledger, caller_role),
+    # 再为每条 ledger 查 member_count + owner_user_id。
+    # admin 不在此路径里跨用户(走专门管理后台)。
     if _is_admin(current_user):
-        ledgers = list(db.scalars(select(Ledger).order_by(Ledger.created_at.desc())).all())
-    else:
-        ledgers = list(
-            db.scalars(
-                select(Ledger)
-                .where(Ledger.user_id == current_user.id)
-                .order_by(Ledger.created_at.desc())
+        rows: list[tuple[Ledger, str]] = [
+            (l, "owner") for l in db.scalars(
+                select(Ledger).order_by(Ledger.created_at.desc())
             ).all()
-        )
+        ]
+    else:
+        rows = list(db.execute(
+            select(Ledger, LedgerMember.role)
+            .join(LedgerMember, LedgerMember.ledger_id == Ledger.id)
+            .where(LedgerMember.user_id == current_user.id)
+            .order_by(Ledger.created_at.desc())
+        ).all())
 
     out: list[ReadLedgerOut] = []
-    for ledger in ledgers:
+    now = datetime.now(timezone.utc)
+    for ledger, role in rows:
         # Hide soft-deleted ledgers.
         if _is_ledger_deleted(db, ledger_id=ledger.id):
             continue
-        # currency 暂不做 projection 化 —— 顶层元数据非热点,snapshot_cache 命中
-        # 后 ~1ms,偶发 cold miss 50ms 可接受;list_ledgers 本身调用频率低。
         currency = ledger.currency or "CNY"
         ledger_name = _resolve_ledger_name(db, ledger=ledger)
         tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
-        now = datetime.now(timezone.utc)
-        role = cast("Any", "owner" if ledger.user_id == current_user.id else "viewer")
+        member_count = db.scalar(
+            select(func.count(LedgerMember.user_id))
+            .where(LedgerMember.ledger_id == ledger.id)
+        ) or 1
+        owner_uid = db.scalar(
+            select(LedgerMember.user_id).where(
+                LedgerMember.ledger_id == ledger.id,
+                LedgerMember.role == "owner",
+            )
+        )
         out.append(
             ReadLedgerOut(
                 ledger_id=ledger.external_id,
@@ -58,9 +71,10 @@ def list_ledgers(
                 balance=income_total - expense_total,
                 exported_at=now,
                 updated_at=now,
-                role=role,
-                is_shared=False,
-                member_count=1,
+                role=cast("Any", role),
+                is_shared=(member_count > 1),
+                member_count=int(member_count),
+                owner_user_id=owner_uid,
             )
         )
     return out
@@ -124,9 +138,9 @@ def get_ledger_stats(
     # 全局口径:跨当前用户所有账本。projection 的 user_id 列已经 denormalized,
     # 一次 SQL COUNT + COUNT DISTINCT 就出全量。比原来循环 parse 每个 snapshot
     # 快 N 倍。
-    user_ledger_ids_subq = (
-        select(Ledger.id).where(Ledger.user_id == current_user.id).scalar_subquery()
-    )
+    user_ledger_ids_subq = accessible_ledger_ids_subquery(
+        user_id=current_user.id
+    ).scalar_subquery()
 
     def _count_total(model) -> int:
         return int(db.scalar(
@@ -202,6 +216,17 @@ def get_ledger(
     tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
     now = datetime.now(timezone.utc)
+    # 共享账本字段:跟 list 路径一致填充
+    member_count = db.scalar(
+        select(func.count(LedgerMember.user_id))
+        .where(LedgerMember.ledger_id == ledger.id)
+    ) or 1
+    owner_uid = db.scalar(
+        select(LedgerMember.user_id).where(
+            LedgerMember.ledger_id == ledger.id,
+            LedgerMember.role == "owner",
+        )
+    )
     return ReadLedgerDetailOut(
         ledger_id=ledger.external_id,
         ledger_name=ledger_name,
@@ -213,9 +238,10 @@ def get_ledger(
         exported_at=now,
         updated_at=now,
         source_change_id=source_change_id,
-        role=cast("Any", member.role if member is not None else "viewer"),
-        is_shared=False,
-        member_count=1,
+        role=cast("Any", member if member is not None else "viewer"),
+        is_shared=(member_count > 1),
+        member_count=int(member_count),
+        owner_user_id=owner_uid,
     )
 
 

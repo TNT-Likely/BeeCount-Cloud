@@ -38,6 +38,7 @@ from ...deps import get_current_user, require_any_scopes, require_scopes
 from ...ledger_access import (
     ROLE_EDITOR,
     ROLE_OWNER,
+    ensure_owner_member,
     get_accessible_ledger_by_external_id,
 )
 from ...models import (
@@ -390,12 +391,18 @@ def _load_ledger_for_write(
     *,
     user_id: str,
     ledger_external_id: str,
-    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
-) -> tuple[Ledger, None]:
+    roles: set[str],
+) -> tuple[Ledger, str]:
+    """Resolve ledger for write,要求 caller 角色在 ``roles`` 集合中。
+
+    角色不足返 **404 而非 403**,避免泄露账本存在性(攻击者无法靠 status code
+    推断"这个 external_id 存在但我无权访问")。返 (ledger, caller_role)。
+    """
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user_id,
         ledger_external_id=ledger_external_id,
+        roles=roles,
     )
     if row is not None:
         return row
@@ -625,9 +632,13 @@ async def _commit_write_fast_tx(
                 return replay
         raise exc
 
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本 fan-out:推给所有成员(原 single owner 路径仅推 ledger.user_id)
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": response.new_change_id,
@@ -826,10 +837,13 @@ async def _commit_write(
         device_id,
         current_user.id,
     )
-    # Single-user-per-ledger: notify only the owner.
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本 fan-out:推给所有成员
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": response.new_change_id,
@@ -932,6 +946,7 @@ __all__ = [
     'require_scopes',
     'ROLE_EDITOR',
     'ROLE_OWNER',
+    'ensure_owner_member',
     'get_accessible_ledger_by_external_id',
     'AuditLog',
     'Ledger',

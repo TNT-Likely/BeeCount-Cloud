@@ -47,6 +47,8 @@ async def create_ledger(
     )
     db.add(ledger)
     db.flush()
+    # 新账本创建者自动成为 Owner — 共享账本 Phase 1。
+    ensure_owner_member(db, ledger=ledger)
 
     # 方案 B:不写 ledger_snapshot 行。emit 一个 ledger entity SyncChange 个体事件,
     # mobile /sync/pull 能收到这个 ledger 被创建的事件。
@@ -205,11 +207,14 @@ async def delete_ledger(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     """Soft-delete a ledger: append a ``ledger_snapshot action=delete`` tombstone
-    SyncChange. Reads filter it out; historical rows are retained for audit."""
+    SyncChange. Reads filter it out; historical rows are retained for audit.
+
+    仅 Owner 可删账本(Editor 想"退出"走成员管理 endpoint)。"""
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=current_user.id,
         ledger_external_id=ledger_id,
+        roles=_OWNER_ONLY_ROLES,
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
@@ -246,9 +251,13 @@ async def delete_ledger(
     )
     db.commit()
 
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本 fan-out:删除事件推给所有成员,Editor 那边本地账本会一并清理。
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": tombstone.change_id,

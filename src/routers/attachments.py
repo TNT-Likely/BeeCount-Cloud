@@ -13,6 +13,11 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
+from ..ledger_access import (
+    ROLE_EDITOR,
+    ROLE_OWNER,
+    get_accessible_ledger_by_external_id,
+)
 from ..models import AttachmentFile, Ledger, User
 from ..schemas import (
     AttachmentBatchExistsRequest,
@@ -46,24 +51,23 @@ def _resolve_ledger(
     *,
     ledger_external_id: str,
     current_user: User,
-    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
-    forbidden_detail: str | None = None,  # noqa: ARG001 — no role hierarchy anymore
-) -> tuple[Ledger, None]:
-    # admin 走跟普通用户一样的 (user_id, external_id) 查询。
-    # 历史上 admin 分支只用 external_id 查会随机命中第一行 —— Ledger.external_id
-    # 不是全局唯一,是 (user_id, external_id) 复合唯一,admin 用户从 mobile 上传
-    # 时会把自己的附件错挂到其他用户的同 external_id 账本上。
-    # admin 的跨用户特权应该通过专门的管理后台 endpoint(带显式 user_id 参数)
-    # 实现,不该在 mobile 共用的 endpoint 里影响数据所属判定。
-    ledger = db.scalar(
-        select(Ledger).where(
-            Ledger.external_id == ledger_external_id,
-            Ledger.user_id == current_user.id,
-        )
+    roles: set[str],
+    forbidden_detail: str | None = None,  # noqa: ARG001 — 角色不足统一 404
+) -> tuple[Ledger, str]:
+    """权限不足 → 404(避免泄露账本存在性)。返 (ledger, caller_role)。
+
+    共享账本 Phase 1:走 ledger_access 层,自动覆盖 Owner + Editor。
+    空 ``roles`` 表示"任何 member 都能访问"(read 路径),非空时按角色过滤。
+    """
+    row = get_accessible_ledger_by_external_id(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        roles=roles if roles else None,
     )
-    if ledger is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
-    return ledger, None
+    return row
 
 
 def _to_upload_out(row: AttachmentFile, ledger_external_id: str) -> AttachmentUploadOut:
@@ -86,11 +90,12 @@ async def upload_attachment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AttachmentUploadOut:
+    # 上传附件:Owner / Editor 可写。Viewer / 非成员 → 404。
     ledger, _ = _resolve_ledger(
         db,
         ledger_external_id=ledger_id,
         current_user=current_user,
-        roles=set(),
+        roles={ROLE_OWNER, ROLE_EDITOR},
     )
     data = await file.read()
     if not data:
@@ -270,7 +275,7 @@ def download_attachment(
     # 权限校验:
     # 1) admin 直接通过(管理后台需求)
     # 2) row.ledger_id 为 NULL(category_icon 类型) → 校验 row.user_id == current_user.id
-    # 3) row.ledger_id 非 NULL → 校验该 ledger 属于 current_user
+    # 3) row.ledger_id 非 NULL → 当前用户必须是该 ledger 的 member(任何角色)
     if not current_user.is_admin:
         if row.ledger_id is None:
             if row.user_id != current_user.id:
@@ -279,13 +284,22 @@ def download_attachment(
                     detail="Attachment access forbidden",
                 )
         else:
+            # 共享账本 Phase 1:从 Ledger.user_id 单 owner 校验改为 ledger_members 查询。
+            # Editor / Viewer 也能看见同账本的附件(read 权限)。
             ledger = db.scalar(
-                select(Ledger).where(
-                    Ledger.id == row.ledger_id,
-                    Ledger.user_id == current_user.id,
-                )
+                select(Ledger).where(Ledger.id == row.ledger_id)
             )
             if ledger is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Attachment access forbidden",
+                )
+            row_access = get_accessible_ledger_by_external_id(
+                db,
+                user_id=current_user.id,
+                ledger_external_id=ledger.external_id,
+            )
+            if row_access is None:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Attachment access forbidden",

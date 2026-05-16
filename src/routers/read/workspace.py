@@ -37,9 +37,9 @@ def list_workspace_transactions(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all())
@@ -279,9 +279,9 @@ def export_workspace_transactions_csv(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all())
@@ -491,9 +491,9 @@ def list_workspace_accounts(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -673,9 +673,9 @@ def list_workspace_categories(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -800,9 +800,9 @@ def list_workspace_tags(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -954,9 +954,9 @@ def workspace_ledger_counts(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
 
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -1024,9 +1024,9 @@ def workspace_analytics(
         ledger_conditions.append(Ledger.external_id == ledger_id)
     if is_admin:
         if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
+            ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=user_id)))
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        ledger_conditions.append(Ledger.id.in_(accessible_ledger_ids_subquery(user_id=current_user.id)))
 
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())

@@ -7,6 +7,14 @@
 from __future__ import annotations
 
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
+from ...ledger_access import ROLE_OWNER
+
+# 共享账本 Phase 1:Editor 在共享账本里只能写 transaction。account/category/tag
+# 是 user-global,budget/ledger meta 是账本级配置,统统 owner-only。snapshot
+# 类(ledger_snapshot)同样 owner-only。把这个映射表中心化,避免 push 路径里到处
+# 散 if-else。
+_EDITOR_ALLOWED_ENTITY_TYPES: frozenset[str] = frozenset({"transaction"})
+
 
 @router.post("/push", response_model=SyncPushResponse)
 async def push_changes(
@@ -51,8 +59,20 @@ async def push_changes(
             ledger = Ledger(user_id=current_user.id, external_id=change.ledger_id)
             db.add(ledger)
             db.flush()
+            # 新账本创建者自动成为 Owner — 共享账本 Phase 1。
+            ensure_owner_member(db, ledger=ledger)
+            caller_role = ROLE_OWNER
         else:
-            ledger, _ = row
+            ledger, caller_role = row
+
+        # 共享账本权限:Editor 在共享账本只能写 transaction;其他 entity 类型
+        # 走 owner-only。404 而非 403,避免泄露存在性。
+        if caller_role != ROLE_OWNER and change.entity_type not in _EDITOR_ALLOWED_ENTITY_TYPES:
+            metrics.inc("beecount_sync_push_failed_total")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ledger not found",
+            )
 
         # Clamp incoming updated_at to the server clock to neutralize client
         # clock skew. Without this, a mobile device whose local clock is ahead
@@ -200,21 +220,20 @@ async def push_changes(
 
     if touched_ledgers:
         ws_manager = request.app.state.ws_manager
-        # Single-user-per-ledger: broadcast only to the owner.
-        owner_user_ids = db.scalars(
-            select(Ledger.user_id).where(Ledger.id.in_(list(touched_ledgers.values())))
-        ).all()
-        for owner_user_id in set(owner_user_ids):
-            for ledger_external_id in touched_ledgers:
-                await ws_manager.broadcast_to_user(
-                    owner_user_id,
-                    {
-                        "type": "sync_change",
-                        "ledgerId": ledger_external_id,
-                        "serverCursor": max_cursor,
-                        "serverTimestamp": now.isoformat(),
-                    },
-                )
+        # 共享账本 fan-out:每个 touched ledger 推给它的所有成员
+        from ...websocket_manager import broadcast_to_ledger
+        for ledger_external_id, ledger_internal_id in touched_ledgers.items():
+            await broadcast_to_ledger(
+                db=db,
+                ws_manager=ws_manager,
+                ledger_id=ledger_internal_id,
+                payload={
+                    "type": "sync_change",
+                    "ledgerId": ledger_external_id,
+                    "serverCursor": max_cursor,
+                    "serverTimestamp": now.isoformat(),
+                },
+            )
 
     logger.info(
         "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d",

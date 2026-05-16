@@ -217,14 +217,16 @@ def _actor_is_admin(payload: dict) -> bool:
 
 
 def _assert_actor_can_modify(item: dict, payload: dict) -> None:
-    actor_user_id = _actor_user_id(payload)
-    if actor_user_id is None:
-        return
-    if _actor_is_admin(payload):
-        return
-    created_by = item.get("createdByUserId")
-    if isinstance(created_by, str) and created_by.strip() and created_by.strip() != actor_user_id:
-        raise PermissionError("write role forbidden: entity owner mismatch")
+    """共享账本 Phase 1:不再做 mutator 层的"createdBy 必须等于 actor"检查。
+
+    历史背景:单用户隔离时代,此函数防"actor A 改 B 在同一物理 ledger 行里写的
+    item"(API 层级越权检查兜底)。共享账本场景下 Editor 编辑 Owner 创建的
+    transaction 是合法 LWW 行为,继续 raise 会直接阻塞共享记账核心场景。
+
+    端点层的 `_load_ledger_for_write` + `required_roles` 已经按角色把不该写的
+    entity_type / write 操作拦下;mutator 层不需要额外身份比对。
+    """
+    _ = item, payload  # 形参保留以维持调用点不破坏
 
 
 def _mark_entity_actor(item: dict, payload: dict, *, create: bool) -> None:

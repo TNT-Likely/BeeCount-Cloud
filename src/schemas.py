@@ -454,6 +454,9 @@ class ReadLedgerOut(BaseModel):
     role: MemberRole
     is_shared: bool = False
     member_count: int = 1
+    # 共享账本 Owner 的 user_id。Mobile UI 用来展示"账本归属",并兜底权限。
+    # 单人账本 = current_user.id;共享账本 = ledger_members 里 role='owner' 的 user_id。
+    owner_user_id: str | None = None
 
 
 class ReadLedgerDetailOut(ReadLedgerOut):
