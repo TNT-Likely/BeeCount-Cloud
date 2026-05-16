@@ -25,11 +25,11 @@ from ...config import get_settings
 from ...database import SessionLocal
 from ...models import (
     Ledger,
-    ReadAccountProjection,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
     User,
 )
 from ...security import SCOPE_APP_WRITE, _create_token
@@ -124,7 +124,7 @@ async def create_transaction(
             db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
         )
 
-    # 标签管理页是从 ReadTagProjection 读的 —— 只往 tx.tags_csv 写 "MCP" 不够,
+    # 标签管理页是从 UserTagProjection 读的 —— 只往 tx.tags_csv 写 "MCP" 不够,
     # 必须额外建一个独立 tag 实体行,Tags 页 / mobile / 同步才能识别。
     # 幂等:如果已存在就跳过。
     if mcp_tag_missing:
@@ -416,12 +416,12 @@ async def parse_and_create_from_text(
 def _is_tag_missing_in_ledger(
     db, *, user_id: str, ledger_id: str, tag_name: str
 ) -> bool:
-    """检查 ReadTagProjection 里这个 ledger 是否已有同名 tag。"""
+    """检查 UserTagProjection 里这个 user 是否已有同名 tag(tag 是 user-global)。"""
+    del ledger_id  # tag 是 user-global,不再按 ledger 过滤
     existing = db.scalar(
-        select(ReadTagProjection).where(
-            ReadTagProjection.user_id == user_id,
-            ReadTagProjection.ledger_id == ledger_id,
-            ReadTagProjection.name == tag_name,
+        select(UserTagProjection).where(
+            UserTagProjection.user_id == user_id,
+            UserTagProjection.name == tag_name,
         )
     )
     return existing is None
@@ -439,11 +439,11 @@ def _lookup_tag_sync_ids(
     """
     if not names:
         return []
+    del ledger_id  # tag 是 user-global,跨账本统一
     rows = db.execute(
-        select(ReadTagProjection.name, ReadTagProjection.sync_id).where(
-            ReadTagProjection.user_id == user_id,
-            ReadTagProjection.ledger_id == ledger_id,
-            ReadTagProjection.name.in_(names),
+        select(UserTagProjection.name, UserTagProjection.sync_id).where(
+            UserTagProjection.user_id == user_id,
+            UserTagProjection.name.in_(names),
         )
     ).all()
     # 同一 name 同 ledger 应当唯一,但稳妥起见去重
@@ -498,12 +498,12 @@ def _merge_default_tag(tags: list[str] | None) -> list[str]:
 def _lookup_category_sync_id(db, user_id: str, name: str | None, tx_type: str | None) -> str | None:
     if not name:
         return None
-    query = select(ReadCategoryProjection).where(
-        ReadCategoryProjection.user_id == user_id,
-        ReadCategoryProjection.name == name,
+    query = select(UserCategoryProjection).where(
+        UserCategoryProjection.user_id == user_id,
+        UserCategoryProjection.name == name,
     )
     if tx_type and tx_type in {"expense", "income", "transfer"}:
-        query = query.where(ReadCategoryProjection.kind == tx_type)
+        query = query.where(UserCategoryProjection.kind == tx_type)
     row = db.scalar(query.limit(1))
     if row is None:
         raise ValueError(f"Category not found: {name}")
@@ -514,10 +514,10 @@ def _lookup_account_sync_id(db, user_id: str, name: str | None) -> str | None:
     if not name:
         return None
     row = db.scalar(
-        select(ReadAccountProjection)
+        select(UserAccountProjection)
         .where(
-            ReadAccountProjection.user_id == user_id,
-            ReadAccountProjection.name == name,
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.name == name,
         )
         .limit(1)
     )

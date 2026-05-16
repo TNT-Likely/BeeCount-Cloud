@@ -259,7 +259,7 @@ def export_workspace_transactions_csv(
     - 字段(11):type,category,subcategory,amount,account,from_account,
       to_account,note,time,tags,attachments
     - subcategory:level=2 时 category 写父类名、subcategory 写当前;level=1 时
-      只写 category。父类名走 LEFT JOIN read_category_projection 拿 parent_name。
+      只写 category。父类名走 LEFT JOIN user_category_projection 拿 parent_name。
     - time:`  YYYY-MM-DD HH:mm:ss  `(前后各 2 空格,App 一致,Excel 列宽好看)
     - 流式 yield_per(500),50k+ 笔 server 内存稳定
     - 文件名:`beecount-<ledger>-<date_from>_<date_to>.csv`,中文走 RFC 5987
@@ -293,8 +293,9 @@ def export_workspace_transactions_csv(
         ledger_internal_ids = []
         primary_name = "ledger"
 
-    # LEFT JOIN ReadCategoryProjection 拿 level + parent_name,做 parent/sub 列拆分
-    Cat = aliased(ReadCategoryProjection)
+    # LEFT JOIN UserCategoryProjection 拿 level + parent_name,做 parent/sub 列拆分。
+    # category 是 user-global,按 user_id 而非 ledger_id JOIN。
+    Cat = aliased(UserCategoryProjection)
 
     query = (
         select(
@@ -306,7 +307,7 @@ def export_workspace_transactions_csv(
         .outerjoin(
             Cat,
             and_(
-                Cat.ledger_id == ReadTxProjection.ledger_id,
+                Cat.user_id == ReadTxProjection.user_id,
                 Cat.sync_id == ReadTxProjection.category_sync_id,
             ),
         )
@@ -572,82 +573,64 @@ def list_workspace_accounts(
         bucket["count"] = int(bucket["count"]) + int(cnt)
         bucket["balance"] = float(bucket["balance"]) + float(amt)
 
-    # 账户从 projection 列出
-    account_query = select(ReadAccountProjection).where(
-        ReadAccountProjection.ledger_id.in_(ledger_internal_ids)
+    # user-global 重构:account 是 per-user 表,直接按 user_id 拉,不再 per-ledger
+    # 重复存 + dedup。target_user 是 admin 模式下指定的 user_id,否则 caller。
+    target_user_id = user_id if (is_admin and user_id) else current_user.id
+    target_email = db.scalar(select(User.email).where(User.id == target_user_id))
+
+    # 用户级 last_change_id:该用户最近的 user-scope SyncChange.change_id(account)。
+    # 给前端做缓存失效 key 用,跨账本统一。
+    account_last_change_id = int(db.scalar(
+        select(func.coalesce(func.max(SyncChange.change_id), 0))
+        .where(
+            SyncChange.user_id == target_user_id,
+            SyncChange.scope == "user",
+            SyncChange.entity_type == "account",
+        )
+    ) or 0)
+
+    account_query = select(UserAccountProjection).where(
+        UserAccountProjection.user_id == target_user_id
     )
     if q:
-        account_query = account_query.where(ReadAccountProjection.name.ilike(f"%{q}%"))
-    account_rows: list[tuple[str, WorkspaceAccountOut]] = []
+        account_query = account_query.where(UserAccountProjection.name.ilike(f"%{q}%"))
+
+    all_accounts: list[WorkspaceAccountOut] = []
     for acct in db.scalars(account_query).all():
         name = (acct.name or "").strip()
         if not name:
             continue
         sync_id = acct.sync_id
         init_bal = float(acct.initial_balance or 0.0)
-        led_ext_id, led_name = ledger_meta.get(acct.ledger_id, ("", ""))
-        change_id = change_id_by_ledger.get(acct.ledger_id, 0)
-        # stats dict 的 key 是 sync_id(跨 ledger 聚合,见上面 group_by 改动)
         bucket = stats.get(sync_id)
         income_total = float(bucket.get("income", 0.0)) if bucket else 0.0
         expense_total = float(bucket.get("expense", 0.0)) if bucket else 0.0
         tx_count = int(bucket.get("count", 0)) if bucket else 0
         movement = float(bucket.get("balance", 0.0)) if bucket else 0.0
-        account_rows.append(
-            (
-                sync_id.lower() if sync_id else name.lower(),
-                WorkspaceAccountOut(
-                    id=sync_id,
-                    name=name,
-                    account_type=acct.account_type,
-                    currency=acct.currency,
-                    initial_balance=init_bal,
-                    last_change_id=change_id,
-                    ledger_id=led_ext_id,
-                    ledger_name=led_name,
-                    created_by_user_id=None,
-                    created_by_email=None,
-                    note=acct.note,
-                    credit_limit=acct.credit_limit,
-                    billing_day=acct.billing_day,
-                    payment_due_day=acct.payment_due_day,
-                    bank_name=acct.bank_name,
-                    card_last_four=acct.card_last_four,
-                    tx_count=tx_count,
-                    income_total=income_total,
-                    expense_total=expense_total,
-                    balance=init_bal + movement,
-                ),
+        all_accounts.append(
+            WorkspaceAccountOut(
+                id=sync_id,
+                name=name,
+                account_type=acct.account_type,
+                currency=acct.currency,
+                initial_balance=init_bal,
+                last_change_id=account_last_change_id,
+                ledger_id="",            # user-global 不挂账本
+                ledger_name="",
+                created_by_user_id=target_user_id,
+                created_by_email=target_email,
+                note=acct.note,
+                credit_limit=acct.credit_limit,
+                billing_day=acct.billing_day,
+                payment_due_day=acct.payment_due_day,
+                bank_name=acct.bank_name,
+                card_last_four=acct.card_last_four,
+                tx_count=tx_count,
+                income_total=income_total,
+                expense_total=expense_total,
+                balance=init_bal + movement,
             )
         )
-    best_by_key: dict[str, WorkspaceAccountOut] = {}
-    for key, entry in account_rows:
-        existing = best_by_key.get(key)
-        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
-            best_by_key[key] = entry
-    name_seen_acct: dict[str, WorkspaceAccountOut] = {}
-    for entry in best_by_key.values():
-        nk = (entry.name or "").lower()
-        prev = name_seen_acct.get(nk)
-        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
-            name_seen_acct[nk] = entry
-    all_accounts: list[WorkspaceAccountOut] = list(name_seen_acct.values())
-
-    # 历史上这里还会合并 UserAccount 表（web 直接建账户的兜底来源）。
-    # 问题：mobile 重命名 A→B，snapshot 更到 B，但 UserAccount 里还有 A（那是
-    # 之前 web 给 tx 指定账户时 _get_or_create_user_account 落下的条目），名字
-    # 不匹配 → 列表 A/B 同时出现，看起来"新建了一个"。
-    # 账户本就是 user-global 的，snapshot 里已经是权威来源；UserAccount 只用来
-    # 给 tx write 做 id→name 回填，不再混进列表，避免重命名后陈旧残留。
-
-    # 对来自 snapshot 的条目（ledger_id 非空 + created_by_user_id 为空）
-    # 填充账本 owner 身份；单用户单账本模型下这就是真正的创建人。
-    owner_map = _owner_map_for_ledgers(db, list(ledgers))
-    for e in all_accounts:
-        if e.created_by_user_id is None and e.ledger_id in owner_map:
-            uid, email = owner_map[e.ledger_id]
-            e.created_by_user_id = uid
-            e.created_by_email = email
 
     # Sort by name, then paginate
     all_accounts.sort(key=lambda a: (a.name or "").lower())
@@ -688,93 +671,75 @@ def list_workspace_categories(
     ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
     change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
 
-    cat_query = select(ReadCategoryProjection).where(
-        ReadCategoryProjection.ledger_id.in_(ledger_internal_ids)
+    # user-global 重构:category 是 per-user 表。target_user 跟 accounts 一致。
+    target_user_id = user_id if (is_admin and user_id) else current_user.id
+    target_email = db.scalar(select(User.email).where(User.id == target_user_id))
+
+    # 用户级 last_change_id:该用户最近的 user-scope SyncChange(category)。
+    cat_last_change_id = int(db.scalar(
+        select(func.coalesce(func.max(SyncChange.change_id), 0))
+        .where(
+            SyncChange.user_id == target_user_id,
+            SyncChange.scope == "user",
+            SyncChange.entity_type == "category",
+        )
+    ) or 0)
+
+    cat_query = select(UserCategoryProjection).where(
+        UserCategoryProjection.user_id == target_user_id
     )
     if q:
-        cat_query = cat_query.where(ReadCategoryProjection.name.ilike(f"%{q}%"))
+        cat_query = cat_query.where(UserCategoryProjection.name.ilike(f"%{q}%"))
 
-    # tx_count 聚合:按 (ledger_id, category_sync_id) 数 ReadTxProjection 行。
-    # category_sync_id 在 tx projection 上可空(转账类交易没分类),NULL 用单独
-    # 桶不计入。这里用 sync_id 全局聚合(不区分 ledger)是因为前端 dedup 时
-    # 同 syncId 跨账本会合并展示,统计一并合并跟 dedup 一致。
+    # tx_count 聚合:按 category_sync_id 数 ReadTxProjection 行。tx 仍 per-ledger,
+    # 限定在 caller 可见 ledger 范围内。
     from collections import defaultdict
     tx_count_by_sync_id: dict[str, int] = defaultdict(int)
-    tx_count_rows = db.execute(
-        select(
-            ReadTxProjection.category_sync_id,
-            func.count(),
-        )
-        .where(
-            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
-            ReadTxProjection.category_sync_id.is_not(None),
-        )
-        .group_by(ReadTxProjection.category_sync_id)
-    ).all()
-    for row in tx_count_rows:
-        sid = row[0]
-        if sid:
-            tx_count_by_sync_id[sid] += int(row[1] or 0)
+    if ledger_internal_ids:
+        tx_count_rows = db.execute(
+            select(
+                ReadTxProjection.category_sync_id,
+                func.count(),
+            )
+            .where(
+                ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+                ReadTxProjection.category_sync_id.is_not(None),
+            )
+            .group_by(ReadTxProjection.category_sync_id)
+        ).all()
+        for row in tx_count_rows:
+            sid = row[0]
+            if sid:
+                tx_count_by_sync_id[sid] += int(row[1] or 0)
 
-    cat_rows: list[tuple[str, WorkspaceCategoryOut]] = []
+    all_categories: list[WorkspaceCategoryOut] = []
     for cat in db.scalars(cat_query).all():
         name = (cat.name or "").strip()
         if not name:
             continue
         kind = cat.kind or "expense"
         sync_id = cat.sync_id
-        led_ext_id, led_name = ledger_meta.get(cat.ledger_id, ("", ""))
-        change_id = change_id_by_ledger.get(cat.ledger_id, 0)
-        key = sync_id.lower() if sync_id else f"{kind}:{name.lower()}"
-        cat_rows.append(
-            (
-                key,
-                WorkspaceCategoryOut(
-                    id=sync_id,
-                    name=name,
-                    kind=kind,
-                    level=int(cat.level or 1),
-                    sort_order=int(cat.sort_order or 0),
-                    icon=cat.icon,
-                    icon_type=cat.icon_type,
-                    custom_icon_path=cat.custom_icon_path,
-                    icon_cloud_file_id=cat.icon_cloud_file_id,
-                    icon_cloud_sha256=cat.icon_cloud_sha256,
-                    parent_name=cat.parent_name,
-                    last_change_id=change_id,
-                    ledger_id=led_ext_id,
-                    ledger_name=led_name,
-                    created_by_user_id=None,
-                    created_by_email=None,
-                    tx_count=tx_count_by_sync_id.get(sync_id, 0) if sync_id else 0,
-                ),
+        all_categories.append(
+            WorkspaceCategoryOut(
+                id=sync_id,
+                name=name,
+                kind=kind,
+                level=int(cat.level or 1),
+                sort_order=int(cat.sort_order or 0),
+                icon=cat.icon,
+                icon_type=cat.icon_type,
+                custom_icon_path=cat.custom_icon_path,
+                icon_cloud_file_id=cat.icon_cloud_file_id,
+                icon_cloud_sha256=cat.icon_cloud_sha256,
+                parent_name=cat.parent_name,
+                last_change_id=cat_last_change_id,
+                ledger_id="",
+                ledger_name="",
+                created_by_user_id=target_user_id,
+                created_by_email=target_email,
+                tx_count=tx_count_by_sync_id.get(sync_id, 0) if sync_id else 0,
             )
         )
-    best_by_key: dict[str, WorkspaceCategoryOut] = {}
-    for key, entry in cat_rows:
-        existing = best_by_key.get(key)
-        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
-            best_by_key[key] = entry
-    kindname_seen: dict[str, WorkspaceCategoryOut] = {}
-    for entry in best_by_key.values():
-        kk = f"{entry.kind}:{(entry.name or '').lower()}"
-        prev = kindname_seen.get(kk)
-        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
-            kindname_seen[kk] = entry
-    all_categories: list[WorkspaceCategoryOut] = list(kindname_seen.values())
-
-    # 不再合并 UserCategory 表。原因同 list_workspace_accounts：
-    # UserCategory 是 web 给 tx 指定分类时 _get_or_create_user_category 落下的
-    # 旁枝，mobile 重命名后这里会残留旧名字，导致列表"看起来多了一个"。
-    # snapshot 是权威来源。
-
-    # Snapshot 条目填 owner 身份，见 list_workspace_accounts 同样处理。
-    owner_map = _owner_map_for_ledgers(db, list(ledgers))
-    for e in all_categories:
-        if e.created_by_user_id is None and e.ledger_id in owner_map:
-            uid, email = owner_map[e.ledger_id]
-            e.created_by_user_id = uid
-            e.created_by_email = email
 
     # Sort by kind, sort_order, name, then paginate
     all_categories.sort(key=lambda c: (c.kind or "", c.sort_order or 0, (c.name or "").lower()))
@@ -811,74 +776,44 @@ def list_workspace_tags(
     all_tags: list[WorkspaceTagOut] = []
 
     ledgers = list(ledgers)
-    if not ledgers:
-        return []
+    # user-global 重构:tag 是 per-user。即便用户无 ledger,标签仍可存在(协议层
+    # 允许);但 tx 聚合需要 ledger 才有意义,所以 stats 阶段空集即可。
     ledger_internal_ids = [l.id for l in ledgers]
-    ledger_meta = {l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers}
-    change_id_by_ledger = {l.id: _get_latest_change_id(db, ledger_id=l.id) for l in ledgers}
 
-    tag_query = select(ReadTagProjection).where(
-        ReadTagProjection.ledger_id.in_(ledger_internal_ids)
+    target_user_id = user_id if (is_admin and user_id) else current_user.id
+    target_email = db.scalar(select(User.email).where(User.id == target_user_id))
+
+    tag_last_change_id = int(db.scalar(
+        select(func.coalesce(func.max(SyncChange.change_id), 0))
+        .where(
+            SyncChange.user_id == target_user_id,
+            SyncChange.scope == "user",
+            SyncChange.entity_type == "tag",
+        )
+    ) or 0)
+
+    tag_query = select(UserTagProjection).where(
+        UserTagProjection.user_id == target_user_id
     )
     if q:
-        tag_query = tag_query.where(ReadTagProjection.name.ilike(f"%{q}%"))
+        tag_query = tag_query.where(UserTagProjection.name.ilike(f"%{q}%"))
 
-    tag_rows: list[tuple[str, WorkspaceTagOut]] = []
     for tag in db.scalars(tag_query).all():
         name = (tag.name or "").strip()
         if not name:
             continue
-        sync_id = tag.sync_id
-        led_ext_id, led_name = ledger_meta.get(tag.ledger_id, ("", ""))
-        change_id = change_id_by_ledger.get(tag.ledger_id, 0)
-        tag_rows.append(
-            (
-                sync_id.lower() if sync_id else name.lower(),
-                WorkspaceTagOut(
-                    id=sync_id,
-                    name=name,
-                    color=tag.color,
-                    last_change_id=change_id,
-                    ledger_id=led_ext_id,
-                    ledger_name=led_name,
-                    created_by_user_id=None,
-                    created_by_email=None,
-                ),
+        all_tags.append(
+            WorkspaceTagOut(
+                id=tag.sync_id,
+                name=name,
+                color=tag.color,
+                last_change_id=tag_last_change_id,
+                ledger_id="",
+                ledger_name="",
+                created_by_user_id=target_user_id,
+                created_by_email=target_email,
             )
         )
-
-    # Prefer highest last_change_id per dedup key; then also track name-level
-    # dedup so the final list doesn't repeat the same name twice under two
-    # different syncIds (mobile fullPush can produce this on legacy data).
-    best_by_key: dict[str, WorkspaceTagOut] = {}
-    for key, entry in tag_rows:
-        existing = best_by_key.get(key)
-        if existing is None or (entry.last_change_id or 0) > (existing.last_change_id or 0):
-            best_by_key[key] = entry
-
-    name_seen: dict[str, WorkspaceTagOut] = {}
-    for entry in best_by_key.values():
-        nk = (entry.name or "").lower()
-        prev = name_seen.get(nk)
-        if prev is None or (entry.last_change_id or 0) > (prev.last_change_id or 0):
-            name_seen[nk] = entry
-
-    for entry in name_seen.values():
-        all_tags.append(entry)
-
-    # 不再合并 UserTag 表。原因同 accounts/categories：mobile 重命名"出差"→"差旅"
-    # 后，snapshot 更新成"差旅"，但 UserTag 里还有"出差"（web 给 tx 指定标签时
-    # _get_or_create_user_tag 落下的），名字不同 dedup 折不掉 → 列表同时出现
-    # "出差" + "差旅"，看起来 web 没刷新。snapshot 作为唯一权威。
-
-    # Sort by name, then paginate
-    # Snapshot 条目填 owner 身份。
-    owner_map = _owner_map_for_ledgers(db, list(ledgers))
-    for e in all_tags:
-        if e.created_by_user_id is None and e.ledger_id in owner_map:
-            uid, email = owner_map[e.ledger_id]
-            e.created_by_user_id = uid
-            e.created_by_email = email
 
     # 按 tag 聚合全量 tx:用 projection 扫一次(SQL select + index scan),
     # Python 侧按 tag_sync_ids_json / tags_csv 做匹配。projection scan 比

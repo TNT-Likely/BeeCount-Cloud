@@ -18,12 +18,12 @@ from src.database import Base, get_db
 from src.main import app
 from src.models import (
     Ledger,
-    ReadAccountProjection,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
     SyncChange,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
 )
 
 
@@ -73,6 +73,12 @@ def _get_ledger_internal_id(session_factory, ledger_external_id):
         return db.scalar(select(Ledger.id).where(Ledger.external_id == ledger_external_id))
 
 
+def _get_ledger_user_id(session_factory, ledger_external_id):
+    """user-global 资源按 user_id 查,helper 把 external_id → owner user_id。"""
+    with session_factory() as db:
+        return db.scalar(select(Ledger.user_id).where(Ledger.external_id == ledger_external_id))
+
+
 def _get_latest_snapshot(session_factory, ledger_internal_id):
     with session_factory() as db:
         row = db.scalar(
@@ -118,8 +124,9 @@ def test_mobile_push_tx_creates_projection_row():
             assert tx.note == "coffee"
             assert tx.account_sync_id == "acc1"
             assert tx.account_name == "Cash"
-            acc = db.scalar(select(ReadAccountProjection).where(
-                ReadAccountProjection.ledger_id == lid, ReadAccountProjection.sync_id == "acc1"))
+            uid = _get_ledger_user_id(sf, "lg1")
+            acc = db.scalar(select(UserAccountProjection).where(
+                UserAccountProjection.user_id == uid, UserAccountProjection.sync_id == "acc1"))
             assert acc is not None and acc.name == "Cash"
     finally:
         app.dependency_overrides.clear()
@@ -177,8 +184,9 @@ def test_mobile_account_rename_cascades_tx_projection():
             tx = db.scalar(select(ReadTxProjection).where(
                 ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
             assert tx.account_name == "招商银行", f"cascade failed, got {tx.account_name}"
-            acc = db.scalar(select(ReadAccountProjection).where(
-                ReadAccountProjection.ledger_id == lid, ReadAccountProjection.sync_id == "a1"))
+            uid = _get_ledger_user_id(sf, "lg3")
+            acc = db.scalar(select(UserAccountProjection).where(
+                UserAccountProjection.user_id == uid, UserAccountProjection.sync_id == "a1"))
             assert acc.name == "招商银行"
     finally:
         app.dependency_overrides.clear()
@@ -281,8 +289,9 @@ def test_web_create_tx_creates_projection_row():
             assert tx.note == "web tx"
             assert tx.category_sync_id == cat_id
             assert tx.category_name == "Food"
-            cat = db.scalar(select(ReadCategoryProjection).where(
-                ReadCategoryProjection.ledger_id == lid, ReadCategoryProjection.sync_id == cat_id))
+            uid = _get_ledger_user_id(sf, "wlg1")
+            cat = db.scalar(select(UserCategoryProjection).where(
+                UserCategoryProjection.user_id == uid, UserCategoryProjection.sync_id == cat_id))
             assert cat is not None and cat.name == "Food"
     finally:
         app.dependency_overrides.clear()
@@ -518,13 +527,14 @@ def test_mobile_push_mixed_entities_in_one_batch():
                          "happenedAt": _iso(), "accountId": "a1", "accountName": "Cash"}},
         ])
         lid = _get_ledger_internal_id(sf, "lg1")
+        uid = _get_ledger_user_id(sf, "lg1")
         with sf() as db:
-            assert db.scalar(select(ReadAccountProjection).where(
-                ReadAccountProjection.ledger_id == lid, ReadAccountProjection.sync_id == "a1"))
-            assert db.scalar(select(ReadCategoryProjection).where(
-                ReadCategoryProjection.ledger_id == lid, ReadCategoryProjection.sync_id == "c1"))
-            assert db.scalar(select(ReadTagProjection).where(
-                ReadTagProjection.ledger_id == lid, ReadTagProjection.sync_id == "tg1"))
+            assert db.scalar(select(UserAccountProjection).where(
+                UserAccountProjection.user_id == uid, UserAccountProjection.sync_id == "a1"))
+            assert db.scalar(select(UserCategoryProjection).where(
+                UserCategoryProjection.user_id == uid, UserCategoryProjection.sync_id == "c1"))
+            assert db.scalar(select(UserTagProjection).where(
+                UserTagProjection.user_id == uid, UserTagProjection.sync_id == "tg1"))
             assert db.scalar(select(ReadBudgetProjection).where(
                 ReadBudgetProjection.ledger_id == lid, ReadBudgetProjection.sync_id == "bu1"))
             assert db.scalar(select(ReadTxProjection).where(

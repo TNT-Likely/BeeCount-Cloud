@@ -1,10 +1,22 @@
 """GET /sync/pull —— mobile / web 按 cursor 拉取 SyncChange。
 
 用于 mobile 增量同步 + web 的 WebSocket 推送掉线后的 catch-up。
+
+user-global 重构后:一条 pull 同时返回 ledger-scope + user-scope changes。
+user-scope change 在响应里 ledger_id = sentinel '__user_global__',scope='user'。
+mobile 按 scope 决定 apply 路径(写主表),不再借车依附任何 ledger。
 """
 from __future__ import annotations
 
+from sqlalchemy import and_, or_
+
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
+
+
+# user-scope change 在 pull 响应里的 ledger_id 用这个 sentinel 标识。mobile 端
+# 用同一字符串当 sync_cursors 的 ledger_external_id key,实现独立 cursor 跟踪。
+USER_GLOBAL_LEDGER_SENTINEL = "__user_global__"
+
 
 @router.get("/pull", response_model=SyncPullResponse)
 def pull_changes(
@@ -33,16 +45,31 @@ def pull_changes(
 
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
-    if not ledger_ids:
-        if heartbeat_updated:
-            db.commit()
-        return SyncPullResponse(changes=[], server_cursor=since, has_more=False)
+    # 无任何 ledger 的用户仍可能有 user-scope changes(场景理论上不存在,但
+    # 协议上允许),所以不在此处早返。
 
+    # LEFT JOIN Ledger:user-scope change 的 ledger_id IS NULL,INNER JOIN
+    # 会把这些行过滤掉。
+    # 过滤:
+    #   - ledger-scope(scope='ledger'):必须属于 caller 可见 ledger
+    #   - user-scope(scope='user'):必须 user_id == caller
+    # `column.in_([])` 在 SQLAlchemy 2.0+ 编译成 false 表达式,不会 crash;
+    # 用户无任何 ledger 时 ledger-scope 子句自然过滤掉所有行。
+    scope_filter = or_(
+        and_(
+            SyncChange.scope == "ledger",
+            SyncChange.ledger_id.in_(ledger_ids),
+        ),
+        and_(
+            SyncChange.scope == "user",
+            SyncChange.user_id == current_user.id,
+        ),
+    )
     query = (
         select(SyncChange, Ledger.external_id)
-        .join(Ledger, SyncChange.ledger_id == Ledger.id)
+        .outerjoin(Ledger, SyncChange.ledger_id == Ledger.id)
         .where(
-            SyncChange.ledger_id.in_(ledger_ids),
+            scope_filter,
             SyncChange.change_id > since,
         )
         .order_by(SyncChange.change_id.asc())
@@ -61,18 +88,26 @@ def pull_changes(
 
     for change, ledger_external_id in rows:
         server_cursor = max(server_cursor, change.change_id)
-        current_cursor = per_ledger_cursor.get(ledger_external_id, 0)
-        per_ledger_cursor[ledger_external_id] = max(current_cursor, change.change_id)
+        # user-scope change 的 ledger_id 字段填 sentinel,让 mobile 把它当独立
+        # 频道跟踪 cursor。
+        out_ledger_id = (
+            USER_GLOBAL_LEDGER_SENTINEL
+            if change.scope == "user"
+            else (ledger_external_id or "")
+        )
+        current_cursor = per_ledger_cursor.get(out_ledger_id, 0)
+        per_ledger_cursor[out_ledger_id] = max(current_cursor, change.change_id)
         changes.append(
             SyncChangeOut(
                 change_id=change.change_id,
-                ledger_id=ledger_external_id,
+                ledger_id=out_ledger_id,
                 entity_type=change.entity_type,
                 entity_sync_id=change.entity_sync_id,
                 action=cast("Any", change.action),
                 payload=change.payload_json,
                 updated_at=change.updated_at,
                 updated_by_device_id=change.updated_by_device_id,
+                scope=change.scope,
             )
         )
 

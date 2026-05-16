@@ -38,21 +38,55 @@ async def push_changes(
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
 
+    # 是否触动 user-global —— 触动了就额外给 owner 广播一条 __user_global__
+    # 通道的 sync_change(让其他设备拉这一份)。
+    touched_user_global = False
+
     for change in req.changes:
-        row = get_accessible_ledger_by_external_id(
-            db,
-            user_id=current_user.id,
-            ledger_external_id=change.ledger_id,
-        )
-        if row is None:
-            # Caller doesn't own a ledger with this external_id — auto-create.
-            # The (user_id, external_id) unique constraint keeps per-user ids
-            # isolated, so two users can independently own "default".
-            ledger = Ledger(user_id=current_user.id, external_id=change.ledger_id)
-            db.add(ledger)
-            db.flush()
+        is_user_global = change.entity_type in USER_GLOBAL_ENTITY_TYPES
+
+        # ============================================================
+        # 路径分流:user-global vs ledger-scoped
+        # ============================================================
+        # user-global(category/account/tag)在新协议下不依附 ledger:
+        #   - SyncChange.user_id = current_user.id(真请求方,非账本 owner)
+        #   - SyncChange.ledger_id = NULL
+        #   - SyncChange.scope = 'user'
+        #   - LWW 按 (user_id, scope='user', entity_type, entity_sync_id) 决胜
+        #   - 不做 ledger 自动创建(user-global 不挂账本)
+        # ledger-scoped(transaction/budget/ledger)沿用老路径。
+        # ============================================================
+
+        ledger: Ledger | None = None  # 仅 ledger-scoped 用
+        if is_user_global:
+            # 老 mobile 可能填了 change.ledger_id(借车协议),server 端忽略;
+            # 不做 get_accessible_ledger 校验。
+            pass
         else:
-            ledger, _ = row
+            if change.ledger_id is None:
+                # 老协议契约要求 ledger-scoped 必须带 ledger_id;新协议同样要求。
+                logger.warning(
+                    "sync.push.skip ledger-scoped change missing ledger_id "
+                    "entity=%s sync_id=%s",
+                    change.entity_type,
+                    change.entity_sync_id,
+                )
+                rejected += 1
+                continue
+            row = get_accessible_ledger_by_external_id(
+                db,
+                user_id=current_user.id,
+                ledger_external_id=change.ledger_id,
+            )
+            if row is None:
+                # Caller doesn't own a ledger with this external_id — auto-create.
+                # The (user_id, external_id) unique constraint keeps per-user ids
+                # isolated, so two users can independently own "default".
+                ledger = Ledger(user_id=current_user.id, external_id=change.ledger_id)
+                db.add(ledger)
+                db.flush()
+            else:
+                ledger, _ = row
 
         # Clamp incoming updated_at to the server clock to neutralize client
         # clock skew. Without this, a mobile device whose local clock is ahead
@@ -63,16 +97,34 @@ async def push_changes(
         raw_updated_at = _to_utc(change.updated_at)
         max_allowed = now + timedelta(seconds=5)
         incoming_updated_at = min(raw_updated_at, max_allowed)
-        latest_entity_change = db.scalar(
-            select(SyncChange)
-            .where(
-                SyncChange.ledger_id == ledger.id,
-                SyncChange.entity_type == change.entity_type,
-                SyncChange.entity_sync_id == change.entity_sync_id,
+
+        # ============================================================
+        # LWW lookup —— scope-aware
+        # ============================================================
+        if is_user_global:
+            latest_entity_change = db.scalar(
+                select(SyncChange)
+                .where(
+                    SyncChange.user_id == current_user.id,
+                    SyncChange.scope == "user",
+                    SyncChange.entity_type == change.entity_type,
+                    SyncChange.entity_sync_id == change.entity_sync_id,
+                )
+                .order_by(SyncChange.change_id.desc())
+                .limit(1)
             )
-            .order_by(SyncChange.change_id.desc())
-            .limit(1)
-        )
+        else:
+            assert ledger is not None
+            latest_entity_change = db.scalar(
+                select(SyncChange)
+                .where(
+                    SyncChange.ledger_id == ledger.id,
+                    SyncChange.entity_type == change.entity_type,
+                    SyncChange.entity_sync_id == change.entity_sync_id,
+                )
+                .order_by(SyncChange.change_id.desc())
+                .limit(1)
+            )
 
         # Deterministic LWW with device_id tie-break:
         # compare (updated_at, device_id) tuples lexicographically so two servers
@@ -113,7 +165,7 @@ async def push_changes(
             db.add(
                 AuditLog(
                     user_id=current_user.id,
-                    ledger_id=ledger.id,
+                    ledger_id=ledger.id if ledger is not None else None,
                     action="sync_conflict",
                     metadata_json={
                         **sample,
@@ -139,51 +191,89 @@ async def push_changes(
             )
             continue
 
-        row_change = SyncChange(
-            user_id=ledger.user_id,
-            ledger_id=ledger.id,
-            entity_type=change.entity_type,
-            entity_sync_id=change.entity_sync_id,
-            action=change.action,
-            payload_json=change.payload,
-            updated_at=incoming_updated_at,
-            updated_by_device_id=req.device_id,
-            updated_by_user_id=current_user.id,
-        )
-        db.add(row_change)
-        db.flush()
-
-        # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
-        if change.entity_type in INDIVIDUAL_ENTITY_TYPES:
-            # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
-            lock_ledger_for_materialize(db, ledger.id)
+        # ============================================================
+        # SyncChange row + apply 路径
+        # ============================================================
+        if is_user_global:
+            row_change = SyncChange(
+                user_id=current_user.id,       # 真请求方
+                ledger_id=None,
+                scope="user",
+                entity_type=change.entity_type,
+                entity_sync_id=change.entity_sync_id,
+                action=change.action,
+                payload_json=change.payload,
+                updated_at=incoming_updated_at,
+                updated_by_device_id=req.device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(row_change)
+            db.flush()
             try:
-                apply_change_to_projection(
+                apply_user_change_to_projection(
                     db,
-                    ledger_id=ledger.id,
-                    ledger_owner_id=ledger.user_id,
+                    user_id=current_user.id,
                     change=row_change,
                 )
             except Exception:
-                # 批量 push 里一条坏 change 炸了要看得到是哪一条;不然 500 只见
-                # generic Internal server error,得上生产日志面板才能查。
                 logger.exception(
-                    "sync.push.apply_failed entity=%s action=%s ledger=%s sync_id=%s "
-                    "change_id=%d payload=%s",
+                    "sync.push.apply_failed (user-scope) entity=%s action=%s "
+                    "sync_id=%s change_id=%d payload=%s",
                     change.entity_type,
                     change.action,
-                    change.ledger_id,
                     change.entity_sync_id,
                     row_change.change_id,
                     change.payload,
                 )
                 raise
+            touched_user_global = True
+        else:
+            assert ledger is not None
+            row_change = SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                scope="ledger",
+                entity_type=change.entity_type,
+                entity_sync_id=change.entity_sync_id,
+                action=change.action,
+                payload_json=change.payload,
+                updated_at=incoming_updated_at,
+                updated_by_device_id=req.device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(row_change)
+            db.flush()
+            # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
+            if change.entity_type in INDIVIDUAL_ENTITY_TYPES:
+                # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
+                lock_ledger_for_materialize(db, ledger.id)
+                try:
+                    apply_change_to_projection(
+                        db,
+                        ledger_id=ledger.id,
+                        ledger_owner_id=ledger.user_id,
+                        change=row_change,
+                    )
+                except Exception:
+                    # 批量 push 里一条坏 change 炸了要看得到是哪一条;不然 500 只见
+                    # generic Internal server error,得上生产日志面板才能查。
+                    logger.exception(
+                        "sync.push.apply_failed entity=%s action=%s ledger=%s sync_id=%s "
+                        "change_id=%d payload=%s",
+                        change.entity_type,
+                        change.action,
+                        change.ledger_id,
+                        change.entity_sync_id,
+                        row_change.change_id,
+                        change.payload,
+                    )
+                    raise
+            touched_ledgers[ledger.external_id] = ledger.id
 
         accepted += 1
         max_cursor = max(max_cursor, row_change.change_id)
-        touched_ledgers[ledger.external_id] = ledger.id
         logger.info(
-            "sync.push.accept entity=%s action=%s ledger=%s sync_id=%s change_id=%d device=%s user=%s",
+            "sync.push.accept entity=%s action=%s ledger=%s sync_id=%s change_id=%d device=%s user=%s scope=%s",
             change.entity_type,
             change.action,
             change.ledger_id,
@@ -191,6 +281,7 @@ async def push_changes(
             row_change.change_id,
             req.device_id,
             current_user.id,
+            row_change.scope,
         )
     if max_cursor == 0:
         accessible = list_accessible_ledgers(db, user_id=current_user.id)
@@ -216,14 +307,29 @@ async def push_changes(
                     },
                 )
 
+    if touched_user_global:
+        # user-global change broadcast 走 sentinel ledger external id,mobile/web
+        # 收到后会去 pull __user_global__ 拉这一份增量。
+        ws_manager = request.app.state.ws_manager
+        await ws_manager.broadcast_to_user(
+            current_user.id,
+            {
+                "type": "sync_change",
+                "ledgerId": "__user_global__",
+                "serverCursor": max_cursor,
+                "serverTimestamp": now.isoformat(),
+            },
+        )
+
     logger.info(
-        "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d",
+        "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d user_global=%s",
         current_user.id,
         req.device_id,
         accepted,
         rejected,
         conflict_count,
         len(touched_ledgers),
+        touched_user_global,
     )
     return SyncPushResponse(
         accepted=accepted,

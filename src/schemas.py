@@ -221,12 +221,20 @@ class DeviceOut(BaseModel):
 
 
 class SyncChangeIn(BaseModel):
-    ledger_id: str
+    # user-global change(category/account/tag)在新协议下不依附 ledger,这里
+    # 允许 None。老 mobile 会发当前 ledger_id —— server 按 entity_type 强制
+    # 路由(参考 .docs/user-global-refactor/plan.md §3.2),不依赖 client 一定
+    # 填对。
+    ledger_id: str | None = None
     entity_type: str
     entity_sync_id: str
     action: SyncAction
     payload: dict[str, Any]
     updated_at: datetime
+    # 'user' = category/account/tag 等 user-global 资源(server 端 SyncChange.scope)
+    # 'ledger' = budget/transaction/ledger 等 ledger-scoped
+    # 老 mobile 不发该字段;server 兜底按 entity_type 推断,不依赖 client 一定填对。
+    scope: str | None = None
 
 
 class SyncPushRequest(BaseModel):
@@ -245,6 +253,9 @@ class SyncPushResponse(BaseModel):
 
 class SyncChangeOut(BaseModel):
     change_id: int
+    # user-scope change(scope='user')的 ledger_id 是 sentinel '__user_global__';
+    # ledger-scope 是真实账本 external_id。mobile 按 scope 字段决定 apply 路径,
+    # ledger_id 仅做日志 / cursor 标识。
     ledger_id: str
     entity_type: str
     entity_sync_id: str
@@ -252,6 +263,8 @@ class SyncChangeOut(BaseModel):
     payload: dict[str, Any]
     updated_at: datetime
     updated_by_device_id: str | None
+    # 'user' / 'ledger'。SyncChange.scope 直接 round-trip。
+    scope: str = "ledger"
 
 
 class SyncPullResponse(BaseModel):

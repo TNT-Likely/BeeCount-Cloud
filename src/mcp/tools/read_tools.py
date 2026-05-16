@@ -21,12 +21,12 @@ from sqlalchemy.orm import Session
 from ...database import SessionLocal
 from ...models import (
     Ledger,
-    ReadAccountProjection,
     ReadBudgetProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
     User,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
 )
 
 
@@ -193,12 +193,12 @@ def get_transaction(user: User, sync_id: str) -> dict[str, Any] | None:
 def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, Any]]:
     """列分类。kind 可选 'expense' / 'income' / 'transfer'。"""
     with SessionLocal() as db:
-        query = select(ReadCategoryProjection).where(ReadCategoryProjection.user_id == user.id)
+        query = select(UserCategoryProjection).where(UserCategoryProjection.user_id == user.id)
         if kind:
-            query = query.where(ReadCategoryProjection.kind == kind)
+            query = query.where(UserCategoryProjection.kind == kind)
         rows = db.scalars(query).all()
         # 跨账本去重 — 同 sync_id 取最新一份
-        seen: dict[str, ReadCategoryProjection] = {}
+        seen: dict[str, UserCategoryProjection] = {}
         for r in rows:
             if r.sync_id not in seen:
                 seen[r.sync_id] = r
@@ -220,11 +220,11 @@ def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, An
 def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[str, Any]]:
     """列账户。account_type 可选 'bank_card' / 'credit_card' / 'cash' / 等。"""
     with SessionLocal() as db:
-        query = select(ReadAccountProjection).where(ReadAccountProjection.user_id == user.id)
+        query = select(UserAccountProjection).where(UserAccountProjection.user_id == user.id)
         if account_type:
-            query = query.where(ReadAccountProjection.account_type == account_type)
+            query = query.where(UserAccountProjection.account_type == account_type)
         rows = db.scalars(query).all()
-        seen: dict[str, ReadAccountProjection] = {}
+        seen: dict[str, UserAccountProjection] = {}
         for r in rows:
             if r.sync_id not in seen:
                 seen[r.sync_id] = r
@@ -248,9 +248,9 @@ def list_tags(user: User) -> list[dict[str, Any]]:
     """列标签。"""
     with SessionLocal() as db:
         rows = db.scalars(
-            select(ReadTagProjection).where(ReadTagProjection.user_id == user.id)
+            select(UserTagProjection).where(UserTagProjection.user_id == user.id)
         ).all()
-        seen: dict[str, ReadTagProjection] = {}
+        seen: dict[str, UserTagProjection] = {}
         for r in rows:
             if r.sync_id not in seen:
                 seen[r.sync_id] = r
@@ -314,16 +314,16 @@ def get_ledger_stats(user: User, *, ledger_id: str | None = None) -> dict[str, A
             .where(ReadTxProjection.ledger_id == led.id)
         ) or 0)
         category_count = int(db.scalar(
-            select(func.count(func.distinct(ReadCategoryProjection.sync_id)))
-            .where(ReadCategoryProjection.user_id == user.id)
+            select(func.count(func.distinct(UserCategoryProjection.sync_id)))
+            .where(UserCategoryProjection.user_id == user.id)
         ) or 0)
         account_count = int(db.scalar(
-            select(func.count(func.distinct(ReadAccountProjection.sync_id)))
-            .where(ReadAccountProjection.user_id == user.id)
+            select(func.count(func.distinct(UserAccountProjection.sync_id)))
+            .where(UserAccountProjection.user_id == user.id)
         ) or 0)
         tag_count = int(db.scalar(
-            select(func.count(func.distinct(ReadTagProjection.sync_id)))
-            .where(ReadTagProjection.user_id == user.id)
+            select(func.count(func.distinct(UserTagProjection.sync_id)))
+            .where(UserTagProjection.user_id == user.id)
         ) or 0)
         budget_count = int(db.scalar(
             select(func.count()).select_from(ReadBudgetProjection)

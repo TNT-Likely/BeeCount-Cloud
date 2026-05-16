@@ -26,12 +26,12 @@ from ..models import (
     BackupSnapshot,
     Device,
     Ledger,
-    ReadAccountProjection,
-    ReadCategoryProjection,
-    ReadTagProjection,
     ReadTxProjection,
     RefreshToken,
     SyncChange,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
     User,
     UserProfile,
 )
@@ -483,23 +483,15 @@ def admin_overview(
         transactions_total=int(
             db.scalar(select(func.count()).select_from(ReadTxProjection)) or 0
         ),
+        # user-global per-user 表已唯一,count(*) 就是 distinct sync_id 数。
         accounts_total=int(
-            db.scalar(
-                select(func.count(func.distinct(ReadAccountProjection.sync_id)))
-            )
-            or 0
+            db.scalar(select(func.count()).select_from(UserAccountProjection)) or 0
         ),
         categories_total=int(
-            db.scalar(
-                select(func.count(func.distinct(ReadCategoryProjection.sync_id)))
-            )
-            or 0
+            db.scalar(select(func.count()).select_from(UserCategoryProjection)) or 0
         ),
         tags_total=int(
-            db.scalar(
-                select(func.count(func.distinct(ReadTagProjection.sync_id)))
-            )
-            or 0
+            db.scalar(select(func.count()).select_from(UserTagProjection)) or 0
         ),
     )
 
@@ -529,13 +521,13 @@ def integrity_scan(
     SAMPLE_LIMIT = 5
     now_utc = datetime.now(timezone.utc)
 
-    # 拉所有 ledger + owner email
+    # 拉所有 ledger + owner email + owner_user_id(user-global 引用检查需要 uid)
     ledger_rows = db.execute(
-        select(Ledger.id, Ledger.name, User.email)
+        select(Ledger.id, Ledger.name, User.email, Ledger.user_id)
         .join(User, User.id == Ledger.user_id)
     ).all()
 
-    for ledger_id, ledger_name, owner_email in ledger_rows:
+    for ledger_id, ledger_name, owner_email, ledger_user_id in ledger_rows:
         # ===== Orphan tx 系列 =====
         # 1. category orphan: 严格定义 — tx 既没有 category_name(用户什么都看
         # 不到),又有一个悬空的 category_sync_id。只要 category_name 有值,
@@ -727,10 +719,11 @@ def integrity_scan(
                     ),
                 )
                 .exists(),
-                ~select(ReadCategoryProjection.sync_id)
+                # category 是 user-global,孤儿检测按 AttachmentFile.user_id JOIN。
+                ~select(UserCategoryProjection.sync_id)
                 .where(
-                    ReadCategoryProjection.ledger_id == ledger_id,
-                    ReadCategoryProjection.icon_cloud_file_id == AttachmentFile.id,
+                    UserCategoryProjection.user_id == AttachmentFile.user_id,
+                    UserCategoryProjection.icon_cloud_file_id == AttachmentFile.id,
                 )
                 .exists(),
             )
@@ -757,10 +750,13 @@ def integrity_scan(
             ))
 
         # 7-9. 未引用的实体(信息性,不算 bug,但帮助 admin 找冗余数据)
+        # user-global 表是 per-user,跨 ledger 检查引用 — 这条 ledger 没引用不算
+        # 真孤儿,要看用户在所有 ledger 里都没引用。但 integrity scan 是 per-ledger
+        # 报告,这里只在第一次遇到该 user_id 时跑一次全用户检查。
         for proj_model, proj_name_col, ref_col, issue_type in (
-            (ReadCategoryProjection, "name", ReadTxProjection.category_sync_id, "unused_category"),
-            (ReadAccountProjection, "name", ReadTxProjection.account_sync_id, "unused_account"),
-            (ReadTagProjection, "name", None, "unused_tag"),  # tag 在 tx 上是 string 形式存的,跳过
+            (UserCategoryProjection, "name", ReadTxProjection.category_sync_id, "unused_category"),
+            (UserAccountProjection, "name", ReadTxProjection.account_sync_id, "unused_account"),
+            (UserTagProjection, "name", None, "unused_tag"),  # tag 在 tx 上是 string 形式存的,跳过
         ):
             if ref_col is None:
                 continue  # tag 引用关系比较复杂,先跳
@@ -770,10 +766,11 @@ def integrity_scan(
                     getattr(proj_model, proj_name_col),
                 )
                 .where(
-                    proj_model.ledger_id == ledger_id,
+                    proj_model.user_id == ledger_user_id,
+                    # 跨该用户所有 ledger 检查引用,无任一 tx 引用即孤儿。
                     ~select(ref_col)
                     .where(
-                        ReadTxProjection.ledger_id == ledger_id,
+                        ReadTxProjection.user_id == ledger_user_id,
                         ref_col == proj_model.sync_id,
                     )
                     .exists(),

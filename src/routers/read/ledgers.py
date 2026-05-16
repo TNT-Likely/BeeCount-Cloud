@@ -105,9 +105,10 @@ def get_ledger_stats(
             .where(model.user_id == current_user.id)
         ) or 0)
 
-    account_count = _count_distinct_sync_for(ReadAccountProjection)
-    category_count = _count_distinct_sync_for(ReadCategoryProjection)
-    tag_count = _count_distinct_sync_for(ReadTagProjection)
+    # user-global tables 都用 user_id PK,count distinct 就是 count rows。
+    account_count = _count_distinct_sync_for(UserAccountProjection)
+    category_count = _count_distinct_sync_for(UserCategoryProjection)
+    tag_count = _count_distinct_sync_for(UserTagProjection)
 
     # 附件计数按 attachment_kind 区分:
     #   - attachment_count / attachment_total: tx 附件(挂在 ledger 上)
@@ -142,9 +143,9 @@ def get_ledger_stats(
 
     tx_total = _count_total(ReadTxProjection)
     budget_total = _count_total(ReadBudgetProjection)
-    account_total = _count_distinct_sync(ReadAccountProjection)
-    category_total = _count_distinct_sync(ReadCategoryProjection)
-    tag_total = _count_distinct_sync(ReadTagProjection)
+    account_total = _count_distinct_sync(UserAccountProjection)
+    category_total = _count_distinct_sync(UserCategoryProjection)
+    tag_total = _count_distinct_sync(UserTagProjection)
 
     attachment_total = int(
         db.scalar(
@@ -344,14 +345,13 @@ def list_accounts(
     # snapshot fullPush 时按 ledger fanout,delete 已修复为跨 ledger 删,
     # 但存量数据可能仍有重复)。这里用 _dedupe_by_sync_id 去重,优先取
     # source_change_id 最大(最新)的一份。
+    # user-global per-user 表已经唯一,_dedupe_by_sync_id 是 no-op,但保留
+     # 调用以兼容历史 helper 签名,不影响行为。
     rows = _dedupe_by_sync_id(
         db.scalars(
-            select(ReadAccountProjection)
-            .where(ReadAccountProjection.user_id == current_user.id)
-            .order_by(
-                ReadAccountProjection.sync_id.asc(),
-                ReadAccountProjection.source_change_id.desc(),
-            )
+            select(UserAccountProjection)
+            .where(UserAccountProjection.user_id == current_user.id)
+            .order_by(UserAccountProjection.sync_id.asc())
         ).all()
     )
     rows.sort(key=lambda r: (r.name or "").lower())
@@ -394,15 +394,12 @@ def list_categories(
     )
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    # user-global,跨 ledger 同 sync_id 去重(优先最新 source_change_id 那份)
+    # user-global per-user 表已经唯一,_dedupe_by_sync_id 是 no-op。
     rows = _dedupe_by_sync_id(
         db.scalars(
-            select(ReadCategoryProjection)
-            .where(ReadCategoryProjection.user_id == current_user.id)
-            .order_by(
-                ReadCategoryProjection.sync_id.asc(),
-                ReadCategoryProjection.source_change_id.desc(),
-            )
+            select(UserCategoryProjection)
+            .where(UserCategoryProjection.user_id == current_user.id)
+            .order_by(UserCategoryProjection.sync_id.asc())
         ).all()
     )
     rows.sort(key=lambda r: (
@@ -457,15 +454,12 @@ def list_budgets(
     # 重复时取最新一份 —— SQL 按 source_change_id DESC 排,字典写入用第一个胜出)
     cat_rows = db.execute(
         select(
-            ReadCategoryProjection.sync_id,
-            ReadCategoryProjection.name,
-            ReadCategoryProjection.source_change_id,
+            UserCategoryProjection.sync_id,
+            UserCategoryProjection.name,
+            UserCategoryProjection.source_change_id,
         )
-        .where(ReadCategoryProjection.user_id == current_user.id)
-        .order_by(
-            ReadCategoryProjection.sync_id.asc(),
-            ReadCategoryProjection.source_change_id.desc(),
-        )
+        .where(UserCategoryProjection.user_id == current_user.id)
+        .order_by(UserCategoryProjection.sync_id.asc())
     ).all()
     cat_name_by_sync: dict[str, str] = {}
     for r in cat_rows:
@@ -524,15 +518,12 @@ def list_tags(
     )
     ledger_name = _resolve_ledger_name(db, ledger=ledger)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
-    # user-global,同 sync_id 跨 ledger 去重
+    # user-global per-user 表已经唯一,_dedupe_by_sync_id 是 no-op。
     rows = _dedupe_by_sync_id(
         db.scalars(
-            select(ReadTagProjection)
-            .where(ReadTagProjection.user_id == current_user.id)
-            .order_by(
-                ReadTagProjection.sync_id.asc(),
-                ReadTagProjection.source_change_id.desc(),
-            )
+            select(UserTagProjection)
+            .where(UserTagProjection.user_id == current_user.id)
+            .order_by(UserTagProjection.sync_id.asc())
         ).all()
     )
     rows.sort(key=lambda r: (r.name or "").lower())
