@@ -127,7 +127,9 @@ export function HomeHero({
         <div className="absolute -left-24 bottom-0 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
       </div>
 
-      <div className="relative grid gap-5 p-6 lg:grid-cols-[1.4fr_1fr]">
+      {/* 窄屏 p-4 / 桌面 p-6:mobile 视口下 hero 体积大,内容只占一列时
+           24px padding 显得很空,16px 紧凑但不挤。grid gap 同步收一点。 */}
+      <div className="relative grid gap-4 p-4 sm:gap-5 sm:p-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="min-w-0">
           {/* 顶部：账本名 + 三视角切换 */}
           <div className="flex items-center justify-between gap-3">
