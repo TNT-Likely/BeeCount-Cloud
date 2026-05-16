@@ -318,6 +318,15 @@ def _run_with_remotes(
             tar_path = None  # type: ignore[assignment]
 
         # ---- 6. fan-out push ----
+        # 确保 rclone.conf 反映 DB 里最新 remote 配置 —— manual run-now 路径在
+        # routers/admin_backup.py:507 已有同样调用,scheduled backup 历史上漏了
+        # 这步,容器重建 / conf 文件丢失就直接 fail(2026-05-14 线上事故就是
+        # 这条路径触发的)。每次 backup 前重写一次保证自愈。
+        config_mgr = RcloneConfigManager(
+            settings.rclone_config_path, settings.rclone_binary
+        )
+        config_mgr.rewrite_from_db(db, user_id)
+
         runner = RcloneRunner(
             binary=settings.rclone_binary,
             config_path=settings.rclone_config_path,

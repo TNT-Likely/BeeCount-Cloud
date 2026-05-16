@@ -34,9 +34,16 @@ class Settings(BaseSettings):
     attachment_max_upload_bytes: int = 64 * 1024 * 1024
 
     # ===== rclone 备份模块 =====
-    # rclone.conf 路径(权限 0600,只 server 进程读写)。默认放在 DATA_DIR
-    # 同级,跟 backup volume 一起被备份覆盖外部脚本时也能保留。
-    rclone_config_path: str = "./data/rclone.conf"
+    # rclone.conf 路径(权限 0600,只 server 进程读写)。默认 `./data/rclone.conf`
+    # 配合本地开发(WORKDIR 平级 ./data)。**生产 Docker 镜像必须通过
+    # `RCLONE_CONFIG_PATH=/data/rclone.conf` env 覆盖**,跟 BACKUP_STORAGE_DIR /
+    # ATTACHMENT_STORAGE_DIR 一样落到 mounted volume 持久化。
+    # 没 alias 的话 Dockerfile 改 env 不生效 — 容器 WORKDIR /app 下 ./data 是
+    # docs-index COPY 来的临时层,容器重建就丢 rclone.conf,scheduled backup
+    # 找不到 conf 直接 fail(2026-05-14 线上事故)。
+    rclone_config_path: str = Field(
+        default="./data/rclone.conf", alias="RCLONE_CONFIG_PATH"
+    )
     # rclone 二进制路径,Docker 镜像里 apt 装的会在 /usr/bin/rclone。
     rclone_binary: str = "rclone"
     # 备份打包 + 还原解压的临时区。需要 ≥ 2x DATA_DIR 大小。

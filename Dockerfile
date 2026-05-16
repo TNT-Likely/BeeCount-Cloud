@@ -84,6 +84,7 @@ ENV APP_ENV=production \
     DATABASE_URL=sqlite:////data/beecount.db \
     BACKUP_STORAGE_DIR=/data/backups \
     ATTACHMENT_STORAGE_DIR=/data/attachments \
+    RCLONE_CONFIG_PATH=/data/rclone.conf \
     WEB_STATIC_DIR=/app/static \
     ALLOW_APP_RW_SCOPES=true \
     APP_VERSION=${VERSION}
