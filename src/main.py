@@ -283,3 +283,39 @@ async def _stop_mcp_log_retention() -> None:  # noqa: B008
     task = getattr(app.state, "mcp_log_retention_task", None)
     if task is not None and not task.done():
         task.cancel()
+
+
+# ============================================================================
+# sync_changes 表规模观测 —— 启动时打印行数 + payload 总字节,运维肉眼
+# 跟踪增长趋势。sync_changes 是 append-only log(append 不 compact),长期
+# 会膨胀;详见 .docs/dashboard-anomaly-budget/plan.md 关于 compaction 的讨论。
+# 当前规模阈值参考:
+#   ~25k 行 / 30 MB(线上 2026-05,跨度 1 个月)
+#   ~120 MB / 年(线性外推)
+# >= 500k 行或 >= 200 MB 时考虑加 retention / compaction job。
+# 查询本身扫一遍 sync_changes,大表上几百 ms — 一次性 startup 开销可接受。
+# ============================================================================
+
+
+@app.on_event("startup")
+async def _log_sync_changes_size() -> None:  # noqa: B008
+    from sqlalchemy import text
+
+    try:
+        with SessionLocal() as db:
+            row = db.execute(text(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes "
+                "FROM sync_changes"
+            )).first()
+            if row is None:
+                return
+            n, payload_bytes = int(row[0] or 0), int(row[1] or 0)
+            logging.getLogger(__name__).info(
+                "sync_changes: %d rows, payload=%.1f MB (append-only,长期膨胀 watch)",
+                n, payload_bytes / 1024.0 / 1024.0,
+            )
+    except Exception:
+        # 启动早期 DB 可能还没准备好(alembic 没跑 / 测试环境)— 不阻塞
+        logging.getLogger(__name__).warning(
+            "sync_changes size probe failed", exc_info=True,
+        )
