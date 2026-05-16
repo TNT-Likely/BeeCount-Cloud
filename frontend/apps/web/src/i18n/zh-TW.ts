@@ -759,6 +759,12 @@ const zhTW = {
   'home.anomaly.attributionUnique': '{cat} {amount}(本月獨有)',
   'home.anomaly.attributionFlat': '{cat} {amount}',
 
+  'home.insights.hint': '懸停查看詳情',
+  'home.insights.budgetChipTotal': '本月預算 {pct}',
+  'home.insights.budgetChipCatOnly': '分類預算 {count} 個',
+  'home.insights.anomalyChip': '異常 {count} 個月',
+  'home.insights.anomalyChipClean': '無異常 ✓',
+
   'home.budget.title': '本月預算',
   'home.budget.totalLabel': '總預算',
   'home.budget.used': '已花',

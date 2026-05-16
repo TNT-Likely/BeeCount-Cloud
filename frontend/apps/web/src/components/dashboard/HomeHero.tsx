@@ -8,13 +8,17 @@ import {
 } from 'lucide-react'
 
 import type {
+  ReadBudget,
   ReadLedger,
+  WorkspaceAnalyticsAnomalyMonth,
   WorkspaceAnalyticsSeriesItem,
   WorkspaceAnalyticsSummary,
   WorkspaceLedgerCounts
 } from '@beecount/api-client'
-import { Amount } from '@beecount/web-features'
+import { Amount, type BudgetUsage } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
+
+import { HeroInsightsRow } from './HeroInsightsRow'
 
 type HeroScope = 'month' | 'year' | 'all'
 
@@ -28,6 +32,12 @@ interface Props {
   allSummary?: WorkspaceAnalyticsSummary
   allSeries?: WorkspaceAnalyticsSeriesItem[]
   ledgerCounts?: WorkspaceLedgerCounts
+  /** 当前账本预算配置 + 当周期 used,空数组 → chip 不显示。 */
+  budgets?: ReadBudget[]
+  budgetUsageById?: Record<string, BudgetUsage>
+  /** 异常月份(scope=year analytics 返回),空数组 + hasEnoughMonths=true 显示 ✓ */
+  anomalyMonths?: WorkspaceAnalyticsAnomalyMonth[]
+  hasEnoughMonthsForAnomaly?: boolean
 }
 
 // 三个 scope 的 label/hint 在组件里 t() 时动态查,这里只留 value 列表
@@ -50,7 +60,11 @@ export function HomeHero({
   yearSeries,
   allSummary,
   allSeries,
-  ledgerCounts
+  ledgerCounts,
+  budgets,
+  budgetUsageById,
+  anomalyMonths,
+  hasEnoughMonthsForAnomaly
 }: Props) {
   const t = useT()
   const [scope, setScope] = useState<HeroScope>('month')
@@ -93,22 +107,25 @@ export function HomeHero({
   }, [activeSeries])
 
   return (
+    // overflow-visible:hero 内的 InsightsRow chip 用 popover 浮出详情,需要
+    // 越出 hero 边界。装饰光斑挪到内层 overflow-hidden 子层去 clip。
     <div
-      className="relative overflow-hidden rounded-2xl border border-primary/30"
+      className="relative rounded-2xl border border-primary/30"
       style={{
         background:
           'linear-gradient(135deg, hsl(var(--primary)/0.18) 0%, hsl(var(--primary)/0.04) 55%, transparent 100%)'
       }}
     >
-      {/* 装饰光斑 */}
+      {/* 装饰光斑容器 — 单独 overflow-hidden + inset-0 + rounded-2xl 跟父
+           容器对齐,光斑不漏到 hero 外。popover absolute 定位在 grid 容器
+           内,跟这层平级,不被 clip。 */}
       <div
-        className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-primary/30 blur-3xl"
+        className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl"
         aria-hidden
-      />
-      <div
-        className="pointer-events-none absolute -left-24 bottom-0 h-56 w-56 rounded-full bg-primary/15 blur-3xl"
-        aria-hidden
-      />
+      >
+        <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-primary/30 blur-3xl" />
+        <div className="absolute -left-24 bottom-0 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+      </div>
 
       <div className="relative grid gap-5 p-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="min-w-0">
@@ -196,6 +213,15 @@ export function HomeHero({
               </div>
             </HeroStat>
           </div>
+
+          {/* 预算 + 异常归因 chip — 关键回顾信息一行带过,hover 出详情 */}
+          <HeroInsightsRow
+            budgets={budgets || []}
+            budgetUsageById={budgetUsageById || {}}
+            anomalyMonths={anomalyMonths || []}
+            hasEnoughMonths={!!hasEnoughMonthsForAnomaly}
+            currency={currency}
+          />
         </div>
 
         {/* 右侧：sparkline，随 scope 变 */}

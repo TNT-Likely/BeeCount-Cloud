@@ -20,8 +20,6 @@ import { HomeTopAccounts } from '../dashboard/HomeTopAccounts'
 import { AssetCompositionDonut } from '../dashboard/AssetCompositionDonut'
 import { MonthlyTrendBars } from '../dashboard/MonthlyTrendBars'
 import { TopCategoriesList } from '../dashboard/TopCategoriesList'
-import { AnomalyMonthsAttribution } from '../dashboard/AnomalyMonthsAttribution'
-import { BudgetUsagePanel } from '../dashboard/BudgetUsagePanel'
 
 interface Props {
   accounts: WorkspaceAccount[]
@@ -74,6 +72,12 @@ export function OverviewSection({
   const t = useT()
   const { ledgers, activeLedgerId, currency } = useLedgers()
 
+  // 预算 + 异常归因被合并进 HomeHero 顶部 chip(hover 出详情),不再独占
+  // 卡片占首页空间。月份够算 baseline 的判定跟 server 算法一致(已发生月份 ≥ 3)。
+  const yearOccurredMonths = (analyticsData?.series || []).filter(
+    (s) => s.expense > 0,
+  ).length
+
   return (
     <div className="space-y-4">
       <HomeHero
@@ -86,19 +90,15 @@ export function OverviewSection({
         allSummary={allTimeSummary || undefined}
         allSeries={allTimeSeries}
         ledgerCounts={ledgerCounts || undefined}
+        budgets={budgets}
+        budgetUsageById={budgetUsageById}
+        anomalyMonths={analyticsData?.anomaly_months || []}
+        hasEnoughMonthsForAnomaly={yearOccurredMonths >= 3}
       />
 
       <HomeHabitStats
         monthSummary={currentMonthSummary || undefined}
         ledgerCounts={ledgerCounts || undefined}
-        currency={currency}
-      />
-
-      {/* 预算监控 — 跟 hero/habits 同等"实时盯盘"优先级,放在扩展分析分割线
-           之前。用户没设过预算时整个 panel 不渲染,避免空提示噪声(plan §3.3)。 */}
-      <BudgetUsagePanel
-        budgets={budgets}
-        usageById={budgetUsageById}
         currency={currency}
       />
 
@@ -115,16 +115,6 @@ export function OverviewSection({
         <HomeMonthCategoryDonut ranks={currentMonthCategoryRanks} currency={currency} />
         <HomeYearHeatmap yearSeries={currentYearSeries} currency={currency} />
       </div>
-
-      {/* 异常月份归因 — 紧贴 heatmap 下方,解释"哪几个月明显超出 + 主因"。
-           已发生月份 < 3 时显示"数据不足",0 异常显示"今年无异常 ✓"。 */}
-      <AnomalyMonthsAttribution
-        anomalyMonths={analyticsData?.anomaly_months || []}
-        hasEnoughMonths={
-          (analyticsData?.series || []).filter((s) => s.expense > 0).length >= 3
-        }
-        currency={currency}
-      />
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
         <AssetCompositionDonut accounts={accounts} />

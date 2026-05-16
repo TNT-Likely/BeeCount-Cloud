@@ -760,6 +760,12 @@ const en = {
   'home.anomaly.attributionUnique': '{cat} {amount} (only this month)',
   'home.anomaly.attributionFlat': '{cat} {amount}',
 
+  'home.insights.hint': 'Hover for details',
+  'home.insights.budgetChipTotal': 'Budget {pct}',
+  'home.insights.budgetChipCatOnly': '{count} category budgets',
+  'home.insights.anomalyChip': '{count} unusual months',
+  'home.insights.anomalyChipClean': 'No outliers ✓',
+
   'home.budget.title': 'This month budget',
   'home.budget.totalLabel': 'Total budget',
   'home.budget.used': 'Used',

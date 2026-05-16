@@ -29,13 +29,20 @@ const VISIBLE_CATEGORY_COUNT = 5
  *   ≥70%   bg-orange-500   注意
  *   <70%   bg-green-500    健康
  */
-export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY' }: Props) {
-  const t = useT()
-  const [expanded, setExpanded] = useState(false)
-
-  const { total, categoryBudgets, summary } = useMemo(() => {
+/**
+ * 算预算的 view-model(汇总分类、healthy/nearing/over 计数等)。Hero
+ * 内 chip 也用同一份,避免逻辑重复。
+ */
+export function useBudgetUsageViewModel(
+  budgets: ReadBudget[],
+  usageById: Record<string, BudgetUsage>,
+) {
+  return useMemo(() => {
     const enabled = budgets.filter((b) => b.enabled)
     const totalRow = enabled.find((b) => b.type === 'total') ?? null
+    const totalUsed = totalRow ? usageById[totalRow.id]?.used ?? 0 : 0
+    const totalRatio =
+      totalRow && totalRow.amount > 0 ? totalUsed / totalRow.amount : 0
     const catRows = enabled
       .filter((b) => b.type === 'category')
       .map((b) => ({
@@ -54,71 +61,127 @@ export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY' }: Props
       else healthy++
     }
 
+    const isEmpty = totalRow == null && catRows.length === 0
     return {
       total: totalRow,
+      totalUsed,
+      totalRatio,
       categoryBudgets: catRows,
       summary: { healthy, nearing, over },
+      isEmpty,
     }
   }, [budgets, usageById])
+}
 
-  // 总预算 + 分类预算都没,整卡不显示(plan §3.3)
-  if (total == null && categoryBudgets.length === 0) return null
+export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY' }: Props) {
+  const vm = useBudgetUsageViewModel(budgets, usageById)
+  if (vm.isEmpty) return null
 
+  return (
+    <Card className="bc-panel overflow-hidden">
+      <BudgetUsageBody
+        viewModel={vm}
+        usageById={usageById}
+        currency={currency}
+        withHeader
+      />
+    </Card>
+  )
+}
+
+/**
+ * 预算面板内部内容(总预算 + 分类列表)。可独立嵌入 popover 等场景,
+ * `withHeader=true` 渲染 CardHeader/CardContent 包装,false 只渲染裸内容。
+ */
+export function BudgetUsageBody({
+  viewModel,
+  usageById,
+  currency = 'CNY',
+  withHeader = false,
+}: {
+  viewModel: ReturnType<typeof useBudgetUsageViewModel>
+  usageById: Record<string, BudgetUsage>
+  currency?: string
+  withHeader?: boolean
+}) {
+  const t = useT()
+  const [expanded, setExpanded] = useState(false)
+  const { total, categoryBudgets, summary } = viewModel
   const visibleCats = expanded
     ? categoryBudgets
     : categoryBudgets.slice(0, VISIBLE_CATEGORY_COUNT)
   const hiddenCount = categoryBudgets.length - VISIBLE_CATEGORY_COUNT
 
-  return (
-    <Card className="bc-panel overflow-hidden">
-      <CardHeader className="flex flex-row items-end justify-between gap-2">
-        <CardTitle className="text-base">{t('home.budget.title')}</CardTitle>
-        {categoryBudgets.length > 0 && (
-          <span className="text-[11px] text-muted-foreground">
-            {t('home.budget.summaryHealthy').replace('{count}', String(summary.healthy))}
-            {' · '}
-            {t('home.budget.summaryNearing').replace('{count}', String(summary.nearing))}
-            {' · '}
-            <span className={summary.over > 0 ? 'text-expense' : ''}>
-              {t('home.budget.summaryOver').replace('{count}', String(summary.over))}
-            </span>
+  const header = (
+    <div className="flex flex-row items-end justify-between gap-2">
+      <CardTitle className="text-base">{t('home.budget.title')}</CardTitle>
+      {categoryBudgets.length > 0 && (
+        <span className="text-[11px] text-muted-foreground">
+          {t('home.budget.summaryHealthy').replace('{count}', String(summary.healthy))}
+          {' · '}
+          {t('home.budget.summaryNearing').replace('{count}', String(summary.nearing))}
+          {' · '}
+          <span className={summary.over > 0 ? 'text-expense' : ''}>
+            {t('home.budget.summaryOver').replace('{count}', String(summary.over))}
           </span>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {total && (
-          <TotalBudgetRow budget={total} used={usageById[total.id]?.used ?? 0} currency={currency} />
-        )}
+        </span>
+      )}
+    </div>
+  )
 
-        {categoryBudgets.length > 0 && (
-          <div className="space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {t('home.budget.categoryTitle')} ({categoryBudgets.length})
-            </div>
-            <ul className="space-y-2">
-              {visibleCats.map((c) => (
-                <CategoryBudgetRow
-                  key={c.budget.id}
-                  budget={c.budget}
-                  used={c.used}
-                />
-              ))}
-            </ul>
-            {hiddenCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setExpanded((v) => !v)}
-                className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                {expanded
-                  ? t('home.budget.collapse')
-                  : t('home.budget.expandRest').replace('{count}', String(hiddenCount))}
-              </button>
-            )}
+  const body = (
+    <div className="space-y-4">
+      {total && (
+        <TotalBudgetRow
+          budget={total}
+          used={usageById[total.id]?.used ?? 0}
+          currency={currency}
+        />
+      )}
+
+      {categoryBudgets.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {t('home.budget.categoryTitle')} ({categoryBudgets.length})
           </div>
-        )}
-      </CardContent>
-    </Card>
+          <ul className="space-y-2">
+            {visibleCats.map((c) => (
+              <CategoryBudgetRow
+                key={c.budget.id}
+                budget={c.budget}
+                used={c.used}
+              />
+            ))}
+          </ul>
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {expanded
+                ? t('home.budget.collapse')
+                : t('home.budget.expandRest').replace('{count}', String(hiddenCount))}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
+  if (withHeader) {
+    return (
+      <>
+        <CardHeader>{header}</CardHeader>
+        <CardContent>{body}</CardContent>
+      </>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      {header}
+      {body}
+    </div>
   )
 }
 

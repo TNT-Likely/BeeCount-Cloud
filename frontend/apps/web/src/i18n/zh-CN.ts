@@ -320,6 +320,13 @@ const zhCN = {
   'home.anomaly.attributionUnique': '{cat} {amount}(本月独有)',
   'home.anomaly.attributionFlat': '{cat} {amount}',
 
+  // HeroInsightsRow(hero chip + popover)
+  'home.insights.hint': '悬停查看详情',
+  'home.insights.budgetChipTotal': '本月预算 {pct}',
+  'home.insights.budgetChipCatOnly': '分类预算 {count} 个',
+  'home.insights.anomalyChip': '异常 {count} 个月',
+  'home.insights.anomalyChipClean': '无异常 ✓',
+
   // BudgetUsagePanel
   'home.budget.title': '本月预算',
   'home.budget.totalLabel': '总预算',
