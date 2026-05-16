@@ -1,4 +1,5 @@
 import type {
+  ReadBudget,
   WorkspaceAccount,
   WorkspaceAnalytics,
   WorkspaceAnalyticsSeriesItem,
@@ -7,6 +8,7 @@ import type {
   WorkspaceTag
 } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
+import type { BudgetUsage } from '@beecount/web-features'
 
 import { useLedgers } from '../../context/LedgersContext'
 import { HomeHero } from '../dashboard/HomeHero'
@@ -18,6 +20,8 @@ import { HomeTopAccounts } from '../dashboard/HomeTopAccounts'
 import { AssetCompositionDonut } from '../dashboard/AssetCompositionDonut'
 import { MonthlyTrendBars } from '../dashboard/MonthlyTrendBars'
 import { TopCategoriesList } from '../dashboard/TopCategoriesList'
+import { AnomalyMonthsAttribution } from '../dashboard/AnomalyMonthsAttribution'
+import { BudgetUsagePanel } from '../dashboard/BudgetUsagePanel'
 
 interface Props {
   accounts: WorkspaceAccount[]
@@ -32,6 +36,9 @@ interface Props {
   analyticsData: WorkspaceAnalytics | null
   analyticsIncomeRanks: WorkspaceAnalytics['category_ranks']
   ledgerCounts: WorkspaceLedgerCounts | null
+  /** 当前账本预算 + 各 budget 当周期 used。空数组 → BudgetUsagePanel 不显示。 */
+  budgets: ReadBudget[]
+  budgetUsageById: Record<string, BudgetUsage>
   onJumpToTransactionsWithQuery: (query: string) => void
 }
 
@@ -60,6 +67,8 @@ export function OverviewSection({
   analyticsData,
   analyticsIncomeRanks,
   ledgerCounts,
+  budgets,
+  budgetUsageById,
   onJumpToTransactionsWithQuery,
 }: Props) {
   const t = useT()
@@ -85,6 +94,14 @@ export function OverviewSection({
         currency={currency}
       />
 
+      {/* 预算监控 — 跟 hero/habits 同等"实时盯盘"优先级,放在扩展分析分割线
+           之前。用户没设过预算时整个 panel 不渲染,避免空提示噪声(plan §3.3)。 */}
+      <BudgetUsagePanel
+        budgets={budgets}
+        usageById={budgetUsageById}
+        currency={currency}
+      />
+
       {/* 扩展分析:Web 端独有的加强仪表,不属于 mobile 首页对标范围 */}
       <div className="flex items-center gap-2 pt-2">
         <span className="h-px flex-1 bg-border/60" aria-hidden />
@@ -98,6 +115,16 @@ export function OverviewSection({
         <HomeMonthCategoryDonut ranks={currentMonthCategoryRanks} currency={currency} />
         <HomeYearHeatmap yearSeries={currentYearSeries} currency={currency} />
       </div>
+
+      {/* 异常月份归因 — 紧贴 heatmap 下方,解释"哪几个月明显超出 + 主因"。
+           已发生月份 < 3 时显示"数据不足",0 异常显示"今年无异常 ✓"。 */}
+      <AnomalyMonthsAttribution
+        anomalyMonths={analyticsData?.anomaly_months || []}
+        hasEnoughMonths={
+          (analyticsData?.series || []).filter((s) => s.expense > 0).length >= 3
+        }
+        currency={currency}
+      />
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
         <AssetCompositionDonut accounts={accounts} />

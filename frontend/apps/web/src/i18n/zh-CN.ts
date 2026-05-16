@@ -309,6 +309,32 @@ const zhCN = {
   'home.topCat.uncategorized': '(未分类)',
   'home.topCat.countUnit': '笔',
 
+  // AnomalyMonthsAttribution
+  'home.anomaly.title': '异常月份',
+  'home.anomaly.hint': '今年明显超出月均的月份与主要原因',
+  'home.anomaly.empty': '今年没有明显异常 ✓',
+  'home.anomaly.insufficient': '已记账月份不足 3 个,数据再多一些就能分析',
+  'home.anomaly.monthLabel': '{month} 月',
+  'home.anomaly.deviation': '比月均 {baseline} 高 {pct}',
+  'home.anomaly.attributionMultiplier': '{cat} {amount}(超月均 {mult}×)',
+  'home.anomaly.attributionUnique': '{cat} {amount}(本月独有)',
+  'home.anomaly.attributionFlat': '{cat} {amount}',
+
+  // BudgetUsagePanel
+  'home.budget.title': '本月预算',
+  'home.budget.totalLabel': '总预算',
+  'home.budget.used': '已花',
+  'home.budget.remaining': '剩余',
+  'home.budget.daysLeft': '{days} 天剩余',
+  'home.budget.dailyAvailable': '日均可用 {amount}',
+  'home.budget.over': '超支 {amount}',
+  'home.budget.categoryTitle': '分类预算',
+  'home.budget.expandRest': '展开剩余 {count} 个',
+  'home.budget.collapse': '收起',
+  'home.budget.summaryHealthy': '健康 {count}',
+  'home.budget.summaryNearing': '接近超支 {count}',
+  'home.budget.summaryOver': '超支 {count}',
+
   // LedgerMiniCards
   'home.ledgerMini.empty': '尚未创建账本',
   'home.ledgerMini.current': '当前',

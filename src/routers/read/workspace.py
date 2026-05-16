@@ -6,6 +6,8 @@ projection 做聚合(tx 计数 / balance / category 排行等)。
 去重 / 跨账本 dedup / owner 信息回填的逻辑也在这里。"""
 from __future__ import annotations
 
+import statistics as _stats
+
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
 @router.get("/workspace/transactions", response_model=WorkspaceTransactionPageOut)
@@ -973,6 +975,9 @@ def workspace_analytics(
     expense_total = 0.0
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, dict[str, float]] = {}
+    # bucket → category → expense 总额。仅 scope=year anomaly 归因用,其它 scope
+    # 也写入(开销可忽略),只在 endpoint 末尾按 scope 决定是否用。
+    category_by_bucket: dict[str, dict[str, float]] = {}
     distinct_days_set: set[str] = set()
     first_tx_at: datetime | None = None
     last_tx_at: datetime | None = None
@@ -1023,6 +1028,9 @@ def workspace_analytics(
                 category_slot["income"] += amt
             elif tx_type_val == "expense":
                 category_slot["expense"] += amt
+                # 同步累加 per-bucket category → anomaly 归因输入
+                bucket_cat = category_by_bucket.setdefault(bucket, {})
+                bucket_cat[category] = bucket_cat.get(category, 0.0) + amt
 
     series = [
         WorkspaceAnalyticsSeriesItemOut(
@@ -1048,6 +1056,13 @@ def workspace_analytics(
         ]
         category_ranks.sort(key=lambda row: (-row.total, row.category_name))
 
+    # 异常月份归因 — 仅 scope=year 算(month/all 没意义,month 只 1 个 bucket,
+    # all 跨年 baseline 抖动太大)。详见
+    # .docs/dashboard-anomaly-budget/plan.md §2.1。
+    anomaly_months: list[WorkspaceAnalyticsAnomalyMonthOut] = []
+    if scope == "year":
+        anomaly_months = _compute_anomaly_months(series, category_by_bucket)
+
     return WorkspaceAnalyticsOut(
         summary=WorkspaceAnalyticsSummaryOut(
             transaction_count=transaction_count,
@@ -1060,6 +1075,7 @@ def workspace_analytics(
         ),
         series=series,
         category_ranks=category_ranks,
+        anomaly_months=anomaly_months,
         range=WorkspaceAnalyticsRangeOut(
             scope=scope,
             metric=metric,
@@ -1068,3 +1084,104 @@ def workspace_analytics(
             end_at=end_at - timedelta(seconds=1) if end_at is not None else None,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# 异常月份归因(scope=year)
+# ---------------------------------------------------------------------------
+
+# 异常判定阈值。同时满足两条才算异常:
+#   1. expense > baseline × 1.2 — 高于基线 20%+
+#   2. expense - baseline > ¥200 — 绝对差避免低消费月的"高 N%"假阳性
+# 详见 .docs/dashboard-anomaly-budget/plan.md §2.1。
+_ANOMALY_DEVIATION_MULT = 1.2
+_ANOMALY_DEVIATION_ABS = 200.0
+# 最少 3 个已发生月份才算 baseline(中位数,1-2 个月样本太小不稳)
+_ANOMALY_MIN_MONTHS = 3
+# 每个异常月份最多归因到 top N 个分类(避免列表过长)
+_ANOMALY_TOP_ATTRIBUTIONS = 2
+
+
+def _compute_anomaly_months(
+    series: list[WorkspaceAnalyticsSeriesItemOut],
+    category_by_bucket: dict[str, dict[str, float]],
+) -> list[WorkspaceAnalyticsAnomalyMonthOut]:
+    """从年度 series + per-bucket category 数据算异常月份 + 归因。
+
+    算法:
+      1. baseline = median(已发生月份的 expense),已发生月份 < 3 时返回空
+      2. 异常判定:expense > baseline × 1.2 AND expense - baseline > ¥200
+      3. 归因:对该月每个 category,算 (该月 category 总额) - (其他月份该
+         category 的中位数),取 diff 最大的 top 2 作主因
+      4. category 在其他月份从来没出现过(median_others=0)→ 算"本月独有",
+         multiplier 返回 None
+    """
+    # 已发生月份(expense > 0)— 没记账的月不算 baseline
+    occurred = [s for s in series if s.expense > 0]
+    if len(occurred) < _ANOMALY_MIN_MONTHS:
+        return []
+
+    baseline = _stats.median(s.expense for s in occurred)
+
+    out: list[WorkspaceAnalyticsAnomalyMonthOut] = []
+    other_buckets_cache: dict[str, list[str]] = {}
+
+    def _others_for(bucket: str) -> list[str]:
+        cached = other_buckets_cache.get(bucket)
+        if cached is not None:
+            return cached
+        result = [o.bucket for o in occurred if o.bucket != bucket]
+        other_buckets_cache[bucket] = result
+        return result
+
+    for s in occurred:
+        if s.expense <= baseline * _ANOMALY_DEVIATION_MULT:
+            continue
+        if s.expense - baseline <= _ANOMALY_DEVIATION_ABS:
+            continue
+
+        # 归因:每个 category 算 diff
+        attributions_raw: list[
+            tuple[float, WorkspaceAnalyticsAnomalyAttributionOut]
+        ] = []
+        this_month_cats = category_by_bucket.get(s.bucket, {})
+        other_bucket_keys = _others_for(s.bucket)
+        for cat_name, cat_amount in this_month_cats.items():
+            others = [
+                category_by_bucket.get(b, {}).get(cat_name, 0.0)
+                for b in other_bucket_keys
+            ]
+            median_others = _stats.median(others) if others else 0.0
+            diff = cat_amount - median_others
+            if diff <= 0:
+                # 该 category 不算异常因素(本月没比平时多)
+                continue
+            multiplier = (
+                cat_amount / median_others if median_others > 0 else None
+            )
+            attributions_raw.append((
+                diff,
+                WorkspaceAnalyticsAnomalyAttributionOut(
+                    category_name=cat_name,
+                    amount=cat_amount,
+                    median_others=median_others,
+                    multiplier=multiplier,
+                ),
+            ))
+        attributions_raw.sort(key=lambda x: -x[0])
+        top_attributions = [a for _, a in attributions_raw[:_ANOMALY_TOP_ATTRIBUTIONS]]
+
+        deviation_pct = (
+            (s.expense - baseline) / baseline if baseline > 0 else 0.0
+        )
+        out.append(WorkspaceAnalyticsAnomalyMonthOut(
+            bucket=s.bucket,
+            expense=s.expense,
+            baseline=baseline,
+            deviation_pct=deviation_pct,
+            top_attributions=top_attributions,
+        ))
+
+    # 按超出 baseline 的绝对值降序(最异常的排前面)
+    out.sort(key=lambda a: -(a.expense - a.baseline))
+    return out

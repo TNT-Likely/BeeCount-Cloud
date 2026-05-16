@@ -338,6 +338,27 @@ export type WorkspaceAnalyticsCategoryRank = {
   tx_count: number
 }
 
+export type WorkspaceAnalyticsAnomalyAttribution = {
+  category_name: string
+  amount: number
+  /** 该分类在其他月份的中位数;本月独有(其他月都 0)时为 0。 */
+  median_others: number
+  /** amount / median_others;本月独有时为 null,前端显示"本月独有"。 */
+  multiplier: number | null
+}
+
+export type WorkspaceAnalyticsAnomalyMonth = {
+  /** "YYYY-MM" */
+  bucket: string
+  expense: number
+  /** median(已发生月份的 expense),见 .docs/dashboard-anomaly-budget/plan.md §2.1 */
+  baseline: number
+  /** (expense - baseline) / baseline */
+  deviation_pct: number
+  /** 归因到的 top 1-2 分类(按 diff 降序) */
+  top_attributions: WorkspaceAnalyticsAnomalyAttribution[]
+}
+
 export type WorkspaceAnalyticsRange = {
   scope: AnalyticsScope
   metric: AnalyticsMetric
@@ -350,6 +371,8 @@ export type WorkspaceAnalytics = {
   summary: WorkspaceAnalyticsSummary
   series: WorkspaceAnalyticsSeriesItem[]
   category_ranks: WorkspaceAnalyticsCategoryRank[]
+  /** 仅 scope=year 时填,已发生月份 < 3 时为空。 */
+  anomaly_months: WorkspaceAnalyticsAnomalyMonth[]
   range: WorkspaceAnalyticsRange
 }
 

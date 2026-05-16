@@ -651,6 +651,35 @@ class WorkspaceAnalyticsCategoryRankOut(BaseModel):
     tx_count: int
 
 
+class WorkspaceAnalyticsAnomalyAttributionOut(BaseModel):
+    """异常月份的归因 — 某分类在该月超出"该分类其他月份中位数"的部分。"""
+
+    category_name: str
+    amount: float  # 该分类在异常月的总支出
+    # 该分类在其他月份的中位数(本月独有时为 0)
+    median_others: float
+    # amount / median_others;median_others=0(本月独有)时为 None,前端显示"本月独有"。
+    multiplier: float | None = None
+
+
+class WorkspaceAnalyticsAnomalyMonthOut(BaseModel):
+    """异常月份 — expense 显著高于已发生月份的 baseline。算法见
+    `.docs/dashboard-anomaly-budget/plan.md`:
+      baseline = median(已发生月份的 expense)
+      异常判定:expense > baseline × 1.2 AND expense - baseline > ¥200
+    """
+
+    bucket: str  # "2026-05"
+    expense: float
+    baseline: float
+    # (expense - baseline) / baseline,前端展示百分比
+    deviation_pct: float
+    # top 1-2 个归因分类,按 diff 降序
+    top_attributions: list[WorkspaceAnalyticsAnomalyAttributionOut] = Field(
+        default_factory=list
+    )
+
+
 class WorkspaceAnalyticsRangeOut(BaseModel):
     scope: AnalyticsScope
     metric: AnalyticsMetric
@@ -663,6 +692,8 @@ class WorkspaceAnalyticsOut(BaseModel):
     summary: WorkspaceAnalyticsSummaryOut
     series: list[WorkspaceAnalyticsSeriesItemOut] = Field(default_factory=list)
     category_ranks: list[WorkspaceAnalyticsCategoryRankOut] = Field(default_factory=list)
+    # 仅在 scope=year 填;月份数 < 3 时返回空 list(baseline 不稳)。
+    anomaly_months: list[WorkspaceAnalyticsAnomalyMonthOut] = Field(default_factory=list)
     range: WorkspaceAnalyticsRangeOut
 
 
