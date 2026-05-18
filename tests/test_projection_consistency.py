@@ -250,6 +250,38 @@ def test_mobile_tag_rename_cascades_tx_projection():
         app.dependency_overrides.clear()
 
 
+def test_mobile_tag_rename_cascades_when_transaction_only_has_tag_name():
+    """Issue #5 regression: legacy/mobile tx may only carry tags_csv without tagIds.
+    Renaming the tag entity must still refresh existing transaction tag names.
+    """
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "m5-name-only@t.com", device_id="m1", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        _push(client, hdr, "m1", "lg5_name_only", [
+            {"ledger_id": "lg5_name_only", "entity_type": "tag", "entity_sync_id": "g1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "g1", "name": "旧标签"}},
+            {"ledger_id": "lg5_name_only", "entity_type": "transaction", "entity_sync_id": "t1",
+             "action": "upsert", "updated_at": _iso(),
+             "payload": {"syncId": "t1", "type": "expense", "amount": 5, "happenedAt": _iso(),
+                         "tags": "旧标签"}},
+        ])
+        later = datetime.now(timezone.utc) + timedelta(seconds=2)
+        _push(client, hdr, "m1", "lg5_name_only", [
+            {"ledger_id": "lg5_name_only", "entity_type": "tag", "entity_sync_id": "g1",
+             "action": "upsert", "updated_at": _iso(later),
+             "payload": {"syncId": "g1", "name": "新标签"}},
+        ])
+        lid = _get_ledger_internal_id(sf, "lg5_name_only")
+        with sf() as db:
+            tx = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t1"))
+            assert tx.tags_csv == "新标签", f"cascade failed, got {tx.tags_csv}"
+    finally:
+        app.dependency_overrides.clear()
+
+
 # --------------------------------------------------------------------------- #
 # web /write/* 驱动 projection 写入                                             #
 # --------------------------------------------------------------------------- #

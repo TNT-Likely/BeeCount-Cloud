@@ -501,15 +501,35 @@ def rename_cascade_tag(
 
     if not old_name or not new_name or old_name == new_name:
         return
-    # tag_sync_ids_json 存的是 `["tag_a", "tag_b"]`,LIKE 匹配 "tag_a" 能框住
+    # 两条查询取并集:
+    #   1) tag_sync_ids_json 精确引用了该 tag sync_id (mobile/web 完整数据)
+    #   2) tags_csv 包含旧名称但没有 tag_sync_ids_json (legacy/不完整数据)
     like_pat = f'%"{tag_sync_id}"%'
-    rows = db.scalars(
+    rows_by_id = db.scalars(
         sql_select(ReadTxProjection).where(
             ReadTxProjection.user_id == user_id,
             ReadTxProjection.tag_sync_ids_json.like(like_pat),
         )
     ).all()
-    for row in rows:
+    # tags_csv 可能是 "旧标签" 或 "A,旧标签,B" 等逗号分隔形式;
+    # 用 LIKE 做粗筛,Python 侧按逗号拆分精确匹配防 substring 误伤。
+    like_name = f"%{old_name}%"
+    rows_by_name = db.scalars(
+        sql_select(ReadTxProjection).where(
+            ReadTxProjection.user_id == user_id,
+            ReadTxProjection.tags_csv.like(like_name),
+            ReadTxProjection.tag_sync_ids_json.is_(None),
+        )
+    ).all()
+    # 去重 (理论上不会重叠,但防御性合并)
+    seen: set[tuple[str, str]] = set()
+    all_rows = []
+    for row in (*rows_by_id, *rows_by_name):
+        key = (row.ledger_id, row.sync_id)
+        if key not in seen:
+            seen.add(key)
+            all_rows.append(row)
+    for row in all_rows:
         if not row.tags_csv:
             continue
         parts = [p.strip() for p in row.tags_csv.split(",") if p.strip()]
