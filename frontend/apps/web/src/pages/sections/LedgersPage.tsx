@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import {
   createLedger,
+  deleteLedger,
   updateLedgerMeta,
   type ReadLedger,
 } from '@beecount/api-client'
@@ -122,6 +123,20 @@ export function LedgersPage() {
     }
   }
 
+  const onDeleteLedger = async (): Promise<boolean> => {
+    if (!editing) return false
+    try {
+      await deleteLedger(token, editing.ledger_id)
+      notifySuccess(t('ledgers.notice.deleted'))
+      await refreshLedgers()
+      setEditing(null)
+      return true
+    } catch (err) {
+      notifyError(err)
+      return false
+    }
+  }
+
   return (
     <>
       <LedgersSection onCreate={onOpenCreate} onEdit={onOpenEdit} />
@@ -140,6 +155,8 @@ export function LedgersPage() {
         onChange={setEditForm}
         onClose={() => setEditing(null)}
         onSubmit={onSaveEdit}
+        onDelete={onDeleteLedger}
+        ledgerName={editing?.ledger_name}
         meta={
           editing
             ? [

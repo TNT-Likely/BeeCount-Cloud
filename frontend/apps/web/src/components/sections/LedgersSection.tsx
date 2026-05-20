@@ -12,6 +12,7 @@ import {
   CardTitle,
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -292,6 +293,10 @@ interface LedgerEditDialogProps {
   onSubmit: () => Promise<boolean> | boolean
   /** 编辑模式额外信息行,例如 ledger id / 创建者 / 角色。 */
   meta?: { label: string; value: string }[]
+  /** 编辑模式下删除回调。提供后显示删除按钮。 */
+  onDelete?: () => Promise<boolean> | boolean
+  /** ledger 名称,用于删除确认文案。 */
+  ledgerName?: string
 }
 
 export function LedgerEditDialog({
@@ -302,9 +307,14 @@ export function LedgerEditDialog({
   onClose,
   onSubmit,
   meta,
+  onDelete,
+  ledgerName,
 }: LedgerEditDialogProps) {
   const t = useT()
   const [submitting, setSubmitting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
   const handleSubmit = async () => {
     setSubmitting(true)
     try {
@@ -314,8 +324,23 @@ export function LedgerEditDialog({
       setSubmitting(false)
     }
   }
+
+  const handleDelete = async () => {
+    if (!onDelete) return
+    setDeleting(true)
+    try {
+      const ok = await onDelete()
+      if (ok) onClose()
+    } finally {
+      setDeleting(false)
+      setConfirmDelete(false)
+    }
+  }
+
+  const busy = submitting || deleting
+
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && !submitting && onClose()}>
+    <Dialog open={open} onOpenChange={(v) => !v && !busy && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
@@ -349,11 +374,51 @@ export function LedgerEditDialog({
             </div>
           ) : null}
         </div>
+
+        {mode === 'edit' && onDelete && confirmDelete ? (
+          <div className="rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 text-sm">
+            <DialogTitle className="text-destructive text-base">
+              {t('ledgers.delete.title')}
+            </DialogTitle>
+            <DialogDescription className="mt-1">
+              {t('ledgers.delete.description').replace('{name}', ledgerName || '')}
+            </DialogDescription>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={deleting}
+                onClick={() => setConfirmDelete(false)}
+              >
+                {t('dialog.cancel')}
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={deleting}
+                onClick={() => void handleDelete()}
+              >
+                {t('ledgers.delete.confirm')}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         <DialogFooter>
-          <Button variant="outline" disabled={submitting} onClick={onClose}>
+          {mode === 'edit' && onDelete && !confirmDelete ? (
+            <Button
+              variant="outline"
+              className="mr-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+              disabled={busy}
+              onClick={() => setConfirmDelete(true)}
+            >
+              {t('ledgers.button.delete')}
+            </Button>
+          ) : null}
+          <Button variant="outline" disabled={busy} onClick={onClose}>
             {t('dialog.cancel')}
           </Button>
-          <Button disabled={submitting} onClick={() => void handleSubmit()}>
+          <Button disabled={busy} onClick={() => void handleSubmit()}>
             {mode === 'create' ? t('ledgers.button.create') : t('ledgers.button.update')}
           </Button>
         </DialogFooter>
