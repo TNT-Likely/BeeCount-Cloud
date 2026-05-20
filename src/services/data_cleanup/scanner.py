@@ -335,9 +335,12 @@ def _scan_attachment_file_missing(db: Session) -> list[OrphanRecord]:
 def _scan_disk_file_no_row(db: Session, root: Path) -> list[OrphanRecord]:
     """B3 — 磁盘 attachments 目录下文件不在 attachment_files 表。
 
-    跨用户递归扫,根目录结构是 `<root>/<user_id>/<ledger_id>/<sha2>/<storage_name>`
-    或 `<root>/<user_id>/category-icons/<sha2>/<storage_name>`。比对方式:把
-    attachment_files.storage_path 全集塞 set,然后 walk 磁盘找差集。
+    跨用户递归扫 root,但**跳过 user-profile 头像目录** —— `<root>/profile-avatars/`
+    下的头像不存 attachment_files 表,由 user_profiles.avatar_file_id 单独管理,
+    扫它们会全部误判为孤儿。其他子目录结构是 `<root>/<user_id>/<ledger_id>/<sha2>/...`
+    或 `<root>/<user_id>/category-icons/<sha2>/...`。
+
+    比对方式:把 attachment_files.storage_path 全集塞 set,然后 walk 磁盘找差集。
     """
     if not root.exists():
         return []
@@ -347,7 +350,14 @@ def _scan_disk_file_no_row(db: Session, root: Path) -> list[OrphanRecord]:
         if row.storage_path
     }
     result: list[OrphanRecord] = []
-    for dirpath, _dirs, files in os.walk(root):
+    # 由其他 DB 表管理生命周期、不该被本工具触碰的子目录(以相对路径为准)
+    excluded_dirs = {"profile-avatars"}
+    for dirpath, dirs, files in os.walk(root):
+        # 原地修剪 dirs,os.walk 就不会下降到被排除目录
+        rel = Path(dirpath).relative_to(root)
+        rel_str = str(rel)
+        if rel_str == "." or rel_str == "":
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
         for f in files:
             full = os.path.join(dirpath, f)
             if full in db_paths:

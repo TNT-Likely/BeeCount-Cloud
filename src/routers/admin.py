@@ -561,12 +561,9 @@ def data_cleanup_clean(
 ) -> DataCleanupResult:
     """批量清理选中的孤儿数据。事务包裹 DB 写,失败收集进 failures。"""
     records = [_schema_to_orphan(r) for r in payload.records]
-    try:
-        result = data_cleanup_svc.clean(db, records)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    # cleaner 内部每条 record commit / rollback,避免长事务持锁阻塞其他请求
+    # (生产 SQLite + observability 中间件场景下尤其重要)。这里不再外层包事务。
+    result = data_cleanup_svc.clean(db, records)
     return DataCleanupResult(
         success_count=result.success_count,
         failures=[

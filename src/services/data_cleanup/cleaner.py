@@ -72,24 +72,45 @@ def clean(db: Session, records: Iterable[OrphanRecord]) -> CleanResult:
     """逐条 dispatch 删除。失败收集到 failures,不阻断其余。
 
     caller 负责 commit / rollback。文件删失败只 warn。
+    生产环境 SQLite 用,每条 record 处理完立即 db.commit() 避免长事务持有
+    write lock 阻塞其他请求(observability 中间件的读请求频繁,长事务 + 文件
+    IO 慢操作会导致 "database is locked")。文件 IO(unlink + rmdir)放到
+    DB commit 之后,确保 DB lock 已释放。
     """
     success = 0
     failures: list[CleanFailure] = []
     for record in records:
+        pending_file_ops: list[callable] = []  # type: ignore[type-arg]
         try:
-            _dispatch(db, record)
+            _dispatch(db, record, pending_file_ops)
+            db.commit()
             success += 1
-        except Exception as exc:  # noqa: BLE001 — 收集所有异常给 UI
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
             logger.warning(
-                "clean record %s failed: %s",
+                "clean record %s db failed: %s",
                 record.unique_key,
                 exc,
             )
             failures.append(CleanFailure(record_key=record.unique_key, error=str(exc)))
+            continue
+        # DB 已 commit + 锁已释放 → 执行文件 IO。失败只 warn,不回滚 DB(行已删
+        # 是事实,磁盘残留下次 GC 会扫到)。
+        for op in pending_file_ops:
+            try:
+                op()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "clean record %s file op failed: %s",
+                    record.unique_key,
+                    exc,
+                )
     return CleanResult(success_count=success, failures=failures)
 
 
-def _dispatch(db: Session, r: OrphanRecord) -> None:
+def _dispatch(db: Session, r: OrphanRecord, file_ops: list) -> None:
+    """跑 record 类型对应的 DB 操作;文件 IO append 到 file_ops 列表,由
+    caller 在 db.commit 之后跑(避免长事务持锁)。"""
     t = r.type
     if t == OrphanType.TX_MISSING_CATEGORY:
         _clear_tx_field(db, r, "category_sync_id", "category_name")
@@ -104,11 +125,11 @@ def _dispatch(db: Session, r: OrphanRecord) -> None:
     elif t == OrphanType.SYNC_CHANGE_MISSING_ENTITY:
         _delete_sync_change(db, r)
     elif t == OrphanType.ATTACHMENT_NO_REF:
-        _delete_attachment_with_file(db, r)
+        _delete_attachment_with_file(db, r, file_ops)
     elif t == OrphanType.ATTACHMENT_FILE_MISSING:
         _delete_attachment_row_only(db, r)
     elif t == OrphanType.DISK_FILE_NO_ROW:
-        _delete_disk_file_only(r)
+        file_ops.append(lambda: _delete_disk_file_only(r))
     elif t == OrphanType.TX_REF_BROKEN_ATTACHMENT:
         _strip_broken_attachments(db, r)
     else:  # pragma: no cover
@@ -172,8 +193,10 @@ def _delete_sync_change(db: Session, r: OrphanRecord) -> None:
     db.delete(row)
 
 
-def _delete_attachment_with_file(db: Session, r: OrphanRecord) -> None:
-    """B1:删 AttachmentFile 行 + os.unlink 物理文件 + 删空父目录(用户痛点)。"""
+def _delete_attachment_with_file(
+    db: Session, r: OrphanRecord, file_ops: list
+) -> None:
+    """B1:删 AttachmentFile 行(同事务)+ 物理文件 + 删空父目录(commit 后)。"""
     if not r.row_id:
         raise ValueError("attachment record 缺 row_id")
     row = db.get(AttachmentFile, r.row_id)
@@ -182,15 +205,17 @@ def _delete_attachment_with_file(db: Session, r: OrphanRecord) -> None:
     storage_path = row.storage_path
     db.delete(row)
     if storage_path:
-        try:
-            if os.path.exists(storage_path):
-                os.remove(storage_path)
-            _remove_empty_parents(storage_path)
-        except OSError as exc:
-            logger.warning(
-                "B1 unlink failed file=%s path=%s err=%s",
-                r.row_id, storage_path, exc,
-            )
+        def _do_file_op(path: str = storage_path, row_id: str = r.row_id) -> None:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                _remove_empty_parents(path)
+            except OSError as exc:
+                logger.warning(
+                    "B1 unlink failed file=%s path=%s err=%s",
+                    row_id, path, exc,
+                )
+        file_ops.append(_do_file_op)
 
 
 def _delete_attachment_row_only(db: Session, r: OrphanRecord) -> None:
