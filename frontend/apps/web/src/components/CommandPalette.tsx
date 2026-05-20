@@ -24,6 +24,8 @@ import {
   Sparkles,
   Sun,
   Tag,
+  UserPlus,
+  Users,
   Wallet,
 } from 'lucide-react'
 
@@ -40,6 +42,10 @@ import {
 } from '@beecount/api-client'
 import { dispatchOpenAsk } from '../lib/askDialogEvents'
 import { dispatchOpenParseTxImage, dispatchOpenParseTxText } from '../lib/parseTxEvents'
+import {
+  dispatchOpenSharedJoin,
+  dispatchOpenSharedManage,
+} from '../lib/sharedLedgerEvents'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 import { VoiceInputButton } from './cmdk-ai/VoiceInputButton'
 
@@ -81,6 +87,8 @@ const VAL_SEARCH_IN_LIST = '__action__search-in-list'
 const VAL_ASK_AI = '__action__ask-ai'
 const VAL_AI_BILLING_TEXT = '__action__ai-billing-text'
 const VAL_AI_BILLING_IMAGE = '__action__ai-billing-image'
+const VAL_SHARED_LEDGER_JOIN = '__action__shared-ledger-join'
+const VAL_SHARED_LEDGER_MANAGE = '__action__shared-ledger-manage'
 
 /**
  * 全局命令面板 — Cmd+K (Mac) / Ctrl+K (其他) 触发。
@@ -553,6 +561,35 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
               }
               onSelect={() => {
                 setMode(resolved === 'dark' ? 'light' : 'dark')
+                onClose()
+              }}
+            />
+            {/* §7 共享账本快捷指令 — 任何 ledger 都可进入"管理成员",
+                单人账本 Owner 通过它生成邀请码,邀请他人加入。 */}
+            {(() => {
+              const cur = ledgers.find((l) => l.ledger_id === activeLedgerId)
+              return cur ? (
+                <Item
+                  value={VAL_SHARED_LEDGER_MANAGE}
+                  icon={<Users className="h-4 w-4 text-primary" />}
+                  label={t('sharedLedger.cmdkManage')}
+                  onSelect={() => {
+                    dispatchOpenSharedManage({
+                      ledgerId: cur.ledger_id,
+                      ledgerName: cur.ledger_name,
+                      isOwner: cur.role === 'owner',
+                    })
+                    onClose()
+                  }}
+                />
+              ) : null
+            })()}
+            <Item
+              value={VAL_SHARED_LEDGER_JOIN}
+              icon={<UserPlus className="h-4 w-4 text-primary" />}
+              label={t('sharedLedger.cmdkJoin')}
+              onSelect={() => {
+                dispatchOpenSharedJoin()
                 onClose()
               }}
             />

@@ -82,6 +82,13 @@ def pull_changes(
     has_more = len(rows) > limit
     rows = rows[:limit]
 
+    # §7 共享账本:对历史 transaction SyncChange 兜底补 user id —— push 端
+    # 已经在写时注入,但 push 修复前的老 SyncChange.payload_json 没有这俩字
+    # 段,mobile pull 拿到 null。这里从 read_tx_projection(server 端那张表
+    # 数据 sync_applier 历史就一直写对)按 (ledger_id, sync_id) 批量回填,
+    # 单次查询覆盖整批,开销可忽略。enrichment 返新列表,不动原 ORM 对象。
+    rows = _enrich_tx_payloads_with_user_ids(db, rows)
+
     changes: list[SyncChangeOut] = []
     server_cursor = since
     per_ledger_cursor: dict[str, int] = {}
@@ -148,5 +155,88 @@ def pull_changes(
             has_more,
         )
     return SyncPullResponse(changes=changes, server_cursor=server_cursor, has_more=has_more)
+
+
+def _enrich_tx_payloads_with_user_ids(
+    db, rows: list
+) -> list:
+    """对返给客户端的 SyncChange 行中,entity_type='transaction' 且 payload
+    缺 createdByUserId / updatedByUserId 的,从 read_tx_projection 批量补上。
+
+    push.py 已在写时注入这俩字段;此 helper 是兜底,覆盖 push 修复前留下的
+    历史 SyncChange.payload_json 缺失的情况。
+
+    防御性 copy:不修改原 ORM 对象的 payload_json 引用(避免 MutableDict
+    切换或意外 db.commit 把 enrichment 写回 DB)。返回 (change, ext_id,
+    payload_override) 列表;调用方用 payload_override 序列化即可。
+    """
+    if not rows:
+        return rows
+    # 1. 收集 (ledger_id, sync_id, idx) 待补行
+    pending: list[tuple[str, str, int]] = []
+    for idx, (change, _external_id) in enumerate(rows):
+        if change.entity_type != "transaction":
+            continue
+        payload = change.payload_json
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("createdByUserId") and payload.get("updatedByUserId"):
+            continue
+        if change.ledger_id is None:
+            continue
+        pending.append((change.ledger_id, change.entity_sync_id, idx))
+    if not pending:
+        return rows
+
+    # 2. 批量查 projection — 用 (ledger_id, sync_id) 复合 filter 避免 cross-ledger
+    # 同名 sync_id 互相串数据。SQLAlchemy 没有原生 (col1, col2) IN VALUES,
+    # 用 sync_id IN (...) + ledger_id IN (...) 缩范围,Python 端再按精确
+    # (lid, sid) 复合 key 索引。
+    sync_ids = list({sid for _lid, sid, _idx in pending})
+    ledger_ids = list({lid for lid, _sid, _idx in pending})
+    rows_proj = db.execute(
+        select(
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.sync_id,
+            ReadTxProjection.created_by_user_id,
+            ReadTxProjection.last_edited_by_user_id,
+        ).where(
+            ReadTxProjection.sync_id.in_(sync_ids),
+            ReadTxProjection.ledger_id.in_(ledger_ids),
+        )
+    ).all()
+    proj_by_key = {
+        (lid, sid): (cb, eb) for lid, sid, cb, eb in rows_proj
+    }
+
+    # 3. 防御 copy:命中 enrichment 才克隆该行 payload,其它行保留原引用
+    enriched_rows = list(rows)
+    for ledger_id, sync_id, idx in pending:
+        entry = proj_by_key.get((ledger_id, sync_id))
+        if entry is None:
+            continue
+        cb, eb = entry
+        change, ext_id = enriched_rows[idx]
+        payload_copy = dict(change.payload_json)
+        if cb and not payload_copy.get("createdByUserId"):
+            payload_copy["createdByUserId"] = cb
+        if eb and not payload_copy.get("updatedByUserId"):
+            payload_copy["updatedByUserId"] = eb
+        # 用 wrapper 暴露 payload_override,序列化阶段从这里取
+        enriched_rows[idx] = (_ChangeWithOverride(change, payload_copy), ext_id)
+    return enriched_rows
+
+
+class _ChangeWithOverride:
+    """轻量代理:把 payload_json 改成 override,其它属性透传原 SyncChange。"""
+
+    __slots__ = ("_change", "payload_json")
+
+    def __init__(self, change, payload_override: dict) -> None:
+        self._change = change
+        self.payload_json = payload_override
+
+    def __getattr__(self, name: str):
+        return getattr(self._change, name)
 
 

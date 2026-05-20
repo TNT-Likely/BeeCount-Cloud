@@ -182,6 +182,9 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("attachments", "attachments_json", _json_loads_safe),
         ("txIndex", "tx_index"),
         ("createdByUserId", "created_by_user_id"),
+        # 共享账本 Phase 1:updatedByUserId 也回写到 projection,作为
+        # last_edited_by。snapshot_mutator._mark_entity_actor 写入。
+        ("updatedByUserId", "last_edited_by_user_id"),
     ]),
 }
 
@@ -444,6 +447,16 @@ def apply_change_to_projection(
     if payload is None:
         return
     payload.setdefault("syncId", sync_id)
+    # 共享账本兜底:mobile EntitySerializer.serializeTransaction 当前不把
+    # updatedByUserId 写进 payload,直接 push 上来 projection 这字段会是 NULL。
+    # 从 SyncChange.updated_by_user_id(推送方真实身份)兜底注入。
+    #
+    # **不**兜底 createdByUserId — 那会让"B 编辑 A 创建的 tx"路径误把 created
+    # 写成 B。createdByUserId 由 projection.upsert_tx 内部 COALESCE 保留旧值
+    # (见 upsert_tx 注释)。
+    actor = change.updated_by_user_id
+    if actor:
+        payload.setdefault("updatedByUserId", actor)
 
     if change.entity_type in _LEDGER_MERGE_SPECS:
         merged = merge_with_existing(db, change.entity_type, ledger_id, sync_id, payload)

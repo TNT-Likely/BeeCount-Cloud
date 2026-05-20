@@ -184,6 +184,18 @@ def upsert_tx(
         db, ledger_id=ledger_id, sync_id=sync_id
     )
 
+    # 共享账本:created_by_user_id 一旦写入就不能被后续 upsert 覆盖
+    # (B 编辑 A 创建的 tx 时,payload 不带 createdByUserId,如果 _upsert
+    # 把列设成 NULL,server 端 created_by 信息就丢了)。先查 existing row,
+    # payload 没带 created → 保留 existing.created_by_user_id。
+    existing_creator = db.scalar(
+        select(ReadTxProjection.created_by_user_id).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == sync_id,
+        )
+    )
+    payload_creator = _as_str(payload.get("createdByUserId"))
+
     values = {
         "ledger_id": ledger_id,
         "sync_id": sync_id,
@@ -207,7 +219,14 @@ def upsert_tx(
         "tag_sync_ids_json": tag_sync_ids_json,
         "attachments_json": attachments_json,
         "tx_index": _as_int(payload.get("txIndex") or payload.get("tx_index"), default=0),
-        "created_by_user_id": _as_str(payload.get("createdByUserId")),
+        # 创建人 first-write-wins:有 existing 就保留;首次插入用 payload 或回退
+        # 到当前 actor(updatedByUserId)。
+        "created_by_user_id": existing_creator
+            or payload_creator
+            or _as_str(payload.get("updatedByUserId")),
+        # 共享账本 Phase 1:每次 upsert 都更新 last_edited_by_user_id;
+        # payload 没带就回退 created。
+        "last_edited_by_user_id": _as_str(payload.get("updatedByUserId")) or payload_creator,
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadTxProjection, ("ledger_id", "sync_id"), values)
@@ -292,6 +311,21 @@ def upsert_category(
     if prev_row:
         prev_icon_file_id = prev_row.strip() if isinstance(prev_row, str) else None
 
+    # 共享账本父子稳定关系:优先用 payload['parentSyncId'](mobile entity_serializer
+    # / web snapshot_mutator 写入);若没有(老 client / 老数据),按
+    # (user_id, parent_name, kind, level=1) 反查同 user 的 level=1 行兜底。
+    parent_name = _as_str(payload.get("parentName"))
+    parent_sync_id = _as_str(payload.get("parentSyncId"))
+    if parent_sync_id is None and parent_name:
+        parent_sync_id = db.scalar(
+            select(UserCategoryProjection.sync_id).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.name == parent_name,
+                UserCategoryProjection.kind == _as_str(payload.get("kind")),
+                func.coalesce(UserCategoryProjection.level, 1) == 1,
+            )
+        )
+
     values = {
         "user_id": user_id,
         "sync_id": sync_id,
@@ -306,7 +340,8 @@ def upsert_category(
         "custom_icon_path": _as_str(payload.get("customIconPath")),
         "icon_cloud_file_id": _as_str(payload.get("iconCloudFileId")),
         "icon_cloud_sha256": _as_str(payload.get("iconCloudSha256")),
-        "parent_name": _as_str(payload.get("parentName")),
+        "parent_name": parent_name,
+        "parent_sync_id": parent_sync_id,
         "source_change_id": source_change_id,
     }
     _upsert(db, UserCategoryProjection, ("user_id", "sync_id"), values)

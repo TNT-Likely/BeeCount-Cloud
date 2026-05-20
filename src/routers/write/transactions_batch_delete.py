@@ -233,9 +233,13 @@ async def delete_tx_batch(
     )
 
     if deleted_ids:
-        await request.app.state.ws_manager.broadcast_to_user(
-            ledger.user_id,
-            {
+        # 共享账本:fan-out 给所有 LedgerMember,Editor 端 mobile 实时收到。
+        from ...websocket_manager import broadcast_to_ledger
+        await broadcast_to_ledger(
+            db=db,
+            ws_manager=request.app.state.ws_manager,
+            ledger_id=ledger.id,
+            payload={
                 "type": "sync_change",
                 "ledgerId": ledger.external_id,
                 "serverCursor": new_change_id,

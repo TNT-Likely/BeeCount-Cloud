@@ -43,6 +43,14 @@
 - **Auto session recovery** — token refresh failures auto-retry with stored credentials; devices stay online across network hiccups
 - **Deep health check** — pull-to-refresh compares local vs remote counts and self-repairs differences
 
+### Shared ledgers (multi-user collaboration)
+
+- **Owner / Editor roles** — Owners invite / remove / rename; Editors co-write transactions
+- **One-click invite** — Owner generates a 6-digit invite code in App or Web (default 24 h TTL); Editor enters the code to join
+- **Who wrote / who last edited** — every transaction tagged with creator + last editor (avatar + role surfaced in the App editor and Web detail dialog)
+- **Member balance stats** — Web dedicated dialog with charts (bar + pie + KPIs); App compact list
+- **Realtime WS push** — every member sees changes within seconds; kicked-while-offline and accept-invite both converge correctly on reconnect
+
 ### Bookkeeping
 
 - **Multi-ledger** with per-ledger currency

@@ -16,6 +16,8 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 // SettingsProfileAppearanceSection 现仅被 SettingsProfilePage 使用。
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
+import { useSharedLedgerResources } from '../../context/SharedLedgerResourcesContext'
+import { bundleToReadResources } from '../../lib/shared-ledger-mappers'
 
 import { CheckSquare, Download, SlidersHorizontal } from 'lucide-react'
 
@@ -478,16 +480,46 @@ export function TransactionsPage() {
     const hit = ledgers.find((ledger) => ledger.ledger_id === (txWriteLedgerId || activeLedgerId))
     return (hit?.currency || 'CNY').trim().toUpperCase()
   }, [ledgers, txWriteLedgerId, activeLedgerId])
+  // §7 共享账本:当前编辑/查看的账本若是共享账本(Editor 视角),走独立
+  // SharedLedgerResources state(Owner 的 user-global 资源镜像),否则走
+  // 用户自己的 user-global 字典。逻辑对齐 mobile picker filter。
+  const txContextLedgerId = txWriteLedgerId || activeLedgerId
+  const txContextLedger = useMemo(
+    () => ledgers.find((l) => l.ledger_id === txContextLedgerId) || null,
+    [ledgers, txContextLedgerId],
+  )
+  const txIsSharedEditor = Boolean(
+    txContextLedger?.is_shared && txContextLedger.role !== 'owner',
+  )
+  const { bundle: sharedBundle } = useSharedLedgerResources(
+    txIsSharedEditor ? txContextLedgerId : null,
+  )
+  const sharedAsRead = useMemo(
+    () => bundleToReadResources(sharedBundle),
+    [sharedBundle],
+  )
+
   const txWriteAccounts = useMemo(() => {
-    return txDictionaryAccounts.filter((row) => {
+    const source =
+      txIsSharedEditor && sharedBundle ? sharedAsRead.accounts : txDictionaryAccounts
+    return source.filter((row) => {
       const currency = (row.currency || 'CNY').trim().toUpperCase()
       if (currency !== txWriteLedgerCurrency) return false
       if (VALUATION_ACCOUNT_TYPES.has(row.account_type || '')) return false
       return true
     })
-  }, [txDictionaryAccounts, txWriteLedgerCurrency, VALUATION_ACCOUNT_TYPES])
-  const txWriteCategories = txDictionaryCategories
-  const txWriteTags = txDictionaryTags
+  }, [
+    txDictionaryAccounts,
+    txWriteLedgerCurrency,
+    VALUATION_ACCOUNT_TYPES,
+    txIsSharedEditor,
+    sharedBundle,
+    sharedAsRead.accounts,
+  ])
+  const txWriteCategories =
+    txIsSharedEditor && sharedBundle ? sharedAsRead.categories : txDictionaryCategories
+  const txWriteTags =
+    txIsSharedEditor && sharedBundle ? sharedAsRead.tags : txDictionaryTags
   const txFilterAccountOptions = useMemo(
     () =>
       [...new Set(accounts.map((row) => (row.name || '').trim()).filter((value) => value.length > 0))].sort((a, b) =>
@@ -1809,6 +1841,12 @@ export function TransactionsPage() {
                   setTxPage(1)
                 }}
                 canWrite={Boolean(canWriteTx)}
+                // §7 共享账本:tx 列表当前 ledger 若是共享账本,每行尾巴
+                // 显示"XX 创建 · YY 编辑"chip(server 已注入 created_by_* +
+                // last_edited_by_* 字段)。currentUserId 用来过滤"全是自己"
+                // 的 tx 不显示 chip。
+                showCreator={Boolean(txContextLedger?.is_shared)}
+                currentUserId={profileMe?.user_id || null}
                 dictionariesLoading={txDictionaryLoading}
                 onFormChange={setTxForm}
                 dialogOpen={txDialogOpen}

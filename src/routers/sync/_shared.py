@@ -31,6 +31,7 @@ from ...models import (
     AuditLog,
     Device,
     Ledger,
+    LedgerMember,
     ReadTxProjection,  # list_ledgers 端点做 tx 计数估算用
     SyncChange,
     SyncCursor,
@@ -101,6 +102,7 @@ __all__ = [
     'AuditLog',
     'Device',
     'Ledger',
+    'LedgerMember',
     'ReadTxProjection',
     'SyncChange',
     'SyncCursor',

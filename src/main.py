@@ -26,6 +26,10 @@ from .routers import admin, attachments, auth, devices, pats, profile, read, syn
 from .routers import admin_backup, mcp_calls, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
+from .routers import invites as invites_router
+from .routers import members as members_router
+from .routers import member_stats as member_stats_router
+from .routers import shared_resources as shared_resources_router
 from .mcp import server as mcp_server
 from .websocket_manager import WSConnectionManager
 
@@ -168,6 +172,12 @@ app.include_router(
     tags=["import"],
 )
 app.include_router(ws.router, tags=["ws"])
+# 共享账本邀请 + 成员管理 — endpoint 内部用绝对路径(/ledgers/.../invites,/invites/...),
+# 所以 prefix 就是 api_prefix 不加额外段。
+app.include_router(invites_router.router, prefix=settings.api_prefix, tags=["invites"])
+app.include_router(members_router.router, prefix=settings.api_prefix, tags=["members"])
+app.include_router(shared_resources_router.router, prefix=settings.api_prefix, tags=["shared-resources"])
+app.include_router(member_stats_router.router, prefix=settings.api_prefix, tags=["member-stats"])
 
 _static_dir = Path(settings.web_static_dir)
 

@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # Admins can still create users via POST /api/v1/admin/users regardless.
     registration_enabled: bool = Field(default=False, alias="REGISTRATION_ENABLED")
 
+    # 共享账本邀请短链域名前缀(Phase 2 才点击跳转,MVP 仅用于复制文案展示)。
+    invite_share_origin: str = Field(
+        default="https://count.beejz.com", alias="INVITE_SHARE_ORIGIN"
+    )
+
     # Legacy strict `base_change_id` check on /write/* endpoints. When mobile
     # fullPush is streaming changes, the server-side materializer bumps the
     # latest ledger_snapshot change_id faster than any web retry can catch up,

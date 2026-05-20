@@ -82,6 +82,10 @@ type TransactionsPanelProps = {
   selectionMode?: boolean
   selectedIds?: Set<string>
   onToggleSelect?: (row: ReadTransaction, event: React.MouseEvent) => void
+  /** §7 共享账本:开启后 tx 列表行末显示"谁记的"chip。 */
+  showCreator?: boolean
+  /** §7 共享账本:当前 caller user_id,自己创建+编辑的 tx 不显示 chip。 */
+  currentUserId?: string | null
 }
 
 type AttachmentCarouselCellProps = {
@@ -255,7 +259,9 @@ export function TransactionsPanel({
   dialogOnlyMode,
   selectionMode = false,
   selectedIds,
-  onToggleSelect
+  onToggleSelect,
+  showCreator = false,
+  currentUserId
 }: TransactionsPanelProps) {
   const t = useT()
   const open = dialogOpen
@@ -348,6 +354,8 @@ export function TransactionsPanel({
             categories={categories}
             iconPreviewUrlByFileId={iconPreviewUrlByFileId}
             variant="default"
+            showCreator={showCreator}
+            currentUserId={currentUserId}
             canManage={canWrite}
             onEdit={(row) => {
               onEdit(row)
@@ -510,14 +518,24 @@ export function TransactionsPanel({
               <div className="space-y-1">
                 <Label>{t('accounts.title')}</Label>
                 <Select
-                  value={form.account_name || undefined}
+                  // Radix SelectItem 不允许 value=""(undefined-state 由 placeholder
+                  // 渲染),所以用 sentinel "__none__" 表示"不选账户"。和 form 的
+                  // 真实空串状态在 value 和 onValueChange 两处来回翻译。
+                  value={form.account_name ? form.account_name : '__none__'}
                   disabled={dictionariesLoading}
-                  onValueChange={(value) => onFormChange({ ...form, account_name: value })}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, account_name: value === '__none__' ? '' : value })
+                  }
                 >
                   <SelectTrigger>
                     <SelectValue placeholder={t('transactions.placeholder.accountName')} />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="__none__">
+                      <span className="text-muted-foreground">
+                        {t('transactions.placeholder.noAccount')}
+                      </span>
+                    </SelectItem>
                     {accountOptions.map((name) => (
                       <SelectItem key={name} value={name}>
                         {name}

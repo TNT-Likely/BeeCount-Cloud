@@ -37,6 +37,9 @@ async def push_changes(
     conflict_samples: list[dict[str, Any]] = []
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
+    # 共享账本 Phase 1:user-global category/account/tag 变更要 fan-out 给
+    # 该 user 作为 owner 的所有共享账本的非 owner member。收集后 commit 后广播。
+    pending_shared_resource_events: list[dict[str, Any]] = []
 
     # 是否触动 user-global —— 触动了就额外给 owner 广播一条 __user_global__
     # 通道的 sync_change(让其他设备拉这一份)。
@@ -85,8 +88,28 @@ async def push_changes(
                 ledger = Ledger(user_id=current_user.id, external_id=change.ledger_id)
                 db.add(ledger)
                 db.flush()
+                # 共享账本 Phase 1:auto-create 时同步建 owner LedgerMember 行
+                db.add(LedgerMember(
+                    ledger_id=ledger.id,
+                    user_id=current_user.id,
+                    role="owner",
+                    joined_at=now,
+                ))
+                db.flush()
             else:
-                ledger, _ = row
+                ledger, caller_role = row
+                # 共享账本 Phase 1:Editor 只能推 transaction / budget;不能推
+                # ledger / ledger_snapshot(账本 meta 改 / 删账本属 owner 操作)。
+                # 老协议没有 entity_type='ledger_snapshot' 路径(0011 后),所以
+                # 实际只挡 'ledger'。
+                if caller_role != "owner" and change.entity_type in ("ledger", "ledger_snapshot"):
+                    logger.warning(
+                        "sync.push.reject ledger-meta change from non-owner "
+                        "user=%s ledger=%s role=%s entity=%s",
+                        current_user.id, change.ledger_id, caller_role, change.entity_type,
+                    )
+                    rejected += 1
+                    continue
 
         # Clamp incoming updated_at to the server clock to neutralize client
         # clock skew. Without this, a mobile device whose local clock is ahead
@@ -227,8 +250,41 @@ async def push_changes(
                 )
                 raise
             touched_user_global = True
+            # 共享账本 fan-out:只对 category/account/tag 三种 user-global 类型
+            # 推 shared_resource_change(其他 user-global 类型如 device 等不外推)
+            if change.entity_type in ("category", "account", "tag"):
+                pending_shared_resource_events.append({
+                    "resource_type": change.entity_type,
+                    "action": change.action,
+                    "sync_id": change.entity_sync_id,
+                    "payload": change.payload or {"sync_id": change.entity_sync_id},
+                })
         else:
             assert ledger is not None
+            # §7 共享账本:mobile 历史路径未在本地 transactions.created_by_user_id
+            # / last_edited_by_user_id 上回填(addTransaction / updateTransaction
+            # 不写这两列),所以 EntitySerializer 序列化出来的 payload 缺这俩
+            # 字段。server 这里兜底注入,让 SyncChange.payload_json 保留正确身份;
+            # 否则 pull 端拿到的 payload 没有 user id,mobile 本地 DB 的
+            # created_by / last_edited 字段全空,UI 无法显示"X 创建 / Y 编辑"。
+            #
+            # createdByUserId:first-write-wins — 已存在 read_tx_projection
+            # 行就保留(避免 B 编辑 A 创建的 tx 时把 created 改成 B),否则用
+            # 当前 actor。
+            # updatedByUserId:始终用当前 actor(谁 push 就是谁编辑)。
+            if change.entity_type == "transaction" and isinstance(change.payload, dict):
+                if not change.payload.get("updatedByUserId"):
+                    change.payload["updatedByUserId"] = current_user.id
+                if not change.payload.get("createdByUserId"):
+                    existing_creator = db.scalar(
+                        select(ReadTxProjection.created_by_user_id).where(
+                            ReadTxProjection.ledger_id == ledger.id,
+                            ReadTxProjection.sync_id == change.entity_sync_id,
+                        )
+                    )
+                    change.payload["createdByUserId"] = (
+                        existing_creator or current_user.id
+                    )
             row_change = SyncChange(
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
@@ -291,21 +347,21 @@ async def push_changes(
 
     if touched_ledgers:
         ws_manager = request.app.state.ws_manager
-        # Single-user-per-ledger: broadcast only to the owner.
-        owner_user_ids = db.scalars(
-            select(Ledger.user_id).where(Ledger.id.in_(list(touched_ledgers.values())))
-        ).all()
-        for owner_user_id in set(owner_user_ids):
-            for ledger_external_id in touched_ledgers:
-                await ws_manager.broadcast_to_user(
-                    owner_user_id,
-                    {
-                        "type": "sync_change",
-                        "ledgerId": ledger_external_id,
-                        "serverCursor": max_cursor,
-                        "serverTimestamp": now.isoformat(),
-                    },
-                )
+        # 共享账本 Phase 1:fan-out 给该 ledger 所有 member(LedgerMember 表),
+        # 包含 owner 自己(其他设备需要拉)+ Editor 等。client 用 device_id 去重。
+        from ...websocket_manager import broadcast_to_ledger
+        for ledger_external_id, ledger_id in touched_ledgers.items():
+            await broadcast_to_ledger(
+                db=db,
+                ws_manager=ws_manager,
+                ledger_id=ledger_id,
+                payload={
+                    "type": "sync_change",
+                    "ledgerId": ledger_external_id,
+                    "serverCursor": max_cursor,
+                    "serverTimestamp": now.isoformat(),
+                },
+            )
 
     if touched_user_global:
         # user-global change broadcast 走 sentinel ledger external id,mobile/web
@@ -320,6 +376,33 @@ async def push_changes(
                 "serverTimestamp": now.isoformat(),
             },
         )
+
+    if pending_shared_resource_events:
+        # 共享账本 fan-out:对 caller 作为 owner 的所有共享账本,推该事件给
+        # 非 owner member。Editor 收到后更新本地 SharedLedger* 镜像。
+        ws_manager = request.app.state.ws_manager
+        from ...models import Ledger as _L, LedgerMember as _LM
+        from sqlalchemy import func as _func
+        rows = db.execute(
+            select(_L.id, _L.external_id)
+            .join(_LM, _LM.ledger_id == _L.id)
+            .where(_L.user_id == current_user.id)
+            .group_by(_L.id, _L.external_id)
+            .having(_func.count(_LM.user_id) > 1)
+        ).all()
+        from ...ledger_access import list_ledger_members
+        for ledger_id, ledger_external_id in rows:
+            for member_user_id, role in list_ledger_members(db, ledger_id=ledger_id):
+                if role == "owner":
+                    continue
+                for ev in pending_shared_resource_events:
+                    await ws_manager.broadcast_to_user(member_user_id, {
+                        "type": "shared_resource_change",
+                        "ledgerId": ledger_external_id,
+                        "resourceType": ev["resource_type"],
+                        "action": ev["action"],
+                        "payload": ev["payload"],
+                    })
 
     logger.info(
         "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d user_global=%s",

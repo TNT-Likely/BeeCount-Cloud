@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { Pencil, TrendingDown, TrendingUp, Upload, Users } from 'lucide-react'
+import { BarChart3, Pencil, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
@@ -26,6 +26,9 @@ import {
 } from '@beecount/web-features'
 
 import { useLedgers } from '../../context/LedgersContext'
+import { JoinSharedLedgerDialog } from '../JoinSharedLedgerDialog'
+import { SharedLedgerManageDialog } from '../SharedLedgerManageDialog'
+import { SharedLedgerStatsDialog } from '../SharedLedgerStatsDialog'
 
 interface Props {
   /** 点击账本卡片(整张卡)的回调。当前实现里:打开编辑 dialog,不切换
@@ -47,15 +50,25 @@ interface Props {
 export function LedgersSection({ onEdit, onCreate }: Props) {
   const t = useT()
   const { ledgers, activeLedgerId } = useLedgers()
+  const [joinOpen, setJoinOpen] = useState(false)
+  const [manageLedger, setManageLedger] = useState<ReadLedger | null>(null)
+  const [statsLedger, setStatsLedger] = useState<ReadLedger | null>(null)
 
   return (
     <div className="space-y-4">
       <Card className="bc-panel">
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle>{t('ledgers.title')}</CardTitle>
-          <Button size="sm" onClick={onCreate}>
-            {t('ledgers.button.create')}
-          </Button>
+          <div className="flex gap-2">
+            {/* §7 共享账本:全局"加入共享账本"入口 — 跟 mobile 设置页一致 */}
+            <Button size="sm" variant="outline" onClick={() => setJoinOpen(true)}>
+              <UserPlus className="mr-1 h-3.5 w-3.5" />
+              {t('sharedLedger.joinAction')}
+            </Button>
+            <Button size="sm" onClick={onCreate}>
+              {t('ledgers.button.create')}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <p className="mb-4 text-xs text-muted-foreground">
@@ -64,10 +77,30 @@ export function LedgersSection({ onEdit, onCreate }: Props) {
           {ledgers.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('ledgers.empty')}</p>
           ) : (
-            <LedgerGrid ledgers={ledgers} activeLedgerId={activeLedgerId} onEdit={onEdit} />
+            <LedgerGrid
+              ledgers={ledgers}
+              activeLedgerId={activeLedgerId}
+              onEdit={onEdit}
+              onManageMembers={(l) => setManageLedger(l)}
+              onOpenStats={(l) => setStatsLedger(l)}
+            />
           )}
         </CardContent>
       </Card>
+      <JoinSharedLedgerDialog open={joinOpen} onOpenChange={setJoinOpen} />
+      <SharedLedgerManageDialog
+        open={manageLedger != null}
+        onOpenChange={(o) => { if (!o) setManageLedger(null) }}
+        ledgerId={manageLedger?.ledger_id || ''}
+        ledgerName={manageLedger?.ledger_name || ''}
+        isOwner={manageLedger?.role === 'owner'}
+      />
+      <SharedLedgerStatsDialog
+        open={statsLedger != null}
+        onOpenChange={(o) => { if (!o) setStatsLedger(null) }}
+        ledgerId={statsLedger?.ledger_id || ''}
+        ledgerName={statsLedger?.ledger_name || ''}
+      />
     </div>
   )
 }
@@ -76,10 +109,14 @@ function LedgerGrid({
   ledgers,
   activeLedgerId,
   onEdit,
+  onManageMembers,
+  onOpenStats,
 }: {
   ledgers: ReadLedger[]
   activeLedgerId: string | null
   onEdit: (ledger: ReadLedger) => void
+  onManageMembers: (ledger: ReadLedger) => void
+  onOpenStats: (ledger: ReadLedger) => void
 }) {
   const t = useT()
   const navigate = useNavigate()
@@ -94,6 +131,8 @@ function LedgerGrid({
           onImport={() =>
             navigate(`/app/import?ledger=${encodeURIComponent(ledger.ledger_id)}`)
           }
+          onManageMembers={() => onManageMembers(ledger)}
+          onOpenStats={() => onOpenStats(ledger)}
           roleLabel={roleLabelOf(ledger.role, t)}
         />
       ))}
@@ -133,25 +172,38 @@ interface LedgerCardProps {
   roleLabel: string
   onEdit: () => void
   onImport: () => void
+  onManageMembers: () => void
+  onOpenStats: () => void
 }
 
-function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport }: LedgerCardProps) {
+function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport, onManageMembers, onOpenStats }: LedgerCardProps) {
   const t = useT()
   const accent = accentFor(ledger.ledger_name || '?')
   const initial = (ledger.ledger_name || '?').trim().slice(0, 1).toUpperCase()
+  // §7 共享账本:Owner 保留导入/编辑入口(他对自己创建的共享账本拥有所有
+  // 权限);非 Owner 成员(Editor)的共享账本卡片才禁用编辑 — Editor 不能
+  // 改账本元数据(name / currency),server 也会拦截。
+  const editDisabled = !!ledger.is_shared && ledger.role !== 'owner'
+  const handleClick = editDisabled ? undefined : onEdit
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onEdit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onEdit()
-        }
-      }}
-      className={`group relative cursor-pointer overflow-hidden rounded-2xl border text-left transition hover:-translate-y-0.5 hover:shadow-lg ${
+      role={editDisabled ? undefined : 'button'}
+      tabIndex={editDisabled ? undefined : 0}
+      onClick={handleClick}
+      onKeyDown={
+        editDisabled
+          ? undefined
+          : (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onEdit()
+              }
+            }
+      }
+      className={`group relative overflow-hidden rounded-2xl border text-left transition ${
+        editDisabled ? '' : 'cursor-pointer hover:-translate-y-0.5 hover:shadow-lg'
+      } ${
         isActive
           ? 'border-primary/60 shadow-md ring-1 ring-primary/20'
           : 'border-border/60'
@@ -189,24 +241,59 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport }: LedgerCar
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              {/* 导入数据入口 — 跳 /app/import?ledger=<id> 把当前账本作为目标
-                  预选。stopPropagation 防止冒泡触发外层 onClick(编辑) */}
+              {/* §7 共享账本:成员/邀请管理入口。任何账本(单人/共享)都
+                  显示 — 单人账本 Owner 通过它生成邀请码邀请他人加入。 */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onImport()
+                  onManageMembers()
                 }}
-                title={t('ledgers.action.import') as string}
-                aria-label={t('ledgers.action.import') as string}
+                title={t('sharedLedger.openManage') as string}
+                aria-label={t('sharedLedger.openManage') as string}
                 className="rounded bg-background/80 p-1 text-muted-foreground transition hover:bg-primary/15 hover:text-primary"
               >
-                <Upload className="h-3 w-3" />
+                <Users className="h-3 w-3" />
               </button>
-              <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
-                <Pencil className="mr-0.5 inline h-2.5 w-2.5" />
-                {t('common.edit')}
-              </span>
+              {/* §7 成员收支统计 — 仅共享账本有意义。单人账本就一个成员,
+                  跟普通 analytics 页重复,不展示入口。 */}
+              {ledger.is_shared ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenStats()
+                  }}
+                  title={t('sharedLedger.statsOpen') as string}
+                  aria-label={t('sharedLedger.statsOpen') as string}
+                  className="rounded bg-background/80 p-1 text-muted-foreground transition hover:bg-primary/15 hover:text-primary"
+                >
+                  <BarChart3 className="h-3 w-3" />
+                </button>
+              ) : null}
+              {/* §7 共享账本:Owner 保留导入/编辑入口(他对自己创建的共享账本
+                  拥有所有权限);Editor(非 Owner 成员)不展示 — Editor 没有
+                  账本元数据写权限,导入数据也会污染 Owner 全局资源。 */}
+              {!ledger.is_shared || ledger.role === 'owner' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onImport()
+                    }}
+                    title={t('ledgers.action.import') as string}
+                    aria-label={t('ledgers.action.import') as string}
+                    className="rounded bg-background/80 p-1 text-muted-foreground transition hover:bg-primary/15 hover:text-primary"
+                  >
+                    <Upload className="h-3 w-3" />
+                  </button>
+                  <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition group-hover:bg-primary/15 group-hover:text-primary">
+                    <Pencil className="mr-0.5 inline h-2.5 w-2.5" />
+                    {t('common.edit')}
+                  </span>
+                </>
+              ) : null}
             </div>
           </div>
         </div>

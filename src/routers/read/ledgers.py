@@ -24,19 +24,18 @@ def list_ledgers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ReadLedgerOut]:
+    # 共享账本 Phase 1:走 LedgerMember 表拿 caller 能访问的全部 ledger(含
+    # 自己 owner 的 + 加入的共享账本)。admin 用户直接看所有(管理后台需求)。
+    from ...ledger_access import list_accessible_memberships, count_ledger_members
+
     if _is_admin(current_user):
-        ledgers = list(db.scalars(select(Ledger).order_by(Ledger.created_at.desc())).all())
+        rows = list(db.scalars(select(Ledger).order_by(Ledger.created_at.desc())).all())
+        memberships: list[tuple[Ledger, str | None]] = [(lg, None) for lg in rows]
     else:
-        ledgers = list(
-            db.scalars(
-                select(Ledger)
-                .where(Ledger.user_id == current_user.id)
-                .order_by(Ledger.created_at.desc())
-            ).all()
-        )
+        memberships = list_accessible_memberships(db, user_id=current_user.id)
 
     out: list[ReadLedgerOut] = []
-    for ledger in ledgers:
+    for ledger, role in memberships:
         # Hide soft-deleted ledgers.
         if _is_ledger_deleted(db, ledger_id=ledger.id):
             continue
@@ -46,7 +45,8 @@ def list_ledgers(
         ledger_name = _resolve_ledger_name(db, ledger=ledger)
         tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
         now = datetime.now(timezone.utc)
-        role = cast("Any", "owner" if ledger.user_id == current_user.id else "viewer")
+        member_count = count_ledger_members(db, ledger_id=ledger.id)
+        effective_role = role or ("owner" if ledger.user_id == current_user.id else "viewer")
         out.append(
             ReadLedgerOut(
                 ledger_id=ledger.external_id,
@@ -58,9 +58,9 @@ def list_ledgers(
                 balance=income_total - expense_total,
                 exported_at=now,
                 updated_at=now,
-                role=role,
-                is_shared=False,
-                member_count=1,
+                role=cast("Any", effective_role),
+                is_shared=member_count > 1,
+                member_count=member_count,
             )
         )
     return out
@@ -125,15 +125,13 @@ def get_ledger_stats(
     # 全局口径:跨当前用户所有账本。projection 的 user_id 列已经 denormalized,
     # 一次 SQL COUNT + COUNT DISTINCT 就出全量。比原来循环 parse 每个 snapshot
     # 快 N 倍。
+    # 共享账本:走 LedgerMember 维度,Editor 也算上 Owner 的账本(否则附件
+    # 总数等指标在 Editor 视角里少算)。
     user_ledger_ids_subq = (
-        select(Ledger.id).where(Ledger.user_id == current_user.id).scalar_subquery()
+        select(LedgerMember.ledger_id)
+        .where(LedgerMember.user_id == current_user.id)
+        .scalar_subquery()
     )
-
-    def _count_total(model) -> int:
-        return int(db.scalar(
-            select(func.count()).select_from(model)
-            .where(model.user_id == current_user.id)
-        ) or 0)
 
     def _count_distinct_sync(model) -> int:
         return int(db.scalar(
@@ -141,8 +139,19 @@ def get_ledger_stats(
             .where(model.user_id == current_user.id)
         ) or 0)
 
-    tx_total = _count_total(ReadTxProjection)
-    budget_total = _count_total(ReadBudgetProjection)
+    # tx / budget 是 ledger-scoped projection。Editor 视角下,Owner 创建的
+    # tx 在 ReadTxProjection.user_id 是 Owner,不是 Editor — 用 user_id
+    # 过滤会把共享账本的 tx 全漏掉。改走 LedgerMember 维度,跟 attachment_total
+    # 已有的口径一致 + 对齐 mobile 本地 db.transactions 全表统计(那边包含
+    # 同步下来的共享账本 tx)。
+    def _count_ledger_scoped(model) -> int:
+        return int(db.scalar(
+            select(func.count()).select_from(model)
+            .where(model.ledger_id.in_(user_ledger_ids_subq))
+        ) or 0)
+
+    tx_total = _count_ledger_scoped(ReadTxProjection)
+    budget_total = _count_ledger_scoped(ReadBudgetProjection)
     account_total = _count_distinct_sync(UserAccountProjection)
     category_total = _count_distinct_sync(UserCategoryProjection)
     tag_total = _count_distinct_sync(UserTagProjection)
@@ -192,7 +201,7 @@ def get_ledger(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ReadLedgerDetailOut:
-    ledger, member = _require_ledger(
+    ledger, role = _require_ledger(
         db,
         user_id=current_user.id,
         ledger_external_id=ledger_external_id,
@@ -203,6 +212,9 @@ def get_ledger(
     tx_count, income_total, expense_total, _ = _projection_totals(db, ledger.id)
     source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
     now = datetime.now(timezone.utc)
+    # 共享账本 Phase 1:member_count 从 ledger_members 表实时数。is_shared = count > 1。
+    from ...ledger_access import count_ledger_members
+    member_count = count_ledger_members(db, ledger_id=ledger.id)
     return ReadLedgerDetailOut(
         ledger_id=ledger.external_id,
         ledger_name=ledger_name,
@@ -214,9 +226,9 @@ def get_ledger(
         exported_at=now,
         updated_at=now,
         source_change_id=source_change_id,
-        role=cast("Any", member.role if member is not None else "viewer"),
-        is_shared=False,
-        member_count=1,
+        role=cast("Any", role or "viewer"),
+        is_shared=member_count > 1,
+        member_count=member_count,
     )
 
 

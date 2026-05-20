@@ -10,6 +10,7 @@ import type {
   ReadLedgerDetail,
   ReadTag,
   ReadTransaction,
+  SharedResourcesBundle,
   WorkspaceAccount,
   WorkspaceAnalytics,
   WorkspaceCategory,
@@ -176,6 +177,27 @@ export async function fetchWorkspaceTags(
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceTag[]>(`/read/workspace/tags${suffix}`, token)
+}
+
+/**
+ * 拉共享账本的 Owner user-global 资源快照(categories/accounts/tags)。
+ *
+ * 用法:Editor 进入共享账本后,前端 lazy 调一次落到独立的
+ * `sharedLedgerResources` state(Map<ledgerId, SharedResourcesBundle>);
+ * picker / tx tile icon lookup / tag color 在共享账本场景下走这套数据,
+ * 不污染用户自己的 user-global state。
+ *
+ * server endpoint: GET /api/v1/ledgers/{ledgerId}/shared-resources
+ * 详见 .docs/shared-ledger/01-product-design.md §7 + 04-server-details.md §3.3
+ */
+export async function fetchSharedResources(
+  token: string,
+  ledgerId: string
+): Promise<SharedResourcesBundle> {
+  return authedGet<SharedResourcesBundle>(
+    `/ledgers/${encodeURIComponent(ledgerId)}/shared-resources`,
+    token
+  )
 }
 
 export async function fetchWorkspaceLedgerCounts(

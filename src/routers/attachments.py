@@ -46,24 +46,25 @@ def _resolve_ledger(
     *,
     ledger_external_id: str,
     current_user: User,
-    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
-    forbidden_detail: str | None = None,  # noqa: ARG001 — no role hierarchy anymore
-) -> tuple[Ledger, None]:
-    # admin 走跟普通用户一样的 (user_id, external_id) 查询。
-    # 历史上 admin 分支只用 external_id 查会随机命中第一行 —— Ledger.external_id
-    # 不是全局唯一,是 (user_id, external_id) 复合唯一,admin 用户从 mobile 上传
-    # 时会把自己的附件错挂到其他用户的同 external_id 账本上。
-    # admin 的跨用户特权应该通过专门的管理后台 endpoint(带显式 user_id 参数)
-    # 实现,不该在 mobile 共用的 endpoint 里影响数据所属判定。
-    ledger = db.scalar(
-        select(Ledger).where(
-            Ledger.external_id == ledger_external_id,
-            Ledger.user_id == current_user.id,
-        )
+    roles: set[str] | None = None,
+    forbidden_detail: str | None = None,  # noqa: ARG001 — no separate 403 path
+) -> tuple[Ledger, str | None]:
+    """共享账本 Phase 1:走 LedgerMember 表(任意 member 可上传 tx 附件)。
+
+    返 ``(ledger, role)``。roles 传 set 时,caller 角色必须在集合内(否则
+    返 404 — 避免泄露存在性)。
+    """
+    from ..ledger_access import get_accessible_ledger_by_external_id
+
+    row = get_accessible_ledger_by_external_id(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        roles=roles,
     )
-    if ledger is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
-    return ledger, None
+    return row
 
 
 def _to_upload_out(row: AttachmentFile, ledger_external_id: str) -> AttachmentUploadOut:
@@ -269,23 +270,46 @@ def download_attachment(
 
     # 权限校验:
     # 1) admin 直接通过(管理后台需求)
-    # 2) row.ledger_id 为 NULL(category_icon 类型) → 校验 row.user_id == current_user.id
-    # 3) row.ledger_id 非 NULL → 校验该 ledger 属于 current_user
+    # 2) 自己上传的(row.user_id == current_user.id) → 通过
+    # 3) row.ledger_id 为 NULL(category_icon / user-global)→ 共享账本场景:
+    #    如果 row.user_id 是 caller 同 ledger 的 owner,允许(详见 .docs/shared-ledger
+    #    04-server-details.md §3.5)
+    # 4) row.ledger_id 非 NULL(tx 附件)→ 走 LedgerMember accessible
     if not current_user.is_admin:
-        if row.ledger_id is None:
-            if row.user_id != current_user.id:
+        from ..ledger_access import get_accessible_ledger_ids
+        from ..models import LedgerMember
+        from sqlalchemy import and_, exists as sa_exists
+
+        if row.user_id == current_user.id:
+            pass  # 自己上传的,允许
+        elif row.ledger_id is None:
+            # category_icon / user-global:caller 跟 row.user_id 在同一 ledger
+            # 且 row.user_id 是该 ledger 的 owner(严控 — 只共享 owner 的 icon)
+            lm_caller = LedgerMember
+            lm_owner = LedgerMember.__table__.alias("lm_owner")
+            shared = db.scalar(
+                select(sa_exists().where(and_(
+                    lm_caller.user_id == current_user.id,
+                    lm_caller.ledger_id == lm_owner.c.ledger_id,
+                    lm_owner.c.user_id == row.user_id,
+                    lm_owner.c.role == "owner",
+                )))
+            )
+            if not shared:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Attachment access forbidden",
                 )
         else:
-            ledger = db.scalar(
+            # tx 附件:走 LedgerMember accessible
+            accessible_ids = get_accessible_ledger_ids(db, user_id=current_user.id)
+            ok = db.scalar(
                 select(Ledger).where(
                     Ledger.id == row.ledger_id,
-                    Ledger.user_id == current_user.id,
+                    Ledger.id.in_(accessible_ids),
                 )
             )
-            if ledger is None:
+            if ok is None:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Attachment access forbidden",

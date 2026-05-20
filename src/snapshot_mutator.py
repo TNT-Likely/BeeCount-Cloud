@@ -222,6 +222,12 @@ def _assert_actor_can_modify(item: dict, payload: dict) -> None:
         return
     if _actor_is_admin(payload):
         return
+    # 共享账本:caller 是该账本的 Owner / Editor(_TRANSACTION_WRITE_ROLES
+    # 已在 endpoint 层放行)→ 可以改任何 member 的 tx / category / tag /
+    # account / budget。__actor_in_shared_ledger 由 _payload_with_actor
+    # 注入,基于 caller 在 LedgerMember 表的存在性 + role。
+    if payload.get("__actor_in_shared_ledger") is True:
+        return
     created_by = item.get("createdByUserId")
     if isinstance(created_by, str) and created_by.strip() and created_by.strip() != actor_user_id:
         raise PermissionError("write role forbidden: entity owner mismatch")

@@ -31,6 +31,7 @@ from ...ledger_access import (
 from ...models import (
     AttachmentFile,
     Ledger,
+    LedgerMember,
     ReadBudgetProjection,
     ReadTxProjection,
     SyncChange,
@@ -186,6 +187,40 @@ def _get_latest_change_id(db: Session, *, ledger_id: str) -> int:
         select(func.max(SyncChange.change_id)).where(SyncChange.ledger_id == ledger_id)
     )
     return int(val or 0)
+
+
+def _user_info_map(
+    db: Session, user_ids: set[str]
+) -> dict[str, tuple[str | None, str | None, str | None, int]]:
+    """Return {user_id: (email, display_name, avatar_file_id, avatar_version)}
+    给共享账本 tx 列表展示 "X 创建 · Y 编辑" 时回填创建者/编辑者头像 + name 用。
+
+    avatar_file_id 是 server attachment id;web 拼成 `/api/v1/profile/avatar/...`
+    访问。display_name 缺失时 caller fallback 到 email split('@')[0]。
+    """
+    if not user_ids:
+        return {}
+    users = db.execute(
+        select(User.id, User.email).where(User.id.in_(user_ids))
+    ).all()
+    profiles = db.execute(
+        select(
+            UserProfile.user_id,
+            UserProfile.display_name,
+            UserProfile.avatar_file_id,
+            UserProfile.avatar_version,
+        ).where(UserProfile.user_id.in_(user_ids))
+    ).all()
+    email_by_uid = {row[0]: row[1] for row in users}
+    profile_by_uid: dict[str, tuple[str | None, str | None, int]] = {
+        row[0]: (row[1], row[2], int(row[3] or 0)) for row in profiles
+    }
+    out: dict[str, tuple[str | None, str | None, str | None, int]] = {}
+    for uid in user_ids:
+        email = email_by_uid.get(uid)
+        prof = profile_by_uid.get(uid, (None, None, 0))
+        out[uid] = (email, prof[0], prof[1], prof[2])
+    return out
 
 
 def _owner_map_for_ledgers(
@@ -520,6 +555,7 @@ __all__ = [
     'get_accessible_ledger_by_external_id',
     'AttachmentFile',
     'Ledger',
+    'LedgerMember',
     'ReadBudgetProjection',
     'ReadTxProjection',
     'UserAccountProjection',
@@ -562,6 +598,7 @@ __all__ = [
     '_get_latest_snapshot',
     '_get_latest_change_id',
     '_owner_map_for_ledgers',
+    '_user_info_map',
     '_is_ledger_deleted',
     '_snapshot_ledger_info',
     '_resolve_ledger_name',

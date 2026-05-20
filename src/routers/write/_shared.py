@@ -27,7 +27,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,7 @@ from ...ledger_access import (
 from ...models import (
     AuditLog,
     Ledger,
+    LedgerMember,
     ReadTxProjection,
     SyncChange,
     SyncPushIdempotency,
@@ -425,12 +426,14 @@ def _load_ledger_for_write(
     *,
     user_id: str,
     ledger_external_id: str,
-    roles: set[str],  # noqa: ARG001 — back-compat, ignored under single-user-per-ledger
-) -> tuple[Ledger, None]:
+    roles: set[str],
+) -> tuple[Ledger, str]:
+    """共享账本 Phase 1:role check 通过 ledger_access 自动生效。返 (ledger, role)。"""
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=user_id,
         ledger_external_id=ledger_external_id,
+        roles=roles,
     )
     if row is not None:
         return row
@@ -660,9 +663,14 @@ async def _commit_write_fast_tx(
                 return replay
         raise exc
 
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
+    # tx,Editor 端 mobile 收不到 sync_change WS,要重启 app 才能看到新数据。
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": response.new_change_id,
@@ -861,17 +869,111 @@ async def _commit_write(
         device_id,
         current_user.id,
     )
-    # Single-user-per-ledger: notify only the owner.
-    await request.app.state.ws_manager.broadcast_to_user(
-        ledger.user_id,
-        {
+    # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
+    # tx/budget/category/...,Editor 端 mobile 收不到 sync_change WS,要重启
+    # app 才能看到新数据。
+    from ...websocket_manager import broadcast_to_ledger
+    await broadcast_to_ledger(
+        db=db,
+        ws_manager=request.app.state.ws_manager,
+        ledger_id=ledger.id,
+        payload={
             "type": "sync_change",
             "ledgerId": ledger.external_id,
             "serverCursor": response.new_change_id,
             "serverTimestamp": response.server_timestamp.isoformat(),
         },
     )
+
+    # §7 共享账本:对 user-global 实体(category/account/tag)再做一次
+    # shared_resource_change fan-out。Editor 的 /sync/pull 只返回自己
+    # scope=user 的变更,A 的 user-global 变更永远拉不到 — 必须靠这条
+    # WS 事件主动推,Editor 收到后更新本地 SharedLedger* 镜像表。
+    # mobile push 路径(sync/push.py:356)早已有此逻辑,web write 漏了。
+    user_global_events = _diff_user_global_for_shared_resource(
+        prev=prev_snapshot, next=next_snapshot
+    )
+    if user_global_events:
+        await _broadcast_shared_resource_events(
+            request=request,
+            db=db,
+            owner_user_id=current_user.id,
+            events=user_global_events,
+        )
+
     return response
+
+
+def _diff_user_global_for_shared_resource(
+    *,
+    prev: dict[str, Any],
+    next: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Diff prev/next snapshots for user-global entities (category/account/tag)
+    → 返回 shared_resource_change WS event payload 列表(resource_type /
+    action / sync_id / payload)。
+    """
+    out: list[dict[str, Any]] = []
+    for key, resource_type in (
+        ("categories", "category"),
+        ("accounts", "account"),
+        ("tags", "tag"),
+    ):
+        prev_map = {e["syncId"]: e for e in (prev.get(key) or []) if "syncId" in e}
+        next_map = {e["syncId"]: e for e in (next.get(key) or []) if "syncId" in e}
+        for sid, entity in next_map.items():
+            prev_e = prev_map.get(sid)
+            if prev_e is None or entity != prev_e:
+                out.append({
+                    "resource_type": resource_type,
+                    "action": "upsert",
+                    "sync_id": sid,
+                    "payload": entity,
+                })
+        for sid in prev_map:
+            if sid not in next_map:
+                out.append({
+                    "resource_type": resource_type,
+                    "action": "delete",
+                    "sync_id": sid,
+                    "payload": {"syncId": sid},
+                })
+    return out
+
+
+async def _broadcast_shared_resource_events(
+    *,
+    request: Request,
+    db: Session,
+    owner_user_id: str,
+    events: list[dict[str, Any]],
+) -> None:
+    """对 owner 作为 owner 的所有共享账本(member_count > 1),给非 owner member
+    推送 shared_resource_change 事件。复刻 sync/push.py:356-381 的逻辑。"""
+    from ...models import Ledger as _L, LedgerMember as _LM
+    from sqlalchemy import func as _func
+    from ...ledger_access import list_ledger_members
+
+    ws_manager = request.app.state.ws_manager
+    rows = db.execute(
+        select(_L.id, _L.external_id)
+        .join(_LM, _LM.ledger_id == _L.id)
+        .where(_L.user_id == owner_user_id)
+        .group_by(_L.id, _L.external_id)
+        .having(_func.count(_LM.user_id) > 1)
+    ).all()
+    for ledger_id, ledger_external_id in rows:
+        for member_user_id, role in list_ledger_members(db, ledger_id=ledger_id):
+            if role == "owner":
+                continue
+            for ev in events:
+                await ws_manager.broadcast_to_user(member_user_id, {
+                    "type": "shared_resource_change",
+                    "ledgerId": ledger_external_id,
+                    "resourceType": ev["resource_type"],
+                    "action": ev["action"],
+                    "payload": ev["payload"],
+                })
 
 
 def _prepare_write(
@@ -919,10 +1021,29 @@ def _normalize_ledger_name(raw: str | None) -> str:
     return value[:255]
 
 
-def _payload_with_actor(payload: dict, current_user: User) -> dict:
+def _payload_with_actor(
+    payload: dict,
+    current_user: User,
+    *,
+    ledger: Ledger | None = None,
+) -> dict:
     merged = dict(payload)
     merged["__actor_user_id"] = current_user.id
     merged["__actor_is_admin"] = bool(current_user.is_admin)
+    # 共享账本场景:_prepare_write 已经在 endpoint 层按 LedgerMember role
+    # 卡过权限,通过到这里的 caller 必然是合法成员(Owner 或 Editor),
+    # snapshot_mutator 的 _assert_can_modify_entity "严格按创建人匹配"
+    # 在共享账本下应该让任何合法成员都跳过(Phase 1 决策:LedgerMember
+    # 里所有人都能改账本内所有 tx)。
+    #
+    # 原老条件 `ledger.user_id != current_user.id` 错了:Owner 编辑
+    # Editor 创建的 tx 时,Owner == ledger.user_id 但 created_by != Owner,
+    # 严格 check 触发 → 403 "write role forbidden: entity owner mismatch"。
+    #
+    # 单人账本(无其它 member):tx.created_by 自然等于 actor,严格 check
+    # 本来就不会 fire,设了 flag 也无副作用。所以无条件设是安全的。
+    if ledger is not None:
+        merged["__actor_in_shared_ledger"] = True
     return merged
 
 
@@ -933,9 +1054,14 @@ def _assert_can_modify_entity(
     current_user: User,
     entity_sync_id: str,  # noqa: ARG001 — retained for signature compat
 ) -> None:
-    """Ownership check: ledger.user_id must match current user."""
-    if ledger.user_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    """共享账本前的 owner-only check。endpoint 已经走过
+    ``_prepare_write(required_roles=...)`` 的 LedgerMember role check,
+    Owner / Editor 都放行。这个 helper 在共享账本场景错杀 Editor → 403。
+    保留函数签名(被 transactions.py 旧调用点引用),内部改成 no-op。
+    """
+    _ = ledger
+    _ = current_user
+    return None
 
 
 
@@ -957,6 +1083,7 @@ __all__ = [
     'status',
     'func',
     'select',
+    'delete',
     'IntegrityError',
     'Session',
     'lock_ledger_for_materialize',
@@ -970,6 +1097,7 @@ __all__ = [
     'get_accessible_ledger_by_external_id',
     'AuditLog',
     'Ledger',
+    'LedgerMember',
     'ReadTxProjection',
     'SyncChange',
     'SyncPushIdempotency',

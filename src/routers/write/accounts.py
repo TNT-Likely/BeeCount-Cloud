@@ -29,7 +29,6 @@ async def create_acc(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -43,6 +42,7 @@ async def create_acc(
     )
     if replay:
         return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,
@@ -74,7 +74,6 @@ async def update_acc(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json", exclude_unset=True)
-    mutate_payload = _payload_with_actor(payload, current_user)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -88,6 +87,7 @@ async def update_acc(
     )
     if replay:
         return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,
@@ -119,7 +119,6 @@ async def delete_acc(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -133,6 +132,7 @@ async def delete_acc(
     )
     if replay:
         return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,

@@ -47,6 +47,12 @@ interface Props {
   selectedIds?: Set<string>
   /** 切换选中。event 透传给上层判断 shift / meta。row.id 是 sync_id。 */
   onToggleSelect?: (row: ReadTransaction, event: React.MouseEvent) => void
+  /** §7 共享账本:为 true 时每行渲染"谁记的"chip(透传到 TransactionRow)。
+   *  默认 false。 */
+  showCreator?: boolean
+  /** §7 共享账本:当前 caller user_id,用来过滤"自己创建+编辑"的 tx 不显示
+   *  chip。透传给 TransactionRow。 */
+  currentUserId?: string | null
 }
 
 /**
@@ -77,7 +83,9 @@ export function TransactionList({
   emptyDescription,
   selectionMode = false,
   selectedIds,
-  onToggleSelect
+  onToggleSelect,
+  showCreator = false,
+  currentUserId
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -132,6 +140,8 @@ export function TransactionList({
               <TransactionRow
                 row={row}
                 variant={variant}
+                showCreator={showCreator}
+                currentUserId={currentUserId}
                 tagColorByName={tagColorByName}
                 categoryById={categoryById}
                 iconPreviewUrlByFileId={iconPreviewUrlByFileId}

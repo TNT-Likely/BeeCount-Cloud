@@ -36,6 +36,12 @@ export type SyncEventKind =
   | 'restore_progress'
   /** 本地 poller 拉到一批 change_envelope;payload.changes 是 envelope 数组 */
   | 'sync_change_batch'
+  /** §7 共享账本:成员变化 — joined / role_changed / removed。
+   *  payload: { ledgerId, changeType, userId, reason? } */
+  | 'member_change'
+  /** §7 共享账本:Owner user-global 资源变化 — category/account/tag。
+   *  payload: { ledgerId, resourceType, action, payload } */
+  | 'shared_resource_change'
   /** 订阅"任何 server 事件",原始 payload 透传 */
   | 'any'
 

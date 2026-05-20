@@ -46,7 +46,7 @@ async def create_tx(
     # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
     # 是 syncId,不再需要任何投影表。payload 直接传给 snapshot_mutator。
-    mutate_payload = _payload_with_actor(payload, current_user)
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,
@@ -99,7 +99,7 @@ async def update_tx(
     )
     # 跟 create_tx 同样改动:account/category/tag 的 id 直接走 snapshot syncId,
     # 不再经 UserAccount 投影表。
-    mutate_payload = _payload_with_actor(payload, current_user)
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     return await _commit_write_fast_tx(
         request=request,
         db=db,
@@ -133,7 +133,6 @@ async def delete_tx(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json")
-    mutate_payload = _payload_with_actor(payload, current_user)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -147,6 +146,7 @@ async def delete_tx(
     )
     if replay:
         return replay
+    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
     _assert_can_modify_entity(
         db=db,
         ledger=ledger,

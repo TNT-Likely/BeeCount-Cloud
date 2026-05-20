@@ -137,7 +137,20 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 <SelectContent>
                   {ledgers.map((ledger) => (
                     <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
-                      {ledger.ledger_name}
+                      <span className="inline-flex items-center gap-1.5">
+                        {ledger.ledger_name}
+                        {/* §7 共享账本:🤝 emoji + 成员数放账本名后面,跟
+                            mobile UI 对齐(账本列表也有相同标识) */}
+                        {ledger.is_shared ? (
+                          <span
+                            className="inline-flex items-center gap-0.5 text-[10px] text-primary"
+                            title={`共享账本 · ${ledger.member_count || 1} 人`}
+                          >
+                            🤝
+                            <span className="font-mono">{ledger.member_count || 1}</span>
+                          </span>
+                        ) : null}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -309,7 +322,18 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
               <SelectContent>
                 {ledgers.map((ledger) => (
                   <SelectItem key={ledger.ledger_id} value={ledger.ledger_id}>
-                    {ledger.ledger_name}
+                    <span className="inline-flex items-center gap-1.5">
+                      {ledger.ledger_name}
+                      {ledger.is_shared ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[10px] text-primary"
+                          title={`共享 · ${ledger.member_count || 1} 人`}
+                        >
+                          🤝
+                          <span className="font-mono">{ledger.member_count || 1}</span>
+                        </span>
+                      ) : null}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>

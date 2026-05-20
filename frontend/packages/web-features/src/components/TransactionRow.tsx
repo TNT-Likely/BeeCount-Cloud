@@ -9,6 +9,12 @@ export type TransactionRowVariant = 'default' | 'compact'
 type CommonProps = {
   row: ReadTransaction
   variant?: TransactionRowVariant
+  /** §7 共享账本:开启后会在 meta 行渲染"XX 创建 · YY 编辑"chip(带头像)。
+   *  默认 false(单人账本不需要显示创建人)。 */
+  showCreator?: boolean
+  /** §7 共享账本:当前 caller user_id,用来过滤掉"自己创建+自己编辑"的 tx —
+   *  这种 tx 在共享账本里也不显示 chip,避免噪声。 */
+  currentUserId?: string | null
   /** 标签配色字典：tagName.lowercase → color，渲染 tag badge 用。 */
   tagColorByName?: Map<string, string>
   /** 分类字典：category_id → ReadCategory，渲染分类图标用。不传 → 不渲染图标。 */
@@ -53,6 +59,8 @@ type CommonProps = {
 export function TransactionRow({
   row,
   variant = 'default',
+  showCreator = false,
+  currentUserId,
   tagColorByName,
   categoryById,
   iconPreviewUrlByFileId,
@@ -148,87 +156,94 @@ export function TransactionRow({
           />
         </div>
       ) : null}
-      <div className="min-w-0 flex-1">
-        {/* 标题行:左 分类图标 + 分类名 · 备注;右 hover 动作 + 金额。类型徽章
-            去掉了 —— 金额正负号 + 颜色已经能明确表达 income/expense/transfer,
-            重复的文字标签只会挤位置。动作放在金额左侧同一 flex 行里,不再
-            absolute 悬浮,避免与金额重叠。 */}
-        <div className="flex items-baseline justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            {categoryEntry ? (
-              <CategoryIcon
-                icon={categoryEntry.icon}
-                iconType={categoryEntry.icon_type}
-                iconCloudFileId={categoryEntry.icon_cloud_file_id}
-                iconPreviewUrlByFileId={iconPreviewUrlByFileId}
-                size={isCompact ? 16 : 18}
-                className="shrink-0 text-muted-foreground"
-              />
-            ) : null}
-            <span className="truncate text-sm font-medium">{categoryText}</span>
-            {row.note ? (
-              <span className="truncate text-xs text-muted-foreground">
-                ({row.note})
-              </span>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {(onEdit || onDelete) && !isCompact && !selectionMode ? (
-              <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                {onEdit ? (
-                  <button
-                    type="button"
-                    disabled={!canManage}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onEdit(row)
-                    }}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
-                  >
-                    {t('common.edit')}
-                  </button>
-                ) : null}
-                {onDelete ? (
-                  <button
-                    type="button"
-                    disabled={!canManage}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onDelete(row)
-                    }}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    {t('common.delete')}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            <span className={`font-mono tabular-nums font-bold ${
-              amountTone === 'positive'
-                ? 'text-income'
-                : amountTone === 'negative'
-                  ? 'text-expense'
-                  : 'text-foreground'
-            } ${isCompact ? 'text-sm' : 'text-base'}`}>
-              {sign}
-              {row.amount.toLocaleString('zh-CN', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-              })}
+      {/* 2×2 grid layout — 左右各 2 行:
+            ┌──────────────────┬──────────────┐
+            │ 分类 / 备注       │ hover + 金额  │  顶
+            ├──────────────────┼──────────────┤
+            │ 时间·账户·tag·附件│ chip(头像)    │  底
+            └──────────────────┴──────────────┘
+          顶/底行因为同 grid row 自然底对齐;showCreator=false 时 chip
+          单元为空(row 高度由顶行决定),tile 跟单人账本完全一致;
+          有 chip 时 row 高度被撑,左下 meta 自然贴底,跟 chip 水平对齐。 */}
+      <div
+        className="min-w-0 flex-1 grid gap-x-3"
+        style={{ gridTemplateColumns: '1fr auto', gridTemplateRows: 'auto 1fr' }}
+      >
+        {/* 左上:分类 + 备注 — self-start 钉到 row 顶部 */}
+        <div className="flex min-w-0 items-center gap-2 self-start">
+          {categoryEntry ? (
+            <CategoryIcon
+              icon={categoryEntry.icon}
+              iconType={categoryEntry.icon_type}
+              iconCloudFileId={categoryEntry.icon_cloud_file_id}
+              iconPreviewUrlByFileId={iconPreviewUrlByFileId}
+              size={isCompact ? 16 : 18}
+              className="shrink-0 text-muted-foreground"
+            />
+          ) : null}
+          <span className="truncate text-sm font-medium">{categoryText}</span>
+          {row.note ? (
+            <span className="truncate text-xs text-muted-foreground">
+              ({row.note})
             </span>
-          </div>
+          ) : null}
         </div>
 
-        {/* 元信息行:时间 · 账户 · 标签 · 附件 chip。备注迁到了上面标题行和
-            分类名连在一起,这里不再重复。 */}
-        <div className={`mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 ${
+        {/* 右上:hover 动作 + 金额 — self-start 钉顶 */}
+        <div className="flex shrink-0 items-center justify-end gap-2 self-start">
+          {(onEdit || onDelete) && !isCompact && !selectionMode ? (
+            <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              {onEdit ? (
+                <button
+                  type="button"
+                  disabled={!canManage}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onEdit(row)
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                >
+                  {t('common.edit')}
+                </button>
+              ) : null}
+              {onDelete ? (
+                <button
+                  type="button"
+                  disabled={!canManage}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onDelete(row)
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                >
+                  {t('common.delete')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <span className={`font-mono tabular-nums font-bold ${
+            amountTone === 'positive'
+              ? 'text-income'
+              : amountTone === 'negative'
+                ? 'text-expense'
+                : 'text-foreground'
+          } ${isCompact ? 'text-sm' : 'text-base'}`}>
+            {sign}
+            {row.amount.toLocaleString('zh-CN', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+            })}
+          </span>
+        </div>
+
+        {/* 左下:时间·账户·标签·附件 — self-end 钉到 row 底部 */}
+        <div className={`mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 self-end ${
           isCompact ? 'text-[11px]' : 'text-xs'
         } text-muted-foreground`}>
           <span className="font-mono tabular-nums">{formatDateTime(row.happened_at)}</span>
           {accountText && accountText !== '-' ? (
             <span className="truncate">· {accountText}</span>
           ) : null}
-
           {row.tags_list && row.tags_list.length > 0
             ? row.tags_list.map((tagName) => (
                 <TagChip
@@ -239,7 +254,6 @@ export function TransactionRow({
                 />
               ))
             : null}
-
           {hasAttachments && firstAttachment ? (
             <button
               type="button"
@@ -255,8 +269,141 @@ export function TransactionRow({
             </button>
           ) : null}
         </div>
+
+        {/* 右下:创建/编辑头像 chip — self-end 钉到 row 底部,跟左下 meta
+            同 grid row,水平 baseline 自动对齐 */}
+        <div className="mt-1 flex shrink-0 items-center justify-end self-end">
+          {showCreator ? (
+            <CreatorEditorChip row={row} currentUserId={currentUserId} t={t} />
+          ) : null}
+        </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * 共享账本 tx tile 右下角"参与者"头像组。
+ *
+ * 显示规则(按用户最新意图):
+ * - 都是自己(creator + editor) → 不显示
+ * - 同一人参与(creator == editor):
+ *     - 是自己 → 不显示
+ *     - 别人 → 显示 1 个头像,tooltip 「{name} 创建并编辑」
+ * - 两个不同人参与:显示 2 个头像,各 tooltip
+ *     - 第 1 个:「{creator} 创建」(自己则 tooltip 写"我 创建")
+ *     - 第 2 个:「{editor} 最后编辑」
+ * - 头像:server avatar_url 失败 fallback 首字母色块。hover 才显示 label
+ *   减少视觉噪声;label 走 native title (浏览器 tooltip)。
+ */
+function CreatorEditorChip({
+  row,
+  currentUserId,
+  t,
+}: {
+  row: ReadTransaction
+  currentUserId?: string | null
+  t: (key: string, vars?: Record<string, string>) => string
+}) {
+  const creatorUid = row.created_by_user_id || ''
+  const editorUid = row.last_edited_by_user_id || creatorUid
+  if (!creatorUid && !editorUid) return null
+
+  const isCreatorMe = !!currentUserId && creatorUid === currentUserId
+  const isEditorMe = !!currentUserId && editorUid === currentUserId
+  if (isCreatorMe && isEditorMe) return null
+
+  const creatorName =
+    row.created_by_display_name ||
+    (row.created_by_email || '').split('@')[0] ||
+    '?'
+  const editorName =
+    row.last_edited_by_display_name ||
+    (row.last_edited_by_email || '').split('@')[0] ||
+    creatorName
+
+  const sameUser = creatorUid && editorUid && creatorUid === editorUid
+
+  // 同一人参与(此时必然不是自己,前面已 early-return) → 单头像 + 创建并编辑 tooltip
+  if (sameUser) {
+    const title = t('sharedLedger.tileCreatedAndEditedBy', {
+      name: creatorName,
+    })
+    return (
+      <span title={title} className="inline-flex items-center">
+        <UserMiniAvatar
+          avatarUrl={row.created_by_avatar_url}
+          name={creatorName}
+          size={24}
+        />
+      </span>
+    )
+  }
+
+  // 两个不同人参与 → 双头像,各自 tooltip
+  return (
+    <span className="inline-flex items-center -space-x-1.5">
+      <span
+        title={t('sharedLedger.tileCreatedBy', { name: creatorName })}
+        className="inline-flex items-center ring-1 ring-background rounded-full"
+      >
+        <UserMiniAvatar
+          avatarUrl={row.created_by_avatar_url}
+          name={creatorName}
+          size={24}
+        />
+      </span>
+      <span
+        title={t('sharedLedger.tileEditedBy', { name: editorName })}
+        className="inline-flex items-center ring-1 ring-background rounded-full"
+      >
+        <UserMiniAvatar
+          avatarUrl={row.last_edited_by_avatar_url}
+          name={editorName}
+          size={24}
+        />
+      </span>
+    </span>
+  )
+}
+
+function UserMiniAvatar({
+  avatarUrl,
+  name,
+  size = 16,
+}: {
+  avatarUrl?: string | null
+  name: string
+  size?: number
+}) {
+  const letter = (name || '?').trim().slice(0, 1).toUpperCase()
+  // letter 字号约头像高度的 45%,28px 头像 ~ 12.5px 字
+  const style: React.CSSProperties = {
+    width: size,
+    height: size,
+    fontSize: Math.round(size * 0.45),
+  }
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name}
+        style={{ width: size, height: size }}
+        className="rounded-full object-cover"
+        onError={(e) => {
+          // 头像 404 时退化成首字母,避免 broken-image 图标
+          ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+        }}
+      />
+    )
+  }
+  return (
+    <span
+      style={style}
+      className="inline-flex items-center justify-center rounded-full bg-primary/20 font-semibold text-primary"
+    >
+      {letter}
+    </span>
   )
 }
 

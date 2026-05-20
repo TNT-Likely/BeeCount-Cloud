@@ -41,7 +41,14 @@ def list_workspace_transactions(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all())
@@ -121,6 +128,26 @@ def list_workspace_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
+    # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
+    # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
+    # 同时把账本 owner 也收进去 — legacy tx(created_by_user_id IS NULL)
+    # fallback 走 owner_info[0],owner uid 必须在 user_info_map 里才能映射
+    # 回 email/display_name,否则前端 created_by_email 全 null,信息回退到
+    # tx 列。
+    actor_user_ids: set[str] = set()
+    for r in rows:
+        cu = r.created_by_user_id
+        if cu:
+            actor_user_ids.add(cu)
+        eu = r.last_edited_by_user_id
+        if eu:
+            actor_user_ids.add(eu)
+    for owner_uid, _owner_email in owner_map.values():
+        if owner_uid:
+            actor_user_ids.add(owner_uid)
+    user_info_map = _user_info_map(db, actor_user_ids)
+
     out_items: list[WorkspaceTransactionOut] = []
     for row in rows:
         led_ext_id, led_name = ledger_meta.get(row.ledger_id, ("", ""))
@@ -144,6 +171,13 @@ def list_workspace_transactions(
             except json.JSONDecodeError:
                 attachments = None
 
+        # §7 共享账本:per-tx 创建者 + 编辑者真实值(对齐 projection 的
+        # created_by_user_id / last_edited_by_user_id 列)。owner_info 仅作为
+        # 回退,projection 没填时用账本所有者。
+        creator_uid = row.created_by_user_id or owner_info[0]
+        editor_uid = row.last_edited_by_user_id or creator_uid
+        creator_info = user_info_map.get(creator_uid or '', (None, None, None, 0))
+        editor_info = user_info_map.get(editor_uid or '', creator_info)
         out_items.append(
             WorkspaceTransactionOut(
                 id=row.sync_id,
@@ -168,11 +202,22 @@ def list_workspace_transactions(
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
-                created_by_user_id=owner_info[0],
-                created_by_email=owner_info[1],
-                created_by_display_name=None,
-                created_by_avatar_url=None,
-                created_by_avatar_version=None,
+                created_by_user_id=creator_uid,
+                created_by_email=creator_info[0],
+                created_by_display_name=creator_info[1],
+                created_by_avatar_url=(
+                    f"/api/v1/profile/avatar/{creator_uid}?v={creator_info[3]}"
+                    if creator_uid and creator_info[2] else None
+                ),
+                created_by_avatar_version=creator_info[3] if creator_info[2] else None,
+                last_edited_by_user_id=editor_uid,
+                last_edited_by_email=editor_info[0],
+                last_edited_by_display_name=editor_info[1],
+                last_edited_by_avatar_url=(
+                    f"/api/v1/profile/avatar/{editor_uid}?v={editor_info[3]}"
+                    if editor_uid and editor_info[2] else None
+                ),
+                last_edited_by_avatar_version=editor_info[3] if editor_info[2] else None,
             )
         )
     return WorkspaceTransactionPageOut(
@@ -283,7 +328,14 @@ def export_workspace_transactions_csv(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
     ).scalars().all())
@@ -496,7 +548,14 @@ def list_workspace_accounts(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -660,7 +719,14 @@ def list_workspace_categories(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -769,7 +835,14 @@ def list_workspace_tags(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
 
     ledgers = db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -893,7 +966,14 @@ def workspace_ledger_counts(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
 
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
@@ -963,7 +1043,14 @@ def workspace_analytics(
         if user_id:
             ledger_conditions.append(Ledger.user_id == user_id)
     else:
-        ledger_conditions.append(Ledger.user_id == current_user.id)
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        ledger_conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
 
     ledgers = list(db.execute(
         select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())

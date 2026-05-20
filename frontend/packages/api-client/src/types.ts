@@ -182,6 +182,13 @@ export type ReadTransaction = {
   created_by_display_name?: string | null
   created_by_avatar_url?: string | null
   created_by_avatar_version?: number | null
+  // §7 共享账本 — server projection 的 last_edited_by_user_id 加上 user 信息回填,
+  // tx 列表显示"创建 / 编辑"双角色。
+  last_edited_by_user_id?: string | null
+  last_edited_by_email?: string | null
+  last_edited_by_display_name?: string | null
+  last_edited_by_avatar_url?: string | null
+  last_edited_by_avatar_version?: number | null
 }
 
 export type ReadAccount = {
@@ -416,26 +423,48 @@ export type AdminHealth = {
   time: string
 }
 
-export type AdminIntegrityIssueSample = {
-  sync_id: string
-  label: string
+// ────────── 数据清理(替代旧 IntegrityScan)──────────
+
+export type DataCleanupOrphanType =
+  | 'tx_missing_category'
+  | 'tx_missing_account'
+  | 'tx_missing_from_account'
+  | 'tx_missing_to_account'
+  | 'budget_missing_category'
+  | 'sync_change_missing_entity'
+  | 'attachment_no_ref'
+  | 'attachment_file_missing'
+  | 'disk_file_no_ref'
+  | 'tx_ref_broken_attachment'
+
+export type DataCleanupRecord = {
+  type: DataCleanupOrphanType | string
+  title: string
+  subtitle: string
+  user_id?: string | null
+  row_id?: string | null
+  sync_id?: string | null
+  file_path?: string | null
+  size_bytes?: number | null
   extra?: Record<string, unknown> | null
 }
 
-export type AdminIntegrityIssue = {
-  issue_type: string
-  ledger_id: string
-  ledger_name: string
-  owner_email: string | null
-  count: number
-  samples: AdminIntegrityIssueSample[]
+export type DataCleanupScanReport = {
+  db_orphans: DataCleanupRecord[]
+  file_orphans: DataCleanupRecord[]
+  sync_orphans: DataCleanupRecord[]
+  total_count: number
+  total_size_bytes: number
 }
 
-export type AdminIntegrityScan = {
-  scanned_at: string
-  ledgers_total: number
-  issues_total: number
-  issues: AdminIntegrityIssue[]
+export type DataCleanupFailure = {
+  record_key: string
+  error: string
+}
+
+export type DataCleanupResult = {
+  success_count: number
+  failures: DataCleanupFailure[]
 }
 
 export type AdminSyncErrorItem = {
@@ -601,4 +630,54 @@ export type AttachmentExistsItem = {
 
 export type AttachmentBatchExistsResponse = {
   items: AttachmentExistsItem[]
+}
+
+// === 共享账本 Editor 视角资源 ===
+// 对应 server src/routers/shared_resources.py — Editor 进共享账本后通过
+// /ledgers/{external_id}/shared-resources 拉一次 Owner 的 user-global 资源
+// 快照,前端缓存到独立 state(Map<ledgerId, SharedResourcesBundle>),
+// picker / tile / icon lookup 在共享账本场景下走这套数据,不污染用户
+// 自己的 user-global state。effacing mobile 端 SharedLedger{Categories,
+// Accounts,Tags} 镜像表的思路。
+export type SharedCategoryItem = {
+  sync_id: string
+  name: string | null
+  kind: string | null
+  icon: string | null
+  icon_type: string | null
+  icon_cloud_file_id: string | null
+  icon_cloud_sha256: string | null
+  sort_order: number | null
+  level: number | null
+  parent_name: string | null
+  // 二级分类父子关系的稳定 FK(parent 的 sync_id)。client 优先用它建父子链,
+  // parent_name 是显示 / 兜底。
+  parent_sync_id: string | null
+}
+
+export type SharedAccountItem = {
+  sync_id: string
+  name: string | null
+  account_type: string | null
+  currency: string | null
+  initial_balance: number | null
+  note: string | null
+  credit_limit: number | null
+  billing_day: number | null
+  payment_due_day: number | null
+  bank_name: string | null
+  card_last_four: string | null
+}
+
+export type SharedTagItem = {
+  sync_id: string
+  name: string | null
+  color: string | null
+}
+
+export type SharedResourcesBundle = {
+  owner_user_id: string
+  categories: SharedCategoryItem[]
+  accounts: SharedAccountItem[]
+  tags: SharedTagItem[]
 }

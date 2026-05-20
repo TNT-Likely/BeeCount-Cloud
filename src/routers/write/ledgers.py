@@ -48,6 +48,16 @@ async def create_ledger(
     db.add(ledger)
     db.flush()
 
+    # 共享账本 Phase 1:创建者自动 owner — 否则 ledger_access 找不到 member,后续
+    # 所有 read/write/sync 路径都 404。
+    db.add(LedgerMember(
+        ledger_id=ledger.id,
+        user_id=current_user.id,
+        role="owner",
+        joined_at=now,
+    ))
+    db.flush()
+
     # 方案 B:不写 ledger_snapshot 行。emit 一个 ledger entity SyncChange 个体事件,
     # mobile /sync/pull 能收到这个 ledger 被创建的事件。
     row_change = SyncChange(
@@ -205,11 +215,16 @@ async def delete_ledger(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     """Soft-delete a ledger: append a ``ledger_snapshot action=delete`` tombstone
-    SyncChange. Reads filter it out; historical rows are retained for audit."""
+    SyncChange. Reads filter it out; historical rows are retained for audit.
+
+    共享账本 Phase 1:owner only。Editor 想离开走 DELETE /members/{user_id}(MVP)
+    或 transfer + leave(Phase 2)路径。
+    """
     row = get_accessible_ledger_by_external_id(
         db,
         user_id=current_user.id,
         ledger_external_id=ledger_id,
+        roles=_OWNER_ONLY_ROLES,
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
@@ -217,6 +232,15 @@ async def delete_ledger(
 
     lock_ledger_for_materialize(db, ledger.id)
     now = _utcnow()
+    # 共享账本 Phase 1:删账本前,先把所有非 owner member 的 user_id 记下来,
+    # commit 后给他们发 member_change.removed,client 端走 _purgeLocalLedger
+    # 自动清本地数据(复用被踢路径),避免"Owner 删了 Editor 那边还在"。
+    from ...ledger_access import list_ledger_members
+    member_ids_to_notify = [
+        uid
+        for uid, role in list_ledger_members(db, ledger_id=ledger.id)
+        if uid != current_user.id
+    ]
     tombstone = SyncChange(
         user_id=ledger.user_id,
         ledger_id=ledger.id,
@@ -233,6 +257,9 @@ async def delete_ledger(
     snapshot_cache.invalidate(ledger.id)
     # 软删除:Ledger 行不动(留着外键历史),但 projection 清零,让 /read/* 立刻看不到
     projection._truncate_ledger(db, ledger.id)
+    # 同时清 LedgerMember — 账本没了,membership 无意义。删之前已经 snapshot
+    # 了 member_ids_to_notify,broadcast 走 extra_user_ids 保证已被踢的人也收到。
+    db.execute(delete(LedgerMember).where(LedgerMember.ledger_id == ledger.id))
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -246,6 +273,8 @@ async def delete_ledger(
     )
     db.commit()
 
+    # Fan-out:Owner 自己一份(sync_change 通知 pull tombstone);非 owner
+    # member 走 member_change.removed,client 端清本地 ledger + SharedLedger*。
     await request.app.state.ws_manager.broadcast_to_user(
         ledger.user_id,
         {
@@ -255,6 +284,17 @@ async def delete_ledger(
             "serverTimestamp": tombstone.updated_at.isoformat(),
         },
     )
+    for member_id in member_ids_to_notify:
+        await request.app.state.ws_manager.broadcast_to_user(
+            member_id,
+            {
+                "type": "member_change",
+                "ledgerId": ledger.external_id,
+                "changeType": "removed",
+                "userId": member_id,
+                "reason": "ledger_deleted",
+            },
+        )
     return WriteCommitMeta(
         ledger_id=ledger.external_id,
         base_change_id=0,

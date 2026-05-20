@@ -15,6 +15,7 @@ export type AppSection =
   | 'settings-ai'
   | 'admin-users'
   | 'admin-backup'
+  | 'admin-data-cleanup'
   | 'import'
 
 export type NavItem = {

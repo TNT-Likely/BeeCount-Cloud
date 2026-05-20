@@ -235,8 +235,52 @@ class Ledger(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")
+    members: Mapped[list["LedgerMember"]] = relationship(
+        back_populates="ledger", cascade="all, delete-orphan"
+    )
 
 
+class LedgerMember(Base):
+    __tablename__ = "ledger_members"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Phase 1: 'owner' / 'editor'。'viewer' 远期保留。
+    role: Mapped[str] = mapped_column(String(16))
+    invited_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    ledger: Mapped[Ledger] = relationship(back_populates="members")
+
+
+Index("ix_ledger_members_user_id", LedgerMember.user_id)
+Index("ix_ledger_members_ledger_id", LedgerMember.ledger_id)
+
+
+class LedgerInvite(Base):
+    __tablename__ = "ledger_invites"
+
+    # 6 位邀请码,字符集排除 O/0/I/1,熵 ≈ 32^6 ≈ 10 亿
+    code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    invited_by: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    target_role: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class SyncChange(Base):
@@ -443,6 +487,7 @@ class ReadTxProjection(Base):
     attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     tx_index: Mapped[int] = mapped_column(Integer, default=0)
     created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_edited_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -495,6 +540,10 @@ class UserCategoryProjection(Base):
     icon_cloud_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     icon_cloud_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 共享账本二级分类:存 parent 的 sync_id,跟 parent_name 同步维护。
+    # parent_name 字段保留(老调用 / fallback / 显示用),parent_sync_id 才是
+    # 稳定 FK,父分类重命名时不需要级联改子分类。
+    parent_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
