@@ -3,6 +3,7 @@ import {
   Archive,
   BookOpen,
   Bot,
+  Brush,
   Info,
   Key,
   Languages,
@@ -178,6 +179,13 @@ export function AvatarDropdown({
                 onClick={() => onNavigate('admin-backup')}
               >
                 {t('nav.backup')}
+              </MenuButton>
+              <MenuButton
+                icon={Brush}
+                active={currentSection === 'admin-data-cleanup'}
+                onClick={() => onNavigate('admin-data-cleanup')}
+              >
+                {t('nav.dataCleanup')}
               </MenuButton>
             </>
           ) : null}

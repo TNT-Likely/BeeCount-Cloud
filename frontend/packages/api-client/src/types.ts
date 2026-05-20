@@ -423,26 +423,48 @@ export type AdminHealth = {
   time: string
 }
 
-export type AdminIntegrityIssueSample = {
-  sync_id: string
-  label: string
+// ────────── 数据清理(替代旧 IntegrityScan)──────────
+
+export type DataCleanupOrphanType =
+  | 'tx_missing_category'
+  | 'tx_missing_account'
+  | 'tx_missing_from_account'
+  | 'tx_missing_to_account'
+  | 'budget_missing_category'
+  | 'sync_change_missing_entity'
+  | 'attachment_no_ref'
+  | 'attachment_file_missing'
+  | 'disk_file_no_ref'
+  | 'tx_ref_broken_attachment'
+
+export type DataCleanupRecord = {
+  type: DataCleanupOrphanType | string
+  title: string
+  subtitle: string
+  user_id?: string | null
+  row_id?: string | null
+  sync_id?: string | null
+  file_path?: string | null
+  size_bytes?: number | null
   extra?: Record<string, unknown> | null
 }
 
-export type AdminIntegrityIssue = {
-  issue_type: string
-  ledger_id: string
-  ledger_name: string
-  owner_email: string | null
-  count: number
-  samples: AdminIntegrityIssueSample[]
+export type DataCleanupScanReport = {
+  db_orphans: DataCleanupRecord[]
+  file_orphans: DataCleanupRecord[]
+  sync_orphans: DataCleanupRecord[]
+  total_count: number
+  total_size_bytes: number
 }
 
-export type AdminIntegrityScan = {
-  scanned_at: string
-  ledgers_total: number
-  issues_total: number
-  issues: AdminIntegrityIssue[]
+export type DataCleanupFailure = {
+  record_key: string
+  error: string
+}
+
+export type DataCleanupResult = {
+  success_count: number
+  failures: DataCleanupFailure[]
 }
 
 export type AdminSyncErrorItem = {

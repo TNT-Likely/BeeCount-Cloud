@@ -422,36 +422,56 @@ class AdminLogEntryOut(BaseModel):
     device_id: str | None = None
 
 
-class AdminIntegrityIssueSample(BaseModel):
-    """整体性扫描:单条 issue 样本(完整 list 可能很长,只回 5 条 spot check)"""
-
-    sync_id: str
-    label: str
-    extra: dict[str, Any] | None = None
-
-
-class AdminIntegrityIssue(BaseModel):
-    """单类问题在某 ledger 下的统计"""
-
-    issue_type: str  # "orphan_tx_category" | "orphan_tx_account" | ...
-    ledger_id: str
-    ledger_name: str | None
-    owner_email: str | None
-    count: int
-    samples: list[AdminIntegrityIssueSample]
-
-
-class AdminIntegrityScanOut(BaseModel):
-    scanned_at: datetime
-    ledgers_total: int
-    issues_total: int
-    issues: list[AdminIntegrityIssue]
-
-
 class AdminLogListOut(BaseModel):
     items: list[AdminLogEntryOut]
     capacity: int
     latest_seq: int
+
+
+# ────────── 数据清理(替代旧 IntegrityScan)─────────────────────────
+
+
+class DataCleanupRequest(BaseModel):
+    """POST /admin/data-cleanup/clean 请求体 — records 直接来自 scan 接口。"""
+
+    records: list["DataCleanupRecord"]
+
+
+class DataCleanupResult(BaseModel):
+    success_count: int
+    failures: list["DataCleanupFailure"] = []
+
+
+class DataCleanupFailure(BaseModel):
+    record_key: str
+    error: str
+
+
+class DataCleanupRecord(BaseModel):
+    """单条孤儿数据 — 直接复用 services.data_cleanup.OrphanRecord 形态,但作为
+    schema 出现避免 router 依赖 services 类型。"""
+
+    type: str  # OrphanType 枚举字符串值
+    title: str
+    subtitle: str
+    user_id: str | None = None
+    row_id: str | None = None
+    sync_id: str | None = None
+    file_path: str | None = None
+    size_bytes: int | None = None
+    extra: dict[str, Any] | None = None
+
+
+class DataCleanupScanReport(BaseModel):
+    db_orphans: list[DataCleanupRecord] = []
+    file_orphans: list[DataCleanupRecord] = []
+    sync_orphans: list[DataCleanupRecord] = []
+    total_count: int = 0
+    total_size_bytes: int = 0
+
+
+DataCleanupRequest.model_rebuild()
+DataCleanupResult.model_rebuild()
 
 
 class ReadLedgerOut(BaseModel):

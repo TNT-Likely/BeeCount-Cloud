@@ -5,10 +5,12 @@ import type {
   AdminBackupRestoreResponse,
   AdminDeviceList,
   AdminHealth,
-  AdminIntegrityScan,
   AdminLogList,
   AdminOverview,
   AdminSyncErrors,
+  DataCleanupRecord,
+  DataCleanupResult,
+  DataCleanupScanReport,
   UserAdmin,
   UserAdminCreatePayload,
   UserAdminList
@@ -103,10 +105,19 @@ export async function fetchAdminHealth(token: string): Promise<AdminHealth> {
   return authedGet<AdminHealth>('/admin/health', token)
 }
 
-export async function fetchAdminIntegrityScan(
+export async function fetchDataCleanupScan(
   token: string,
-): Promise<AdminIntegrityScan> {
-  return authedGet<AdminIntegrityScan>('/admin/integrity/scan', token)
+): Promise<DataCleanupScanReport> {
+  return authedGet<DataCleanupScanReport>('/admin/data-cleanup/scan', token)
+}
+
+export async function executeDataCleanup(
+  token: string,
+  records: DataCleanupRecord[],
+): Promise<DataCleanupResult> {
+  return authedPost<DataCleanupResult>('/admin/data-cleanup/clean', token, {
+    records,
+  })
 }
 
 export async function fetchAdminSyncErrors(token: string): Promise<AdminSyncErrors> {

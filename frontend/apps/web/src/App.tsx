@@ -21,6 +21,11 @@ const AccountsPage = lazy(() =>
 const AdminBackupPage = lazy(() =>
   import('./pages/sections/AdminBackupPage').then((m) => ({ default: m.AdminBackupPage })),
 )
+const AdminDataCleanupPage = lazy(() =>
+  import('./pages/sections/AdminDataCleanupPage').then((m) => ({
+    default: m.AdminDataCleanupPage,
+  })),
+)
 const AdminUsersPage = lazy(() =>
   import('./pages/sections/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })),
 )
@@ -265,6 +270,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <AdminBackupPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/data-cleanup"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminDataCleanupPage />
             </Suspense>
           }
         />
