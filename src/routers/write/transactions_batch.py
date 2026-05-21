@@ -194,7 +194,17 @@ async def create_tx_batch(
         if isinstance(arr, list):
             prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
 
-    # 4. 循环 mutate snapshot,创建 N 笔
+    # 4. 预查所有标签名 → sync_id,避免每笔 tx 触发 N 次 lookup,顺便修
+    # issue #5 根因(batch 路径之前不反查导致 tag_sync_ids_json 为 NULL)。
+    all_tag_names: set[str] = set(auto_tag_names)
+    for _item in req.transactions:
+        if _item.tags:
+            all_tag_names.update(t for t in _item.tags if t)
+    tag_name_to_sync_id = _lookup_tag_sync_ids_map(
+        db, user_id=current_user.id, names=list(all_tag_names),
+    )
+
+    # 5. 循环 mutate snapshot,创建 N 笔
     created_sync_ids: list[str] = []
     try:
         for i, item in enumerate(req.transactions):
@@ -203,6 +213,7 @@ async def create_tx_batch(
                 auto_tag_names=auto_tag_names,
                 attachment_dict=attachment_dict,
                 actor_user=current_user,
+                tag_name_to_sync_id=tag_name_to_sync_id,
             )
             snapshot, sync_id = create_transaction(snapshot, tx_payload)
             if sync_id:
@@ -310,15 +321,50 @@ async def create_tx_batch(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _lookup_tag_sync_ids_map(
+    db: Session, *, user_id: str, names: list[str]
+) -> dict[str, str]:
+    """批量把 tag 名字解析成 sync_id(user-global),返回 name → sync_id map。
+
+    跟 src/mcp/tools/write_tools.py::_lookup_tag_sync_ids 同语义,只是这里
+    返回 dict 方便 batch 路径多次反查不重复打表 + 避免 N+1。没找到的 name
+    不出现在 dict 里。
+
+    存在的意义:batch API 历史上 schema 没 tag_ids 字段,所有 LLM 记账走
+    batch 都只有 tags 名字,导致 ReadTxProjection.tag_sync_ids_json 为
+    NULL,后续 tag rename 走 sync_id 路径会漏掉这些行。这里 server 主动
+    反查,把 sync_id 一起塞进 payload,根治 issue #5 的 name-only 数据
+    源头(PR #9 是 rename cascade 端的补救,这里是源头治理)。
+    """
+    if not names:
+        return {}
+    rows = db.execute(
+        select(UserTagProjection.name, UserTagProjection.sync_id).where(
+            UserTagProjection.user_id == user_id,
+            UserTagProjection.name.in_(names),
+        )
+    ).all()
+    out: dict[str, str] = {}
+    for n, sid in rows:
+        out.setdefault(n, sid)
+    return out
+
+
 def _build_tx_payload(
     *,
     item: BatchTransactionItem,
     auto_tag_names: list[str],
     attachment_dict: dict | None,
     actor_user: User,
+    tag_name_to_sync_id: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """把 BatchTransactionItem + 自动 tag + 共享 attachment 拼成 single create
-    所需的 payload(对应 WriteTransactionCreateRequest schema)。"""
+    所需的 payload(对应 WriteTransactionCreateRequest schema)。
+
+    `tag_name_to_sync_id`(可选):name → sync_id map,batch 路径预先 lookup
+    传进来,让 payload 同时带 tags(名字)+ tag_ids(sync_id),projection 写入
+    时 tag_sync_ids_json 才完整。
+    """
     payload: dict[str, Any] = {
         "tx_type": item.tx_type,
         "amount": item.amount,
@@ -339,6 +385,16 @@ def _build_tx_payload(
     merged_tags = user_tags + [t for t in auto_tag_names if t and t not in user_tags]
     if merged_tags:
         payload["tags"] = merged_tags
+        # 反查 sync_id 一起传 — 让 projection.tag_sync_ids_json 完整填充。
+        # 否则 tag rename 走 sync_id 路径会漏掉这笔 tx(issue #5 根因)。
+        # 找不到 sync_id 的 name 静默丢弃,不阻塞 tx 创建(可能是 LLM 抽出的
+        # 全新 tag 名字,稍后 snapshot 同步 emit 时会创建 tag 实体)。
+        if tag_name_to_sync_id:
+            tag_ids = [
+                tag_name_to_sync_id[n] for n in merged_tags if n in tag_name_to_sync_id
+            ]
+            if tag_ids:
+                payload["tag_ids"] = tag_ids
 
     if attachment_dict is not None:
         payload["attachments"] = [attachment_dict]
