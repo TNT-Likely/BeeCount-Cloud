@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { BarChart3, Pencil, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
+import { BarChart3, Pencil, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users } from 'lucide-react'
 
 import type { ReadLedger } from '@beecount/api-client'
 import {
@@ -35,6 +35,9 @@ interface Props {
    *  active ledger 也不跳转 —— 切账本仍走顶部 ledger picker / 其它入口。 */
   onEdit: (ledger: ReadLedger) => void
   onCreate: () => void
+  /** 点删除按钮的回调 — page 端弹独立确认弹窗 + 调 deleteLedger。
+   *  不传则卡片上不展示删除按钮(viewer 视角 / page 还没实现时兜底)。 */
+  onDelete?: (ledger: ReadLedger) => void
 }
 
 /**
@@ -47,7 +50,7 @@ interface Props {
  *
  * 顶部右侧 "新建账本" 按钮。点击账本卡片 → 编辑 dialog。
  */
-export function LedgersSection({ onEdit, onCreate }: Props) {
+export function LedgersSection({ onEdit, onCreate, onDelete }: Props) {
   const t = useT()
   const { ledgers, activeLedgerId } = useLedgers()
   const [joinOpen, setJoinOpen] = useState(false)
@@ -81,6 +84,7 @@ export function LedgersSection({ onEdit, onCreate }: Props) {
               ledgers={ledgers}
               activeLedgerId={activeLedgerId}
               onEdit={onEdit}
+              onDelete={onDelete}
               onManageMembers={(l) => setManageLedger(l)}
               onOpenStats={(l) => setStatsLedger(l)}
             />
@@ -109,12 +113,14 @@ function LedgerGrid({
   ledgers,
   activeLedgerId,
   onEdit,
+  onDelete,
   onManageMembers,
   onOpenStats,
 }: {
   ledgers: ReadLedger[]
   activeLedgerId: string | null
   onEdit: (ledger: ReadLedger) => void
+  onDelete?: (ledger: ReadLedger) => void
   onManageMembers: (ledger: ReadLedger) => void
   onOpenStats: (ledger: ReadLedger) => void
 }) {
@@ -128,6 +134,7 @@ function LedgerGrid({
           ledger={ledger}
           isActive={activeLedgerId === ledger.ledger_id}
           onEdit={() => onEdit(ledger)}
+          onDelete={onDelete ? () => onDelete(ledger) : undefined}
           onImport={() =>
             navigate(`/app/import?ledger=${encodeURIComponent(ledger.ledger_id)}`)
           }
@@ -171,12 +178,14 @@ interface LedgerCardProps {
   isActive: boolean
   roleLabel: string
   onEdit: () => void
+  /** undefined 时不展示删除按钮(viewer / 非 owner / page 没接 handler 时) */
+  onDelete?: () => void
   onImport: () => void
   onManageMembers: () => void
   onOpenStats: () => void
 }
 
-function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport, onManageMembers, onOpenStats }: LedgerCardProps) {
+function LedgerCard({ ledger, isActive, roleLabel, onEdit, onDelete, onImport, onManageMembers, onOpenStats }: LedgerCardProps) {
   const t = useT()
   const accent = accentFor(ledger.ledger_name || '?')
   const initial = (ledger.ledger_name || '?').trim().slice(0, 1).toUpperCase()
@@ -292,6 +301,23 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit, onImport, onManageMem
                     <Pencil className="mr-0.5 inline h-2.5 w-2.5" />
                     {t('common.edit')}
                   </span>
+                  {/* 删除按钮 — owner-only(server _OWNER_ONLY_ROLES 兜底拦截),
+                      stopPropagation 防卡片整张的 onEdit 同时触发。视觉上跟其它
+                      action 按钮排在一起 — 不再塞编辑弹窗里(per #13 review)。 */}
+                  {onDelete ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onDelete()
+                      }}
+                      title={t('ledgers.action.delete') as string}
+                      aria-label={t('ledgers.action.delete') as string}
+                      className="rounded bg-background/80 p-1 text-muted-foreground transition hover:bg-destructive/15 hover:text-destructive"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  ) : null}
                 </>
               ) : null}
             </div>

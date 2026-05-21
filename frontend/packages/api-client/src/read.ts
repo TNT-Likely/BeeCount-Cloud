@@ -68,6 +68,36 @@ export async function fetchReadBudgets(token: string, ledgerId: string): Promise
   return authedGet<ReadBudget[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/budgets`, token)
 }
 
+/**
+ * 单账本统计 — server 直接返回 transaction_count + attachment_count + budget_count 等。
+ * 用于:删除账本确认弹窗(让用户清楚知道删了什么)、mobile 深度同步差异检测。
+ */
+export type ReadLedgerStats = {
+  transaction_count: number
+  transaction_total: number
+  attachment_count: number
+  attachment_total: number
+  category_attachment_total: number
+  budget_count: number
+  budget_total: number
+  account_count: number
+  account_total: number
+  category_count: number
+  category_total: number
+  tag_count: number
+  tag_total: number
+}
+
+export async function fetchReadLedgerStats(
+  token: string,
+  ledgerId: string,
+): Promise<ReadLedgerStats> {
+  return authedGet<ReadLedgerStats>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/stats`,
+    token,
+  )
+}
+
 export async function fetchWorkspaceTransactions(
   token: string,
   options?: {

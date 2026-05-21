@@ -6,9 +6,13 @@ WRITE 响应表。Endpoint 自身只管参数校验 + mutate lambda 的构造。
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
+from ...models import AttachmentFile
+from ...services.data_cleanup.cleaner import _remove_empty_parents
 
 router = APIRouter()
 
@@ -214,8 +218,17 @@ async def delete_ledger(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
-    """Soft-delete a ledger: append a ``ledger_snapshot action=delete`` tombstone
-    SyncChange. Reads filter it out; historical rows are retained for audit.
+    """Delete a ledger thoroughly. 写一个 ``ledger_snapshot action=delete`` tombstone
+    SyncChange,然后**真清干净**:
+      1. 清 read_*_projection(让 /read/* 立刻看不到)
+      2. 清 LedgerMember(账本没了 membership 无意义)
+      3. **删 sync_changes 历史**(只留 tombstone,clients 拿到 tombstone 后
+         就知道账本已删,中间过程的 events 不再有意义 — 跟"删除账本但保留
+         交易历史"是矛盾语义)
+      4. **删 attachment_files 行 + unlink 物理文件**(原本只 truncate projection
+         的话物理文件永远孤儿 — storage / 隐私两头都不好)
+      5. Ledger 行**保留**(soft-delete) — sync_changes 的 ledger_id FK 还指着它,
+         tombstone 也需要它在;留个壳 + content=NULL 即可
 
     共享账本 Phase 1:owner only。Editor 想离开走 DELETE /members/{user_id}(MVP)
     或 transfer + leave(Phase 2)路径。
@@ -257,9 +270,51 @@ async def delete_ledger(
     snapshot_cache.invalidate(ledger.id)
     # 软删除:Ledger 行不动(留着外键历史),但 projection 清零,让 /read/* 立刻看不到
     projection._truncate_ledger(db, ledger.id)
-    # 同时清 LedgerMember — 账本没了,membership 无意义。删之前已经 snapshot
-    # 了 member_ids_to_notify,broadcast 走 extra_user_ids 保证已被踢的人也收到。
-    db.execute(delete(LedgerMember).where(LedgerMember.ledger_id == ledger.id))
+    # 删非 owner LedgerMember(owner 自己保留)。
+    #
+    # **不能删 owner 自己**:pull endpoint 按 `list_accessible_ledgers`(走
+    # LedgerMember)过滤 `scope=ledger` change。owner 删完后如果连自己也踢出
+    # member,后续自己 pull 时 ledger_id NOT IN accessible → 拉不到刚写的
+    # tombstone,client 永远收不到删除信号本地 ledger 一直留着。
+    # 老版本删 owner 也是个 bug,首次发现于 mobile 收 WS 后 pull 返回 0 changes。
+    db.execute(
+        delete(LedgerMember).where(
+            LedgerMember.ledger_id == ledger.id,
+            LedgerMember.user_id != current_user.id,
+        )
+    )
+
+    # ────────────── 真清干净:附件 + 历史 sync_changes ──────────────
+    # 1) 收集本账本的 transaction 附件(category_icon 是 user-global,ledger_id
+    #    为 NULL,不归本账本,跳过)。先收集 storage_path,DB 删完再 unlink。
+    attachment_rows = list(
+        db.scalars(
+            select(AttachmentFile).where(
+                AttachmentFile.ledger_id == ledger.id,
+                AttachmentFile.attachment_kind == "transaction",
+            )
+        ).all()
+    )
+    attachment_paths_to_unlink: list[str] = [
+        row.storage_path for row in attachment_rows if row.storage_path
+    ]
+    attachment_count = len(attachment_rows)
+    for row in attachment_rows:
+        db.delete(row)
+
+    # 2) 删 sync_changes 历史 — 只保留刚写的 tombstone。tombstone 是单一权威
+    #    "ledger 已删除"事件,clients pull 到它就走 _purgeLocalLedger;
+    #    保留之前的 entity upsert / delete events 没有实际用途(读不到 +
+    #    apply 后又被 tombstone 覆盖),纯占空间。
+    sync_changes_pruned_result = db.execute(
+        delete(SyncChange)
+        .where(
+            SyncChange.ledger_id == ledger.id,
+            SyncChange.change_id != tombstone.change_id,
+        )
+    )
+    sync_changes_pruned = int(sync_changes_pruned_result.rowcount or 0)
+
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -268,13 +323,44 @@ async def delete_ledger(
             metadata_json={
                 "ledgerId": ledger.external_id,
                 "newChangeId": tombstone.change_id,
+                "attachmentsDeleted": attachment_count,
+                "syncChangesPruned": sync_changes_pruned,
             },
         )
     )
     db.commit()
 
-    # Fan-out:Owner 自己一份(sync_change 通知 pull tombstone);非 owner
-    # member 走 member_change.removed,client 端清本地 ledger + SharedLedger*。
+    # 3) DB commit + 锁释放后再做文件 IO。失败只 warn,不回滚 DB(行已删是
+    #    事实,残留物会被 data_cleanup B3 类扫到下次 GC)。
+    for path in attachment_paths_to_unlink:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            _remove_empty_parents(path)
+        except OSError as exc:
+            logger.warning(
+                "delete_ledger unlink failed ledger=%s path=%s err=%s",
+                ledger.external_id, path, exc,
+            )
+
+    logger.info(
+        "write.ledger.delete ledger=%s user=%s attachments=%d sync_changes_pruned=%d",
+        ledger.external_id,
+        current_user.id,
+        attachment_count,
+        sync_changes_pruned,
+    )
+
+    # Fan-out:
+    # - 给 owner 自己发 sync_change → owner 其它 web tab 拉 tombstone 清 projection 缓存
+    # - 给 owner 自己**也**发 member_change.removed → owner 的 mobile 设备走
+    #   `_handleMemberChange` 的 `_purgeLocalLedgerByExternalId` 清本地 ledger 数据。
+    #   这条额外通知是绕开 mobile 端契约漏洞:`_applyRemoteChange` 把所有
+    #   `ledger_snapshot` change 无条件 skip(老注释:"全量快照在 fullPull 中处理"),
+    #   delete tombstone 也被一并跳过 → owner mobile 自己 pull 到 tombstone 不处理 →
+    #   本地账本一直留着。member_change.removed 是 mobile 已经实现的 purge 通道,
+    #   语义上"被自己 web tab 踢出"虽然有点怪但行为一致。
+    # - 非 owner member 跟原来一样,走 member_change.removed → client _purgeLocalLedger。
     await request.app.state.ws_manager.broadcast_to_user(
         ledger.user_id,
         {
@@ -284,7 +370,9 @@ async def delete_ledger(
             "serverTimestamp": tombstone.updated_at.isoformat(),
         },
     )
-    for member_id in member_ids_to_notify:
+    # owner 自己 + 其它 member 都发 member_change.removed
+    purge_targets = [ledger.user_id, *member_ids_to_notify]
+    for member_id in purge_targets:
         await request.app.state.ws_manager.broadcast_to_user(
             member_id,
             {
