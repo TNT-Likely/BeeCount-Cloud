@@ -175,12 +175,33 @@ def test_web_delete_ledger_endpoint() -> None:
         meta = r.json()
         assert meta["ledger_id"] == "L1"
         assert meta["new_change_id"] > 0
+        tombstone_change_id = meta["new_change_id"]
 
         # Subsequently not visible to either mobile or web.
         r = client.get("/api/v1/sync/ledgers", headers={"Authorization": f"Bearer {app_token}"})
         assert r.json() == []
         r = client.get("/api/v1/read/ledgers", headers={"Authorization": f"Bearer {web_token}"})
         assert r.json() == []
+
+        # 回归测试:owner 自己 pull 必须能拿到 tombstone change。曾经的 bug:
+        # delete_ledger 把 owner 自己的 LedgerMember 也删了 → pull 按
+        # list_accessible_ledgers 过滤 scope=ledger,owner 不再是 member → 拉
+        # 不到自己刚写的 tombstone → mobile / 其它 tab 永远收不到删除信号。
+        # 这里直接 pull since=0 验证 tombstone 在响应里。
+        r = client.get(
+            "/api/v1/sync/pull?since=0&limit=2000",
+            headers={"Authorization": f"Bearer {app_token}"},
+        )
+        assert r.status_code == 200, r.text
+        changes = r.json()["changes"]
+        tombstones = [
+            c for c in changes
+            if c.get("entity_type") == "ledger_snapshot"
+            and c.get("action") == "delete"
+            and c.get("entity_sync_id") == "L1"
+        ]
+        assert len(tombstones) == 1, f"owner 拉不到自己写的 tombstone: changes={changes}"
+        assert tombstones[0].get("change_id") == tombstone_change_id
     finally:
         app.dependency_overrides.clear()
 

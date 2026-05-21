@@ -270,9 +270,19 @@ async def delete_ledger(
     snapshot_cache.invalidate(ledger.id)
     # 软删除:Ledger 行不动(留着外键历史),但 projection 清零,让 /read/* 立刻看不到
     projection._truncate_ledger(db, ledger.id)
-    # 同时清 LedgerMember — 账本没了,membership 无意义。删之前已经 snapshot
-    # 了 member_ids_to_notify,broadcast 走 extra_user_ids 保证已被踢的人也收到。
-    db.execute(delete(LedgerMember).where(LedgerMember.ledger_id == ledger.id))
+    # 删非 owner LedgerMember(owner 自己保留)。
+    #
+    # **不能删 owner 自己**:pull endpoint 按 `list_accessible_ledgers`(走
+    # LedgerMember)过滤 `scope=ledger` change。owner 删完后如果连自己也踢出
+    # member,后续自己 pull 时 ledger_id NOT IN accessible → 拉不到刚写的
+    # tombstone,client 永远收不到删除信号本地 ledger 一直留着。
+    # 老版本删 owner 也是个 bug,首次发现于 mobile 收 WS 后 pull 返回 0 changes。
+    db.execute(
+        delete(LedgerMember).where(
+            LedgerMember.ledger_id == ledger.id,
+            LedgerMember.user_id != current_user.id,
+        )
+    )
 
     # ────────────── 真清干净:附件 + 历史 sync_changes ──────────────
     # 1) 收集本账本的 transaction 附件(category_icon 是 user-global,ledger_id
