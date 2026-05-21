@@ -38,6 +38,9 @@ type CardBodyProps = {
   rows: WorkspaceCategory[]
   onEdit: (row: ReadCategory) => void
   onDelete?: (row: ReadCategory) => void
+  /** 整行点击回调 — 不传则行不可点击;传了则点击行(避开 Edit / Delete 按钮)
+   *  会派发该事件。外层用来弹分类详情。 */
+  onRowClick?: (row: WorkspaceCategory) => void
   canManage: boolean
   showCreatorColumn: boolean
   /** 按 category.id 查询的笔数。card 上展示笔数 badge,跟 mobile 对齐。 */
@@ -57,6 +60,7 @@ function CategoriesCardBody({
   rows,
   onEdit,
   onDelete,
+  onRowClick,
   canManage,
   showCreatorColumn,
   txCountById = {},
@@ -65,12 +69,14 @@ function CategoriesCardBody({
   const t = useT()
   const [activeKind, setActiveKind] = useState<CategoryKind>('expense')
   const grouped = useMemo(() => {
-    const parentsByKind: Record<CategoryKind, ReadCategory[]> = {
+    // 用 WorkspaceCategory 而不是 ReadCategory — 保留 ledger_id / tx_count 等字段,
+    // 行点击回调要把完整 WorkspaceCategory 传给详情弹窗。
+    const parentsByKind: Record<CategoryKind, WorkspaceCategory[]> = {
       expense: [],
       income: [],
       transfer: []
     }
-    const childrenByParent: Record<string, ReadCategory[]> = {}
+    const childrenByParent: Record<string, WorkspaceCategory[]> = {}
     for (const row of rows) {
       const kind = (row.kind as CategoryKind) || 'expense'
       const parent = (row.parent_name || '').trim()
@@ -157,8 +163,27 @@ function CategoriesCardBody({
               grouped.childrenByParent[`${activeKind}::${parent.name.toLowerCase()}`] || []
             return (
               <div key={parent.id} className="rounded-xl border border-border/60 bg-card/60 p-3">
-                {/* parent row */}
-                <div className="flex items-center justify-between gap-3">
+                {/* parent row — 整行可点击进详情;Edit/Delete 按钮 stopPropagation 防双触发 */}
+                <div
+                  role={onRowClick ? 'button' : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onClick={onRowClick ? () => onRowClick(parent) : undefined}
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            onRowClick(parent)
+                          }
+                        }
+                      : undefined
+                  }
+                  className={`flex items-center justify-between gap-3 ${
+                    onRowClick
+                      ? '-mx-1 -my-1 cursor-pointer rounded-lg px-1 py-1 transition hover:bg-muted/40'
+                      : ''
+                  }`}
+                >
                   <div className="flex min-w-0 items-center gap-2.5">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
                       {renderIcon(parent.icon, parent.icon_type, parent.icon_cloud_file_id)}
@@ -184,7 +209,10 @@ function CategoriesCardBody({
                       className="text-xs text-muted-foreground hover:text-primary"
                       disabled={!canManage}
                       type="button"
-                      onClick={() => onEdit(parent)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onEdit(parent)
+                      }}
                     >
                       {t('common.edit')}
                     </button>
@@ -193,7 +221,10 @@ function CategoriesCardBody({
                         className="text-xs text-muted-foreground hover:text-destructive"
                         disabled={!canManage}
                         type="button"
-                        onClick={() => onDelete(parent)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDelete(parent)
+                        }}
                       >
                         {t('common.delete')}
                       </button>
@@ -206,7 +237,22 @@ function CategoriesCardBody({
                     {children.map((child) => (
                       <div
                         key={child.id}
-                        className="group flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/60 px-2.5 py-1.5 text-xs"
+                        role={onRowClick ? 'button' : undefined}
+                        tabIndex={onRowClick ? 0 : undefined}
+                        onClick={onRowClick ? () => onRowClick(child) : undefined}
+                        onKeyDown={
+                          onRowClick
+                            ? (e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  onRowClick(child)
+                                }
+                              }
+                            : undefined
+                        }
+                        className={`group flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/60 px-2.5 py-1.5 text-xs ${
+                          onRowClick ? 'cursor-pointer transition hover:border-primary/40 hover:bg-primary/5' : ''
+                        }`}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/50">
@@ -222,7 +268,10 @@ function CategoriesCardBody({
                             className="text-[10px] text-muted-foreground hover:text-primary"
                             disabled={!canManage}
                             type="button"
-                            onClick={() => onEdit(child)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onEdit(child)
+                            }}
                           >
                             {t('common.edit')}
                           </button>
@@ -231,7 +280,10 @@ function CategoriesCardBody({
                               className="text-[10px] text-muted-foreground hover:text-destructive"
                               disabled={!canManage}
                               type="button"
-                              onClick={() => onDelete(child)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onDelete(child)
+                              }}
                             >
                               {t('common.delete')}
                             </button>
@@ -422,6 +474,8 @@ type CategoriesPanelProps = {
   onReset: () => void
   onEdit: (row: ReadCategory) => void
   onDelete?: (row: ReadCategory) => void
+  /** 点击列表行(整行点击,避开 Edit / Delete 按钮)的回调。不传则行不可点击。 */
+  onRowClick?: (row: WorkspaceCategory) => void
   /** Upload a custom icon file to the cloud and return the refs to store in the form. */
   onUploadIcon?: (file: File) => Promise<{ fileId: string; sha256: string } | null>
   /** 受控 dialog 开关 — 让外层(如详情弹窗 → 编辑链)能命令式打开本 panel
@@ -459,6 +513,7 @@ export function CategoriesPanel({
   onReset,
   onEdit,
   onDelete,
+  onRowClick,
   onUploadIcon,
   dialogOpen,
   onDialogOpenChange,
@@ -617,6 +672,7 @@ export function CategoriesPanel({
               rows={rows}
               onEdit={startEdit}
               onDelete={onDelete}
+              onRowClick={onRowClick}
               canManage={canManage}
               showCreatorColumn={showCreatorColumn}
               txCountById={txCountById}
