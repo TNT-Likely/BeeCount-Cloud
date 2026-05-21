@@ -3,11 +3,13 @@ import { useSearchParams } from 'react-router-dom'
 
 import {
   createLedger,
+  deleteLedger,
   updateLedgerMeta,
   type ReadLedger,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
 
+import { LedgerDeleteConfirmDialog } from '../../components/dialogs/LedgerDeleteConfirmDialog'
 import {
   LedgerEditDialog,
   LedgersSection,
@@ -38,6 +40,10 @@ export function LedgersPage() {
   const [createForm, setCreateForm] = useState<LedgerForm>(defaultForm)
   const [editing, setEditing] = useState<ReadLedger | null>(null)
   const [editForm, setEditForm] = useState<LedgerForm>(defaultForm)
+  // 删除流:卡片上的 Trash 按钮把待删 ledger 放进 state → 弹独立确认 dialog →
+  // 点确认后调 deleteLedger + 关闭。deleting 标志 disable 双触发。
+  const [pendingDelete, setPendingDelete] = useState<ReadLedger | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // ?create=1 自动打开新建弹窗 —— header 端"无账本"CTA 跳过来时省一次点击
   const [searchParams, setSearchParams] = useSearchParams()
@@ -122,9 +128,30 @@ export function LedgersPage() {
     }
   }
 
+  const onConfirmDelete = async (): Promise<void> => {
+    if (!pendingDelete) return
+    setDeleting(true)
+    try {
+      await deleteLedger(token, pendingDelete.ledger_id)
+      notifySuccess(t('ledgers.notice.deleted'))
+      // refreshLedgers 后 AppShell.reconcileActiveLedger 会自动把 active
+      // 切到剩下的第一个;activeLedger 状态不需要在这里手动维护。
+      await refreshLedgers()
+      setPendingDelete(null)
+    } catch (err) {
+      notifyError(err)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <>
-      <LedgersSection onCreate={onOpenCreate} onEdit={onOpenEdit} />
+      <LedgersSection
+        onCreate={onOpenCreate}
+        onEdit={onOpenEdit}
+        onDelete={(ledger) => setPendingDelete(ledger)}
+      />
       <LedgerEditDialog
         open={createOpen}
         mode="create"
@@ -132,6 +159,12 @@ export function LedgersPage() {
         onChange={setCreateForm}
         onClose={() => setCreateOpen(false)}
         onSubmit={onCreate}
+      />
+      <LedgerDeleteConfirmDialog
+        ledger={pendingDelete}
+        loading={deleting}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => void onConfirmDelete()}
       />
       <LedgerEditDialog
         open={editing !== null}
