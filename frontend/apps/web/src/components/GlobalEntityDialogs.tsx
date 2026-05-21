@@ -12,6 +12,7 @@ import {
 
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
+import { useLedgers } from '../context/LedgersContext'
 import {
   dispatchOpenEditCategory,
   dispatchOpenEditTx,
@@ -26,6 +27,10 @@ import { TagDetailDialog } from './dialogs/TagDetailDialog'
 import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
 
 const DETAIL_PAGE_SIZE = 50
+// CategoryDetail 的 stats batch 上限。单账本单分类的交易量上限,950 以下场景
+// 拉一次就能拿全;超过则在 UI 提示用户精度被截断。1000 是 server 的硬上限,
+// 留 50 缓冲避免边界 off-by-one。
+const CATEGORY_STATS_LIMIT = 1000
 
 /**
  * 全局实体详情弹窗容器 — 监听 4 类 detail 事件,在 AppShell 顶层渲染对应弹窗。
@@ -44,6 +49,7 @@ const DETAIL_PAGE_SIZE = 50
 export function GlobalEntityDialogs() {
   const navigate = useNavigate()
   const { token } = useAuth()
+  const { activeLedgerId, currency: activeCurrency } = useLedgers()
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
 
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
@@ -60,6 +66,10 @@ export function GlobalEntityDialogs() {
   const [categoryTotal, setCategoryTotal] = useState(0)
   const [categoryOffset, setCategoryOffset] = useState(0)
   const [categoryLoading, setCategoryLoading] = useState(false)
+  // Stats 批量数据 — 限定当前账本,不参与分页,只给 KPI/趋势/Top 用。
+  const [categoryStatsTxs, setCategoryStatsTxs] = useState<WorkspaceTransaction[]>([])
+  const [categoryStatsLoading, setCategoryStatsLoading] = useState(false)
+  const [categoryStatsTruncated, setCategoryStatsTruncated] = useState(false)
 
   const [tag, setTag] = useState<WorkspaceTag | null>(null)
   const [tagTxs, setTagTxs] = useState<WorkspaceTransaction[]>([])
@@ -124,8 +134,11 @@ export function GlobalEntityDialogs() {
     async (categorySyncId: string, offset: number) => {
       setCategoryLoading(true)
       try {
+        // 分类详情按"当前账本"过滤 — 跟分类详情弹窗的 KPI / Top 列表口径
+        // 一致。activeLedgerId 缺省时退化为跨账本(空字符串 → 不传)。
         const page = await fetchWorkspaceTransactions(token, {
           categorySyncId,
+          ledgerId: activeLedgerId || undefined,
           limit: DETAIL_PAGE_SIZE,
           offset,
         })
@@ -138,7 +151,31 @@ export function GlobalEntityDialogs() {
         setCategoryLoading(false)
       }
     },
-    [token],
+    [token, activeLedgerId],
+  )
+
+  /** 拉一次大批量(限定当前账本)用于客户端聚合 KPI / 趋势 / Top。
+   *  cap=1000 — 超过显示截断提示,KPI 仍可用但精度下降。 */
+  const loadCategoryStats = useCallback(
+    async (categorySyncId: string) => {
+      setCategoryStatsLoading(true)
+      setCategoryStatsTruncated(false)
+      try {
+        const page = await fetchWorkspaceTransactions(token, {
+          categorySyncId,
+          ledgerId: activeLedgerId || undefined,
+          limit: CATEGORY_STATS_LIMIT,
+          offset: 0,
+        })
+        setCategoryStatsTxs(page.items)
+        setCategoryStatsTruncated(page.total > page.items.length)
+      } catch {
+        setCategoryStatsTxs([])
+      } finally {
+        setCategoryStatsLoading(false)
+      }
+    },
+    [token, activeLedgerId],
   )
 
   // 监听 category detail
@@ -148,12 +185,15 @@ export function GlobalEntityDialogs() {
       setCategoryTxs([])
       setCategoryTotal(0)
       setCategoryOffset(0)
+      setCategoryStatsTxs([])
+      setCategoryStatsTruncated(false)
       void loadCategoryTxs(cat.id, 0)
+      void loadCategoryStats(cat.id)
       if (tagsDict.length === 0) {
         void fetchWorkspaceTags(token, { limit: 500 }).then(setTagsDict).catch(() => undefined)
       }
     })
-  }, [loadCategoryTxs, token, tagsDict.length])
+  }, [loadCategoryTxs, loadCategoryStats, token, tagsDict.length])
 
   const loadTagTxs = useCallback(
     async (tagSyncId: string, offset: number) => {
@@ -209,6 +249,19 @@ export function GlobalEntityDialogs() {
     [],
   )
 
+  const handleJumpToTransactions = useCallback(
+    (cat: WorkspaceCategory) => {
+      setCategory(null)
+      // CategoryDetail 限定当前账本,所以这里也带上 ledger filter — TransactionsPage
+      // 读 ?q= 会做模糊搜索,但 ledger filter 用 ?ledger=,跟 CategoriesPage 写法一致。
+      const params = new URLSearchParams()
+      params.set('q', cat.name)
+      if (activeLedgerId) params.set('ledger', activeLedgerId)
+      navigate(`/app/transactions?${params.toString()}`)
+    },
+    [navigate, activeLedgerId],
+  )
+
   return (
     <>
       <TransactionDetailDialog
@@ -229,6 +282,10 @@ export function GlobalEntityDialogs() {
       />
       <CategoryDetailDialog
         category={category}
+        currency={activeCurrency}
+        statsTransactions={categoryStatsTxs}
+        statsLoading={categoryStatsLoading}
+        statsTruncated={categoryStatsTruncated}
         transactions={categoryTxs}
         total={categoryTotal}
         offset={categoryOffset}
@@ -238,6 +295,7 @@ export function GlobalEntityDialogs() {
         onClose={() => setCategory(null)}
         onLoadMore={(syncId, off) => void loadCategoryTxs(syncId, off)}
         onEdit={handleEditCategory}
+        onJumpToTransactions={handleJumpToTransactions}
       />
       <TagDetailDialog
         tag={tag}

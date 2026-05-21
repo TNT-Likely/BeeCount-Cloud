@@ -187,6 +187,7 @@ export function CategoriesPage() {
         onSave={onSave}
         onReset={() => setForm(categoryDefaults())}
         onEdit={enterEdit}
+        onRowClick={(row) => dispatchOpenDetailCategory(row)}
         onDelete={(row) => {
           // 跟 mobile + AccountsPage 对齐:有关联交易 / 子分类 → 拒删,要求
           // 用户先迁移这些数据。比"允许删除并 orphan 子分类/交易"更严格。

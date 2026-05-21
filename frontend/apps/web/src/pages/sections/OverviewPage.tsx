@@ -4,11 +4,13 @@ import { useNavigate } from 'react-router-dom'
 import {
   fetchWorkspaceAccounts,
   fetchWorkspaceAnalytics,
+  fetchWorkspaceCategories,
   fetchWorkspaceLedgerCounts,
   fetchWorkspaceTags,
   type ReadBudget,
   type WorkspaceAccount,
   type WorkspaceAnalytics,
+  type WorkspaceCategory,
   type WorkspaceLedgerCounts,
   type WorkspaceTag,
 } from '@beecount/api-client'
@@ -19,6 +21,7 @@ import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
+import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
 
 /**
  * 首页 overview 仪表 —— 读多视角 analytics(year/month/all)+ ledgerCounts
@@ -37,6 +40,13 @@ export function OverviewPage() {
   const bucket = activeLedgerId || '__none__'
   const [accounts, setAccounts] = usePageCache<WorkspaceAccount[]>('overview:accounts', [])
   const [tags, setTags] = usePageCache<WorkspaceTag[]>('overview:tags', [])
+  // 当前账本下的全部分类(用于把 TopCategoriesList 里的 category_name 反查
+  // 成完整 WorkspaceCategory,从而打开富统计详情弹窗)。activeLedgerId 变了
+  // 重拉,避免错按本来不在当前账本的分类查 stats。
+  const [categories, setCategories] = usePageCache<WorkspaceCategory[]>(
+    `overview:${bucket}:categories`,
+    [],
+  )
   const [analyticsData, setAnalyticsData] = usePageCache<WorkspaceAnalytics | null>(
     `overview:${bucket}:analyticsData`,
     null
@@ -93,6 +103,26 @@ export function OverviewPage() {
       // dashboard 静默降级
     }
   }, [token])
+
+  const loadCategories = useCallback(async () => {
+    if (!activeLedgerId) {
+      setCategories([])
+      return
+    }
+    try {
+      const rows = await fetchWorkspaceCategories(token, {
+        ledgerId: activeLedgerId,
+        limit: 500,
+      })
+      setCategories(rows)
+    } catch {
+      // 静默降级:Top 卡片点击拿不到 detail 时回退到 jump-to-tx-page,
+      // 跟没装这个功能等价。
+      setCategories([])
+    }
+    // setCategories 是 usePageCache 稳定 setter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeLedgerId])
 
   const loadBudgets = useCallback(async () => {
     if (!activeLedgerId) {
@@ -195,13 +225,43 @@ export function OverviewPage() {
     void loadBudgets()
   }, [loadBudgets])
 
+  useEffect(() => {
+    void loadCategories()
+  }, [loadCategories])
+
   // mobile 端或其它 tab 写入后 WS / poller 推事件时重拉 analytics + 账户 +
   // 标签 + 预算。budget 跟随 tx 变化(used 是 tx 累加)。
   useSyncRefresh(() => {
     void loadAnalytics()
     void loadAccountsAndTags()
     void loadBudgets()
+    void loadCategories()
   })
+
+  // 把 Top 卡片里只有 name 的点击事件反查成 WorkspaceCategory 后弹详情;
+  // 反查不到(分类被删 / name 是 "Uncategorized" / 异步 race)兜底跳交易页。
+  const onCategoryClickFromHome = useCallback(
+    (name: string, kind: 'expense' | 'income') => {
+      const trimmed = (name || '').trim()
+      if (!trimmed) {
+        navigate(`/app/transactions`)
+        return
+      }
+      const cat = categories.find(
+        (c) =>
+          (c.name || '').trim().toLowerCase() === trimmed.toLowerCase() &&
+          (c.kind || '').toLowerCase() === kind,
+      )
+      if (cat) {
+        dispatchOpenDetailCategory(cat)
+        return
+      }
+      const params = new URLSearchParams({ q: trimmed })
+      if (activeLedgerId) params.set('ledger', activeLedgerId)
+      navigate(`/app/transactions?${params.toString()}`)
+    },
+    [categories, navigate, activeLedgerId],
+  )
 
   return (
     <OverviewSection
@@ -225,6 +285,7 @@ export function OverviewPage() {
         const suffix = q ? `?q=${encodeURIComponent(q)}` : ''
         navigate(`/app/transactions${suffix}`)
       }}
+      onCategoryClickFromTop={onCategoryClickFromHome}
     />
   )
 }
