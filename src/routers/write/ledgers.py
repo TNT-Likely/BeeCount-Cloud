@@ -351,8 +351,16 @@ async def delete_ledger(
         sync_changes_pruned,
     )
 
-    # Fan-out:Owner 自己一份(sync_change 通知 pull tombstone);非 owner
-    # member 走 member_change.removed,client 端清本地 ledger + SharedLedger*。
+    # Fan-out:
+    # - 给 owner 自己发 sync_change → owner 其它 web tab 拉 tombstone 清 projection 缓存
+    # - 给 owner 自己**也**发 member_change.removed → owner 的 mobile 设备走
+    #   `_handleMemberChange` 的 `_purgeLocalLedgerByExternalId` 清本地 ledger 数据。
+    #   这条额外通知是绕开 mobile 端契约漏洞:`_applyRemoteChange` 把所有
+    #   `ledger_snapshot` change 无条件 skip(老注释:"全量快照在 fullPull 中处理"),
+    #   delete tombstone 也被一并跳过 → owner mobile 自己 pull 到 tombstone 不处理 →
+    #   本地账本一直留着。member_change.removed 是 mobile 已经实现的 purge 通道,
+    #   语义上"被自己 web tab 踢出"虽然有点怪但行为一致。
+    # - 非 owner member 跟原来一样,走 member_change.removed → client _purgeLocalLedger。
     await request.app.state.ws_manager.broadcast_to_user(
         ledger.user_id,
         {
@@ -362,7 +370,9 @@ async def delete_ledger(
             "serverTimestamp": tombstone.updated_at.isoformat(),
         },
     )
-    for member_id in member_ids_to_notify:
+    # owner 自己 + 其它 member 都发 member_change.removed
+    purge_targets = [ledger.user_id, *member_ids_to_notify]
+    for member_id in purge_targets:
         await request.app.state.ws_manager.broadcast_to_user(
             member_id,
             {
