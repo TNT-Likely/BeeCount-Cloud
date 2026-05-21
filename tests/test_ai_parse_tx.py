@@ -397,6 +397,83 @@ def test_batch_create_with_image_attachment(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_batch_create_materializes_auto_tag_entities():
+    """B2/B3 LLM 记账场景:auto_ai_tag + extra_tag_name 之前只是字符串塞 tags_csv,
+    UserTagProjection 没行,Tags 详情页查不到关联 tx。
+
+    现在 batch 路径会:
+    1. 在 snapshot 里实际 create_tag 实体(走 snapshot_mutator + diff emit)
+    2. tx payload 引用其 sync_id
+    3. UserTagProjection 写入 + ReadTxProjection.tag_sync_ids_json 完整填充
+    """
+    from sqlalchemy import select
+    from src.models import ReadTxProjection, UserTagProjection
+
+    client = _make_client()
+    try:
+        token, uid = _register_and_login(client, "bat-auto-tag@test.com", client_type="web")
+        hdr = {"Authorization": f"Bearer {token}", "X-Device-ID": "d-web"}
+
+        r = client.post(
+            "/api/v1/write/ledgers",
+            json={"ledger_name": "default", "currency": "CNY"},
+            headers=hdr,
+        )
+        assert r.status_code == 200, r.text
+        ledger_id = r.json()["entity_id"]
+        change_id = r.json()["new_change_id"]
+
+        # batch 创建,auto_ai_tag=True + extra_tag_name="文字记账"
+        # 完全没预先创建任何 tag,期望 server 自动建实体
+        r = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/batch",
+            json={
+                "base_change_id": change_id,
+                "transactions": [{
+                    "tx_type": "expense",
+                    "amount": 20.0,
+                    "happened_at": "2026-05-21T09:47:00Z",
+                    "note": "买菜",
+                    "tags": [],
+                }],
+                "auto_ai_tag": True,
+                "extra_tag_name": "文字记账",
+                "locale": "zh",
+            },
+            headers=hdr,
+        )
+        assert r.status_code == 200, r.text
+        tx_sync_id = r.json()["created_sync_ids"][0]
+
+        # 验证 1:UserTagProjection 里有「AI记账」+「文字记账」两个 tag 实体
+        db = next(app.dependency_overrides[get_db]())
+        try:
+            tag_rows = db.scalars(
+                select(UserTagProjection).where(UserTagProjection.user_id == uid)
+            ).all()
+            tag_names = {t.name for t in tag_rows}
+            assert "AI记账" in tag_names, f"AI记账 tag 实体未创建, 现有={tag_names}"
+            assert "文字记账" in tag_names, f"文字记账 tag 实体未创建, 现有={tag_names}"
+            name_to_sync_id = {t.name: t.sync_id for t in tag_rows}
+
+            # 验证 2:这笔 tx 的 projection tag_sync_ids_json 包含两个 sync_id
+            tx = db.scalar(
+                select(ReadTxProjection).where(ReadTxProjection.sync_id == tx_sync_id)
+            )
+            assert tx is not None
+            assert tx.tags_csv and "AI记账" in tx.tags_csv and "文字记账" in tx.tags_csv
+            assert tx.tag_sync_ids_json is not None, (
+                "tag_sync_ids_json 应被填充,实际 NULL = 修复未生效"
+            )
+            sync_ids = json.loads(tx.tag_sync_ids_json)
+            assert name_to_sync_id["AI记账"] in sync_ids
+            assert name_to_sync_id["文字记账"] in sync_ids
+        finally:
+            db.close()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_batch_create_fills_tag_sync_ids_for_existing_tags():
     """Issue #5 根因修复:batch create 路径(B2/B3 LLM 记账)只接受 tags 名字,
     之前不反查 sync_id,导致 ReadTxProjection.tag_sync_ids_json 永远 NULL。

@@ -40,7 +40,7 @@ from ...models import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 from ...services.ai.image_cache import consume_image
-from ...snapshot_mutator import create_transaction
+from ...snapshot_mutator import create_tag, create_transaction
 from ._shared import (
     _TRANSACTION_WRITE_ROLES,
     _WRITE_RESPONSES,
@@ -194,15 +194,43 @@ async def create_tx_batch(
         if isinstance(arr, list):
             prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
 
-    # 4. 预查所有标签名 → sync_id,避免每笔 tx 触发 N 次 lookup,顺便修
-    # issue #5 根因(batch 路径之前不反查导致 tag_sync_ids_json 为 NULL)。
-    all_tag_names: set[str] = set(auto_tag_names)
+    # 4. Ensure 所有用到的 tag 名字都在 snapshot.tags 里有实体,得到 name→sync_id map。
+    #
+    # 历史问题:_resolve_or_make_ai_tag_name 名字误导 — 它只 "resolve or pick a
+    # default *name*",**不创建实体**。extra_tag_name(图片/文字记账)更直接,
+    # 字符串 append 完就完事。导致 batch 创建的 tx 上看得到 chip,但 Tags 管理
+    # 页里这俩 tag 不存在 → tag_sync_ids_json 也填不上,Tags 详情查不到关联 tx。
+    #
+    # 这里改成跟 mobile 行为对齐:发现 snapshot.tags 里没这个名字 → 用
+    # snapshot_mutator.create_tag 实际建实体,后续 _emit_entity_diffs 会把它
+    # emit 成 SyncChange + 写 UserTagProjection。tx payload 直接引用 sync_id。
+    tag_name_to_sync_id: dict[str, str] = {}
+    existing_tags = snapshot.get("tags") or []
+    for t in existing_tags:
+        n = (t.get("name") or "").strip()
+        if n:
+            tag_name_to_sync_id.setdefault(n, str(t.get("syncId") or ""))
+
+    needed_names: set[str] = {n for n in auto_tag_names if n}
     for _item in req.transactions:
         if _item.tags:
-            all_tag_names.update(t for t in _item.tags if t)
-    tag_name_to_sync_id = _lookup_tag_sync_ids_map(
-        db, user_id=current_user.id, names=list(all_tag_names),
-    )
+            needed_names.update(t for t in _item.tags if t)
+
+    for name in needed_names:
+        if name in tag_name_to_sync_id and tag_name_to_sync_id[name]:
+            continue
+        tag_payload = _payload_with_actor({"name": name}, current_user)
+        try:
+            snapshot, new_sync_id = create_tag(snapshot, tag_payload)
+            tag_name_to_sync_id[name] = new_sync_id
+        except ValueError:
+            # create_tag 内部 dup name 会 raise,理论上前面已 dedup 不会到这。
+            # 防御性重扫 snapshot 找同名 sync_id,实在没有就放弃(让 tx 带
+            # name-only 落库,跟历史行为兼容)。
+            for t in snapshot.get("tags") or []:
+                if (t.get("name") or "").strip() == name:
+                    tag_name_to_sync_id[name] = str(t.get("syncId") or "")
+                    break
 
     # 5. 循环 mutate snapshot,创建 N 笔
     created_sync_ids: list[str] = []
@@ -319,35 +347,6 @@ async def create_tx_batch(
 
 
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _lookup_tag_sync_ids_map(
-    db: Session, *, user_id: str, names: list[str]
-) -> dict[str, str]:
-    """批量把 tag 名字解析成 sync_id(user-global),返回 name → sync_id map。
-
-    跟 src/mcp/tools/write_tools.py::_lookup_tag_sync_ids 同语义,只是这里
-    返回 dict 方便 batch 路径多次反查不重复打表 + 避免 N+1。没找到的 name
-    不出现在 dict 里。
-
-    存在的意义:batch API 历史上 schema 没 tag_ids 字段,所有 LLM 记账走
-    batch 都只有 tags 名字,导致 ReadTxProjection.tag_sync_ids_json 为
-    NULL,后续 tag rename 走 sync_id 路径会漏掉这些行。这里 server 主动
-    反查,把 sync_id 一起塞进 payload,根治 issue #5 的 name-only 数据
-    源头(PR #9 是 rename cascade 端的补救,这里是源头治理)。
-    """
-    if not names:
-        return {}
-    rows = db.execute(
-        select(UserTagProjection.name, UserTagProjection.sync_id).where(
-            UserTagProjection.user_id == user_id,
-            UserTagProjection.name.in_(names),
-        )
-    ).all()
-    out: dict[str, str] = {}
-    for n, sid in rows:
-        out.setdefault(n, sid)
-    return out
 
 
 def _build_tx_payload(
