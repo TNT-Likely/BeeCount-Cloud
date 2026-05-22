@@ -432,6 +432,7 @@ def list_categories(
             icon_cloud_file_id=row.icon_cloud_file_id,
             icon_cloud_sha256=row.icon_cloud_sha256,
             parent_name=row.parent_name,
+            parent_sync_id=row.parent_sync_id,
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,

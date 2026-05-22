@@ -134,6 +134,7 @@ export function OverviewPage() {
       const { budgets: b, usageById } = await fetchBudgetsWithUsage(
         token,
         activeLedgerId,
+        categories,
       )
       setBudgets(b)
       setBudgetUsageById(usageById)
@@ -144,7 +145,7 @@ export function OverviewPage() {
     }
     // setBudgets / setBudgetUsageById 是 usePageCache 返回的稳定 setter
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, activeLedgerId])
+  }, [token, activeLedgerId, categories])
 
   const loadAnalytics = useCallback(async () => {
     const now = new Date()

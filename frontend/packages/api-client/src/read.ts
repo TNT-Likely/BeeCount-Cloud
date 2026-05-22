@@ -109,6 +109,7 @@ export async function fetchWorkspaceTransactions(
     txSyncId?: string
     tagSyncId?: string
     categorySyncId?: string
+    categorySyncIds?: string[]
     accountSyncId?: string
     /** 金额下限(含),按 abs 比较 */
     amountMin?: number
@@ -131,6 +132,9 @@ export async function fetchWorkspaceTransactions(
   if (options?.txSyncId) query.set('tx_sync_id', options.txSyncId)
   if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
   if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
+  if (options?.categorySyncIds?.length) {
+    for (const id of options.categorySyncIds) query.append('category_sync_ids', id)
+  }
   if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)
   if (typeof options?.amountMin === 'number') query.set('amount_min', `${options.amountMin}`)
   if (typeof options?.amountMax === 'number') query.set('amount_max', `${options.amountMax}`)

@@ -2,6 +2,7 @@ import {
   fetchReadBudgets,
   fetchWorkspaceTransactions,
   type ReadBudget,
+  type WorkspaceCategory,
 } from '@beecount/api-client'
 
 import type { BudgetUsage } from '../features/BudgetsPanel'
@@ -37,9 +38,27 @@ export type BudgetsWithUsage = {
 }
 
 /**
+ * Collect parent category id + all child category ids for budget usage query.
+ * When a budget targets a parent category, transactions under any of its
+ * subcategories should also count toward the budget.
+ */
+function collectCategorySyncIds(
+  budgetCategoryId: string,
+  categories: readonly WorkspaceCategory[],
+): string[] {
+  const ids = [budgetCategoryId]
+  for (const cat of categories) {
+    if (cat.parent_sync_id === budgetCategoryId) {
+      ids.push(cat.id)
+    }
+  }
+  return ids
+}
+
+/**
  * 拉指定账本的 budgets + 每个 budget 当前周期的 used。
  * - total budget:全部 expense 累加(指定 ledger 范围内)
- * - category budget:按 category_sync_id 过滤
+ * - category budget:按 category_sync_id 过滤,含子分类交易
  *
  * 每个 budget 独立 fetch 期内 tx — 跟 mobile repository.getBudgetUsage
  * per-budget 模式一致。budgets 数量通常很少(1 个 total + 几个 category),
@@ -51,6 +70,7 @@ export type BudgetsWithUsage = {
 export async function fetchBudgetsWithUsage(
   token: string,
   ledgerId: string,
+  categories: readonly WorkspaceCategory[],
 ): Promise<BudgetsWithUsage> {
   const budgets = await fetchReadBudgets(token, ledgerId)
   if (budgets.length === 0) {
@@ -62,12 +82,13 @@ export async function fetchBudgetsWithUsage(
       try {
         const startDay = Math.max(1, Math.min(28, Number(b.start_day || 1)))
         const { start, end } = currentMonthRange(startDay)
-        const categorySyncId =
-          b.type === 'category' ? b.category_id || undefined : undefined
         const page = await fetchWorkspaceTransactions(token, {
           ledgerId,
           txType: 'expense',
-          categorySyncId,
+          categorySyncIds:
+            b.type === 'category' && b.category_id
+              ? collectCategorySyncIds(b.category_id, categories)
+              : undefined,
           dateFrom: start.toISOString(),
           dateTo: end.toISOString(),
           limit: 1000,

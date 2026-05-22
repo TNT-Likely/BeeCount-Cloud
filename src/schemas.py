@@ -563,6 +563,7 @@ class ReadCategoryOut(BaseModel):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None
+    parent_sync_id: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None

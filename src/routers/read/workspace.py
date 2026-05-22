@@ -20,6 +20,7 @@ def list_workspace_transactions(
     tx_sync_id: str | None = Query(default=None, description="按 tx 自身 syncId 精确过滤(用于 admin/integrity 跳到具体交易)"),
     tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
     category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
+    category_sync_ids: list[str] | None = Query(default=None, description="按 category syncId 集合过滤(repeated query param);传入则忽略 category_sync_id"),
     account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
     amount_min: float | None = Query(default=None, description="金额下限(含)。按 abs(amount) 比较以兼容 expense 负值"),
     amount_max: float | None = Query(default=None, description="金额上限(含)"),
@@ -86,7 +87,9 @@ def list_workspace_transactions(
         query = query.where(
             ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
         )
-    if category_sync_id:
+    if category_sync_ids:
+        query = query.where(ReadTxProjection.category_sync_id.in_(category_sync_ids))
+    elif category_sync_id:
         query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
     if account_sync_id:
         query = query.where(or_(
@@ -280,6 +283,7 @@ def export_workspace_transactions_csv(
     ),
     tag_sync_id: str | None = Query(default=None),
     category_sync_id: str | None = Query(default=None),
+    category_sync_ids: list[str] | None = Query(default=None, description="按 category syncId 集合过滤(repeated query param);传入则忽略 category_sync_id"),
     account_sync_id: str | None = Query(default=None),
     amount_min: float | None = Query(default=None),
     amount_max: float | None = Query(default=None),
@@ -397,7 +401,9 @@ def export_workspace_transactions_csv(
             query = query.where(
                 ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
             )
-        if category_sync_id:
+        if category_sync_ids:
+            query = query.where(ReadTxProjection.category_sync_id.in_(category_sync_ids))
+        elif category_sync_id:
             query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
         if account_sync_id:
             query = query.where(or_(
@@ -800,6 +806,7 @@ def list_workspace_categories(
                 icon_cloud_file_id=cat.icon_cloud_file_id,
                 icon_cloud_sha256=cat.icon_cloud_sha256,
                 parent_name=cat.parent_name,
+                parent_sync_id=cat.parent_sync_id,
                 last_change_id=cat_last_change_id,
                 ledger_id="",
                 ledger_name="",
