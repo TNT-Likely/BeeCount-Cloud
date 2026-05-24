@@ -4,8 +4,8 @@ import {
   createBudget,
   deleteBudget,
   fetchReadBudgets,
+  fetchReadBudgetUsage,
   fetchWorkspaceCategories,
-  fetchWorkspaceTransactions,
   updateBudget,
   type ReadBudget,
   type WorkspaceCategory,
@@ -81,47 +81,26 @@ export function BudgetsPage() {
   )
 
   /**
-   * 拉本期间 expense 交易,按 budget 分组累加 used。
-   * - total budget:全部 expense 累加(可选 ledger filter)
-   * - category budget:按 category_sync_id 过滤
-   *
-   * 这里走"按 budget 各自周期分别 fetch"的简化策略,因为 mobile 也是 per-budget
-   * 算 usage(repository.getBudgetUsage),不复用同一份 tx。budgets 数量通常很少
-   * (1 个 total + 几个 category),fetch 数次问题不大。
+   * 拉每个 budget 当前周期 used。聚合在 server SQL 完成 — 分类预算的 used
+   * 含子分类支出(对齐手机端 `local_budget_repository.getBudgetUsage`)。
+   * usage 接口失败时清空 — 各进度条显示 0%,不阻塞 budget 列表渲染。
    */
   const refreshUsages = useCallback(
-    async (budgetRows: ReadBudget[], catRows: WorkspaceCategory[]) => {
+    async (budgetRows: ReadBudget[], _catRows: WorkspaceCategory[]) => {
       if (!activeLedgerId || budgetRows.length === 0) {
         setUsageById({})
         return
       }
-      const next: Record<string, BudgetUsage> = {}
-      // 并行 fetch 各预算 used。失败的桶 used=0,不阻塞其它。
-      await Promise.all(
-        budgetRows.map(async (b) => {
-          try {
-            const startDay = Math.max(1, Math.min(28, Number(b.start_day || 1)))
-            const { start, end } = currentMonthRange(startDay)
-            // category 预算需要 categorySyncId 过滤,total 不传分类。
-            const categorySyncId = b.type === 'category' ? b.category_id || undefined : undefined
-            // expense type only。fetchWorkspaceTransactions 已支持
-            // amount range / date range / categorySyncId。
-            const page = await fetchWorkspaceTransactions(token, {
-              ledgerId: activeLedgerId,
-              txType: 'expense',
-              categorySyncId,
-              dateFrom: start.toISOString(),
-              dateTo: end.toISOString(),
-              limit: 1000, // 单期间一般 < 1000 条;超出再分页
-            })
-            const used = page.items.reduce((acc, tx) => acc + Math.abs(Number(tx.amount || 0)), 0)
-            next[b.id] = { used }
-          } catch (_err) {
-            next[b.id] = { used: 0 }
-          }
-        }),
-      )
-      setUsageById(next)
+      try {
+        const resp = await fetchReadBudgetUsage(token, activeLedgerId)
+        const next: Record<string, BudgetUsage> = {}
+        for (const item of resp.items) {
+          next[item.budget_id] = { used: item.used }
+        }
+        setUsageById(next)
+      } catch (_err) {
+        setUsageById({})
+      }
     },
     [token, activeLedgerId],
   )

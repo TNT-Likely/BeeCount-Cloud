@@ -68,6 +68,30 @@ export async function fetchReadBudgets(token: string, ledgerId: string): Promise
   return authedGet<ReadBudget[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/budgets`, token)
 }
 
+export type ReadBudgetUsageItem = {
+  budget_id: string
+  used: number
+}
+
+export type ReadBudgetUsage = {
+  items: ReadBudgetUsageItem[]
+}
+
+/**
+ * 后端 SQL 聚合每个 budget 当周期已用金额。分类预算的 used 含子分类支出。
+ * 取代旧的"循环 fetch transactions + 前端 reduce"路径(N 次 HTTP + 1000 条
+ * limit 隐患)。详见后端 list_budgets_usage。
+ */
+export async function fetchReadBudgetUsage(
+  token: string,
+  ledgerId: string,
+): Promise<ReadBudgetUsage> {
+  return authedGet<ReadBudgetUsage>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/budgets/usage`,
+    token,
+  )
+}
+
 /**
  * 单账本统计 — server 直接返回 transaction_count + attachment_count + budget_count 等。
  * 用于:删除账本确认弹窗(让用户清楚知道删了什么)、mobile 深度同步差异检测。

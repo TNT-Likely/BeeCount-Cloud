@@ -600,6 +600,20 @@ class ReadBudgetOut(BaseModel):
     ledger_name: str | None = None
 
 
+class ReadBudgetUsageItemOut(BaseModel):
+    """单个 budget 当前周期的已用金额。分类预算的 used 包含该分类自身 + 所有
+    parent_sync_id 指向它的子分类支出(跟手机端 local_budget_repository 的
+    OR c.parent_id = ? 语义对齐)。"""
+    budget_id: str
+    used: float
+
+
+class ReadBudgetUsageOut(BaseModel):
+    """`/ledgers/{id}/budgets/usage` 返回。per-budget 周期窗口由后端按各自
+    start_day 算(不同 budget 可能不同),前端只用 used 数字。"""
+    items: list[ReadBudgetUsageItemOut] = Field(default_factory=list)
+
+
 class WorkspaceTransactionOut(ReadTransactionOut):
     pass
 

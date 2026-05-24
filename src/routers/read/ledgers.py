@@ -514,6 +514,111 @@ def list_budgets(
     return results
 
 
+@router.get(
+    "/ledgers/{ledger_external_id}/budgets/usage",
+    response_model=ReadBudgetUsageOut,
+)
+def list_budgets_usage(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReadBudgetUsageOut:
+    """每个 enabled budget 当前周期已用金额(后端 SQL 聚合)。
+
+    跟手机端 `local_budget_repository.getBudgetUsage` 同语义:
+    - total 预算: 该 ledger 当周期内全部 expense SUM
+    - category 预算: 预算关联分类自身 + 所有 parent_sync_id 指向它的子分类的
+      expense SUM(父分类预算自动覆盖子分类支出)
+
+    取代"前端循环 fetch /workspace/transactions + reduce"的旧路径:
+    - N 次 HTTP → 1 次
+    - 计算下沉到 SQL,不受 limit=1000 截断
+    - 子分类展开在 server 完成,前端无需感知 parent_sync_id
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+
+    # 跟 list_budgets 一致:不 filter enabled,以便前端 join 时不丢 budget。
+    raw = db.scalars(
+        select(ReadBudgetProjection).where(
+            ReadBudgetProjection.ledger_id == ledger.id,
+        )
+    ).all()
+
+    # 跟 list_budgets 同款脏数据去重: (type, category_sync_id) 维度,sync_id
+    # 字典序最大胜出。usage 跟 list 必须用同一份 budget 才一致。
+    dedup: dict[tuple[str, str], ReadBudgetProjection] = {}
+    for b in raw:
+        btype = b.budget_type or "total"
+        if btype == "category" and not b.category_sync_id:
+            continue
+        key = (btype, b.category_sync_id or "")
+        current = dedup.get(key)
+        if current is None or current.sync_id < b.sync_id:
+            dedup[key] = b
+
+    now = datetime.now(timezone.utc)
+
+    items: list[ReadBudgetUsageItemOut] = []
+    for b in dedup.values():
+        start, end = _current_period_range(int(b.start_day or 1), now)
+        base_q = select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.happened_at >= start,
+            ReadTxProjection.happened_at < end,
+        )
+        if (b.budget_type or "total") == "category" and b.category_sync_id:
+            # parent + 所有 parent_sync_id 指向它的子分类
+            child_ids = list(db.scalars(
+                select(UserCategoryProjection.sync_id).where(
+                    UserCategoryProjection.user_id == ledger.user_id,
+                    UserCategoryProjection.parent_sync_id == b.category_sync_id,
+                )
+            ).all())
+            ids = [b.category_sync_id, *child_ids]
+            base_q = base_q.where(ReadTxProjection.category_sync_id.in_(ids))
+
+        used = float(db.scalar(base_q) or 0.0)
+        items.append(ReadBudgetUsageItemOut(budget_id=b.sync_id, used=abs(used)))
+
+    return ReadBudgetUsageOut(items=items)
+
+
+def _current_period_range(
+    start_day: int, now: datetime
+) -> tuple[datetime, datetime]:
+    """跟手机端 `local_budget_repository.getBudgetUsage` 同款月周期算法:
+    - 当天 >= start_day → 本月 start_day 起,下月 start_day 止
+    - 当天 < start_day → 上月 start_day 起,本月 start_day 止
+    边界统一到 [1, 28],避免 29/30/31 在 2 月翻车。
+    """
+    day = max(1, min(28, start_day or 1))
+    if now.day >= day:
+        start = now.replace(day=day, hour=0, minute=0, second=0, microsecond=0)
+        # 下月同 day —— year/month 进位
+        if now.month == 12:
+            end = start.replace(year=now.year + 1, month=1)
+        else:
+            end = start.replace(month=now.month + 1)
+    else:
+        # 上月 day —— 借位
+        if now.month == 1:
+            start = now.replace(year=now.year - 1, month=12, day=day,
+                                hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start = now.replace(month=now.month - 1, day=day,
+                                hour=0, minute=0, second=0, microsecond=0)
+        end = now.replace(day=day, hour=0, minute=0, second=0, microsecond=0)
+    return start, end
+
+
 @router.get("/ledgers/{ledger_external_id}/tags", response_model=list[ReadTagOut])
 def list_tags(
     ledger_external_id: str,
