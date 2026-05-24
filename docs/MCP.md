@@ -136,7 +136,7 @@ LLM 客户端连上之后:
 | 消息回信道 | `https://your-domain.com/api/v1/mcp/messages/` |
 | 鉴权 | `Authorization: Bearer bcmcp_…`(PAT) |
 
-PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp/*`**,所有其他 API 接收 PAT 都返回 403。同理 access token 不能用来调 MCP endpoint。
+PAT 跟 access token 严格分流:**MCP scope PAT 只能用在 `/api/v1/mcp/*`**；如需外部只读同步器调用 `/api/v1/read/*`，请创建单独的 `read:api` scope PAT。同理 access token 不能用来调 MCP endpoint。
 
 ---
 
@@ -147,9 +147,9 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp/*`**,所有其
 | Token 存储 | `sha256` 哈希 + `hmac.compare_digest` 常数时间比较,**明文只在创建时返一次** |
 | Token 删除 | 一键物理删除,该行从 DB 移除,token 立即失效 |
 | Token 过期 | 创建时可设过期日,过期后 401 |
-| Scope 分离 | `mcp:read` / `mcp:write` 独立勾选;只 read 不会被升权成 write |
+| Scope 分离 | `mcp:read` / `mcp:write` / `read:api` 独立勾选;只 read 不会被升权成 write |
 | 危险操作 | `delete_transaction` 必须传 `confirm=true`,首次调用返"待确认"占位符,LLM 必须跟用户确认后再调一次 |
-| 写权限隔离 | PAT 不能调常规 `/api/v1/*` endpoint,只能调 MCP tool |
+| 写权限隔离 | MCP PAT 不能调常规 `/api/v1/*` endpoint；`read:api` PAT 只能调 `/api/v1/read/*` |
 | 审计 | 每次 PAT 使用都 bump `last_used_at` + `last_used_ip`,Web 设置页可看 |
 
 **如果 PAT 泄露**:立即去 Web 设置页删除该 token;同时检查 `last_used_ip` 是否有异常来源。

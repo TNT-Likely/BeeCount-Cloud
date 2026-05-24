@@ -1,6 +1,6 @@
 """Personal Access Token (PAT) 管理 endpoint。
 
-PAT 是给 MCP / 外部 LLM 客户端用的长期 token。详见 .docs/mcp-server-design.md。
+PAT 是给 MCP / 外部 LLM 客户端 / 只读同步器用的长期 token。详见 .docs/mcp-server-design.md。
 
 路由设计:
   - 创建 / 列出 / 撤销:必须用 access token(JWT)调用,**不能用 PAT 自己创自己**
@@ -29,6 +29,7 @@ from ..security import (
     SCOPE_APP_WRITE,
     SCOPE_MCP_READ,
     SCOPE_MCP_WRITE,
+    SCOPE_READ_API,
     SCOPE_WEB_READ,
     SCOPE_WEB_WRITE,
     generate_pat,
@@ -55,14 +56,14 @@ def _require_jwt_only(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-_ScopeName = Literal["mcp:read", "mcp:write"]
+_ScopeName = Literal["mcp:read", "mcp:write", "read:api"]
 
 
 class PatCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128, description="给这个 token 起的标识名,如 'Claude Desktop'")
     scopes: list[_ScopeName] = Field(
         default_factory=lambda: ["mcp:read"],
-        description="授权范围。mcp:read 让 LLM 查数据,mcp:write 让 LLM 改数据。",
+        description="授权范围。mcp:read 让 LLM 查数据,mcp:write 让 LLM 改数据,read:api 让外部只读同步器调用 /read/*。",
     )
     expires_in_days: int | None = Field(
         default=90,
@@ -135,7 +136,7 @@ def create_pat(
             detail="At least one scope required",
         )
     # 校验 scope 合法性 — Pydantic Literal 已经管了,这里 belt-and-suspenders
-    allowed = {SCOPE_MCP_READ, SCOPE_MCP_WRITE}
+    allowed = {SCOPE_MCP_READ, SCOPE_MCP_WRITE, SCOPE_READ_API}
     bad = [s for s in req.scopes if s not in allowed]
     if bad:
         raise HTTPException(
@@ -249,7 +250,7 @@ def update_pat(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="At least one scope required",
             )
-        allowed = {SCOPE_MCP_READ, SCOPE_MCP_WRITE}
+        allowed = {SCOPE_MCP_READ, SCOPE_MCP_WRITE, SCOPE_READ_API}
         bad = [s for s in req.scopes if s not in allowed]
         if bad:
             raise HTTPException(
