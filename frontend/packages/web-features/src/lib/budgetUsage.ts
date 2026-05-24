@@ -1,6 +1,6 @@
 import {
   fetchReadBudgets,
-  fetchWorkspaceTransactions,
+  fetchReadBudgetUsage,
   type ReadBudget,
 } from '@beecount/api-client'
 
@@ -9,6 +9,9 @@ import type { BudgetUsage } from '../features/BudgetsPanel'
 /**
  * 给定 budget 的 start_day,算当前周期的 [start, end)。仅 monthly(其他
  * period 当前 mobile 没真正用,默认 monthly,跟 BudgetsPage.tsx 同算法)。
+ *
+ * 注:used 计算已下沉到 server SQL,这里保留是因为 BudgetsPage 还要拿 end
+ * 算"日均可用 / 剩余天数"等 UI 派生量。
  *
  * 当天 < startDay → 期间是上个月 startDay 到本月 startDay
  * 当天 >= startDay → 期间是本月 startDay 到下个月 startDay
@@ -37,50 +40,27 @@ export type BudgetsWithUsage = {
 }
 
 /**
- * 拉指定账本的 budgets + 每个 budget 当前周期的 used。
- * - total budget:全部 expense 累加(指定 ledger 范围内)
- * - category budget:按 category_sync_id 过滤
+ * 拉指定账本的 budgets + 每个 budget 当前周期 used。
  *
- * 每个 budget 独立 fetch 期内 tx — 跟 mobile repository.getBudgetUsage
- * per-budget 模式一致。budgets 数量通常很少(1 个 total + 几个 category),
- * fetch 数次开销可忽略。
+ * - total budget: 全部 expense 累加(指定 ledger 范围内)
+ * - category budget: 关联分类自身 + 所有子分类(parent_sync_id 指向它的)
+ *   的 expense 累加 — 父分类预算自动覆盖子分类支出,跟手机端
+ *   `local_budget_repository.getBudgetUsage` 同语义
  *
- * 返回:`{ budgets, usageById }`。某个 budget 的 fetch 失败时 used=0,不
- * 阻塞其它。整体调用失败抛错给 caller 处理。
+ * 聚合在 server SQL 完成,这里只做两次并发 fetch + join。usage 接口失败时
+ * 静默返回空 usage,不阻塞 budgets 渲染(进度条显示 0%)。
  */
 export async function fetchBudgetsWithUsage(
   token: string,
   ledgerId: string,
 ): Promise<BudgetsWithUsage> {
-  const budgets = await fetchReadBudgets(token, ledgerId)
-  if (budgets.length === 0) {
-    return { budgets, usageById: {} }
-  }
+  const [budgets, usageResp] = await Promise.all([
+    fetchReadBudgets(token, ledgerId),
+    fetchReadBudgetUsage(token, ledgerId).catch(() => ({ items: [] })),
+  ])
   const usageById: Record<string, BudgetUsage> = {}
-  await Promise.all(
-    budgets.map(async (b) => {
-      try {
-        const startDay = Math.max(1, Math.min(28, Number(b.start_day || 1)))
-        const { start, end } = currentMonthRange(startDay)
-        const categorySyncId =
-          b.type === 'category' ? b.category_id || undefined : undefined
-        const page = await fetchWorkspaceTransactions(token, {
-          ledgerId,
-          txType: 'expense',
-          categorySyncId,
-          dateFrom: start.toISOString(),
-          dateTo: end.toISOString(),
-          limit: 1000,
-        })
-        const used = page.items.reduce(
-          (acc, tx) => acc + Math.abs(Number(tx.amount || 0)),
-          0,
-        )
-        usageById[b.id] = { used }
-      } catch {
-        usageById[b.id] = { used: 0 }
-      }
-    }),
-  )
+  for (const item of usageResp.items) {
+    usageById[item.budget_id] = { used: item.used }
+  }
   return { budgets, usageById }
 }

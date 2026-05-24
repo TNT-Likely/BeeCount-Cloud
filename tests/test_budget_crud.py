@@ -246,6 +246,194 @@ def test_create_category_budget_persists_category_and_ledger_sync_id() -> None:
         app.dependency_overrides.clear()
 
 
+def test_category_budget_usage_aggregates_subcategory_transactions() -> None:
+    """父分类预算的 used 必须包含子分类交易支出。
+
+    Regression for Issue #15: 给父分类("吃喝")设预算,在子分类("吃"/"喝")下
+    记账,父分类预算 used 应该等于子分类交易之和。旧实现按 category_sync_id
+    精确匹配,子分类交易匹配不上 → used 永远 0。
+    """
+    client = _make_client()
+    try:
+        owner = _register(client, "bu@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_BUDGET_USAGE"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "bu@example.com")
+        token = web["access_token"]
+
+        # 父分类 "吃喝"
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "base_change_id": base,
+                "name": "吃喝",
+                "kind": "expense",
+                "level": 1,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        # 两个子分类
+        for sub in ("吃", "喝"):
+            base = _latest_change_id(client, token, ledger_id)
+            res = client.post(
+                f"/api/v1/write/ledgers/{ledger_id}/categories",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "base_change_id": base,
+                    "name": sub,
+                    "kind": "expense",
+                    "level": 2,
+                    "parent_name": "吃喝",
+                },
+            )
+            assert res.status_code == 200, res.text
+
+        # 父分类预算 1000
+        res = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/categories",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        cats = res.json()
+        parent_id = next(c["id"] for c in cats if c["name"] == "吃喝")
+        eat_id = next(c["id"] for c in cats if c["name"] == "吃")
+        drink_id = next(c["id"] for c in cats if c["name"] == "喝")
+
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/budgets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "base_change_id": base,
+                "type": "category",
+                "category_id": parent_id,
+                "amount": 1000,
+                "start_day": 1,
+            },
+        )
+        assert res.status_code == 200, res.text
+        cat_budget_id = res.json()["sync_id"] if "sync_id" in res.json() else None
+
+        # 三笔交易:子分类各一,父分类一。happened_at 用"今天 12:00 UTC"确保
+        # 落在当前周期内(start_day=1 → 本月 1 日到下月 1 日)。
+        now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+        happened = now.isoformat()
+        for cat_id, amount in [(eat_id, 50), (drink_id, 60), (parent_id, 20)]:
+            base = _latest_change_id(client, token, ledger_id)
+            res = client.post(
+                f"/api/v1/write/ledgers/{ledger_id}/transactions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "base_change_id": base,
+                    "tx_type": "expense",
+                    "amount": amount,
+                    "happened_at": happened,
+                    "category_id": cat_id,
+                    "category_kind": "expense",
+                },
+            )
+            assert res.status_code == 200, res.text
+
+        # 拉 usage,父分类预算 used 应当 = 50 + 60 + 20 = 130
+        res = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/budgets/usage",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200, res.text
+        items = res.json()["items"]
+        # 找到该分类预算的 used
+        budgets_res = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/budgets",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        budgets = budgets_res.json()
+        cat_budget_id = next(b["id"] for b in budgets if b["type"] == "category")
+        usage_by_id = {it["budget_id"]: it["used"] for it in items}
+        assert cat_budget_id in usage_by_id, (
+            f"category budget {cat_budget_id} not in usage response {usage_by_id}"
+        )
+        assert usage_by_id[cat_budget_id] == 130.0, (
+            f"expected 130.0 (50+60+20), got {usage_by_id[cat_budget_id]}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_total_budget_usage_sums_all_expense_in_period() -> None:
+    """总预算 used = 当周期内所有 expense 之和(不限分类)。"""
+    client = _make_client()
+    try:
+        owner = _register(client, "btu@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        ledger_id = "L_TOTAL_USAGE"
+        _seed_ledger(client, app_token, device, ledger_id)
+
+        web = _login_web(client, "btu@example.com")
+        token = web["access_token"]
+
+        # 一个支出分类用于挂交易
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "base_change_id": base,
+                "name": "杂项",
+                "kind": "expense",
+                "level": 1,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        # 总预算
+        base = _latest_change_id(client, token, ledger_id)
+        res = client.post(
+            f"/api/v1/write/ledgers/{ledger_id}/budgets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "base_change_id": base,
+                "type": "total",
+                "amount": 5000,
+                "start_day": 1,
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        # 两笔支出 + 一笔不在 expense 桶里的(收入 — 不应计入)
+        now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+        happened = now.isoformat()
+        for amount in [100, 200]:
+            base = _latest_change_id(client, token, ledger_id)
+            res = client.post(
+                f"/api/v1/write/ledgers/{ledger_id}/transactions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "base_change_id": base,
+                    "tx_type": "expense",
+                    "amount": amount,
+                    "happened_at": happened,
+                    "category_name": "杂项",
+                    "category_kind": "expense",
+                },
+            )
+            assert res.status_code == 200, res.text
+
+        res = client.get(
+            f"/api/v1/read/ledgers/{ledger_id}/budgets/usage",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200, res.text
+        items = res.json()["items"]
+        assert len(items) == 1
+        assert items[0]["used"] == 300.0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_total_budget_duplicate_blocked() -> None:
     client = _make_client()
     try:
