@@ -1627,6 +1627,20 @@ const zhTW = {
   'sharedLedger.tileCreatedBy': '{name} 建立',
   'sharedLedger.tileEditedBy': '{name} 最後編輯',
   'sharedLedger.tileCreatedAndEditedBy': '{name} 建立並編輯',
+
+  // PWA: Share Target / File Handler 著陸頁 + 升級 banner + 安裝 banner
+  'pwa.share.reading': '正在讀取分享內容...',
+  'pwa.share.routing': '正在開啟...',
+  'pwa.share.error': '處理分享失敗:{reason}',
+  'pwa.share.routedToImport': '已收到 {name},為你開啟匯入頁',
+  'pwa.share.imageNotYet': '圖片自動辨識暫在 mobile 端,網頁端請手動記一筆',
+  'pwa.update.available': '偵測到新版本',
+  'pwa.update.apply': '立即更新',
+  'pwa.install.title': '把蜜蜂記帳加入桌面?',
+  'pwa.install.subtitle': '裝到 dock / 主畫面後可直接開啟,支援記一筆等快捷入口',
+  'pwa.install.apply': '加入',
+  'pwa.install.never': '不再提示',
+  'pwa.install.accepted': '已安裝,可在 dock / 主畫面找到「蜜蜂記帳」',
 } as const
 
 export default zhTW

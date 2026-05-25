@@ -65,6 +65,9 @@ const TagsPage = lazy(() =>
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
+const ShareIncomingPage = lazy(() =>
+  import('./pages/sections/ShareIncomingPage').then((m) => ({ default: m.ShareIncomingPage })),
+)
 
 /** 路由切换时的 Suspense fallback。section 切换通常 < 200ms,加个轻量
  *  loading shell 避免白屏闪烁。 */
@@ -254,6 +257,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <ImportPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="share-incoming"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ShareIncomingPage />
             </Suspense>
           }
         />

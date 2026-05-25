@@ -95,6 +95,7 @@ import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
 import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
+import { consumePendingShareText } from '../../lib/pwa-intake'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
@@ -836,6 +837,56 @@ export function TransactionsPage() {
     }
     window.localStorage.setItem(txFilterPersistKey, JSON.stringify(payload))
   }, [route.section, txFilterPersistKey, listQuery, txFilterApplied])
+
+  // PWA shortcut / share target / file handler 触发的 URL action 消费:
+  //   action=quick-add  → 自动弹「新建交易」对话框,且若 pwa-intake 单例里
+  //                       有 share target 投递的文本(标题/正文/URL),按
+  //                       「标题 - 正文 url」拼成 note 预填(≤60 字符截断)
+  //   range=today       → 把日期筛选预设为今天(「今日账单」shortcut)
+  // 消费后一次性 strip URL 参数,避免刷新或下次 effect 重触发。canWriteTx
+  // 还没就绪(ledger 还在加载)时 quick-add 留着不消费,deps 变化时再次跑
+  // 直到 ledger 加载完 —— 这样用户不会因为时序差就丢掉 shortcut intent。
+  useEffect(() => {
+    if (route.section !== 'transactions') return
+    const action = searchParams.get('action')
+    const range = searchParams.get('range')
+    if (!action && !range) return
+
+    const consumed: string[] = []
+
+    if (action === 'quick-add' && canWriteTx) {
+      // 优先消费 share target 投递的文本,拼成 note 预填(≤60 chr 截断,
+      // 避免长 URL 撑爆 textarea)
+      const shareText = consumePendingShareText()
+      if (shareText) {
+        const composed = [shareText.title, shareText.text, shareText.url]
+          .map((s) => (s || '').trim())
+          .filter(Boolean)
+          .join(' ')
+          .slice(0, 60)
+        if (composed) {
+          setTxForm((prev) => ({ ...prev, note: composed }))
+        }
+      }
+      setTxDialogOpen(true)
+      consumed.push('action')
+    }
+
+    if (range === 'today') {
+      const now = new Date()
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      setTxFilterApplied((prev) => ({ ...prev, dateFrom: todayStr, dateTo: todayStr }))
+      setTxFilterDraft((prev) => ({ ...prev, dateFrom: todayStr, dateTo: todayStr }))
+      consumed.push('range')
+    }
+
+    if (consumed.length === 0) return
+
+    const next = new URLSearchParams(searchParams)
+    consumed.forEach((k) => next.delete(k))
+    next.delete('source')
+    setSearchParams(next, { replace: true })
+  }, [route.section, searchParams, canWriteTx, setSearchParams])
 
   // 列表类 section / admin / 设备 / 健康 页的数据加载。合并了"filter 变化
   // 刷新" + "切账本刷新" 两条触发路径 —— 原来分两个 useEffect 都调同一个

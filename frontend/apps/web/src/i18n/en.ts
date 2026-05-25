@@ -1631,6 +1631,20 @@ const en = {
   'sharedLedger.tileCreatedBy': 'Created by {name}',
   'sharedLedger.tileEditedBy': 'Last edited by {name}',
   'sharedLedger.tileCreatedAndEditedBy': 'Created and edited by {name}',
+
+  // PWA: Share Target / File Handler landing + update banner + install banner
+  'pwa.share.reading': 'Reading shared content...',
+  'pwa.share.routing': 'Opening...',
+  'pwa.share.error': 'Failed to handle share: {reason}',
+  'pwa.share.routedToImport': 'Received {name}, opening import page',
+  'pwa.share.imageNotYet': 'Image auto-extraction is mobile-only for now. Please record manually on the web.',
+  'pwa.update.available': 'New version available',
+  'pwa.update.apply': 'Update now',
+  'pwa.install.title': 'Install BeeCount?',
+  'pwa.install.subtitle': 'Add to dock / home screen to launch like a native app, with quick shortcuts',
+  'pwa.install.apply': 'Install',
+  'pwa.install.never': "Don't ask again",
+  'pwa.install.accepted': 'Installed — find "BeeCount" in your dock / home screen',
 } as const
 
 export default en

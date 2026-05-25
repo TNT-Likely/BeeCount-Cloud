@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Pencil } from 'lucide-react'
 
@@ -29,6 +29,7 @@ import { TransactionsPreviewCard } from '../../components/import/TransactionsPre
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { localizeError } from '../../i18n/errors'
+import { consumePendingImportFile } from '../../lib/pwa-intake'
 
 type Phase = 'idle' | 'uploading' | 'preview' | 'executing'
 
@@ -71,6 +72,18 @@ export function ImportPage() {
     },
     [token, initialLedger, toast, t],
   )
+
+  // PWA Share Target / File Handler 入口:ShareIncomingPage 把 File 暂存到
+  // pwa-intake 单例,这里挂载时 consume 一次,自动触发上传流程。useRef 守门
+  // 避免 StrictMode 双 mount 重复消费。
+  const pwaPickedRef = useRef(false)
+  useEffect(() => {
+    if (pwaPickedRef.current) return
+    const file = consumePendingImportFile()
+    if (!file) return
+    pwaPickedRef.current = true
+    void handleSelectFile(file)
+  }, [handleSelectFile])
 
   const refreshPreview = useCallback(
     async (

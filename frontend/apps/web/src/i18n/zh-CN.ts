@@ -1668,6 +1668,20 @@ const zhCN = {
   'sharedLedger.tileCreatedBy': '{name} 创建',
   'sharedLedger.tileEditedBy': '{name} 最后编辑',
   'sharedLedger.tileCreatedAndEditedBy': '{name} 创建并编辑',
+
+  // PWA: Share Target / File Handler 着陆页 + 升级 banner + 安装 banner
+  'pwa.share.reading': '正在读取分享内容...',
+  'pwa.share.routing': '正在打开...',
+  'pwa.share.error': '处理分享失败:{reason}',
+  'pwa.share.routedToImport': '已收到 {name},为你打开导入页',
+  'pwa.share.imageNotYet': '图片自动识别暂在 mobile 端,网页端请手动记一笔',
+  'pwa.update.available': '检测到新版本',
+  'pwa.update.apply': '立即更新',
+  'pwa.install.title': '把蜜蜂记账添加到桌面?',
+  'pwa.install.subtitle': '装到 dock / 主屏后可直接打开,支持记一笔等快捷入口',
+  'pwa.install.apply': '添加',
+  'pwa.install.never': '不再提示',
+  'pwa.install.accepted': '已安装,可在 dock / 主屏找到「蜜蜂记账」',
 } as const
 
 export default zhCN

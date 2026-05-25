@@ -14,6 +14,8 @@ import { usePrimaryColor } from '@beecount/ui'
 import type { AppSection } from '@beecount/web-features'
 
 import { AboutDialog } from '../components/AboutDialog'
+import { PwaInstallBanner } from '../components/PwaInstallBanner'
+import { PwaUpdateBanner } from '../components/PwaUpdateBanner'
 import { GlobalAskDialog } from '../components/cmdk-ai/GlobalAskDialog'
 import { GlobalParseTxDialog } from '../components/cmdk-ai/GlobalParseTxDialog'
 import { GlobalEditDialogs } from '../components/GlobalEditDialogs'
@@ -228,6 +230,8 @@ export function AppShell({ token, onLogout }: Props) {
           </AppLayout>
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
           <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+          <PwaUpdateBanner />
+          <PwaInstallBanner />
           <GlobalEntityDialogs />
           <GlobalEditDialogs />
           <GlobalAskDialog />

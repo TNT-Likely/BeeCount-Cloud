@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
@@ -21,6 +21,7 @@ import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
+import { setAppBadge } from '../../lib/pwa-badge'
 import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
 
 /**
@@ -262,6 +263,25 @@ export function OverviewPage() {
     },
     [categories, navigate, activeLedgerId],
   )
+
+  // PWA dock badge:统计本月超支预算条数,写到 navigator.setAppBadge。
+  // 用户安装 PWA 后,即使应用没在前台,dock 图标也会显示一个小红点(数字),
+  // 提醒「有预算超了」。浏览器不支持 Badging API 时静默 no-op。
+  const overBudgetCount = useMemo(() => {
+    if (!budgets || budgets.length === 0) return 0
+    let count = 0
+    for (const b of budgets) {
+      if (!b.enabled) continue
+      const used = budgetUsageById[b.id]?.used ?? 0
+      if (used > b.amount) count += 1
+    }
+    return count
+  }, [budgets, budgetUsageById])
+
+  useEffect(() => {
+    // setAppBadge 内部已处理不支持/失败,这里 fire-and-forget 即可
+    void setAppBadge(overBudgetCount)
+  }, [overBudgetCount])
 
   return (
     <OverviewSection
