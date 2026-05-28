@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.orm import Session
 
 from . import projection
@@ -213,6 +213,42 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
 # category 删除时附带 GC icon 附件(同样 user_id scope)。
 
 
+def _compact_entity_upsert_events(
+    db: Session,
+    *,
+    user_id: str,
+    entity_type: str,
+    entity_sync_id: str,
+) -> int:
+    """实体被删除后,清掉该 (user_id, entity_type, entity_sync_id) 的全部 **upsert**
+    sync_changes 历史,**保留 delete 事件本身**。
+
+    背景:sync_changes 一般是 append-only event log,不裸 DELETE(防止 projection
+    跟 log 漂移,见 21136 案例)。但**实体彻底下线**的场景下,所有 upsert 事件都已
+    没有价值:
+      - projection 已经把该实体的行删了 → 没人会再引用任何 source_change_id
+      - 其它设备 cursor 落后时,只看到 delete event 也能正确处理(apply 路径
+        `if (existingId == null) return;` 是 idempotent no-op,见
+        sync_engine_apply.dart::_applyTransactionChange)
+      - delete event 本身**保留**,确保 cursor 落后的设备能 apply delete 把本地
+        副本删干净
+
+    所以"删 entity 时连带清掉它的 upsert 历史"是契约的**合理例外**,跟"projection
+    漂移"那种裸 DELETE 不一样。
+
+    返回清掉的 row 数。
+    """
+    result = db.execute(
+        sa_delete(SyncChange).where(
+            SyncChange.user_id == user_id,
+            SyncChange.entity_type == entity_type,
+            SyncChange.entity_sync_id == entity_sync_id,
+            SyncChange.action != "delete",
+        )
+    )
+    return result.rowcount or 0
+
+
 def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     # 先收集附件 fileId(删行后 attachments_json 就没了)再删 tx,然后 GC
     # 孤立附件。共享引用(同图多 tx)的会自动保留。
@@ -220,8 +256,17 @@ def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
         db, ledger_id=ledger_id, sync_id=sync_id,
     )
     projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
-    projection.gc_orphan_attachments(
-        db, user_id=user_id, file_ids=tx_file_ids,
+    # 共享账本场景:attachment.user_id 可能是 Editor 而 SyncChange.user_id 是
+    # ledger owner,GC 必须按 ledger_id scope 而不是 user_id —— 否则 Editor 上传
+    # 的附件永远被静默跳过留作孤儿。详见 projection.gc_orphan_attachments_for_ledger
+    # 的 doc。
+    projection.gc_orphan_attachments_for_ledger(
+        db, ledger_id=ledger_id, file_ids=tx_file_ids,
+    )
+    # 实体彻底下线,清 upsert 历史(详见 _compact_entity_upsert_events)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="transaction",
+        entity_sync_id=sync_id,
     )
 
 
@@ -231,21 +276,46 @@ def _delete_user_category(db: Session, user_id: str, sync_id: str) -> None:
         db, user_id=user_id, sync_id=sync_id,
     )
     projection.delete_category(db, user_id=user_id, sync_id=sync_id)
+    # category icon 是 user-scope,继续走 gc_orphan_attachments(user_id)
     projection.gc_orphan_attachments(
         db, user_id=user_id, file_ids=cat_file_ids,
+    )
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="category", entity_sync_id=sync_id,
+    )
+
+
+def _delete_budget(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_budget(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="budget", entity_sync_id=sync_id,
+    )
+
+
+def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
+    projection.delete_account(db, user_id=user_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="account", entity_sync_id=sync_id,
+    )
+
+
+def _delete_user_tag(db: Session, user_id: str, sync_id: str) -> None:
+    projection.delete_tag(db, user_id=user_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="tag", entity_sync_id=sync_id,
     )
 
 
 _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
-    "budget": lambda db, lid, sid, uid: projection.delete_budget(db, ledger_id=lid, sync_id=sid),
+    "budget": _delete_budget,
 }
 
 
 _USER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
-    "account": lambda db, uid, sid: projection.delete_account(db, user_id=uid, sync_id=sid),
+    "account": _delete_user_account,
     "category": _delete_user_category,
-    "tag": lambda db, uid, sid: projection.delete_tag(db, user_id=uid, sync_id=sid),
+    "tag": _delete_user_tag,
 }
 
 

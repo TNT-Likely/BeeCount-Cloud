@@ -766,6 +766,102 @@ def _fileid_still_referenced(db: Session, *, user_id: str, file_id: str) -> bool
     return bool(cat_hit)
 
 
+def _fileid_still_referenced_in_ledger(
+    db: Session, *, ledger_id: str, file_id: str,
+) -> bool:
+    """某个 AttachmentFile 在该 ledger 下任何 user 的 tx projection 还有引用吗?
+
+    跟 [_fileid_still_referenced] 不同之处:**按 ledger_id 过滤,不按 user_id**。
+
+    共享账本场景下 tx 创建人(Editor)上传的 attachment 在 `attachment_files` 表里
+    user_id = Editor,但 `read_tx_projection` 里行可能挂在 ledger owner 的 user_id 下。
+    `_delete_tx` 的 GC 路径如果用 user_id 过滤就会漏 — 这里改按 ledger_id 扫,任何
+    user 的 projection 行只要还引用这个 fileId,都算"被引用",不能 GC。
+
+    category icon 不是 ledger-scope,继续走原 [_fileid_still_referenced]。
+    """
+    pat_no_space = f'%"cloudFileId":"{file_id}"%'
+    pat_with_space = f'%"cloudFileId": "{file_id}"%'
+    tx_hit = db.scalar(
+        select(func.count())
+        .select_from(ReadTxProjection)
+        .where(
+            ReadTxProjection.ledger_id == ledger_id,
+            or_(
+                ReadTxProjection.attachments_json.like(pat_no_space),
+                ReadTxProjection.attachments_json.like(pat_with_space),
+            ),
+        )
+    )
+    return bool(tx_hit)
+
+
+def gc_orphan_attachments_for_ledger(
+    db: Session,
+    *,
+    ledger_id: str,
+    file_ids: Iterable[str | None],
+) -> int:
+    """对给定 fileId 集合,若该 ledger 下任何 user 的 tx projection 都无引用 →
+    删 AttachmentFile 行 + unlink 物理文件。返回实际清掉的条数。
+
+    跟 [gc_orphan_attachments] 同款契约(调用前 projection 必须先删),区别是
+    **scope 是 ledger 而不是 user**:
+
+    - **引用检查**走 [_fileid_still_referenced_in_ledger](扫所有 user 在本 ledger
+      的 projection,不限 user_id)
+    - **DELETE 时按 ledger_id 过滤**,不按 user_id,所以 Editor 上传的附件(user_id
+      = Editor)也能被 Owner-发起的 delete 路径正确清理。
+
+    使用场景:**ledger-scope 实体的 delete handler**(tx)。
+    category icon / 其它 user-scope 路径继续用 [gc_orphan_attachments]。
+    """
+    cleaned = 0
+    seen: set[str] = set()
+    for fid in file_ids:
+        if not fid:
+            continue
+        file_id = fid.strip()
+        if not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+
+        if _fileid_still_referenced_in_ledger(
+            db, ledger_id=ledger_id, file_id=file_id,
+        ):
+            continue
+
+        att = db.scalar(
+            select(AttachmentFile).where(
+                AttachmentFile.id == file_id,
+                AttachmentFile.ledger_id == ledger_id,
+            )
+        )
+        if att is None:
+            continue
+
+        storage_path = att.storage_path
+        db.delete(att)
+
+        try:
+            p = Path(storage_path)
+            if p.exists():
+                p.unlink()
+        except OSError as exc:
+            logger.warning(
+                "attachment gc unlink failed ledger=%s file=%s path=%s err=%s",
+                ledger_id, file_id, storage_path, exc,
+            )
+
+        cleaned += 1
+
+    if cleaned:
+        logger.info(
+            "attachment gc ledger=%s cleaned=%d", ledger_id, cleaned,
+        )
+    return cleaned
+
+
 def gc_orphan_attachments(
     db: Session,
     *,
