@@ -342,9 +342,18 @@ def test_batch_create_with_ai_tag_and_extra_tag(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_batch_create_with_image_attachment(monkeypatch):
+def test_batch_create_with_image_attachment(monkeypatch, tmp_path):
     """attach_image_id → server 转 attachment + 关联到所有 tx。"""
     from src.services.ai.image_cache import store_image
+    from src import config
+
+    # 把 attachment_storage_dir 重定向到 pytest tmp_path,避免 test 跑完留下
+    # 13B 的 "fakejpegbytes" 文件污染 dev 的 ./data/attachments/(scanner 会
+    # 把它当成磁盘孤儿报上来)。tmp_path 在 test session 结束自动清理。
+    settings = config.get_settings()
+    monkeypatch.setattr(
+        settings, "attachment_storage_dir", str(tmp_path / "attachments"),
+    )
 
     client = _make_client()
     try:
