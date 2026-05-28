@@ -53,9 +53,13 @@ def vacuum_into(
 ) -> None:
     """跑 VACUUM INTO,把当前数据库一致快照写到 target_path。
 
-    exclude_tables 提供时,VACUUM 完后开 copy 文件,DROP 这些表 + 再 VACUUM
-    一次释放空间。default 排除运维类表(backup_runs / audit_logs 等),
-    用户数据全部保留。
+    exclude_tables 提供时,VACUUM 完后开 copy 文件,**DELETE 这些表的数据**
+    (保留 schema)+ 再 VACUUM 一次释放空间。default 排除运维类表
+    (backup_runs / audit_logs 等),用户数据全部保留。
+
+    **注意**:之前版本是 `DROP TABLE` 整张表,restore 后 server 启动会撞
+    "no such table" 因为代码里有引用(典型:`mcp_call_logs`)。
+    改成 `DELETE FROM` 仅清数据,schema 保留 → restore 后即插即用。
 
     target_path 父目录必须已存在 + 文件不能已存在(SQLite 要求)。
     """
@@ -70,20 +74,30 @@ def vacuum_into(
         raise RuntimeError(f"VACUUM INTO did not produce file: {target}")
 
     if exclude_tables:
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, inspect
 
         copy_engine = create_engine(f"sqlite:///{target}")
         try:
+            # **保留 schema,只 DELETE 数据**(原来用 DROP TABLE 会让 restore
+            # 出来的 DB 缺表,server 启动后查到这些表就 500 —— 历史 issue:
+            # 0008+ 之后 mcp_call_logs 不在表里,导致 GET /profile/pats 报
+            # "no such table"。运维类表本身体积也不大,留 schema 不影响
+            # 备份大小。)
+            inspector = inspect(copy_engine)
+            existing_tables = set(inspector.get_table_names())
             with copy_engine.begin() as conn:
                 for tbl in exclude_tables:
+                    if tbl not in existing_tables:
+                        # 表本来就不存在(老 DB 还没跑过这个 migration)— 跳过
+                        continue
                     # 表名是常量白名单,无注入风险
-                    conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
-            # VACUUM 释放被 DROP 表占用的空间(SQLite 不会自动收回)
+                    conn.execute(text(f"DELETE FROM {tbl}"))
+            # VACUUM 释放数据占用的空间(SQLite 不会自动收回)
             with copy_engine.connect() as conn:
                 conn.execute(text("VACUUM"))
                 conn.commit()
             logger.info(
-                "vacuum_into: excluded %d tables: %s",
+                "vacuum_into: cleared data in %d tables (schema preserved): %s",
                 len(exclude_tables), ", ".join(exclude_tables),
             )
         finally:
