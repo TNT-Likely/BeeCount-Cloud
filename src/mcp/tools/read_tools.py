@@ -28,18 +28,36 @@ from ...models import (
     UserCategoryProjection,
     UserTagProjection,
 )
+# 复用 read 端的唯一权威"软删除"判定 —— 保证 MCP 与 web/mobile 账本可见性口径
+# 一致(issue #31)。read._shared 不依赖 mcp,无循环 import。
+from ...routers.read._shared import _is_ledger_deleted
 
 
 # ---------- helpers ----------------------------------------------------------
 
 
+def live_ledgers(db: Session, user_id: str) -> list[Ledger]:
+    """该用户所有**未软删**账本,按 created_at 升序。
+
+    issue #31:MCP 历史上直接查 Ledger 表、不过滤软删账本,导致解析 / 列举到
+    web 与 mobile 都看不见的"幽灵账本"(尤其多设备各自上传的默认账本)。这里
+    统一复用 read 端的 `_is_ledger_deleted` 权威判定,跟账本列表口径对齐。
+    """
+    rows = db.scalars(
+        select(Ledger)
+        .where(Ledger.user_id == user_id)
+        .order_by(Ledger.created_at.asc())
+    ).all()
+    return [led for led in rows if not _is_ledger_deleted(db, ledger_id=led.id)]
+
+
 def _resolve_ledger(
     db: Session, user_id: str, ledger_id: str | None
 ) -> Ledger | None:
-    """LLM 友好的 ledger 解析:
-      - ledger_id 是 external_id(用户视角的 id,如 "1" / UUID)→ 按 external_id 查
-      - 空 → 拿用户的第一个账本(active fallback)
-      - 不存在 → None
+    """LLM 友好的 ledger 解析(已排除软删账本,issue #31):
+      - ledger_id 是 external_id(用户视角的 id,如 "1" / UUID)→ 按 external_id 查;
+        命中软删账本 / 不存在 → None
+      - 空 → 第一个**未软删**账本(按 created_at 升序)
     """
     if ledger_id:
         led = db.scalar(
@@ -48,14 +66,11 @@ def _resolve_ledger(
                 Ledger.external_id == ledger_id,
             )
         )
+        if led is None or _is_ledger_deleted(db, ledger_id=led.id):
+            return None
         return led
-    # fallback 第一个账本(按 created_at)
-    return db.scalar(
-        select(Ledger)
-        .where(Ledger.user_id == user_id)
-        .order_by(Ledger.created_at.asc())
-        .limit(1)
-    )
+    live = live_ledgers(db, user_id)
+    return live[0] if live else None
 
 
 def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str, Any]:
@@ -77,13 +92,11 @@ def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str,
 
 
 def list_ledgers(user: User) -> list[dict[str, Any]]:
-    """列出当前用户的所有账本。返回 external_id / name / currency / created_at。"""
+    """列出当前用户的所有账本(已排除软删账本,issue #31)。
+
+    返回 external_id / name / currency / created_at。
+    """
     with SessionLocal() as db:
-        rows = db.scalars(
-            select(Ledger)
-            .where(Ledger.user_id == user.id)
-            .order_by(Ledger.created_at.asc())
-        ).all()
         return [
             {
                 "id": r.external_id,
@@ -91,7 +104,7 @@ def list_ledgers(user: User) -> list[dict[str, Any]]:
                 "currency": r.currency,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
-            for r in rows
+            for r in live_ledgers(db, user.id)
         ]
 
 

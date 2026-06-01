@@ -33,7 +33,7 @@ from ...models import (
     User,
 )
 from ...security import SCOPE_APP_WRITE, _create_token
-from .read_tools import _parse_dt, _resolve_ledger
+from .read_tools import _parse_dt, _resolve_ledger, live_ledgers
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,53 @@ async def _self_call(method: str, path: str, user: User, **kwargs: Any) -> dict[
         return {"_raw": resp.text}
 
 
+# ---------- ledger resolution for writes ------------------------------------
+
+
+def _resolve_write_ledger(
+    db, user: User, ledger_id: str | None
+) -> tuple[Ledger | None, dict[str, Any] | None]:
+    """为**写**操作解析目标账本。返回 ``(ledger, None)`` 表示成功;
+    ``(None, status_dict)`` 表示调用方 / LLM 必须先澄清,**不应写入**。
+
+    issue #31 两条规则:
+      - 软删账本不可作为写入目标(`_resolve_ledger` 已排除,B1/B2);
+      - 不指定 ``ledger_id`` 且有 **>1 个 live 账本**时**拒绝瞎猜**(B5):返回
+        候选列表,逼 LLM 显式带 ``ledger_id`` —— 避免静默落到"最早创建"的幽灵
+        默认账本(报告里"写进了不存在的默认账本"的根因)。
+
+    返回的 status_dict 跟 `delete_transaction` 的 ``confirmation_required`` 一样,
+    是给 LLM 看的结构化信号,不是错误。
+    """
+    if ledger_id:
+        led = _resolve_ledger(db, user.id, ledger_id)
+        if led is None:
+            return None, {
+                "status": "ledger_not_found",
+                "message": f"Ledger not found or has been deleted: {ledger_id}",
+                "ledger_id": ledger_id,
+            }
+        return led, None
+
+    live = live_ledgers(db, user.id)
+    if not live:
+        return None, {
+            "status": "no_ledger",
+            "message": "You have no ledger yet. Create one in BeeCount first.",
+        }
+    if len(live) == 1:
+        return live[0], None
+    return None, {
+        "status": "ledger_required",
+        "message": (
+            "You have multiple ledgers — refusing to guess which one to write to. "
+            "Re-call this tool with an explicit `ledger_id` (the `id` field of one "
+            "of the candidates below)."
+        ),
+        "candidates": [{"id": led.external_id, "name": led.name} for led in live],
+    }
+
+
 # ---------- tools -----------------------------------------------------------
 
 
@@ -110,9 +157,11 @@ async def create_transaction(
         raise ValueError("amount must be positive")
 
     with SessionLocal() as db:
-        led = _resolve_ledger(db, user.id, ledger_id)
-        if led is None:
-            raise ValueError(f"Ledger not found: {ledger_id}")
+        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
+        if ledger_status is not None:
+            # 多账本未指定 / 账本不存在或已删 —— 交回 LLM 澄清,不写入。
+            return ledger_status
+        assert led is not None  # 契约:_resolve_write_ledger 的 status 为 None ⟺ led 命中
         if category:
             _lookup_category_sync_id(db, user.id, category, tx_type)
         if account:
@@ -355,6 +404,121 @@ async def update_budget(
     return {"sync_id": budget_id, "amount": amount, "_meta": result}
 
 
+# 一次 self-call /transactions/batch 最多塞多少笔(端点自身上限 50)。
+_BATCH_CHUNK = 50
+# 单次 create_transactions 调用的总上限 —— 防 LLM 一次塞几千笔把单个 tool call
+# 拖死;超过让它分多次调。
+_BULK_MAX_TOTAL = 200
+
+
+async def create_transactions(
+    user: User,
+    *,
+    transactions: list[dict[str, Any]],
+    ledger_id: str | None = None,
+) -> dict[str, Any]:
+    """批量新建交易(Excel / 对账单导入等)。
+
+    比循环调 `create_transaction` 高效得多:走 server 的 `/transactions/batch`
+    端点,每 ≤50 笔**一次 commit + 一次 WS 广播**,避免 N 次全量 snapshot 重建
+    (issue #31 A3 —— 报告里"批量 MCP 写入服务端短时无响应 / 部分失败"的正解)。
+
+    每个 item 字段(跟 create_transaction 一致):
+      amount(必填 >0)、tx_type(expense|income|transfer,默认 expense)、
+      category、account、happened_at(ISO,缺省=now)、note、tags(list)。
+    """
+    if not transactions:
+        raise ValueError("transactions must be a non-empty list")
+    if len(transactions) > _BULK_MAX_TOTAL:
+        raise ValueError(
+            f"Too many transactions in one call ({len(transactions)} > "
+            f"{_BULK_MAX_TOTAL}). Split into multiple calls."
+        )
+
+    # 1. 解析 + 校验目标账本(B5:多账本不瞎猜)
+    with SessionLocal() as db:
+        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
+        if ledger_status is not None:
+            return ledger_status
+        assert led is not None  # 契约:_resolve_write_ledger 的 status 为 None ⟺ led 命中
+        ledger_external_id = led.external_id
+        ledger_name = led.name
+        led_internal_id = led.id
+
+    # 2. 规范化每笔 + 基础校验;收集要校验的 category / account 名
+    norm_items: list[dict[str, Any]] = []
+    cat_needed: set[str] = set()
+    acc_needed: set[str] = set()
+    for i, raw in enumerate(transactions):
+        amount = raw.get("amount")
+        tx_type = raw.get("tx_type") or "expense"
+        if tx_type not in {"expense", "income", "transfer"}:
+            raise ValueError(f"transactions[{i}]: invalid tx_type {tx_type!r}")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+            raise ValueError(f"transactions[{i}]: amount must be a positive number")
+        happened_at = raw.get("happened_at")
+        happened = _parse_dt(happened_at) if happened_at else datetime.now(timezone.utc)
+        item: dict[str, Any] = {
+            "tx_type": tx_type,
+            "amount": float(amount),
+            "happened_at": happened.isoformat(),
+        }
+        if raw.get("note"):
+            item["note"] = str(raw["note"])
+        category = raw.get("category")
+        if category:
+            item["category_name"] = str(category)
+            item["category_kind"] = tx_type
+            cat_needed.add(str(category))
+        account = raw.get("account")
+        if account:
+            if tx_type == "transfer":
+                item["from_account_name"] = str(account)
+            else:
+                item["account_name"] = str(account)
+            acc_needed.add(str(account))
+        # 用户 tags ∪ MCP 默认标签;batch 端点按名建实体 / 反查 sync_id。
+        item["tags"] = _merge_default_tag(raw.get("tags"))
+        norm_items.append(item)
+
+    # 3. 预校验 category / account 名是否存在(O(1) 查询,给 LLM 清晰报错,
+    #    跟单笔 create_transaction 的 _lookup_* 校验同口径)
+    with SessionLocal() as db:
+        _validate_names_exist(db, user.id, categories=cat_needed, accounts=acc_needed)
+        mcp_tag_missing = _is_tag_missing_in_ledger(
+            db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
+        )
+
+    # 4. 确保 MCP tag 实体存在(带专属颜色),batch 端点随后复用同名 tag。
+    if mcp_tag_missing:
+        await _ensure_mcp_tag(user, ledger_external_id)
+
+    # 5. 分块 self-call /transactions/batch
+    settings = get_settings()
+    path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions/batch"
+    created_ids: list[str] = []
+    for start in range(0, len(norm_items), _BATCH_CHUNK):
+        chunk = norm_items[start : start + _BATCH_CHUNK]
+        result = await _self_call(
+            "POST",
+            path,
+            user,
+            json={
+                "base_change_id": 0,
+                "transactions": chunk,
+                "auto_ai_tag": False,  # MCP 用自己的 MCP 标签,不要"AI 记账"标签
+            },
+        )
+        created_ids.extend(result.get("created_sync_ids") or [])
+
+    return {
+        "status": "created",
+        "ledger": ledger_name,
+        "created_count": len(created_ids),
+        "sync_ids": created_ids,
+    }
+
+
 async def parse_and_create_from_text(
     user: User,
     *,
@@ -366,6 +530,15 @@ async def parse_and_create_from_text(
     LLM 偷懒选项 — 直接转发用户原话 → BeeCount AI parse → 自动 create。
     要求用户已配 AI chat provider(profile.ai_config_json),否则报错。
     """
+    # B5(issue #31):先把目标账本定死,多账本不指定则不猜(返回候选),也避免
+    # 拿一个软删 / 幽灵账本去跑 AI 解析。pin 到 external_id 后贯穿 parse + create。
+    with SessionLocal() as db:
+        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
+        if ledger_status is not None:
+            return ledger_status
+        assert led is not None  # 契约:_resolve_write_ledger 的 status 为 None ⟺ led 命中
+        ledger_id = led.external_id
+
     settings = get_settings()
     path = f"{settings.api_prefix}/ai/parse-tx-text"
     parsed = await _self_call(
@@ -493,6 +666,48 @@ def _merge_default_tag(tags: list[str] | None) -> list[str]:
 
 
 # ---------- internal lookups ------------------------------------------------
+
+
+def _validate_names_exist(
+    db, user_id: str, *, categories: set[str], accounts: set[str]
+) -> None:
+    """批量校验 category / account 名都存在(各一条 IN 查询),不存在的一次性报全。
+
+    给 create_transactions 用 —— 单笔 create 走 _lookup_* 逐个校验,批量则一次
+    查清,避免 N 次查询,且能在一条错误里列出所有未知名字。
+    """
+    if categories:
+        found = {
+            n
+            for (n,) in db.execute(
+                select(UserCategoryProjection.name).where(
+                    UserCategoryProjection.user_id == user_id,
+                    UserCategoryProjection.name.in_(categories),
+                )
+            ).all()
+        }
+        missing = sorted(categories - found)
+        if missing:
+            raise ValueError(
+                f"Unknown categories: {missing}. Use existing category names "
+                "(call list_categories) or create them first."
+            )
+    if accounts:
+        found = {
+            n
+            for (n,) in db.execute(
+                select(UserAccountProjection.name).where(
+                    UserAccountProjection.user_id == user_id,
+                    UserAccountProjection.name.in_(accounts),
+                )
+            ).all()
+        }
+        missing = sorted(accounts - found)
+        if missing:
+            raise ValueError(
+                f"Unknown accounts: {missing}. Use existing account names "
+                "(call list_accounts)."
+            )
 
 
 def _lookup_category_sync_id(db, user_id: str, name: str | None, tx_type: str | None) -> str | None:

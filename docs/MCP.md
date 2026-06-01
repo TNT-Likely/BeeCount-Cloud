@@ -6,10 +6,10 @@
 
 ## 是什么
 
-MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 17 个 tool:
+MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 18 个 tool:
 
 - **11 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
-- **6 个 write tool**:`create_transaction` / `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
+- **7 个 write tool**:`create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
 
 跟 LLM 聊天时可以这样说:
 
@@ -179,6 +179,7 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp/*`**,所有其
 | Tool | 用途 | 关键参数 |
 |---|---|---|
 | `create_transaction` | 新建交易 | amount, tx_type, category, account, happened_at, note, tags |
+| `create_transactions` | **批量**新建交易(导入正解,一次提交多笔) | transactions(list), ledger_id |
 | `update_transaction` | 改交易 | sync_id + 待改字段 |
 | `delete_transaction` | 删交易(**二次确认**) | sync_id, confirm |
 | `create_category` | 新建分类 | name, kind, parent_name |

@@ -1,4 +1,4 @@
-"""BeeCount Cloud MCP server — 注册所有 17 个 tool,导出 ASGI app。
+"""BeeCount Cloud MCP server — 注册所有 18 个 tool,导出 ASGI app。
 
 设计:.docs/mcp-server-design.md。
 
@@ -330,7 +330,7 @@ async def search(ctx: Context, q: str, limit: int = 20) -> list[dict[str, Any]]:
 
 
 # ============================================================================
-# Write tools — 6 个,mcp:write scope
+# Write tools — 7 个,mcp:write scope
 # ============================================================================
 
 
@@ -365,6 +365,34 @@ async def create_transaction(
     return await _logged_call(
         ctx, name="create_transaction", scope=SCOPE_MCP_WRITE, kwargs=kw,
         body=lambda user: write_tools.create_transaction(user, **kw),
+    )
+
+
+@mcp.tool()
+async def create_transactions(
+    ctx: Context,
+    transactions: list[dict[str, Any]],
+    ledger_id: str | None = None,
+) -> dict[str, Any]:
+    """Create many transactions at once — use this for bulk imports.
+
+    Far more efficient than calling create_transaction in a loop: routes through
+    the server's batch endpoint (one commit + one notification per ~50 rows),
+    avoiding the per-row overhead that makes large imports slow/unreliable.
+
+    Args:
+        transactions: list of objects, each like create_transaction's args —
+            {amount (>0), tx_type (expense|income|transfer, default expense),
+             category, account, happened_at (ISO, default now), note, tags}.
+            category/account must be existing names (server rejects unknown ones).
+        ledger_id: Optional. If omitted and you have multiple ledgers, the tool
+            refuses to guess and returns the candidate list — re-call with an id.
+            Max 200 transactions per call; split larger imports across calls.
+    """
+    kw = dict(transactions=transactions, ledger_id=ledger_id)
+    return await _logged_call(
+        ctx, name="create_transactions", scope=SCOPE_MCP_WRITE, kwargs=kw,
+        body=lambda user: write_tools.create_transactions(user, **kw),
     )
 
 

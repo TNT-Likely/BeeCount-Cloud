@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ...concurrency import lock_ledger_for_materialize
 from ...config import get_settings
@@ -436,6 +437,18 @@ def _load_ledger_for_write(
         roles=roles,
     )
     if row is not None:
+        # issue #31(B2):软删账本不可写。否则一次写入就"复活"它的 projection,
+        # 产生 web 账本列表看不见、tag / 跨账本视图里却查得到、又没 UI 入口去删
+        # 的幽灵交易。软删后无法用同 external_id 重建(create_ledger 命中既有行
+        # 直接 409),所以这里跟 read 端 _is_ledger_deleted 同口径直接 404,不会
+        # 误伤任何合法重建流程。late import 防循环。
+        from ..read._shared import _is_ledger_deleted
+
+        ledger = row[0]
+        if _is_ledger_deleted(db, ledger_id=ledger.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found"
+            )
         return row
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
 
@@ -516,7 +529,7 @@ def _load_idempotent_response(
     return WriteCommitMeta.model_validate(payload)
 
 
-async def _commit_write_fast_tx(
+async def _commit_create_tx_fast(
     *,
     request: Request,
     db: Session,
@@ -527,65 +540,28 @@ async def _commit_write_fast_tx(
     idempotency_key: str | None,
     device_id: str,
     audit_action: str,
-    tx_id: str,
     mutate_payload: dict,
-    action: str,  # "upsert" | "delete"
 ) -> WriteCommitMeta:
-    """Fast path:单 tx update/delete,跳过全 snapshot build。只 SELECT 目标 tx
-    (1 条 query by PK)→ 合并 payload → 写 SyncChange + projection。~10-15ms。
+    """Fast path:新建单笔 tx,跳过全量 snapshot build(issue #31 A1b)。
+
+    create 不需要 diff 全表 —— 新行就是唯一变更。snapshot_mutator.create_transaction
+    不依赖现有 items / tx_index,所以用空的最小 snapshot 跑它产出规范化 item,直接
+    emit 一条 transaction SyncChange + projection.upsert_tx。语义跟 _commit_write
+    (build→mutate→_emit_entity_diffs)对单笔 create 的结果完全一致,但把成本从
+    O(账本交易数) 降到 O(1)。
+
+    DB 工作整段丢到 threadpool(issue #31 A2),不阻塞 event loop;WS 广播在
+    线程返回后于 loop 上做(仅一次小的 member 查询 + 推送)。
     """
-    lock_ledger_for_materialize(db, ledger.id)
-    now = _utcnow()
+    from ...snapshot_mutator import create_transaction as _mutate_create_tx
 
-    # 1. 读目标 tx from projection
-    tx_row = db.scalar(
-        select(ReadTxProjection).where(
-            ReadTxProjection.ledger_id == ledger.id,
-            ReadTxProjection.sync_id == tx_id,
-        )
-    )
-    if tx_row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
-
-    # 2. 把 projection row → dict(mutator 认的 snapshot item 格式)
-    prev_item = _projection_row_to_tx_dict(tx_row)
-
-    # 3. actor 权限检查(复用现有逻辑)
-    from ...snapshot_mutator import _assert_actor_can_modify  # 延迟 import 避免循环
-    try:
-        _assert_actor_can_modify(prev_item, mutate_payload)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-
-    if action == "delete":
-        # 删 tx 前收集引用的 cloudFileId,删后 GC 孤立附件(物理 blob + 行)
-        tx_file_ids = projection.collect_tx_attachment_fileids(
-            db, ledger_id=ledger.id, sync_id=tx_id,
-        )
-        change_row = SyncChange(
-            user_id=ledger.user_id,
-            ledger_id=ledger.id,
-            entity_type="transaction",
-            entity_sync_id=tx_id,
-            action="delete",
-            payload_json={},
-            updated_at=now,
-            updated_by_device_id=device_id,
-            updated_by_user_id=current_user.id,
-        )
-        db.add(change_row)
-        db.flush()
-        projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
-        projection.gc_orphan_attachments(
-            db, user_id=ledger.user_id, file_ids=tx_file_ids,
-        )
-    else:
-        # Upsert:merge payload 到 prev_item
-        from ...snapshot_mutator import update_transaction
-        # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
-        minimal_snap = {"items": [prev_item], "count": 1}
-        minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
-        new_item = minimal_snap["items"][0]
+    def _core() -> tuple[WriteCommitMeta, bool]:
+        """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
+        lock_ledger_for_materialize(db, ledger.id)
+        now = _utcnow()
+        # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
+        _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
+        new_item = _snap["items"][0]
 
         change_row = SyncChange(
             user_id=ledger.user_id,
@@ -608,78 +584,257 @@ async def _commit_write_fast_tx(
             payload=new_item,
         )
 
-    new_change_id = change_row.change_id
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                ledger_id=ledger.id,
+                action=audit_action,
+                metadata_json={
+                    "ledgerId": ledger.external_id,
+                    "baseChangeId": base_change_id,
+                    "newChangeId": change_row.change_id,
+                    "entityId": tx_id,
+                },
+            )
+        )
 
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
+        response = WriteCommitMeta(
+            ledger_id=ledger.external_id,
+            base_change_id=base_change_id,
+            new_change_id=change_row.change_id,
+            server_timestamp=now,
+            idempotency_replayed=False,
+            entity_id=tx_id,
+        )
+
+        request_hash = _hash_request(request.method, request.url.path, request_payload)
+        if idempotency_key:
+            db.add(
+                SyncPushIdempotency(
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_json=response.model_dump(mode="json"),
+                    created_at=now,
+                    expires_at=now + timedelta(hours=24),
+                )
+            )
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if idempotency_key:
+                replay = _load_idempotent_response(
+                    db,
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if replay is not None:
+                    return replay, True
+            raise
+        return response, False
+
+    response, did_replay = await run_in_threadpool(_core)
+
+    if not did_replay:
+        from ...websocket_manager import broadcast_to_ledger
+
+        await broadcast_to_ledger(
+            db=db,
+            ws_manager=request.app.state.ws_manager,
             ledger_id=ledger.id,
-            action=audit_action,
-            metadata_json={
+            payload={
+                "type": "sync_change",
                 "ledgerId": ledger.external_id,
-                "baseChangeId": base_change_id,
-                "newChangeId": new_change_id,
-                "entityId": tx_id,
+                "serverCursor": response.new_change_id,
+                "serverTimestamp": response.server_timestamp.isoformat(),
             },
         )
+    logger.info(
+        "write.commit.create_fast ledger=%s entity=%s change_id=%d device=%s user=%s replay=%s",
+        ledger.external_id, response.entity_id, response.new_change_id,
+        device_id, current_user.id, did_replay,
     )
+    return response
 
-    response = WriteCommitMeta(
-        ledger_id=ledger.external_id,
-        base_change_id=base_change_id,
-        new_change_id=new_change_id,
-        server_timestamp=now,
-        idempotency_replayed=False,
-        entity_id=tx_id,
-    )
 
-    request_hash = _hash_request(request.method, request.url.path, request_payload)
-    if idempotency_key:
+async def _commit_write_fast_tx(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    ledger: Ledger,
+    base_change_id: int,
+    request_payload: dict,
+    idempotency_key: str | None,
+    device_id: str,
+    audit_action: str,
+    tx_id: str,
+    mutate_payload: dict,
+    action: str,  # "upsert" | "delete"
+) -> WriteCommitMeta:
+    """Fast path:单 tx update/delete,跳过全 snapshot build。只 SELECT 目标 tx
+    (1 条 query by PK)→ 合并 payload → 写 SyncChange + projection。~10-15ms。
+
+    DB 工作整段丢 threadpool(issue #31 A2),不阻塞 event loop;广播在线程返回后做。
+    """
+
+    def _core() -> tuple[WriteCommitMeta, bool]:
+        """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
+        lock_ledger_for_materialize(db, ledger.id)
+        now = _utcnow()
+
+        # 1. 读目标 tx from projection
+        tx_row = db.scalar(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.sync_id == tx_id,
+            )
+        )
+        if tx_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+
+        # 2. 把 projection row → dict(mutator 认的 snapshot item 格式)
+        prev_item = _projection_row_to_tx_dict(tx_row)
+
+        # 3. actor 权限检查(复用现有逻辑)
+        from ...snapshot_mutator import _assert_actor_can_modify  # 延迟 import 避免循环
+        try:
+            _assert_actor_can_modify(prev_item, mutate_payload)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+        if action == "delete":
+            # 删 tx 前收集引用的 cloudFileId,删后 GC 孤立附件(物理 blob + 行)
+            tx_file_ids = projection.collect_tx_attachment_fileids(
+                db, ledger_id=ledger.id, sync_id=tx_id,
+            )
+            change_row = SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type="transaction",
+                entity_sync_id=tx_id,
+                action="delete",
+                payload_json={},
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(change_row)
+            db.flush()
+            projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
+            projection.gc_orphan_attachments(
+                db, user_id=ledger.user_id, file_ids=tx_file_ids,
+            )
+        else:
+            # Upsert:merge payload 到 prev_item
+            from ...snapshot_mutator import update_transaction
+            # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
+            minimal_snap = {"items": [prev_item], "count": 1}
+            minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
+            new_item = minimal_snap["items"][0]
+
+            change_row = SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type="transaction",
+                entity_sync_id=tx_id,
+                action="upsert",
+                payload_json=new_item,
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(change_row)
+            db.flush()
+            projection.upsert_tx(
+                db,
+                ledger_id=ledger.id,
+                user_id=ledger.user_id,
+                source_change_id=change_row.change_id,
+                payload=new_item,
+            )
+
+        new_change_id = change_row.change_id
+
         db.add(
-            SyncPushIdempotency(
+            AuditLog(
                 user_id=current_user.id,
-                device_id=device_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-                response_json=response.model_dump(mode="json"),
-                created_at=now,
-                expires_at=now + timedelta(hours=24),
+                ledger_id=ledger.id,
+                action=audit_action,
+                metadata_json={
+                    "ledgerId": ledger.external_id,
+                    "baseChangeId": base_change_id,
+                    "newChangeId": new_change_id,
+                    "entityId": tx_id,
+                },
             )
         )
 
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        if idempotency_key:
-            replay = _load_idempotent_response(
-                db,
-                user_id=current_user.id,
-                device_id=device_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-            )
-            if replay is not None:
-                return replay
-        raise exc
+        response = WriteCommitMeta(
+            ledger_id=ledger.external_id,
+            base_change_id=base_change_id,
+            new_change_id=new_change_id,
+            server_timestamp=now,
+            idempotency_replayed=False,
+            entity_id=tx_id,
+        )
 
-    # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
-    # tx,Editor 端 mobile 收不到 sync_change WS,要重启 app 才能看到新数据。
-    from ...websocket_manager import broadcast_to_ledger
-    await broadcast_to_ledger(
-        db=db,
-        ws_manager=request.app.state.ws_manager,
-        ledger_id=ledger.id,
-        payload={
-            "type": "sync_change",
-            "ledgerId": ledger.external_id,
-            "serverCursor": response.new_change_id,
-            "serverTimestamp": response.server_timestamp.isoformat(),
-        },
-    )
+        request_hash = _hash_request(request.method, request.url.path, request_payload)
+        if idempotency_key:
+            db.add(
+                SyncPushIdempotency(
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_json=response.model_dump(mode="json"),
+                    created_at=now,
+                    expires_at=now + timedelta(hours=24),
+                )
+            )
+
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if idempotency_key:
+                replay = _load_idempotent_response(
+                    db,
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if replay is not None:
+                    return replay, True
+            raise exc
+        return response, False
+
+    response, did_replay = await run_in_threadpool(_core)
+
+    if not did_replay:
+        # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
+        # tx,Editor 端 mobile 收不到 sync_change WS,要重启 app 才能看到新数据。
+        from ...websocket_manager import broadcast_to_ledger
+        await broadcast_to_ledger(
+            db=db,
+            ws_manager=request.app.state.ws_manager,
+            ledger_id=ledger.id,
+            payload={
+                "type": "sync_change",
+                "ledgerId": ledger.external_id,
+                "serverCursor": response.new_change_id,
+                "serverTimestamp": response.server_timestamp.isoformat(),
+            },
+        )
     logger.info(
-        "write.commit.fast action=%s ledger=%s entity=%s change_id=%d device=%s user=%s",
-        audit_action, ledger.external_id, tx_id, response.new_change_id, device_id, current_user.id,
+        "write.commit.fast action=%s ledger=%s entity=%s change_id=%d device=%s user=%s replay=%s",
+        audit_action, ledger.external_id, tx_id, response.new_change_id, device_id, current_user.id, did_replay,
     )
     return response
 
@@ -749,126 +904,135 @@ async def _commit_write(
     audit_action: str,
     mutate: Callable[[dict], tuple[dict, str | None]],
 ) -> WriteCommitMeta:
-    # Serialize concurrent writers on the same ledger。方案 B 后不再写 snapshot,
-    # 但依然锁 —— 防止 rename cascade 的 SQL UPDATE 和 tx upsert 交叉跑。
-    lock_ledger_for_materialize(db, ledger.id)
+    # DB 工作整段丢 threadpool(issue #31 A2),不阻塞 event loop;两类 WS 广播
+    # 在线程返回后于 loop 上做。_core 返回 (response, did_replay, user_global_events)。
+    def _core() -> tuple[WriteCommitMeta, bool, list]:
+        # Serialize concurrent writers on the same ledger。方案 B 后不再写 snapshot,
+        # 但依然锁 —— 防止 rename cascade 的 SQL UPDATE 和 tx upsert 交叉跑。
+        lock_ledger_for_materialize(db, ledger.id)
 
-    # strict_base_change_id 语义转换:原先比 latest ledger_snapshot.change_id,
-    # 方案 B 后 snapshot 不再写,改比 ledger 上任意 entity 的最新 change_id
-    # (更严格 —— 连 tx 级修改都会触发 409)。默认关闭的 feature flag,生产用不到。
-    #
-    # 动态读 get_settings() 而不是缓存模块级 `settings`,是为了让测试 flip
-    # STRICT_BASE_CHANGE_ID + get_settings.cache_clear() 的方式能立刻生效
-    # (否则写入包分多个文件后,importlib.reload 不会重新执行 _shared.py
-    # 的 module-level `settings = get_settings()`,flag 读的永远是旧值)。
-    if get_settings().strict_base_change_id:
-        latest_any_change_id = snapshot_builder.latest_change_id(db, ledger.id)
-        if base_change_id != latest_any_change_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": "Write conflict",
-                    "latest_change_id": latest_any_change_id,
+        # strict_base_change_id 语义转换:原先比 latest ledger_snapshot.change_id,
+        # 方案 B 后 snapshot 不再写,改比 ledger 上任意 entity 的最新 change_id
+        # (更严格 —— 连 tx 级修改都会触发 409)。默认关闭的 feature flag,生产用不到。
+        if get_settings().strict_base_change_id:
+            latest_any_change_id = snapshot_builder.latest_change_id(db, ledger.id)
+            if base_change_id != latest_any_change_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "message": "Write conflict",
+                        "latest_change_id": latest_any_change_id,
+                    },
+                )
+
+        # 从 projection 按需构建当前状态给 mutator 吃。这个 snapshot dict 不写回 DB ——
+        # 只是 mutator 内部用来查当前实体、做 duplicate/actor 校验。
+        snapshot = snapshot_builder.build(db, ledger)
+        # Shallow-per-entity copy for diffing(mutator 会原地改 items[i] 等)
+        prev_snapshot = {**snapshot}
+        for _k in ("items", "accounts", "categories", "tags", "budgets"):
+            arr = snapshot.get(_k)
+            if isinstance(arr, list):
+                prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
+        try:
+            next_snapshot, entity_id = mutate(snapshot)
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found") from None
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        now = _utcnow()
+        # 不再写 ledger_snapshot 行。emit 个体 SyncChange + 同事务 projection 写入,
+        # new_change_id 用 emit 出来的最后一条 SyncChange 的 change_id。
+        emitted_change_ids = _emit_entity_diffs(
+            db,
+            ledger=ledger,
+            current_user=current_user,
+            device_id=device_id,
+            prev=prev_snapshot,
+            next_snapshot=next_snapshot,
+            now=now,
+        )
+        # 无变化 → 用当前 max change_id(幂等/只是触发写但没真修改的场景)
+        new_change_id = max(emitted_change_ids) if emitted_change_ids else (
+            snapshot_builder.latest_change_id(db, ledger.id)
+        )
+
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                ledger_id=ledger.id,
+                action=audit_action,
+                metadata_json={
+                    "ledgerId": ledger.external_id,
+                    "baseChangeId": base_change_id,
+                    "newChangeId": new_change_id,
+                    "entityId": entity_id,
                 },
             )
-
-    # 从 projection 按需构建当前状态给 mutator 吃。这个 snapshot dict 不写回 DB ——
-    # 只是 mutator 内部用来查当前实体、做 duplicate/actor 校验。
-    snapshot = snapshot_builder.build(db, ledger)
-    # Shallow-per-entity copy for diffing(mutator 会原地改 items[i] 等)
-    prev_snapshot = {**snapshot}
-    for _k in ("items", "accounts", "categories", "tags", "budgets"):
-        arr = snapshot.get(_k)
-        if isinstance(arr, list):
-            prev_snapshot[_k] = [dict(e) if isinstance(e, dict) else e for e in arr]
-    try:
-        next_snapshot, entity_id = mutate(snapshot)
-    except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found") from None
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    now = _utcnow()
-    # 不再写 ledger_snapshot 行。emit 个体 SyncChange + 同事务 projection 写入,
-    # new_change_id 用 emit 出来的最后一条 SyncChange 的 change_id。
-    emitted_change_ids = _emit_entity_diffs(
-        db,
-        ledger=ledger,
-        current_user=current_user,
-        device_id=device_id,
-        prev=prev_snapshot,
-        next_snapshot=next_snapshot,
-        now=now,
-    )
-    # 无变化 → 用当前 max change_id(幂等/只是触发写但没真修改的场景)
-    new_change_id = max(emitted_change_ids) if emitted_change_ids else (
-        snapshot_builder.latest_change_id(db, ledger.id)
-    )
-
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
-            ledger_id=ledger.id,
-            action=audit_action,
-            metadata_json={
-                "ledgerId": ledger.external_id,
-                "baseChangeId": base_change_id,
-                "newChangeId": new_change_id,
-                "entityId": entity_id,
-            },
-        )
-    )
-
-    response = WriteCommitMeta(
-        ledger_id=ledger.external_id,
-        base_change_id=base_change_id,
-        new_change_id=new_change_id,
-        server_timestamp=now,
-        idempotency_replayed=False,
-        entity_id=entity_id,
-    )
-
-    request_hash = _hash_request(request.method, request.url.path, request_payload)
-    if idempotency_key:
-        db.add(
-            SyncPushIdempotency(
-                user_id=current_user.id,
-                device_id=device_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-                response_json=response.model_dump(mode="json"),
-                created_at=now,
-                expires_at=now + timedelta(hours=24),
-            )
         )
 
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
+        response = WriteCommitMeta(
+            ledger_id=ledger.external_id,
+            base_change_id=base_change_id,
+            new_change_id=new_change_id,
+            server_timestamp=now,
+            idempotency_replayed=False,
+            entity_id=entity_id,
+        )
+
+        request_hash = _hash_request(request.method, request.url.path, request_payload)
         if idempotency_key:
-            replay = _load_idempotent_response(
-                db,
-                user_id=current_user.id,
-                device_id=device_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
+            db.add(
+                SyncPushIdempotency(
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_json=response.model_dump(mode="json"),
+                    created_at=now,
+                    expires_at=now + timedelta(hours=24),
+                )
             )
-            if replay is not None:
-                return replay
-        raise exc
 
-    logger.info(
-        "write.commit action=%s ledger=%s entity=%s change_id=%d device=%s user=%s",
-        audit_action,
-        ledger.external_id,
-        entity_id,
-        response.new_change_id,
-        device_id,
-        current_user.id,
-    )
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if idempotency_key:
+                replay = _load_idempotent_response(
+                    db,
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if replay is not None:
+                    return replay, True, []
+            raise exc
+
+        logger.info(
+            "write.commit action=%s ledger=%s entity=%s change_id=%d device=%s user=%s",
+            audit_action,
+            ledger.external_id,
+            entity_id,
+            response.new_change_id,
+            device_id,
+            current_user.id,
+        )
+        # §7 共享账本:user-global 实体(category/account/tag)的 shared_resource
+        # fan-out 输入。纯 diff(sync),在线程里算好,出去再 await 推送。
+        user_global_events = _diff_user_global_for_shared_resource(
+            prev=prev_snapshot, next=next_snapshot
+        )
+        return response, False, user_global_events
+
+    response, did_replay, user_global_events = await run_in_threadpool(_core)
+    if did_replay:
+        return response
+
     # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
     # tx/budget/category/...,Editor 端 mobile 收不到 sync_change WS,要重启
     # app 才能看到新数据。
@@ -885,14 +1049,8 @@ async def _commit_write(
         },
     )
 
-    # §7 共享账本:对 user-global 实体(category/account/tag)再做一次
-    # shared_resource_change fan-out。Editor 的 /sync/pull 只返回自己
-    # scope=user 的变更,A 的 user-global 变更永远拉不到 — 必须靠这条
-    # WS 事件主动推,Editor 收到后更新本地 SharedLedger* 镜像表。
-    # mobile push 路径(sync/push.py:356)早已有此逻辑,web write 漏了。
-    user_global_events = _diff_user_global_for_shared_resource(
-        prev=prev_snapshot, next=next_snapshot
-    )
+    # Editor 的 /sync/pull 只返回自己 scope=user 的变更,Owner 的 user-global
+    # 变更永远拉不到 — 必须靠这条 WS 事件主动推。mobile push 路径早有此逻辑。
     if user_global_events:
         await _broadcast_shared_resource_events(
             request=request,
@@ -1160,6 +1318,7 @@ __all__ = [
     '_purge_expired_idempotency',
     '_load_idempotent_response',
     '_commit_write_fast_tx',
+    '_commit_create_tx_fast',
     '_projection_row_to_tx_dict',
     '_commit_write',
     '_prepare_write',

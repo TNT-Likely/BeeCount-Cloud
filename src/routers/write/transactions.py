@@ -47,7 +47,9 @@ async def create_tx(
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
     # 是 syncId,不再需要任何投影表。payload 直接传给 snapshot_mutator。
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
-    return await _commit_write(
+    # issue #31 A1b:单笔新建走 fast path,不再全量 build snapshot(O(账本交易数)→O(1))。
+    # create 没有 diff 需求(新行即唯一变更),语义与 _commit_write 一致。
+    return await _commit_create_tx_fast(
         request=request,
         db=db,
         current_user=current_user,
@@ -57,7 +59,7 @@ async def create_tx(
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_tx_create",
-        mutate=lambda snapshot: create_transaction(snapshot, mutate_payload),
+        mutate_payload=mutate_payload,
     )
 
 

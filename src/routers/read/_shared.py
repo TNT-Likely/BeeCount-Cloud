@@ -262,6 +262,47 @@ def _is_ledger_deleted(db: Session, *, ledger_id: str) -> bool:
     return latest_action == "delete"
 
 
+def _visible_workspace_ledgers(
+    db: Session,
+    *,
+    current_user: User,
+    is_admin: bool,
+    ledger_id: str | None = None,
+    user_id: str | None = None,
+) -> list[Ledger]:
+    """workspace.py 跨账本聚合端点共用的账本可见性解析。
+
+    统一三件事(此前 7 个端点各自 copy-paste 一份 ledger_conditions):
+      - ``ledger_id``(external_id)限定单账本;
+      - admin + ``user_id`` 限定某用户;非 admin 走 ``LedgerMember``;
+      - **排除软删账本**(issue #31):软删账本被写入"复活"出来的交易不应再出现
+        在跨账本 / tag / 统计视图里 —— 跟 ``/read/ledgers`` 的 `_is_ledger_deleted`
+        过滤口径保持一致(此前 workspace 不过滤,导致"tag 里看得到、账本列表里
+        却没有"的幽灵交易)。
+    """
+    conditions: list[Any] = []
+    if ledger_id:
+        conditions.append(Ledger.external_id == ledger_id)
+    if is_admin:
+        if user_id:
+            conditions.append(Ledger.user_id == user_id)
+    else:
+        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
+        conditions.append(
+            Ledger.id.in_(
+                select(LedgerMember.ledger_id).where(
+                    LedgerMember.user_id == current_user.id
+                )
+            )
+        )
+    ledgers = list(
+        db.execute(
+            select(Ledger).where(and_(*conditions) if conditions else true())
+        ).scalars().all()
+    )
+    return [lg for lg in ledgers if not _is_ledger_deleted(db, ledger_id=lg.id)]
+
+
 def _snapshot_ledger_info(
     snapshot: dict[str, Any] | None,
     *,
@@ -604,6 +645,7 @@ __all__ = [
     '_owner_map_for_ledgers',
     '_user_info_map',
     '_is_ledger_deleted',
+    '_visible_workspace_ledgers',
     '_snapshot_ledger_info',
     '_resolve_ledger_name',
     '_load_owner_identity',

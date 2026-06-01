@@ -33,25 +33,11 @@ def list_workspace_transactions(
 ) -> WorkspaceTransactionPageOut:
     is_admin = _is_admin(current_user)
 
-    # 账本筛选 → 内部 id 列表,projection 用 internal id 对账
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-    ledgers = list(db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all())
+    # 账本筛选 → 内部 id 列表(已排除软删账本,issue #31)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
     if not ledgers:
         return WorkspaceTransactionPageOut(items=[], total=0, limit=limit, offset=offset)
 
@@ -320,25 +306,11 @@ def export_workspace_transactions_csv(
     headers = _CSV_HEADERS_BY_LANG[lang_key]
     type_labels = _TX_TYPE_LABELS_BY_LANG[lang_key]
 
-    # 账本筛选 — 跟 list_workspace_transactions 完全一致
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-    ledgers = list(db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all())
+    # 账本筛选 — 跟 list_workspace_transactions 完全一致(含软删过滤,issue #31)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
 
     if ledgers:
         ledger_internal_ids = [l.id for l in ledgers]
@@ -540,28 +512,11 @@ def list_workspace_accounts(
 ) -> list[WorkspaceAccountOut]:
     is_admin = _is_admin(current_user)
 
-    # --- 1. 从 snapshot 聚合账户（手机同步写入的数据） ---
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-
-    ledgers = db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
-
-    ledgers = list(ledgers)
+    # --- 1. 从 snapshot 聚合账户（手机同步写入的数据，已排除软删账本 issue #31） ---
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
     if not ledgers:
         return []
     ledger_internal_ids = [l.id for l in ledgers]
@@ -711,28 +666,11 @@ def list_workspace_categories(
 ) -> list[WorkspaceCategoryOut]:
     is_admin = _is_admin(current_user)
 
-    # --- 1. 从 snapshot 聚合分类（手机同步写入的数据） ---
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-
-    ledgers = db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
-
-    ledgers = list(ledgers)
+    # --- 1. 从 snapshot 聚合分类（手机同步写入的数据，已排除软删账本 issue #31） ---
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
     if not ledgers:
         return []
     ledger_internal_ids = [l.id for l in ledgers]
@@ -827,30 +765,13 @@ def list_workspace_tags(
 ) -> list[WorkspaceTagOut]:
     is_admin = _is_admin(current_user)
 
-    # --- 1. 从 snapshot 聚合标签（手机同步写入的数据） ---
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-
-    ledgers = db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all()
+    # --- 1. 从 snapshot 聚合标签（手机同步写入的数据，已排除软删账本 issue #31） ---
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
 
     all_tags: list[WorkspaceTagOut] = []
-
-    ledgers = list(ledgers)
     # user-global 重构:tag 是 per-user。即便用户无 ledger,标签仍可存在(协议层
     # 允许);但 tx 聚合需要 ledger 才有意义,所以 stats 阶段空集即可。
     ledger_internal_ids = [l.id for l in ledgers]
@@ -959,25 +880,10 @@ def workspace_ledger_counts(
     `COUNT(*) + julianday(now) - julianday(MIN(happened_at))`)。不限时间范围。
     首页 Hero 用来展示"记账笔数 / 记账天数"，与 analytics 的 scope=year 脱钩。"""
     is_admin = _is_admin(current_user)
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-
-    ledgers = list(db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all())
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
     ledger_internal_ids = [l.id for l in ledgers]
     if not ledger_internal_ids:
         return WorkspaceLedgerCountsOut(
@@ -1036,25 +942,10 @@ def workspace_analytics(
         scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
     )
 
-    ledger_conditions: list[Any] = []
-    if ledger_id:
-        ledger_conditions.append(Ledger.external_id == ledger_id)
-    if is_admin:
-        if user_id:
-            ledger_conditions.append(Ledger.user_id == user_id)
-    else:
-        # 共享账本:走 LedgerMember 维度,Editor 也能看到 Owner 的账本数据。
-        ledger_conditions.append(
-            Ledger.id.in_(
-                select(LedgerMember.ledger_id).where(
-                    LedgerMember.user_id == current_user.id
-                )
-            )
-        )
-
-    ledgers = list(db.execute(
-        select(Ledger).where(and_(*ledger_conditions) if ledger_conditions else true())
-    ).scalars().all())
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
     ledger_internal_ids = [l.id for l in ledgers]
 
     transaction_count = 0
