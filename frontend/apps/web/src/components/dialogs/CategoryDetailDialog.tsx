@@ -11,11 +11,13 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  useLocale,
   useT,
 } from '@beecount/ui'
 import { Amount, CategoryIcon, TransactionList } from '@beecount/web-features'
 import { ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
 
+import { formatCompactTick } from '../../i18n/format'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { DetailScopeToggle } from './DetailScopeToggle'
 import {
@@ -111,6 +113,8 @@ export function CategoryDetailDialog({
   onJumpToTransactions,
 }: Props) {
   const t = useT()
+  const { locale } = useLocale()
+  const chinese = locale.startsWith('zh')
 
   const tagColorByName = useMemo(() => {
     const map = new Map<string, string | null>()
@@ -225,6 +229,7 @@ export function CategoryDetailDialog({
                 kind={category.kind}
                 currency={currency}
                 t={t}
+                chinese={chinese}
               />
 
               <div className="grid gap-4 border-b border-border/60 px-6 py-4 sm:grid-cols-2">
@@ -383,11 +388,13 @@ function TrendBars({
   kind,
   currency,
   t,
+  chinese,
 }: {
   monthly: { bucket: string; amount: number; count: number }[]
   kind: WorkspaceCategory['kind']
   currency: string
   t: (k: string) => string
+  chinese: boolean
 }) {
   // 取最近 12 个月。如果不足 12 期,补空格保证轴长度一致,视觉上能看出"才记账几个月"。
   const slice = useMemo(() => fillTrailingMonths(monthly, 12), [monthly])
@@ -452,9 +459,7 @@ function TrendBars({
                 tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
                 stroke="hsl(var(--border))"
                 tickFormatter={(v: number) =>
-                  Math.abs(v) >= 10000
-                    ? `${(v / 10000).toFixed(1)}${t('home.trendBars.10kUnit')}`
-                    : String(v)
+                  formatCompactTick(v, { chinese, wanUnit: t('common.unit.10k') })
                 }
                 width={40}
               />

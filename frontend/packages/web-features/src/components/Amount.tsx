@@ -1,17 +1,22 @@
+import { useLocale, useT } from '@beecount/ui'
+
 import { formatBalanceCompact } from '../format'
 
 /**
  * 通用金额展示组件。全站所有"金额"类文案都走这里，方便统一改：
  *
  * - 默认使用紧凑格式（`formatBalanceCompact`），对齐 mobile 的"X.X万 / X.Xk / X.XM"规则。
+ * - 紧凑单位跟随 **UI 语言**而非币种:中文(zh-CN / zh-TW)用「万 / 萬」,英文用
+ *   "k / M" —— 这样英文界面下哪怕是 CNY 账本也不会再蹦出「247.25万」这种不符合
+ *   英文区阅读习惯的写法(见 #英文金额统计 issue)。
  * - `compact={false}` 时回退到千分号两位小数完整格式（比如详情页、表格合计行）。
  * - `sign`：`'none'`（默认）直接展示；`'positive'` 强制 + / -；`'negative'` 只在负值加 -。
  * - `tone`：`'default' | 'positive' | 'negative' | 'muted'`，语义色。
  * - `showCurrency`：是否在数字前展示币种符号（默认不展示，避免和 pill / 分组标题重复）。
  * - `size`：预设字号。业务不直接指定 tailwind text-\* 以免各处分散。
  *
- * 使用示例：
- *   <Amount value={1234567.89} />                     → ¥123.5万
+ * 使用示例(中文 locale)：
+ *   <Amount value={1234567.89} />                     → ¥123.5万   （英文 locale → ¥1.2M）
  *   <Amount value={-980} tone="negative" />           → -980.00
  *   <Amount value={0} compact={false} showCurrency /> → ¥0.00
  */
@@ -68,7 +73,14 @@ export function Amount({
   className,
   sign = 'auto'
 }: AmountProps) {
-  const text = renderAmount({ value, currency, compact, showCurrency, sign })
+  // chinese 决定算法分支(中文按「万」折算 / 英文按 k·M);万字字形(简体「万」、
+  // 繁体「萬」)是纯文案,统一从 i18n 取,不在 JS 里硬编码。英文 locale 下这个 key
+  // 返回 'k',但英文分支用不到 wanUnit,无副作用。
+  const { locale } = useLocale()
+  const t = useT()
+  const chinese = locale.startsWith('zh')
+  const wanUnit = t('common.unit.10k')
+  const text = renderAmount({ value, currency, compact, showCurrency, sign, chinese, wanUnit })
   const classes = [
     'font-mono tabular-nums',
     SIZE_CLASS[size],
@@ -86,13 +98,17 @@ function renderAmount({
   currency,
   compact,
   showCurrency,
-  sign
+  sign,
+  chinese,
+  wanUnit
 }: {
   value: number | null | undefined
   currency?: string | null
   compact: boolean
   showCurrency: boolean
   sign: 'auto' | 'always' | 'never'
+  chinese: boolean
+  wanUnit: string
 }): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '-'
   const isNeg = value < 0
@@ -101,11 +117,9 @@ function renderAmount({
 
   let body: string
   if (compact) {
-    body = formatBalanceCompact(absVal, cur, {
-      chinese: (cur || currency || 'CNY').toUpperCase() === 'CNY'
-    })
+    body = formatBalanceCompact(absVal, cur, { chinese, wanUnit })
   } else {
-    const formatted = absVal.toLocaleString('zh-CN', {
+    const formatted = absVal.toLocaleString(chinese ? 'zh-CN' : 'en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     })

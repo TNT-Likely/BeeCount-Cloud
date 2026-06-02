@@ -10,7 +10,9 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useLocale, useT } from '@beecount/ui'
+
+import { formatCompactTick } from '../../i18n/format'
 
 interface SeriesItem {
   bucket: string
@@ -37,6 +39,8 @@ const TREND_WINDOW = 12
  */
 export function MonthlyTrendBars({ data }: Props) {
   const t = useT()
+  const { locale } = useLocale()
+  const chinese = locale.startsWith('zh')
 
   const slice = useMemo(() => {
     const tail = data.slice(-TREND_WINDOW)
@@ -81,7 +85,9 @@ export function MonthlyTrendBars({ data }: Props) {
                 <YAxis
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
                   stroke="hsl(var(--border))"
-                  tickFormatter={(v) => (Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}${t('home.trendBars.10kUnit')}` : String(v))}
+                  tickFormatter={(v) =>
+                    formatCompactTick(v, { chinese, wanUnit: t('common.unit.10k') })
+                  }
                 />
                 <Tooltip
                   contentStyle={{
