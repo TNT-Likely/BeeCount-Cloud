@@ -24,6 +24,13 @@ import { Amount } from '../components/Amount'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
+import {
+  accountBalance,
+  type AssetSummary,
+  computeCurrencySummary,
+  LIABILITY_TYPES,
+  splitByCurrency
+} from '../lib/assetAggregation'
 
 type AssetGroup = {
   type: string
@@ -31,18 +38,17 @@ type AssetGroup = {
   color: string
   isLiability: boolean
   rows: ReadAccount[]
-  subtotal: number
+  /** 小计按币种拆 —— 单币种只有 1 条;同一类型跨币种(只可能出现在底部跨币种
+   *  列表)时各币种独立累计,绝不跨币种相加($1000 不是 ¥1000)。 */
+  subtotals: { currency: string; value: number }[]
 }
 
-type AssetSummary = {
-  assetTotal: number
-  liabilityTotal: number
-  netWorth: number
-}
 
 type MobileStyleAssetsProps = {
-  groups: AssetGroup[]
-  summary: AssetSummary
+  /** 按币种切分后的汇总(每币种各自 summary + 构成饼图)。单币种时只有 1 条。 */
+  byCurrency: CurrencyBucket[]
+  /** 底部分组列表:跨币种按类型分组,每组小计按币种拆。 */
+  listGroups: AssetGroup[]
   canManage: boolean
   onEdit: (row: ReadAccount) => void
   onDelete?: (row: ReadAccount) => void
@@ -59,8 +65,8 @@ type MobileStyleAssetsProps = {
  * 一致，和标签页的小卡片网格做出明显区分。
  */
 function MobileStyleAssets({
-  groups,
-  summary,
+  byCurrency,
+  listGroups,
   canManage,
   onEdit,
   onDelete,
@@ -68,6 +74,10 @@ function MobileStyleAssets({
   onCreate
 }: MobileStyleAssetsProps) {
   const t = useT()
+  // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
+  // 符号也跟这个走(多币种才需要符号消歧)。
+  const multiCurrency = byCurrency.length > 1
+  const single = byCurrency[0]
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggle = (type: string) =>
     setCollapsed((prev) => {
@@ -79,14 +89,24 @@ function MobileStyleAssets({
 
   return (
     <div className="space-y-4">
-      {/* 第一行：汇总 hero + 构成饼图，左右分列 */}
-      <div className="grid gap-3 lg:grid-cols-[1.1fr_1fr]">
-        <AssetsSummaryHero summary={summary} />
-        <AssetsCompositionMini
-          groups={groups}
-          totalAbs={summary.assetTotal + summary.liabilityTotal}
-        />
-      </div>
+      {/* 第一行：单币种 → 汇总 hero + 构成饼图左右分列(维持原样);
+          多币种 → 每币种一张卡(各自净值 + 构成饼图),金额绝不跨币种合并。 */}
+      {multiCurrency ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {byCurrency.map((entry) => (
+            <CurrencyAssetCard key={entry.currency} entry={entry} />
+          ))}
+        </div>
+      ) : single ? (
+        <div className="grid gap-3 lg:grid-cols-[1.1fr_1fr]">
+          <AssetsSummaryHero summary={single.summary} currency={single.currency} />
+          <AssetsCompositionMini
+            groups={single.groups}
+            totalAbs={single.summary.assetTotal + single.summary.liabilityTotal}
+            currency={single.currency}
+          />
+        </div>
+      ) : null}
 
       {onCreate ? (
         <div className="flex items-center justify-end">
@@ -98,7 +118,7 @@ function MobileStyleAssets({
 
       {/* 下面是分组 + 真实卡片风格的子项列表 */}
       <div className="space-y-4">
-        {groups.map((group) => {
+        {listGroups.map((group) => {
           const isCollapsed = collapsed.has(group.type)
           return (
             <div
@@ -140,12 +160,21 @@ function MobileStyleAssets({
                   </div>
                 </div>
                 <div className="relative flex items-center gap-3">
-                  <Amount
-                    value={group.subtotal}
-                    size="xl"
-                    bold
-                    tone={group.isLiability ? 'negative' : 'default'}
-                  />
+                  {/* 小计按币种逐条展示 —— 单币种 1 条(同原样);该组跨币种时各币种
+                      一行,绝不相加。多币种页统一带币种符号消歧。 */}
+                  <div className="flex flex-col items-end gap-0.5">
+                    {group.subtotals.map((st) => (
+                      <Amount
+                        key={st.currency}
+                        value={st.value}
+                        currency={st.currency}
+                        showCurrency={multiCurrency}
+                        size={group.subtotals.length > 1 ? 'md' : 'xl'}
+                        bold
+                        tone={group.isLiability ? 'negative' : 'default'}
+                      />
+                    ))}
+                  </div>
                   <span
                     className={`text-xl text-muted-foreground transition-transform ${
                       isCollapsed ? '' : 'rotate-90'
@@ -184,7 +213,13 @@ function MobileStyleAssets({
  * 资产总览 hero：大号净值 + 资产 / 负债两行。跟 overview 页的 OverviewHero
  * 区别在于不接 period income/expense，只展示 account 聚合后的静态净值。
  */
-function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
+function AssetsSummaryHero({
+  summary,
+  currency
+}: {
+  summary: AssetSummary
+  currency: string
+}) {
   const t = useT()
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/30">
@@ -202,6 +237,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
         </div>
         <Amount
           value={summary.netWorth}
+          currency={currency}
           size="4xl"
           bold
           showCurrency
@@ -215,6 +251,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
             </div>
             <Amount
               value={summary.assetTotal}
+              currency={currency}
               size="xl"
               bold
               showCurrency
@@ -228,6 +265,7 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
             </div>
             <Amount
               value={summary.liabilityTotal}
+              currency={currency}
               size="xl"
               bold
               showCurrency
@@ -247,17 +285,26 @@ function AssetsSummaryHero({ summary }: { summary: AssetSummary }) {
  */
 function AssetsCompositionMini({
   groups,
-  totalAbs
+  totalAbs,
+  currency,
+  showCurrency = false,
+  embedded = false
 }: {
   groups: AssetGroup[]
   totalAbs: number
+  currency: string
+  /** 中心总额是否带币种符号(多币种卡内需要,单币种页保持原样不带)。 */
+  showCurrency?: boolean
+  /** 嵌在币种卡里时去掉自身的边框/卡片底色,避免双层卡片。 */
+  embedded?: boolean
 }) {
   const t = useT()
+  // 传进来的 groups 一定是单币种(单币种页 or 某一币种卡),subtotals 求和即该币种值。
   const data = groups.map((g) => ({
     type: g.type,
     label: g.label,
     color: g.color,
-    value: g.subtotal
+    value: g.subtotals.reduce((s, x) => s + x.value, 0)
   }))
   const total = totalAbs > 0 ? totalAbs : 1
   // conic-gradient 分段
@@ -274,7 +321,13 @@ function AssetsCompositionMini({
     : 'hsl(var(--muted))'
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border/50 bg-card/80 p-5">
+    <div
+      className={
+        embedded
+          ? 'px-5 pb-5'
+          : 'overflow-hidden rounded-2xl border border-border/50 bg-card/80 p-5'
+      }
+    >
       <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
         {t('accounts.composition')}
       </div>
@@ -297,7 +350,14 @@ function AssetsCompositionMini({
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 {t('common.total')}
               </div>
-              <Amount value={totalAbs} size="md" bold className="mt-0.5" />
+              <Amount
+                value={totalAbs}
+                currency={currency}
+                showCurrency={showCurrency}
+                size="md"
+                bold
+                className="mt-0.5"
+              />
             </div>
           </div>
           {/* legend */}
@@ -583,7 +643,6 @@ const VALUATION_TYPES: { value: string }[] = [
   { value: 'social_fund' },
   { value: 'loan' }
 ]
-const LIABILITY_TYPES = new Set(['credit_card', 'loan'])
 
 // 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
 // 拷到 `web/public/icons/account/`，公共资源目录直接通过 URL 访问即可（不用
@@ -645,6 +704,123 @@ function accountTypeLabel(tt: (k: string) => string, value?: string | null): str
   return translated
 }
 
+// ── 多币种聚合 ────────────────────────────────────────────────────────────
+// 铁律:资产统计绝不跨币种相加($1000 不是 ¥1000)。所有汇总先按币种切分再各算各
+// 的:单币种(绝大多数)维持单一 hero + 饼图;多币种则每币种一张卡 + 各自饼图。
+// 没有汇率基建、也不做换算 —— 宁可不给单一总额,也不给一个错的合并数字。
+
+/** 一种币种的聚合结果:净值汇总 + 该币种内按类型分组(组里带饼图所需 subtotal)。 */
+type CurrencyBucket = {
+  currency: string
+  summary: AssetSummary
+  groups: AssetGroup[]
+}
+
+// 类型展示顺序:可交易在前、估值在后,跟编辑弹窗里的分组顺序一致。
+const ACCOUNT_ORDER: string[] = [
+  ...TRADABLE_TYPES.map((x) => x.value),
+  ...VALUATION_TYPES.map((x) => x.value)
+]
+
+/** 按账户类型分组。每组小计再按币种拆:同一类型若混多币种(只会出现在底部跨币种
+ *  列表),各币种独立累计、不相加。单币种入参时每组只有 1 条 subtotal。 */
+function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string): AssetGroup[] {
+  const buckets: Record<string, ReadAccount[]> = {}
+  for (const row of rows) {
+    const key = row.account_type || 'other'
+    buckets[key] = buckets[key] || []
+    buckets[key].push(row)
+  }
+  return ACCOUNT_ORDER.filter((type) => (buckets[type] || []).length > 0).map((type) => {
+    const groupRows = (buckets[type] || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+    const isLiability = LIABILITY_TYPES.has(type)
+    const byCur = new Map<string, number>()
+    for (const r of groupRows) {
+      const cur = (r.currency || 'CNY').toUpperCase()
+      const raw = accountBalance(r)
+      byCur.set(cur, (byCur.get(cur) ?? 0) + (isLiability ? Math.abs(raw) : raw))
+    }
+    return {
+      type,
+      label: accountTypeLabel(t, type),
+      color: TYPE_COLORS[type] || '#94a3b8',
+      isLiability,
+      rows: groupRows,
+      subtotals: [...byCur.entries()].map(([currency, value]) => ({ currency, value }))
+    }
+  })
+}
+
+/**
+ * 多币种时:每种币种一张卡 —— 顶部币种 badge + 净值,中间资产/负债,底部该币种
+ * 自己的构成饼图。金额全部带该币种符号,绝不跟其它币种混。
+ */
+function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
+  const t = useT()
+  const { currency, summary, groups } = entry
+  const totalAbs = summary.assetTotal + summary.liabilityTotal
+  return (
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-card/60">
+      <div className="flex items-center justify-between gap-2 border-b border-border/40 px-4 py-3">
+        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-xs font-semibold tracking-wide text-primary">
+          {currency}
+        </span>
+        <div className="min-w-0 text-right">
+          <div className="text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
+            {t('accounts.netWorth')}
+          </div>
+          <Amount
+            value={summary.netWorth}
+            currency={currency}
+            showCurrency
+            size="2xl"
+            bold
+            tone={summary.netWorth >= 0 ? 'positive' : 'negative'}
+            className="block"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 px-4 py-3">
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-1.5">
+          <div className="text-[9px] uppercase tracking-wider text-emerald-600/80 dark:text-emerald-400/80">
+            {t('accounts.assets')}
+          </div>
+          <Amount
+            value={summary.assetTotal}
+            currency={currency}
+            showCurrency
+            size="md"
+            bold
+            tone="positive"
+            className="mt-0.5 block"
+          />
+        </div>
+        <div className="rounded-lg border border-rose-500/25 bg-rose-500/5 px-2.5 py-1.5">
+          <div className="text-[9px] uppercase tracking-wider text-rose-600/80 dark:text-rose-400/80">
+            {t('accounts.liabilities')}
+          </div>
+          <Amount
+            value={summary.liabilityTotal}
+            currency={currency}
+            showCurrency
+            size="md"
+            bold
+            tone="negative"
+            className="mt-0.5 block"
+          />
+        </div>
+      </div>
+      <AssetsCompositionMini
+        groups={groups}
+        totalAbs={totalAbs}
+        currency={currency}
+        showCurrency
+        embedded
+      />
+    </div>
+  )
+}
+
 type AccountsPanelProps = {
   form: AccountForm
   rows: ReadAccount[]
@@ -673,56 +849,26 @@ export function AccountsPanel({
   const t = useT()
   const [open, setOpen] = useState(false)
 
-  const summary = useMemo(() => {
-    let assetTotal = 0
-    let liabilityTotal = 0
-    for (const row of rows) {
-      // 优先用 server 聚合后的 balance（含所有交易）；老接口 / 无 tx 则回退到
-      // initialBalance。负债类 balance 通常是负数,abs 后作为正欠款累计;资产
-      // 类保留符号,透支账户(balance<0)会扣减总资产,跟 mobile
-      // local_account_repository.getNetWorthBreakdown 的累加口径一致。
-      const stats = row as ReadAccount & AccountStats
-      const raw =
-        typeof stats.balance === 'number' && stats.balance !== null
-          ? stats.balance
-          : row.initial_balance ?? 0
-      if (LIABILITY_TYPES.has(row.account_type || '')) liabilityTotal += Math.abs(raw)
-      else assetTotal += raw
-    }
-    return { assetTotal, liabilityTotal, netWorth: assetTotal - liabilityTotal }
-  }, [rows])
-
-  // 按类型分组 + 排序（日常类型在前，估值在后，跟 mobile 的 group 顺序一致）
-  const grouped = useMemo(() => {
-    const order: string[] = [
-      ...TRADABLE_TYPES.map((x) => x.value),
-      ...VALUATION_TYPES.map((x) => x.value)
-    ]
-    const buckets: Record<string, ReadAccount[]> = {}
-    for (const row of rows) {
-      const key = row.account_type || 'other'
-      buckets[key] = buckets[key] || []
-      buckets[key].push(row)
-    }
-    return order
-      .filter((type) => (buckets[type] || []).length > 0)
-      .map((type) => ({
-        type,
-        label: accountTypeLabel(t, type),
-        color: TYPE_COLORS[type] || '#94a3b8',
-        isLiability: LIABILITY_TYPES.has(type),
-        rows: (buckets[type] || []).sort((a, b) => a.name.localeCompare(b.name)),
-        subtotal: (buckets[type] || []).reduce((s, r) => {
-          const stats = r as ReadAccount & AccountStats
-          const raw =
-            typeof stats.balance === 'number' && stats.balance !== null
-              ? stats.balance
-              : r.initial_balance ?? 0
-          // 负债组按 |balance| 显示总欠款,资产组保留符号,跟 summary 累加口径一致。
-          return s + (LIABILITY_TYPES.has(type) ? Math.abs(raw) : raw)
-        }, 0)
+  // 按币种切分后再聚合 —— 资产统计绝不跨币种相加(见 computeCurrencySummary)。
+  // 单币种(绝大多数场景)→ currencyBuckets 只有 1 条,顶部展示完全维持原样。
+  const currencyBuckets = useMemo<CurrencyBucket[]>(() => {
+    return [...splitByCurrency(rows).entries()]
+      .map(([currency, curRows]) => ({
+        currency,
+        summary: computeCurrencySummary(curRows),
+        groups: computeTypeGroups(curRows, t)
       }))
+      // 体量大的币种排前面(资产+负债绝对额)
+      .sort(
+        (a, b) =>
+          b.summary.assetTotal +
+          b.summary.liabilityTotal -
+          (a.summary.assetTotal + a.summary.liabilityTotal)
+      )
   }, [rows, t])
+
+  // 底部列表:跨币种按类型分组(每组小计按币种拆,见 computeTypeGroups)。
+  const listGroups = useMemo(() => computeTypeGroups(rows, t), [rows, t])
 
   // 顶部"新建账户"按钮 —— rows 空时也要显示,否则首次使用没法建账户。
   // 复用现有 dialog,form 重置成 defaults 让 dialog 进入 create 模式。
@@ -760,8 +906,8 @@ export function AccountsPanel({
         </>
       ) : (
         <MobileStyleAssets
-          groups={grouped}
-          summary={summary}
+          byCurrency={currencyBuckets}
+          listGroups={listGroups}
           canManage={canManage}
           onEdit={(row) => {
             onEdit(row)
