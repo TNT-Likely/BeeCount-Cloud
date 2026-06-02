@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 
 import { useReducedMotion } from 'framer-motion'
 
@@ -74,6 +74,8 @@ type AmountProps = {
   animate?: boolean
   /** 翻滚时长(秒),默认 0.6。 */
   animateDuration?: number
+  /** 首次翻滚前的延迟(秒),默认 0 —— 用于"卡片先入场、数字再滚动"的编排;后续数值变化不受影响,立即滚。 */
+  animateDelay?: number
 }
 
 export function Amount({
@@ -87,7 +89,8 @@ export function Amount({
   className,
   sign = 'auto',
   animate = false,
-  animateDuration = 0.6
+  animateDuration = 0.6,
+  animateDelay = 0
 }: AmountProps) {
   // chinese 决定算法分支(中文按「万」折算 / 英文按 k·M);万字字形(简体「万」、
   // 繁体「萬」)是纯文案,统一从 i18n 取,不在 JS 里硬编码。英文 locale 下这个 key
@@ -116,7 +119,7 @@ export function Amount({
   if (shouldRoll) {
     return (
       <span className={classes}>
-        <RollingNumber text={text} duration={animateDuration} />
+        <RollingNumber text={text} duration={animateDuration} delay={animateDelay} />
       </span>
     )
   }
@@ -142,13 +145,21 @@ const SR_ONLY: CSSProperties = {
  * 滚的是"终值字符串的每一位",所以不会出现 count-up 跨档位时
  * "¥9999.00 → ¥1万" 那种宽度/格式突变的抖动。
  */
-function RollingNumber({ text, duration }: { text: string; duration: number }) {
+function RollingNumber({
+  text,
+  duration,
+  delay
+}: {
+  text: string
+  duration: number
+  delay: number
+}) {
   return (
     <span style={{ lineHeight: 1, whiteSpace: 'nowrap' }}>
       <span style={SR_ONLY}>{text}</span>
       {text.split('').map((ch, i) =>
         ch >= '0' && ch <= '9' ? (
-          <RollingDigit key={i} digit={Number(ch)} duration={duration} />
+          <RollingDigit key={i} digit={Number(ch)} duration={duration} delay={delay} />
         ) : (
           <span
             key={i}
@@ -164,13 +175,27 @@ function RollingNumber({ text, duration }: { text: string; duration: number }) {
 }
 
 /** 单个数字位:0-9 竖排成一列,translateY 把目标数字滚动到可视窗口。 */
-function RollingDigit({ digit, duration }: { digit: number; duration: number }) {
-  // 初值 0,挂载后下一帧再设目标值,让首次出现也有"从 0 滚入"的效果。
+function RollingDigit({
+  digit,
+  duration,
+  delay
+}: {
+  digit: number
+  duration: number
+  delay: number
+}) {
+  // 初值 0;首次挂载等 delay 秒后再滚(让卡片入场先走完),之后的数值变化立即滚。
   const [shown, setShown] = useState(0)
+  const mounted = useRef(false)
   useEffect(() => {
-    const id = requestAnimationFrame(() => setShown(digit))
-    return () => cancelAnimationFrame(id)
-  }, [digit])
+    if (mounted.current) {
+      setShown(digit)
+      return
+    }
+    mounted.current = true
+    const id = setTimeout(() => setShown(digit), delay * 1000)
+    return () => clearTimeout(id)
+  }, [digit, delay])
   return (
     <span
       aria-hidden

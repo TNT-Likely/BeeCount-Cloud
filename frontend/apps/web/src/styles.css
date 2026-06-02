@@ -135,3 +135,27 @@
     pointer-events: none;
   }
 }
+
+/* ===== 入场动画 ===== */
+/* 淡入 + 轻微上移。配合 inline `animation-delay` 做 stagger 级联(见 HomeHero)。 */
+.bee-rise-in {
+  animation: bee-rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes bee-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 尊重系统"减少动态效果":直接展示终态,不做入场。 */
+@media (prefers-reduced-motion: reduce) {
+  .bee-rise-in {
+    animation: none;
+  }
+}

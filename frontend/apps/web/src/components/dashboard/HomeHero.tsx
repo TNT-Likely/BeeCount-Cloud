@@ -168,6 +168,8 @@ export function HomeHero({
             <HeroStat
               icon={<ArrowDownLeft className="h-3.5 w-3.5 text-income" />}
               label={t('home.hero.income').replace('{scope}', scopeLabel)}
+              className="bee-rise-in"
+              style={{ animationDelay: '0ms' }}
             >
               <Amount
                 value={income}
@@ -175,6 +177,7 @@ export function HomeHero({
                 showCurrency
                 bold
                 animate
+                animateDelay={0.45}
                 size="xl"
                 tone="positive"
                 className="mt-0.5 block leading-tight"
@@ -183,6 +186,8 @@ export function HomeHero({
             <HeroStat
               icon={<ArrowUpRight className="h-3.5 w-3.5 text-expense" />}
               label={t('home.hero.expense').replace('{scope}', scopeLabel)}
+              className="bee-rise-in"
+              style={{ animationDelay: '110ms' }}
             >
               <Amount
                 value={expense}
@@ -190,6 +195,7 @@ export function HomeHero({
                 showCurrency
                 bold
                 animate
+                animateDelay={0.55}
                 size="xl"
                 tone="negative"
                 className="mt-0.5 block leading-tight"
@@ -198,6 +204,8 @@ export function HomeHero({
             <HeroStat
               icon={<Receipt className="h-3.5 w-3.5 text-amber-500" />}
               label={t('home.hero.count')}
+              className="bee-rise-in"
+              style={{ animationDelay: '220ms' }}
             >
               <div className="mt-0.5 font-mono text-xl font-bold tabular-nums leading-tight">
                 {txCount.toLocaleString()}
@@ -209,6 +217,8 @@ export function HomeHero({
             <HeroStat
               icon={<CalendarDays className="h-3.5 w-3.5 text-sky-500" />}
               label={t('home.hero.days')}
+              className="bee-rise-in"
+              style={{ animationDelay: '330ms' }}
             >
               <div className="mt-0.5 font-mono text-xl font-bold tabular-nums leading-tight">
                 {days.toLocaleString()}
@@ -339,14 +349,21 @@ function ScopeSwitcher({
 function HeroStat({
   icon,
   label,
-  children
+  children,
+  className,
+  style
 }: {
   icon: React.ReactNode
   label: string
   children: React.ReactNode
+  className?: string
+  style?: React.CSSProperties
 }) {
   return (
-    <div className="rounded-xl border border-border/40 bg-background/50 px-3 py-2 backdrop-blur-sm">
+    <div
+      className={`rounded-xl border border-border/40 bg-background/50 px-3 py-2 backdrop-blur-sm${className ? ` ${className}` : ''}`}
+      style={style}
+    >
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
         {icon}
         {label}
