@@ -159,6 +159,7 @@ export function HomeHero({
             currency={currency}
             size="4xl"
             bold
+            animate
             tone={balance >= 0 ? 'positive' : 'negative'}
             className="mt-1 block font-black tracking-tight"
           />
@@ -173,6 +174,7 @@ export function HomeHero({
                 currency={currency}
                 showCurrency
                 bold
+                animate
                 size="xl"
                 tone="positive"
                 className="mt-0.5 block leading-tight"
@@ -187,6 +189,7 @@ export function HomeHero({
                 currency={currency}
                 showCurrency
                 bold
+                animate
                 size="xl"
                 tone="negative"
                 className="mt-0.5 block leading-tight"
