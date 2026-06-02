@@ -8,7 +8,7 @@ import {
   type WorkspaceAnalyticsSeriesItem,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
-import { Button, Card, CardContent, useT } from '@beecount/ui'
+import { Button, Card, CardContent, useLocale, useT } from '@beecount/ui'
 import { ChevronLeft, ChevronRight, Info, Plus, Sparkles } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -564,6 +564,8 @@ function DayCell({
   monthMaxAbsNet,
   onSelect,
 }: DayCellProps) {
+  const { locale } = useLocale()
+  const chinese = locale.startsWith('zh')
   const dayNum = Number(dateKey.slice(8))
 
   // 周末判断:0=周日 / 6=周六 → 给一个非常微弱的灰底,跟工作日区分但不抢戏
@@ -653,7 +655,7 @@ function DayCell({
             }
           >
             {bucket.net >= 0 ? '+' : ''}
-            {compactNum(bucket.net)}
+            {compactNum(bucket.net, chinese)}
           </span>
         </div>
       )}
@@ -661,12 +663,17 @@ function DayCell({
   )
 }
 
-// 单元格内的紧凑数字格式化:千 = k,万 = w(中文习惯)
-function compactNum(value: number): string {
+// 单元格内的紧凑数字格式化。中文习惯:千 = k,万 = w;英文区:千 = k,百万 = M
+// (不出现「w/万」)。chinese 由调用方按 UI 语言传入。
+function compactNum(value: number, chinese: boolean): string {
   const abs = Math.abs(value)
   if (abs < 1000) return value.toFixed(0)
-  if (abs < 10000) return `${(value / 1000).toFixed(1)}k`
-  return `${(value / 10000).toFixed(1)}w`
+  if (chinese) {
+    if (abs < 10000) return `${(value / 1000).toFixed(1)}k`
+    return `${(value / 10000).toFixed(1)}w`
+  }
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  return `${(value / 1000).toFixed(1)}k`
 }
 
 // ============================================================================

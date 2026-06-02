@@ -272,7 +272,7 @@ const zhCN = {
   'home.trendBars.income': '收入',
   'home.trendBars.expense': '支出',
   'home.trendBars.balance': '净额',
-  'home.trendBars.10kUnit': '万',
+  'common.unit.10k': '万',
 
   // AssetCompositionDonut
   'home.assetComp.title': '资产构成',

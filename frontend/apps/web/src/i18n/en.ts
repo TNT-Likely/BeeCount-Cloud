@@ -719,7 +719,7 @@ const en = {
   'home.trendBars.income': 'Income',
   'home.trendBars.expense': 'Expense',
   'home.trendBars.balance': 'Net',
-  'home.trendBars.10kUnit': 'k',
+  'common.unit.10k': 'k',
 
   'home.assetComp.title': 'Asset composition',
   'home.assetComp.empty': 'No accounts yet',

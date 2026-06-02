@@ -6,13 +6,14 @@ import {
   persistLocale
 } from '@beecount/ui'
 import { ApiError } from '@beecount/api-client'
+import { formatBalanceCompact } from '@beecount/web-features'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import en from './i18n/en'
 import zhCN from './i18n/zh-CN'
 import zhTW from './i18n/zh-TW'
 import { localizeError } from './i18n/errors'
-import { formatAmountCny, formatIsoDateTime } from './i18n/format'
+import { formatAmountCny, formatCompactTick, formatIsoDateTime } from './i18n/format'
 
 describe('i18n locale runtime', () => {
   afterEach(() => {
@@ -73,6 +74,43 @@ describe('i18n error mapping and formatting', () => {
   it('formats amount and datetime in fixed mode', () => {
     expect(formatAmountCny(12.5)).toBe('CNY 12.50')
     expect(formatIsoDateTime('2026-02-25T10:20:30Z')).toBe('2026-02-25 10:20:30')
+  })
+})
+
+/**
+ * 紧凑金额单位跟随 UI 语言:中文「万 / 萬」、英文「k / M」。
+ * 锁住 bug —— 英文界面下的 CNY 金额曾仍显示「247.25万」,应为「2.47M」。
+ */
+describe('compact amount locale unit', () => {
+  it('formatBalanceCompact uses 万 for chinese', () => {
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: true })).toBe('¥5万')
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true })).toBe('¥247.25万')
+    // < 1 万保留两位
+    expect(formatBalanceCompact(980, 'CNY', { chinese: true })).toBe('¥980.00')
+  })
+
+  it('formatBalanceCompact honors traditional 萬 via wanUnit', () => {
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('¥247.25萬')
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: true, wanUnit: '萬' })).toBe('¥5萬')
+  })
+
+  it('formatBalanceCompact uses k / M for english (even CNY)', () => {
+    expect(formatBalanceCompact(50000, 'CNY', { chinese: false })).toBe('¥50k')
+    expect(formatBalanceCompact(2472500, 'CNY', { chinese: false })).toBe('¥2.47M')
+    expect(formatBalanceCompact(980, 'CNY', { chinese: false })).toBe('¥980.00')
+    // currencyCode 传 null 不带符号
+    expect(formatBalanceCompact(50000, null, { chinese: false })).toBe('50k')
+  })
+
+  it('formatCompactTick abbreviates by locale, keeps small values integer', () => {
+    // 英文:÷1000 标 k(修复旧的「÷10000 却标 k」=> 10 倍偏小 bug)
+    expect(formatCompactTick(50000, { chinese: false })).toBe('50.0k')
+    expect(formatCompactTick(2_000_000, { chinese: false })).toBe('2.0M')
+    expect(formatCompactTick(500, { chinese: false })).toBe('500')
+    // 中文:÷10000 标万/萬(单位由调用方传入)
+    expect(formatCompactTick(50000, { chinese: true, wanUnit: '万' })).toBe('5.0万')
+    expect(formatCompactTick(50000, { chinese: true, wanUnit: '萬' })).toBe('5.0萬')
+    expect(formatCompactTick(5000, { chinese: true, wanUnit: '万' })).toBe('5000')
   })
 })
 
