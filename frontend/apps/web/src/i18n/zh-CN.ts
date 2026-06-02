@@ -172,6 +172,8 @@ const zhCN = {
   'accounts.bankcard.balance': '余额',
   'accounts.bankcard.income': '收入',
   'accounts.bankcard.expense': '支出',
+  'accounts.bankcard.creditUsed': '已用',
+  'accounts.bankcard.creditAvailable': '可用',
   'accounts.bankcard.balanceLabel': '余额',
   'accounts.bankcard.owedLabel': '欠款',
 

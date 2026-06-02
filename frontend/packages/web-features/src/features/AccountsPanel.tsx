@@ -437,6 +437,11 @@ function BankCardTile({
   const displayBalance = hasStats ? (row.balance as number) : row.initial_balance ?? 0
   // 估值账户：负债显示绝对值欠款，资产显示当前估值。
   const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
+  // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
+  const isCreditCard = accountType === 'credit_card'
+  const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
+  const ccOwed = Math.max(0, -displayBalance)
+  const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
 
   return (
     <div
@@ -530,6 +535,39 @@ function BankCardTile({
               className="mt-0.5 block text-[18px] leading-tight drop-shadow text-white"
             />
           </div>
+        ) : isCreditCard ? (
+          ccLimit !== null ? (
+            <div className="mt-auto grid grid-cols-3 gap-1 rounded-md bg-black/15 px-2 py-1.5 backdrop-blur-[1px]">
+              <StatCell
+                label={t('accounts.field.creditLimit')}
+                value={ccLimit}
+                currency={currency}
+              />
+              <StatCell
+                label={t('accounts.bankcard.creditUsed')}
+                value={ccOwed}
+                currency={currency}
+              />
+              <StatCell
+                label={t('accounts.bankcard.creditAvailable')}
+                value={ccAvailable as number}
+                currency={currency}
+              />
+            </div>
+          ) : (
+            <div className="mt-auto">
+              <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
+                {t('accounts.bankcard.currentOwed')}
+              </div>
+              <Amount
+                value={ccOwed}
+                currency={currency}
+                showCurrency
+                bold
+                className="mt-0.5 block text-[18px] leading-tight drop-shadow text-white"
+              />
+            </div>
+          )
         ) : hasStats ? (
           <div className="mt-auto grid grid-cols-3 gap-1 rounded-md bg-black/15 px-2 py-1.5 backdrop-blur-[1px]">
             <StatCell

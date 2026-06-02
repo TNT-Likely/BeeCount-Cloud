@@ -626,6 +626,8 @@ const zhTW = {
   'accounts.bankcard.balance': '餘額',
   'accounts.bankcard.income': '收入',
   'accounts.bankcard.expense': '支出',
+  'accounts.bankcard.creditUsed': '已用',
+  'accounts.bankcard.creditAvailable': '可用',
   'accounts.bankcard.balanceLabel': '餘額',
   'accounts.bankcard.owedLabel': '欠款',
 

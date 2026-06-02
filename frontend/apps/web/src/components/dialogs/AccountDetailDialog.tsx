@@ -109,6 +109,24 @@ function AccountStatsHeader({
   const balance = hasServerStats ? account.balance! : account.initial_balance ?? 0
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  // 信用卡按负债展示:只显当前欠款(= -balance,余额为负=欠款),不显示
+  // 累计收入/支出(信用卡入账是还款/退款,非收入);额度/可用/账单在下方
+  // AccountCardInfo。对齐 mobile account_detail_page。
+  if ((account.account_type || '') === 'credit_card') {
+    const owed = Math.max(0, -balance)
+    return (
+      <div className="border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {t('accounts.bankcard.currentOwed')}
+        </div>
+        <div className="mt-0.5 font-mono text-lg font-bold tabular-nums text-expense">
+          {fmt(owed)}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="grid grid-cols-3 gap-3 border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
       <div>

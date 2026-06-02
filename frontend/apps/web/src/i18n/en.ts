@@ -627,6 +627,8 @@ const en = {
   'accounts.bankcard.balance': 'Balance',
   'accounts.bankcard.income': 'Income',
   'accounts.bankcard.expense': 'Expense',
+  'accounts.bankcard.creditUsed': 'Used',
+  'accounts.bankcard.creditAvailable': 'Available',
   'accounts.bankcard.balanceLabel': 'Balance',
   'accounts.bankcard.owedLabel': 'Owed',
 
