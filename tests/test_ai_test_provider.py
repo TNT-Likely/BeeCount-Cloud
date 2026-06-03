@@ -318,6 +318,54 @@ def test_rate_limit_after_30_requests():
 # ──────────────────── 字段校验 ────────────────────
 
 
+# ──────────────────── 参数自适应(issue #312) ────────────────────
+
+
+def test_temperature_rejected_retries_without_it():
+    """复现 Moonshot kimi-k2.5:带温度 → 400「only 1 is allowed」→ 摘掉温度重发 → 成功。
+
+    推理模型把 temperature 锁死成 1,我们发的低温被拒。无需真实 Kimi key,
+    伪造上游响应即可:带 temperature → 400;不带 → 200。
+    """
+    calls: list[dict | None] = []
+
+    async def fake_post(self, url, headers=None, json=None, **_):
+        calls.append(json)
+        if json is not None and "temperature" in json:
+            return httpx.Response(
+                400,
+                text='{"error":{"message":"invalid temperature: only 1 is allowed for this model","type":"invalid_request_error"}}',
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+    client = _make_client()
+    try:
+        token = _register_and_login(client, "temp1@test.com")
+        with patch("httpx.AsyncClient.post", fake_post):
+            r = client.post(
+                "/api/v1/ai/test-provider",
+                json={
+                    "provider": {
+                        "apiKey": "sk-x",
+                        "baseUrl": "https://api.moonshot.cn/v1",
+                        "textModel": "kimi-k2.5",
+                    },
+                    "capability": "text",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        body = r.json()
+        assert body["success"] is True, body          # 最终成功
+        assert len(calls) == 2                          # 带温度→被拒,不带温度→成功
+        assert "temperature" in calls[0]                # 第一次带了温度
+        assert "temperature" not in calls[1]            # 重试摘掉了温度
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_vision_capability_with_empty_model_returns_missing_fields():
     client = _make_client()
     try:

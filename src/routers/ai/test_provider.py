@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from ...config import get_settings
 from ...deps import get_current_user
 from ...models import User
+from ...services.ai.provider_client import _post_chat_adaptive
 from ...services.ai.test_samples import (
     TEST_JPEG_DATA_URL,
     TEST_WAV_BYTES,
@@ -97,6 +98,12 @@ def _classify_error(status_code: int, body: str) -> str:
     if status_code == 404:
         return "AI_TEST_MODEL_NOT_FOUND"
     if status_code in (400, 422):
+        # 参数类错误(如推理模型锁 temperature:"invalid temperature ... for this model")
+        # 同时含 "model" + "invalid",会被下面的规则误判成「模型未找到」。正常路径已由
+        # _post_chat_adaptive 自适应摘参数;这里兜底,把它如实归到 UNKNOWN(前端显示原始
+        # error_message),别再误导用户去查模型名。
+        if "temperature" in body_lower:
+            return "AI_TEST_UNKNOWN"
         # 常见:model not found / model not supported
         if "model" in body_lower and ("not" in body_lower or "invalid" in body_lower or "support" in body_lower):
             return "AI_TEST_MODEL_NOT_FOUND"
@@ -219,18 +226,16 @@ async def _test_text(base_url: str, api_key: str, model: str) -> str:
         "max_tokens": 16,
         "temperature": 0.2,
     }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     async with httpx.AsyncClient(
         timeout=15.0,
         verify=get_settings().ai_http_verify_ssl,
     ) as client:
-        resp = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+        # 推理模型(kimi-k2.5 等)锁 temperature → 被拒时自适应摘掉重发
+        resp = await _post_chat_adaptive(client, url, headers, payload)
     if resp.status_code >= 400:
         raise _UpstreamHTTPError(resp.status_code, resp.text)
     data = resp.json()
@@ -254,18 +259,15 @@ async def _test_vision(base_url: str, api_key: str, model: str) -> str:
         "max_tokens": 16,
         "temperature": 0.2,
     }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     async with httpx.AsyncClient(
         timeout=20.0,
         verify=get_settings().ai_http_verify_ssl,
     ) as client:
-        resp = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+        resp = await _post_chat_adaptive(client, url, headers, payload)
     if resp.status_code >= 400:
         raise _UpstreamHTTPError(resp.status_code, resp.text)
     data = resp.json()

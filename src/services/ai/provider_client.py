@@ -244,6 +244,76 @@ class JsonParseFailedError(ChatProviderError):
         self.raw_content = raw_content
 
 
+# 自适应参数剥离 ────────────────────────────────────────────────────────────
+#
+# 不同模型对 OpenAI-compatible 参数有不同约束:推理模型(kimi-k2.5 / o1 / o3 /
+# DeepSeek-R1)把 temperature 锁死成 1,拒绝其他值;部分模型不支持 response_format。
+# 与其按模型/参数名写死兼容分支,不如「听上游报错动态适配」:上游因某个参数报错时
+# 它会点名是哪个参数,我们照它说的把那个参数摘掉重发。
+
+# 结构上必须保留的键;其余键(temperature / top_p / response_format / max_tokens …)
+# 都是「可丢的可选参数」:被上游拒绝时摘掉重发。
+_REQUIRED_KEYS = frozenset({"model", "messages", "stream"})
+# 防止烂网关让我们无限摘参数空转
+_MAX_PARAM_STRIPS = 3
+
+
+def _rejected_param(payload: dict, status_code: int, body: str) -> str | None:
+    """上游因「参数不合法」报错时,返回它点名的那个参数(且必须是我们发出去的可丢键)。
+
+    优先结构化 error.param(OpenAI / o1 / o3 错误体里直接给 ``"param": "temperature"``);
+    没有该字段(Moonshot 那种 ``invalid temperature: only 1 is allowed for this model``)
+    就扫错误文案里点了我们发出去的哪个键。
+
+    返回 None = 不是参数问题 / 点名的是必须键 / 没的可摘了 → 交给上层照常报错。
+    """
+    if status_code < 400:
+        return None
+    # 1) 结构化:{"error": {"param": "temperature", ...}}
+    try:
+        err = json.loads(body).get("error")
+        if isinstance(err, dict):
+            param = err.get("param")
+            if isinstance(param, str) and param in payload and param not in _REQUIRED_KEYS:
+                return param
+    except (ValueError, TypeError, AttributeError):
+        pass
+    # 2) 文案兜底:错误信息点了我们发出去的哪个可丢键
+    low = body.lower()
+    for key in payload:
+        if key not in _REQUIRED_KEYS and key.lower() in low:
+            return key
+    return None
+
+
+async def _post_chat_adaptive(
+    client: httpx.AsyncClient, url: str, headers: dict, payload: dict,
+) -> httpx.Response:
+    """POST /chat/completions;若上游因某个可选参数报 4xx,摘掉它重发,最多 _MAX_PARAM_STRIPS 次。
+
+    普通模型:参数都合法 → 一次成功,行为完全不变。
+    推理模型(k2.5 / o1 / o3 / R1):温度等被锁 → 摘掉 → 用模型默认值,通过。
+
+    只在「拿到响应且是参数类错误」时重试;超时 / 网络异常照常向上抛(由调用方处理)。
+    """
+    payload = dict(payload)  # 不改调用方的 dict
+    resp = await client.post(url, headers=headers, json=payload)
+    for _ in range(_MAX_PARAM_STRIPS):
+        if resp.status_code < 400:
+            return resp
+        param = _rejected_param(payload, resp.status_code, resp.text)
+        if param is None:
+            return resp  # 不是参数问题 / 没的可摘 → 原样返回,交给上层报错
+        logger.info(
+            "ai.param_stripped param=%s model=%s status=%d",
+            param, payload.get("model"), resp.status_code,
+        )
+        # 重建(而非 in-place pop):每次 POST 用独立 dict,不改已发出去的引用
+        payload = {k: v for k, v in payload.items() if k != param}
+        resp = await client.post(url, headers=headers, json=payload)
+    return resp  # 摘到上限仍失败,返回最后一次让上层报错
+
+
 async def call_chat_json(
     *,
     config: ChatProviderConfig,
@@ -268,7 +338,9 @@ async def call_chat_json(
     }
 
     for attempt in range(max_retries + 1):
-        # 重试时降 temperature + 去掉 response_format(兼容性更好)
+        # attempt 0 带 response_format;重试(解析失败 / 超时)降 temperature 并去掉
+        # response_format。参数被模型拒绝(如推理模型锁 temperature、不支持 response_format)
+        # 由 _post_chat_adaptive 在单次调用内自适应摘除,不依赖 attempt 切换。
         temperature = 0.2 if attempt == 0 else 0.05
         payload: dict[str, object] = {
             "model": config.model,
@@ -289,26 +361,16 @@ async def call_chat_json(
                 timeout=timeout,
                 verify=get_settings().ai_http_verify_ssl,
             ) as client:
-                resp = await client.post(url, headers=headers, json=payload)
+                resp = await _post_chat_adaptive(client, url, headers, payload)
             elapsed = time.monotonic() - t0
             logger.info(
                 "ai.call_chat_json done attempt=%d status=%d elapsed=%.2fs body_len=%d",
                 attempt + 1, resp.status_code, elapsed, len(resp.text),
             )
             if resp.status_code >= 400:
-                body = resp.text
-                # 400/422/不支持 response_format → 让 retry 跑(下一轮去掉这参数)
-                if attempt < max_retries and resp.status_code in (400, 422):
-                    last_exc = ChatProviderError(
-                        f"provider returned {resp.status_code}: {body[:200]}"
-                    )
-                    logger.warning(
-                        "ai.call_chat_json got %d, will retry without response_format",
-                        resp.status_code,
-                    )
-                    continue
+                # 参数类 4xx 已由 _post_chat_adaptive 摘参数重试过;到这说明不是参数问题
                 raise ChatProviderError(
-                    f"provider {config.provider_id} returned {resp.status_code}: {body[:200]}"
+                    f"provider {config.provider_id} returned {resp.status_code}: {resp.text[:200]}"
                 )
             data = resp.json()
             content = (
@@ -386,32 +448,49 @@ async def stream_chat_completion(
             timeout=timeout,
             verify=get_settings().ai_http_verify_ssl,
         ) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", errors="replace")
-                    raise ChatProviderError(
-                        f"provider {config.provider_id} returned {resp.status_code}: {body[:200]}"
-                    )
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    payload_str = line[len("data:"):].strip()
-                    if payload_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload_str)
-                    except (ValueError, TypeError):
-                        logger.warning("ai.chat malformed SSE chunk: %s", payload_str[:80])
-                        continue
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        yield content
+            # 参数被模型拒绝(如推理模型锁 temperature)→ 摘掉重开一次流。
+            attempt_payload = dict(payload)
+            for _ in range(_MAX_PARAM_STRIPS + 1):
+                async with client.stream("POST", url, headers=headers, json=attempt_payload) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread()).decode("utf-8", errors="replace")
+                        param = _rejected_param(attempt_payload, resp.status_code, body)
+                        if param is None:
+                            raise ChatProviderError(
+                                f"provider {config.provider_id} returned {resp.status_code}: {body[:200]}"
+                            )
+                        logger.info(
+                            "ai.stream_param_stripped param=%s model=%s status=%d",
+                            param, attempt_payload.get("model"), resp.status_code,
+                        )
+                        attempt_payload = {
+                            k: v for k, v in attempt_payload.items() if k != param
+                        }
+                        continue  # 摘掉该参数,重开流
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        payload_str = line[len("data:"):].strip()
+                        if payload_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload_str)
+                        except (ValueError, TypeError):
+                            logger.warning("ai.chat malformed SSE chunk: %s", payload_str[:80])
+                            continue
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    return  # 流正常结束
+            raise ChatProviderError(
+                f"provider {config.provider_id} stream failed after stripping params"
+            )
     except httpx.HTTPError as exc:
         raise ChatProviderError(f"network error: {exc}") from exc
