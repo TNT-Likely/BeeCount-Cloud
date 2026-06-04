@@ -78,6 +78,10 @@ class ImportFieldMapping:
     datetime_format: str | None = None
     strip_currency_symbols: bool = True
     expense_is_negative: bool = False
+    # 客户端本地时区相对 UTC 的分钟偏移(东为正,UTC+8 = 480)。CSV 里的时间是
+    # 用户本地墙钟,据此换算成 UTC 存储;None = 老客户端未传,退回"当作 UTC"。
+    # 详见 transformer._localize_naive(issue #314)。
+    tz_offset_minutes: int | None = None
 
     @property
     def required_complete(self) -> bool:

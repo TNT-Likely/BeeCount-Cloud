@@ -76,6 +76,9 @@ class FieldMappingPayload(BaseModel):
     datetime_format: str | None = None
     strip_currency_symbols: bool = True
     expense_is_negative: bool = False
+    # 客户端本地时区相对 UTC 的分钟偏移(东为正,UTC+8 = 480);用于把 CSV 本地
+    # 时间正确换算成 UTC(issue #314)。前端传 -new Date().getTimezoneOffset()。
+    tz_offset_minutes: int | None = None
 
     def to_internal(self) -> ImportFieldMapping:
         return ImportFieldMapping(
@@ -92,6 +95,7 @@ class FieldMappingPayload(BaseModel):
             datetime_format=self.datetime_format,
             strip_currency_symbols=self.strip_currency_symbols,
             expense_is_negative=self.expense_is_negative,
+            tz_offset_minutes=self.tz_offset_minutes,
         )
 
 
@@ -110,6 +114,7 @@ def _mapping_to_payload(m: ImportFieldMapping) -> dict:
         "datetime_format": m.datetime_format,
         "strip_currency_symbols": m.strip_currency_symbols,
         "expense_is_negative": m.expense_is_negative,
+        "tz_offset_minutes": m.tz_offset_minutes,
     }
 
 

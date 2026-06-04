@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
@@ -132,7 +132,7 @@ def _transform_row(row: ParsedRow, mapping: ImportFieldMapping) -> ImportTransac
     if not raw_dt:
         raise _RowError("PARSE_MISSING_REQUIRED", "happened_at",
                         "happened_at is empty")
-    dt = _parse_datetime(raw_dt, mapping.datetime_format)
+    dt = _parse_datetime(raw_dt, mapping.datetime_format, mapping.tz_offset_minutes)
     if dt is None:
         raise _RowError("PARSE_INVALID_FIELD", "happened_at",
                         f"could not parse datetime {raw_dt!r}")
@@ -228,34 +228,46 @@ def _parse_amount(raw: str, strip_currency: bool) -> tuple[Decimal, bool]:
     return d, is_negative
 
 
-def _parse_datetime(raw: str, fmt: str | None) -> datetime | None:
+def _localize_naive(dt: datetime, tz_offset_minutes: int | None) -> datetime:
+    """把 strptime/fromisoformat 出来的 naive datetime 转成 aware UTC。
+
+    CSV 里的时间是用户【本地墙钟】(无时区信息)。tz_offset_minutes 是客户端传来的
+    本地相对 UTC 的分钟偏移(东为正,UTC+8 = 480),据此把墙钟换算成 UTC 存储,
+    避免被下游"naive 一律当 UTC"的序列化逻辑整体偏移(issue #314:之前直接
+    replace(tzinfo=utc),把 23:16 本地当成 23:16 UTC,客户端 toLocal 后晚 8 小时)。
+
+    - 已带时区(strptime %z / fromisoformat 带偏移)→ 原样保留。
+    - tz_offset_minutes 为 None(老客户端未传)→ 退回旧行为:当作 UTC,不破坏兼容。
+    """
+    if dt.tzinfo is not None:
+        return dt
+    if tz_offset_minutes is None:
+        return dt.replace(tzinfo=timezone.utc)
+    local_tz = timezone(timedelta(minutes=tz_offset_minutes))
+    return dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+
+
+def _parse_datetime(
+    raw: str, fmt: str | None, tz_offset_minutes: int | None = None
+) -> datetime | None:
     s = raw.strip()
     if not s:
         return None
     if fmt:
         try:
-            dt = datetime.strptime(s, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            return _localize_naive(datetime.strptime(s, fmt), tz_offset_minutes)
         except ValueError:
             return None
     # auto try
     for f in _DATETIME_CANDIDATES:
         try:
-            dt = datetime.strptime(s, f)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            return _localize_naive(datetime.strptime(s, f), tz_offset_minutes)
         except ValueError:
             continue
     # 最后兜底:fromisoformat 容忍多种 ISO 变体
     try:
         s2 = s.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s2)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return _localize_naive(datetime.fromisoformat(s2), tz_offset_minutes)
     except ValueError:
         return None
 

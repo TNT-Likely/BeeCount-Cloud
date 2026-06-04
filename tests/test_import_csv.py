@@ -182,6 +182,30 @@ def test_apply_mapping_required_field_missing():
     assert txs == []
 
 
+def test_apply_mapping_tz_offset_local_to_utc():
+    """issue #314: CSV 里是用户本地墙钟,应按客户端时区 offset 换算成 UTC,
+    而不是直接当 UTC(否则 UTC+8 用户导入后会整体晚 8 小时)。"""
+    csv = "类型,金额,时间,分类\n支出,35.00,2024-08-29 23:16,餐饮\n"
+    data = parse_csv_text(raw_text=csv)
+    mapping = data.suggested_mapping
+    mapping.tz_offset_minutes = 480  # UTC+8(北京)
+    txs, errors, _ = apply_mapping(rows=data.rows, mapping=mapping)
+    assert errors == []
+    # 23:16 北京时间 == 15:16 UTC
+    assert txs[0].happened_at == datetime(2024, 8, 29, 15, 16, tzinfo=timezone.utc)
+
+
+def test_apply_mapping_tz_offset_none_keeps_utc():
+    """未传 tz_offset(老客户端)→ 保持旧行为:naive 当 UTC,向后兼容不破坏。"""
+    csv = "类型,金额,时间,分类\n支出,35.00,2024-08-29 23:16,餐饮\n"
+    data = parse_csv_text(raw_text=csv)
+    mapping = data.suggested_mapping
+    assert mapping.tz_offset_minutes is None
+    txs, errors, _ = apply_mapping(rows=data.rows, mapping=mapping)
+    assert errors == []
+    assert txs[0].happened_at == datetime(2024, 8, 29, 23, 16, tzinfo=timezone.utc)
+
+
 def test_apply_mapping_user_override():
     """generic parser 没识别 tx_type 时,用户手填映射应该工作。"""
     csv = "状态,金额,时间,分类\n支出,35,2024-05-01,餐饮\n"
