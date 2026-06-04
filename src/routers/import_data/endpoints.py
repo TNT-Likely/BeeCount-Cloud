@@ -155,6 +155,9 @@ async def upload_import(
     request: Request,
     file: UploadFile = File(...),
     target_ledger_id: str | None = Form(default=None),
+    # 客户端本地时区相对 UTC 的分钟偏移(东为正,UTC+8 = 480)。CSV/Excel 里的
+    # 时间是用户本地墙钟,据此换算成 UTC(issue #314)。None = 老客户端未传。
+    tz_offset_minutes: int | None = Form(default=None),
     _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -214,6 +217,10 @@ async def upload_import(
                 "limit_rows": _MAX_ROW_COUNT,
             },
         )
+
+    # 把客户端时区偏移写进 suggested_mapping —— sample_transactions / 后续
+    # preview / execute 全程继承,避免本地时间被当 UTC 整体偏移(issue #314)。
+    data.suggested_mapping.tz_offset_minutes = tz_offset_minutes
 
     # 校验 target_ledger_id(可空 — 用户可在 preview 阶段再选)
     target_ext_id = (target_ledger_id or "").strip() or None

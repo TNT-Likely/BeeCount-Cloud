@@ -334,6 +334,31 @@ def test_upload_and_preview_happy_path():
         app.dependency_overrides.clear()
 
 
+def test_upload_with_tz_offset_localizes_happened_at():
+    """issue #314: upload 带 tz_offset_minutes 时,CSV 本地时间应换算成正确 UTC,
+    而非直接当 UTC(否则返回的 sample_transactions / 之后 execute 全偏 +8h)。"""
+    client = _make_client()
+    try:
+        token = _login(client, "imptz@test.com")
+        ledger_id = _make_ledger(client, token)
+        csv = "类型,分类,金额,账户,时间\n支出,彩票,819.19,工行,2026-05-23 21:28:52\n"
+        files = {"file": ("t.csv", csv.encode("utf-8"), "text/csv")}
+        r = client.post(
+            "/api/v1/import/upload",
+            files=files,
+            data={"target_ledger_id": ledger_id, "tz_offset_minutes": "480"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        ts = r.json()["sample_transactions"][0]["happened_at"]
+        # 21:28:52 北京(UTC+8)== 13:28:52 UTC;修复前会是 "2026-05-23T21:28:52+00:00"
+        assert datetime.fromisoformat(ts) == datetime(
+            2026, 5, 23, 13, 28, 52, tzinfo=timezone.utc
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_preview_recompute_when_target_ledger_changes():
     client = _make_client()
     try:

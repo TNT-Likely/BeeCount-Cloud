@@ -126,6 +126,9 @@ export async function uploadImport(
   const form = new FormData()
   form.append('file', options.file)
   if (options.targetLedgerId) form.append('target_ledger_id', options.targetLedgerId)
+  // CSV/Excel 里的时间是用户本地墙钟,带上浏览器时区偏移(东为正,UTC+8 = 480),
+  // 让后端从上传起就正确换算成 UTC,sample/preview/execute 全程一致(issue #314)。
+  form.append('tz_offset_minutes', String(-new Date().getTimezoneOffset()))
   const response = await fetch(`${API_BASE}/import/upload`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
