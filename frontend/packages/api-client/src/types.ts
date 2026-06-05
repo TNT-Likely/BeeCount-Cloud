@@ -34,8 +34,8 @@ export type TwoFARegenerateResponse = {
 }
 
 export type ProfileAppearance = {
-  /** 月显示装饰风格:'icons' | 'particles' | 'honeycomb' | … */
-  header_decoration_style?: string
+  /** 顶部皮肤 id:'none' | 'aurora' | 'mountains' | … 详见 mobile kHeaderSkins */
+  header_skin?: string
   /** 紧凑金额显示(万/亿) */
   compact_amount?: boolean
   /** 交易行是否显示时间 */

@@ -187,7 +187,7 @@ export function SettingsProfileAppearanceSection() {
   // 单字段传过去会丢掉其它字段)。 :这里需要先合并出"完整的下一个 appearance"
   // 再发 patch,而不是只发改动的那个 key。
   const appearance = profileMe?.appearance ?? {}
-  const headerDecorationStyle = appearance.header_decoration_style ?? 'icons'
+  const headerSkin = appearance.header_skin ?? 'none'
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
   const [appearanceSaving, setAppearanceSaving] = useState(false)
@@ -199,12 +199,9 @@ export function SettingsProfileAppearanceSection() {
     setAppearanceSaving(true)
     try {
       await patchProfileMe(token, {
-        appearance: {
-          header_decoration_style: headerDecorationStyle,
-          compact_amount: compactAmount,
-          show_transaction_time: showTransactionTime,
-          ...patch,
-        },
+        // 整体替换语义:把 server 现有 appearance 全量带上再 patch,否则会清掉
+        // mobile 设的 header_skin 等本页未直接管理的字段。
+        appearance: { ...appearance, ...patch },
       })
       await refreshProfile()
       toast.success(t('profile.sync.appearanceSaved'))
@@ -417,17 +414,16 @@ export function SettingsProfileAppearanceSection() {
           </div>
 
           <div className="grid gap-2 sm:grid-cols-3">
-            {/* 月装饰风格 —— Select 4 选项,跟 mobile 端 headerDecorationStyle
-                provider 注释里列出的可选值对齐(none / icons / particles /
-                honeycomb)。改完整体 PATCH 整个 appearance dict。 */}
+            {/* 皮肤 —— 跟 mobile 端 headerSkin(kHeaderSkins)对齐:none + 渐变 /
+                场景 / 图案皮肤。改完整体 PATCH 整个 appearance dict。 */}
             <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                {t('profile.sync.headerDecoration')}
+                {t('profile.sync.headerSkin')}
               </p>
               <Select
-                value={headerDecorationStyle}
+                value={headerSkin}
                 onValueChange={(value) =>
-                  void saveAppearance({ header_decoration_style: value })
+                  void saveAppearance({ header_skin: value })
                 }
                 disabled={appearanceSaving}
               >
@@ -435,10 +431,16 @@ export function SettingsProfileAppearanceSection() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">{t('profile.sync.headerDecoration.none')}</SelectItem>
-                  <SelectItem value="icons">{t('profile.sync.headerDecoration.icons')}</SelectItem>
-                  <SelectItem value="particles">{t('profile.sync.headerDecoration.particles')}</SelectItem>
-                  <SelectItem value="honeycomb">{t('profile.sync.headerDecoration.honeycomb')}</SelectItem>
+                  <SelectItem value="none">{t('profile.sync.headerSkin.none')}</SelectItem>
+                  <SelectItem value="aurora">{t('profile.sync.headerSkin.aurora')}</SelectItem>
+                  <SelectItem value="mountains">{t('profile.sync.headerSkin.mountains')}</SelectItem>
+                  <SelectItem value="bokeh">{t('profile.sync.headerSkin.bokeh')}</SelectItem>
+                  <SelectItem value="waves">{t('profile.sync.headerSkin.waves')}</SelectItem>
+                  <SelectItem value="sunset">{t('profile.sync.headerSkin.sunset')}</SelectItem>
+                  <SelectItem value="clouds">{t('profile.sync.headerSkin.clouds')}</SelectItem>
+                  <SelectItem value="honeycomb">{t('profile.sync.headerSkin.honeycomb')}</SelectItem>
+                  <SelectItem value="starry">{t('profile.sync.headerSkin.starry')}</SelectItem>
+                  <SelectItem value="stripes">{t('profile.sync.headerSkin.stripes')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>

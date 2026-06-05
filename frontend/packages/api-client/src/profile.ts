@@ -25,7 +25,7 @@ export async function patchProfileMe(
     income_is_red?: boolean
     /** 主题色 hex,例如 `#FF9800`。 */
     theme_primary_color?: string
-    /** 外观偏好(header_decoration_style / compact_amount / show_transaction_time)。 */
+    /** 外观偏好(header_skin / compact_amount / show_transaction_time)。 */
     appearance?: ProfileAppearance
     /** AI 配置整体替换 —— **整体**替换语义,server 直接覆盖。调用方必须先读
      *  当前 profile.ai_config,merge 后整体推,否则 mobile-only 字段
