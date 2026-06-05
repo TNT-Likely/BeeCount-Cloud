@@ -5,11 +5,11 @@ import {
   ChevronDown,
   Loader2,
   Moon,
+  MoonStar,
   Palette,
   Pencil,
   Sun,
   Sunrise,
-  Sunset,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -57,7 +57,7 @@ function pickGreeting(): { key: string; icon: LucideIcon; tone: string } {
   if (h >= 13 && h < 18)
     return { key: 'profile.greeting.afternoon', icon: Sun, tone: 'text-orange-500' }
   if (h >= 18 && h < 23)
-    return { key: 'profile.greeting.evening', icon: Sunset, tone: 'text-rose-500' }
+    return { key: 'profile.greeting.evening', icon: MoonStar, tone: 'text-violet-500' }
   return { key: 'profile.greeting.night', icon: Moon, tone: 'text-indigo-400' }
 }
 
@@ -257,7 +257,7 @@ export function SettingsProfileAppearanceSection() {
               />
               <div className="min-w-0 flex-1">
                 {/* 欢迎语图标 + 文案 + display name 同一行 —— icon 按时段切
-                    (Sunrise / Sun / Sunset / Moon),配色 amber/orange/rose/indigo;
+                    (Sunrise / Sun / MoonStar / Moon),配色 amber/orange/violet/indigo;
                     名字 hover 出 ✏️,点击进入 inline edit。 */}
                 {nameEditing ? (
                   <div className="flex items-center gap-1.5">
