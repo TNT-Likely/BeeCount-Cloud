@@ -106,6 +106,7 @@ src/
   │      ├─ delete: projection.delete_* + GC 孤立附件         │
   │      └─ upsert:                                          │
   │          a. rename cascade 探测(account/category/tag 改名)│
+  │             (exchange_rate_override 无 rename-cascade、无共享账本扇出)
   │          b. _merge_with_existing 拉现有行把 None 字段补齐  │
   │          c. projection.upsert_* 写行(同事务)             │
   │ 整批单事务 commit                                        │
@@ -201,6 +202,7 @@ Web Page mount / useSyncRefresh 触发
 | account | user-global | **必须** `0`,走 globalChanges 通道 | 随 push 挂到具体账本下 |
 | category | user-global | **必须** `0` | 同上 |
 | tag | user-global | **必须** `0` | 同上 |
+| exchange_rate_override | user-global | **必须** `0` | 同上(无 rename-cascade、无共享账本扇出) |
 | transaction | ledger-scoped | 具体 ledger.id | 具体 ledger.id |
 | budget | ledger-scoped | 具体 ledger.id | 具体 ledger.id |
 | ledger | 自身 | 自己的 id | 自己的 id |
@@ -344,7 +346,7 @@ web 的 `SyncSocketProvider` 里的 poller)每 30s 主动拉一次补漏。
 - [ ] 改的是哪条路由的逻辑?对应文件是?
   (写入:`routers/write/{entity}.py`;推送:`routers/sync/push.py`;等)
 - [ ] 是改共享 helper 还是单 endpoint 行为?前者去 `_shared.py`,后者去对应 entity 文件。
-- [ ] 牵涉到 user-global 实体(account/category/tag)吗?ledger_id=0 通道?
+- [ ] 牵涉到 user-global 实体(account/category/tag/exchange_rate_override)吗?ledger_id=0 通道?
 - [ ] 有没有新增 entity type?`_MERGE_SPECS` / `_UPSERT_DISPATCH` / 
   `_DELETE_DISPATCH`(在 `sync_applier.py`)三张表都登记了?
 - [ ] 改了 payload 字段映射?对应的 spec 加了字段,并且 **mobile 端 /

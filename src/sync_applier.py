@@ -52,6 +52,7 @@ from .models import (
     SyncChange,
     UserAccountProjection,
     UserCategoryProjection,
+    UserExchangeRateProjection,
     UserTagProjection,
 )
 from .services.category_icon import resolve_icon_by_name
@@ -59,11 +60,11 @@ from .services.category_icon import resolve_icon_by_name
 
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
 # 比如 ``ledger_snapshot`` 是 sync_changes 里的元数据行,不走这条路径)。
-INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger"}
+INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger", "exchange_rate_override"}
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
 # 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
-USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag"}
+USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag", "exchange_rate_override"}
 
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +131,13 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
     ]),
+    "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
+        ("syncId", "sync_id"),
+        ("baseCurrency", "base_currency"),
+        ("quoteCurrency", "quote_currency"),
+        ("rate", "rate"),
+        ("updatedAt", "updated_at", _isoformat_or_none),
+    ]),
     "category": _MergeSpec(UserCategoryProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
@@ -194,6 +202,7 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
+    "exchange_rate_override": projection.upsert_exchange_rate_override,
 }
 
 
@@ -306,6 +315,13 @@ def _delete_user_tag(db: Session, user_id: str, sync_id: str) -> None:
     )
 
 
+def _delete_user_exchange_rate_override(db: Session, user_id: str, sync_id: str) -> None:
+    projection.delete_exchange_rate_override(db, user_id=user_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="exchange_rate_override", entity_sync_id=sync_id,
+    )
+
+
 _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
     "budget": _delete_budget,
@@ -316,6 +332,7 @@ _USER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
     "account": _delete_user_account,
     "category": _delete_user_category,
     "tag": _delete_user_tag,
+    "exchange_rate_override": _delete_user_exchange_rate_override,
 }
 
 

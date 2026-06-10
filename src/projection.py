@@ -27,6 +27,7 @@ from .models import (
     ReadTxProjection,
     UserAccountProjection,
     UserCategoryProjection,
+    UserExchangeRateProjection,
     UserTagProjection,
 )
 
@@ -1014,3 +1015,44 @@ def collect_category_icon_fileids(
             if isinstance(icon, str) and icon.strip():
                 out.add(icon.strip())
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 手动汇率 override:user_exchange_rate_projection                               #
+# --------------------------------------------------------------------------- #
+
+def upsert_exchange_rate_override(
+    db: Session,
+    *,
+    user_id: str,
+    source_change_id: int,
+    payload: dict,
+) -> None:
+    """手动汇率 override → user_exchange_rate_projection。方向:1 quote = rate base。"""
+    sync_id = str(payload.get("syncId") or "")
+    base = str(payload.get("baseCurrency") or "").upper()
+    quote = str(payload.get("quoteCurrency") or "").upper()
+    rate = str(payload.get("rate") or "")
+    if not sync_id or not base or not quote or not rate:
+        return
+    updated_at = _parse_happened_at(payload.get("updatedAt"))
+    values = {
+        "user_id": user_id,
+        "sync_id": sync_id,
+        "base_currency": base,
+        "quote_currency": quote,
+        "rate": rate,
+        "updated_at": updated_at,
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, UserExchangeRateProjection, ("user_id", "sync_id"), values)
+
+
+def delete_exchange_rate_override(db: Session, *, user_id: str, sync_id: str) -> None:
+    """user-global exchange_rate_override delete。PK=(user_id, sync_id)。"""
+    db.execute(
+        delete(UserExchangeRateProjection).where(
+            UserExchangeRateProjection.user_id == user_id,
+            UserExchangeRateProjection.sync_id == sync_id,
+        )
+    )
