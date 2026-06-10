@@ -16,16 +16,31 @@ import {
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
-import { Card, CardContent, useT, useToast } from '@beecount/ui'
+import {
+  Button,
+  Card,
+  CardContent,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  useT,
+  useToast,
+} from '@beecount/ui'
 import {
   AccountsPanel,
   Amount,
+  AssetsCompositionMini,
   ConfirmDialog,
+  CurrencyAssetCard,
   accountDefaults,
   computeCurrencySummary,
+  computeTypeGroups,
   effectiveRateToBase,
+  mergeGroupsToBase,
   splitByCurrency,
   type AccountForm,
+  type CurrencyBucket,
 } from '@beecount/web-features'
 
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
@@ -37,6 +52,20 @@ import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
 const ACCOUNT_DETAIL_PAGE_SIZE = 20
+
+// 折算汇总开关(设备级,跨账本/跨用户共用)。默认 true = 显示折算汇总视图;
+// 关闭后回到「每币种一张卡」的现状。照 App.tsx token 惯例:useState 初始化器
+// 读 localStorage,useEffect 写回。仅在「主币种已设 且 ≥2 币种」时才在 UI 露出。
+const CONVERTED_VIEW_KEY = 'beecount:web:accounts:converted'
+
+function readConvertedView(): boolean {
+  try {
+    // 缺省(从未设置过)按 true;仅显式存了 '0' 才算关闭。
+    return localStorage.getItem(CONVERTED_VIEW_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
 
 /**
  * 账户 / 资产页 —— 账户列表 + CRUD(无 delete,web 只支持创建/编辑)
@@ -67,6 +96,17 @@ export function AccountsPage() {
   // confirm dialog 直接读它,不再发额外请求。
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
   const [deleting, setDeleting] = useState(false)
+
+  // 折算汇总视图开关 + 分币种明细 dialog。开关设备级持久化(见 CONVERTED_VIEW_KEY)。
+  const [convertedView, setConvertedView] = useState<boolean>(() => readConvertedView())
+  const [detailOpen, setDetailOpen] = useState(false)
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONVERTED_VIEW_KEY, convertedView ? '1' : '0')
+    } catch {
+      // private mode / 超配额忽略
+    }
+  }, [convertedView])
 
   // 多币种折算(只读卡)。主币种存在且账户币种 ≥2 种时,并行拉汇率 + 手动 override,
   // 任一失败置 null 不阻塞账户列表。单币种 / 无主币种则不渲染卡(零变化)。
@@ -246,58 +286,166 @@ export function AccountsPage() {
     }
   }
 
-  // 折算卡:按币种分组 → 每币种 computeCurrencySummary(rows).netWorth × effectiveRateToBase 累加。
-  // 复用 assetAggregation 铁律原语确保负债符号契约单点。缺失汇率的币种进 missing 列表,
-  // **绝不按 1 折算**。单币种 / 无主币种 → converted=null,卡不渲染。
+  // 折算汇总:按币种分组 → 每币种 summary(netWorth/assetTotal/liabilityTotal)× 汇率累加。
+  // 复用 assetAggregation 铁律原语确保负债符号契约单点。缺失汇率的币种进 missing 列表、
+  // 不计入任何总额 / donut(整币种剔除),**绝不按 1 折算**。
+  // 单币种 / 无主币种 → converted=null,折算卡及开关都不出现(现状零变化)。
+  //   - buckets:每币种 summary + 分组,既给合并 donut(mergeGroupsToBase),也给详情 dialog 的分币种卡复用。
+  //   - mergedGroups:各币种 groups × 汇率折算后按 type 聚合成一份主币种构成,喂 donut(currency=base)。
   const converted = useMemo(() => {
     if (!base) return null
     const byCur = splitByCurrency(rows)
     if (byCur.size < 2) return null
 
+    const buckets: CurrencyBucket[] = []
     let netWorth = 0
+    let assetTotal = 0
+    let liabilityTotal = 0
     const missing = new Set<string>()
     for (const [cur, curRows] of byCur) {
+      const summary = computeCurrencySummary(curRows)
+      // 详情 dialog 复用 CurrencyAssetCard,需要全部币种(含缺失汇率的)原样展示。
+      buckets.push({ currency: cur, summary, groups: computeTypeGroups(curRows, t) })
       const eff = effectiveRateToBase(cur, base, rates, rateOverrides)
       if (!eff) {
         missing.add(cur)
         continue
       }
-      const summary = computeCurrencySummary(curRows)
       netWorth += summary.netWorth * eff.rate
+      assetTotal += summary.assetTotal * eff.rate
+      liabilityTotal += summary.liabilityTotal * eff.rate
     }
-    return { netWorth, missing: [...missing].sort(), rateDate: rates?.rate_date }
-  }, [base, rows, rates, rateOverrides])
+    // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除。
+    const mergedGroups = mergeGroupsToBase(buckets, base, rates, rateOverrides)
+    return {
+      netWorth,
+      assetTotal,
+      liabilityTotal,
+      mergedGroups,
+      buckets: buckets.sort(
+        (a, b) =>
+          b.summary.assetTotal +
+          b.summary.liabilityTotal -
+          (a.summary.assetTotal + a.summary.liabilityTotal),
+      ),
+      missing: [...missing].sort(),
+      rateDate: rates?.rate_date,
+    }
+  }, [base, rows, rates, rateOverrides, t])
 
   return (
     <>
+      {/* 折算汇总:仅「主币种已设 且 ≥2 币种」时出现(converted!=null)。
+          - convertedView 开(默认):折算卡(净资产≈ + 资产≈/负债≈ + 合并构成 donut
+            + 详情按钮),header 右侧 toggle 可关;AccountsPanel 隐藏分币种卡。
+          - convertedView 关:折算卡隐藏,这里只留一行 toggle(可逆,再打开),
+            分币种卡由 AccountsPanel 照常渲染。 */}
       {converted ? (
-        <Card className="bc-panel mb-4">
-          <CardContent className="space-y-1 p-5">
-            <p className="text-xs text-muted-foreground">
-              {t('accounts.converted.netWorth', { currency: base })}
-            </p>
-            <Amount value={converted.netWorth} currency={base} showCurrency size="2xl" bold />
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pt-1">
-              {converted.rateDate ? (
-                <span className="text-[11px] text-muted-foreground">
-                  {t('accounts.converted.footnote', { date: converted.rateDate })}
-                </span>
+        convertedView ? (
+          <Card className="bc-panel mb-4">
+            <CardContent className="space-y-3 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    {t('accounts.converted.netWorth', { currency: base })}
+                  </p>
+                  <Amount
+                    value={converted.netWorth}
+                    currency={base}
+                    showCurrency
+                    size="2xl"
+                    bold
+                    tone={converted.netWorth >= 0 ? 'positive' : 'negative'}
+                  />
+                </div>
+                <ConvertedToggle
+                  on={convertedView}
+                  label={t('accounts.converted.toggle')}
+                  onChange={setConvertedView}
+                />
+              </div>
+
+              {/* 资产 ≈ / 负债 ≈ 两个小项(与净资产同口径:缺失汇率币种已剔除) */}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wider text-emerald-600/80 dark:text-emerald-400/80">
+                    {t('accounts.assets')}
+                  </div>
+                  <Amount
+                    value={converted.assetTotal}
+                    currency={base}
+                    size="lg"
+                    bold
+                    showCurrency
+                    tone="positive"
+                    className="mt-0.5 block"
+                  />
+                </div>
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wider text-rose-600/80 dark:text-rose-400/80">
+                    {t('accounts.liabilities')}
+                  </div>
+                  <Amount
+                    value={converted.liabilityTotal}
+                    currency={base}
+                    size="lg"
+                    bold
+                    showCurrency
+                    tone="negative"
+                    className="mt-0.5 block"
+                  />
+                </div>
+              </div>
+
+              {/* 合并构成 donut —— 各币种分组折算到主币种后按类型聚合(currency=base)。 */}
+              {converted.mergedGroups.length > 0 ? (
+                <AssetsCompositionMini
+                  groups={converted.mergedGroups}
+                  totalAbs={converted.assetTotal + converted.liabilityTotal}
+                  currency={base}
+                  showCurrency
+                  embedded
+                  title={t('accounts.converted.composition', { currency: base })}
+                />
               ) : null}
-              {converted.missing.length > 0 ? (
-                <span className="text-[11px] text-amber-600 dark:text-amber-500">
-                  {t('accounts.converted.missing', {
-                    currencies: converted.missing.join(', '),
-                  })}
-                </span>
-              ) : null}
-            </div>
-          </CardContent>
-        </Card>
+
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                  {converted.rateDate ? (
+                    <span className="text-[11px] text-muted-foreground">
+                      {t('accounts.converted.footnote', { date: converted.rateDate })}
+                    </span>
+                  ) : null}
+                  {converted.missing.length > 0 ? (
+                    <span className="text-[11px] text-amber-600 dark:text-amber-500">
+                      {t('accounts.converted.missing', {
+                        currencies: converted.missing.join(', '),
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setDetailOpen(true)}>
+                  {t('accounts.converted.detail')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          // 折算关:折算卡隐藏,仅留可逆 toggle 在分币种卡上方。
+          <div className="mb-3 flex items-center justify-end">
+            <ConvertedToggle
+              on={convertedView}
+              label={t('accounts.converted.toggle')}
+              onChange={setConvertedView}
+            />
+          </div>
+        )
       ) : null}
       <AccountsPanel
         form={form}
         rows={rows}
         canManage
+        hideCurrencyCards={Boolean(converted) && convertedView}
         onFormChange={setForm}
         onSave={onSave}
         onReset={() => setForm(accountDefaults())}
@@ -362,6 +510,64 @@ export function AccountsPage() {
         confirmText={t('common.delete')}
         confirmVariant="destructive"
       />
+      {/* 分币种明细 dialog —— 折算汇总卡的「详情」入口,复用 CurrencyAssetCard
+          按现状网格逐币种渲染(含缺失汇率币种,原样不折算)。 */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-h-[88vh] w-[92vw] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('accounts.converted.detailTitle')}</DialogTitle>
+          </DialogHeader>
+          {converted ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {converted.buckets.map((entry) => (
+                <CurrencyAssetCard key={entry.currency} entry={entry} />
+              ))}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
+  )
+}
+
+/**
+ * 折算汇总开关 —— 仓内无 Switch 组件,用一颗自绘 pill toggle(checkbox 语义 +
+ * label),亮暗通用、不引新依赖。开启态填主题色,关闭态描边灰。
+ */
+function ConvertedToggle({
+  on,
+  label,
+  onChange,
+}: {
+  on: boolean
+  label: string
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+        on
+          ? 'border-primary/40 bg-primary/10 text-primary'
+          : 'border-border bg-transparent text-muted-foreground hover:bg-muted/40'
+      }`}
+    >
+      <span
+        className={`relative h-3.5 w-6 shrink-0 rounded-full transition-colors ${
+          on ? 'bg-primary' : 'bg-muted-foreground/40'
+        }`}
+        aria-hidden
+      >
+        <span
+          className={`absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full bg-white shadow-sm transition-all ${
+            on ? 'left-[12px]' : 'left-0.5'
+          }`}
+        />
+      </span>
+      <span className="whitespace-nowrap">{label}</span>
+    </button>
   )
 }

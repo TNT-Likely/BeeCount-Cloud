@@ -1674,6 +1674,10 @@ const en = {
   'accounts.converted.netWorth': 'Net worth (in {currency})',
   'accounts.converted.footnote': 'Converted at {date} rates',
   'accounts.converted.missing': '{currencies} not converted',
+  'accounts.converted.toggle': 'Convert to primary currency',
+  'accounts.converted.detail': 'Details',
+  'accounts.converted.detailTitle': 'By-currency breakdown',
+  'accounts.converted.composition': 'Composition (in {currency})',
 } as const
 
 export default en

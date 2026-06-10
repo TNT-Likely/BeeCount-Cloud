@@ -15,6 +15,20 @@ export type AssetSummary = {
   netWorth: number
 }
 
+/**
+ * 一个账户类型分组(构成饼图 / 分组列表的最小单元)。subtotals 按币种拆 ——
+ * 单币种入参时每组只有 1 条,跨币种(底部混合列表)时各币种独立累计、绝不相加。
+ * 定义放 lib 是为了让 {@link mergeGroupsToBase} 这类纯聚合脱离 React 组件单测。
+ */
+export type AssetGroup = {
+  type: string
+  label: string
+  color: string
+  isLiability: boolean
+  rows: ReadAccount[]
+  subtotals: { currency: string; value: number }[]
+}
+
 /** 负债类账户类型:余额按 |balance| 计欠款,从净值里扣减。 */
 export const LIABILITY_TYPES = new Set(['credit_card', 'loan'])
 
@@ -74,4 +88,48 @@ export function effectiveRateToBase(
   const raw = Number(auto?.rates?.[quote])
   if (!Number.isFinite(raw) || raw <= 0) return null
   return { rate: 1 / raw, source: 'auto', date: auto!.rate_date }
+}
+
+/**
+ * 把「每币种各自的类型分组」按汇率折算到主币种后,合并成一份主币种构成 ——
+ * 用于折算汇总视图的合并饼图(`AssetsCompositionMini` currency=base)。
+ *
+ * 入参 `buckets` 是各币种的分组列表(单币种页里的 `computeTypeGroups` 产物按币种装好)。
+ * 对每个币种取 {@link effectiveRateToBase},把该币种每组的 subtotal 求和后 × rate
+ * 折进主币种,再按 type 跨币种累加成一份 `AssetGroup[]`。
+ *
+ * **铁律对齐**:缺失汇率(`effectiveRateToBase` 返回 null)的整币种直接剔除,
+ * **绝不按 1 折入** —— 与净资产/资产/负债折算同口径。输出每组只有 1 条 subtotal(主币种),
+ * 顺序沿用首次出现的类型顺序(即 `computeTypeGroups` 的 ACCOUNT_ORDER)。
+ */
+export function mergeGroupsToBase(
+  buckets: { currency: string; groups: AssetGroup[] }[],
+  base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+): AssetGroup[] {
+  // type → 累加器。保留首次出现的 label/color/isLiability 与出现顺序。
+  const merged = new Map<string, AssetGroup>()
+  for (const bucket of buckets) {
+    const eff = effectiveRateToBase(bucket.currency.toUpperCase(), base, auto, overrides)
+    if (!eff) continue // 缺失汇率:整币种剔除,绝不按 1 折入
+    for (const group of bucket.groups) {
+      const sub = group.subtotals.reduce((s, x) => s + x.value, 0) * eff.rate
+      const existing = merged.get(group.type)
+      if (existing) {
+        existing.subtotals[0].value += sub
+        existing.rows = existing.rows.concat(group.rows)
+      } else {
+        merged.set(group.type, {
+          type: group.type,
+          label: group.label,
+          color: group.color,
+          isLiability: group.isLiability,
+          rows: [...group.rows],
+          subtotals: [{ currency: base, value: sub }],
+        })
+      }
+    }
+  }
+  return [...merged.values()]
 }

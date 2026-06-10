@@ -1711,6 +1711,10 @@ const zhCN = {
   'accounts.converted.netWorth': '净资产(折{currency})',
   'accounts.converted.footnote': '按 {date} 汇率折算',
   'accounts.converted.missing': '{currencies} 未折算',
+  'accounts.converted.toggle': '按主币种折算',
+  'accounts.converted.detail': '详情',
+  'accounts.converted.detailTitle': '分币种明细',
+  'accounts.converted.composition': '资产构成(折{currency})',
 } as const
 
 export default zhCN
