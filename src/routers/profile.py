@@ -146,6 +146,7 @@ def get_my_profile(
     theme_primary_color = profile.theme_primary_color if profile is not None else None
     appearance = _parse_appearance_json(profile.appearance_json) if profile is not None else None
     ai_config = _parse_appearance_json(profile.ai_config_json) if profile is not None else None
+    primary_currency = profile.primary_currency if profile is not None else None
     return UserProfileOut(
         user_id=current_user.id,
         email=current_user.email,
@@ -158,6 +159,7 @@ def get_my_profile(
         theme_primary_color=theme_primary_color,
         appearance=appearance,
         ai_config=ai_config,
+        primary_currency=primary_currency,
     )
 
 
@@ -179,6 +181,7 @@ async def patch_my_profile(
             theme_primary_color=req.theme_primary_color,
             appearance_json=_dump_appearance_json(req.appearance),
             ai_config_json=_dump_appearance_json(req.ai_config),
+            primary_currency=(req.primary_currency.upper() if req.primary_currency is not None else None),
             updated_at=now,
         )
         db.add(profile)
@@ -197,11 +200,13 @@ async def patch_my_profile(
             profile.appearance_json = _dump_appearance_json(req.appearance)
         if req.ai_config is not None:
             profile.ai_config_json = _dump_appearance_json(req.ai_config)
+        if req.primary_currency is not None:
+            profile.primary_currency = req.primary_currency.upper()
         profile.updated_at = now
     db.commit()
     db.refresh(profile)
     logger.info(
-        "profile_patch: user=%s display_name=%s income_is_red=%s theme=%s appearance=%s ai_config_len=%s avatar_version=%s",
+        "profile_patch: user=%s display_name=%s income_is_red=%s theme=%s appearance=%s ai_config_len=%s avatar_version=%s primary_currency=%s",
         current_user.id,
         profile.display_name,
         profile.income_is_red,
@@ -209,6 +214,7 @@ async def patch_my_profile(
         profile.appearance_json,
         len(profile.ai_config_json or ""),
         profile.avatar_version,
+        profile.primary_currency,
     )
     appearance = _parse_appearance_json(profile.appearance_json)
     ai_config = _parse_appearance_json(profile.ai_config_json)
@@ -221,6 +227,7 @@ async def patch_my_profile(
             "income_is_red": profile.income_is_red,
             "theme_primary_color": profile.theme_primary_color,
             "appearance": appearance,
+            "primary_currency": profile.primary_currency,
             # ai_config 可能很大(providers 数组里若干对象),WS payload 不塞,
             # 客户端收到 profile_change 自己拉 /profile/me 即可。
         },
@@ -240,6 +247,7 @@ async def patch_my_profile(
         theme_primary_color=profile.theme_primary_color,
         appearance=appearance,
         ai_config=ai_config,
+        primary_currency=profile.primary_currency,
     )
 
 
