@@ -27,6 +27,12 @@ services:
       EMBEDDING_MODEL: BAAI/bge-m3
       EMBEDDING_API_KEY: ""  # ← 填你的 SiliconFlow key 启用 AI 文档 Q&A
 
+      # ===== 汇率代理(多币种 MVP)=====
+      # EXCHANGE_RATE_PROXY_ENABLED: "true"
+      # EXCHANGE_RATE_CACHE_TTL_HOURS: "12"
+      # 可选:整体替换上游为自托管 Frankfurter(http://host:8080)
+      # EXCHANGE_RATE_UPSTREAM: ""
+
       # ===== 其它常用环境变量(详见 docs/DEPLOYMENT.md)=====
       # CORS_ORIGINS: "https://your-domain.com"
       # REGISTRATION_ENABLED: "false"
