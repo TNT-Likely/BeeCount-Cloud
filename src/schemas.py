@@ -478,6 +478,7 @@ class ReadLedgerOut(BaseModel):
     ledger_id: str
     ledger_name: str
     currency: str
+    month_start_day: int = 1
     transaction_count: int
     income_total: float
     expense_total: float
