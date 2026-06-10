@@ -32,6 +32,8 @@ export async function patchProfileMe(
      *  (custom_prompt / strategy / bill_extraction_enabled / use_vision)
      *  会被默认值覆盖。见 lib/aiConfigMerge.ts。 */
     ai_config?: AIConfig | Record<string, any>
+    /** 主币种(本位币),资产折算目标。与 mobile prefs `baseCurrency` 同步。 */
+    primary_currency?: string
   }
 ): Promise<ProfileMe> {
   const profile = await authedPatch<ProfileMe>('/profile/me', token, payload)

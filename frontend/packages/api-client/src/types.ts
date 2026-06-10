@@ -102,6 +102,8 @@ export type ProfileMe = {
    *  API key 存在这里面,只读展示时要脱敏。shape 由 mobile 的 snapshotForSync
    *  定义,这里用 Record 宽松接收,避免 web 跟 mobile 的实现耦合。 */
   ai_config?: Record<string, any> | null
+  /** 主币种(本位币),资产折算目标。mobile prefs `baseCurrency` 同步而来。 */
+  primary_currency?: string | null
 }
 
 export type WriteCommitMeta = {
@@ -683,4 +685,23 @@ export type SharedResourcesBundle = {
   categories: SharedCategoryItem[]
   accounts: SharedAccountItem[]
   tags: SharedTagItem[]
+}
+
+export type ExchangeRatesResponse = {
+  base: string
+  rate_date: string
+  source: string
+  fetched_at: string
+  stale: boolean
+  /** 方向:1 base = x quote(展示折算前需取倒数,与 App 同规则)。 */
+  rates: Record<string, string>
+}
+
+export type ExchangeRateOverride = {
+  sync_id: string
+  base_currency: string
+  quote_currency: string
+  /** 方向:1 quote = rate base。 */
+  rate: string
+  updated_at: string
 }

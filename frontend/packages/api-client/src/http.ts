@@ -209,6 +209,22 @@ export async function authedPatch<T>(path: string, token: string, body: unknown)
   return parseResponse<T>(res)
 }
 
+export async function authedPut<T>(path: string, token: string, body: unknown): Promise<T> {
+  const res = await authedFetch(
+    (tok) =>
+      fetch(`${API_BASE}${path}`, {
+        method: 'PUT',
+        headers: {
+          ...authHeaders(tok),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      }),
+    token
+  )
+  return parseResponse<T>(res)
+}
+
 export async function authedDelete<T>(path: string, token: string, body?: unknown): Promise<T> {
   const hasBody = typeof body !== 'undefined'
   const res = await authedFetch(
