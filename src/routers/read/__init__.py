@@ -14,6 +14,6 @@ main.py 的 `from .routers import read` + `app.include_router(read.router, ...)`
 from ._shared import router  # noqa: F401
 
 # 导入子模块触发 @router 装饰器注册。
-from . import ledgers, summary, workspace  # noqa: E402,F401
+from . import ledgers, rates, summary, workspace  # noqa: E402,F401
 
 __all__ = ['router']

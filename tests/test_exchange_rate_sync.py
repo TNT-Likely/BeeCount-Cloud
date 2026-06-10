@@ -161,3 +161,34 @@ def test_same_pair_two_sync_ids_coexist():
     finally:
         from src.main import app
         app.dependency_overrides.clear()
+
+
+def test_read_overrides_endpoint():
+    client, _ = _make_client()
+    try:
+        # Push via app token (app_write), then re-login as web (web_read) for the same user.
+        # ALLOW_APP_RW_SCOPES=false in conftest, so /read/* needs web_read scope.
+        email = "er4@t.com"
+        app_hdr = {"Authorization": f"Bearer {_login(client, email)}"}
+        _push(client, app_hdr, "lg1", "exchange_rate_override", "rate-4",
+              _payload("rate-4", quote="JPY", rate="0.048"), scope="user")
+        # Same user, different device + client_type=web → gets web_read scope
+        r_web = client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": email,
+                "password": "Pa$$word1!",
+                "device_id": "d-web",
+                "client_type": "web",
+                "device_name": "pytest-web",
+                "platform": "test",
+            },
+        )
+        web_hdr = {"Authorization": f"Bearer {r_web.json()['access_token']}"}
+        r = client.get("/api/v1/read/exchange-rate-overrides", headers=web_hdr)
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        assert any(x["quote_currency"] == "JPY" and x["rate"] == "0.048" for x in rows)
+    finally:
+        from src.main import app
+        app.dependency_overrides.clear()
