@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     # 默认 true — 生产 / docker 部署千万别关,关了会被中间人篡改流量也不知。
     ai_http_verify_ssl: bool = Field(default=True, alias="AI_HTTP_VERIFY_SSL")
 
+    # ===== 汇率代理(多币种 MVP)=====
+    # 设计:BeeCount 仓 .docs/multi-currency/03-tech-design-cloud.md §五。
+    # 只允许 CC0/央行类上游(fawazahmed0 / Frankfurter);
+    # 绝不可配置 open.er-api.com —— 其 Terms 明文禁止再分发与程序化转发。
+    exchange_rate_proxy_enabled: bool = Field(default=True, alias="EXCHANGE_RATE_PROXY_ENABLED")
+    exchange_rate_cache_ttl_hours: int = Field(default=12, alias="EXCHANGE_RATE_CACHE_TTL_HOURS")
+    # 整体替换内置上游链,指向 Frankfurter 兼容服务的根地址(如自托管
+    # `docker run -d -p 8080:8080 lineofflight/frankfurter` → http://host:8080)。
+    exchange_rate_upstream: str = Field(default="", alias="EXCHANGE_RATE_UPSTREAM")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

@@ -1,15 +1,17 @@
 """汇率读端点:手动 override 列表(本文件) + 汇率代理(Task 5 追加)。"""
 from __future__ import annotations
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...config import get_settings
 from ...database import get_db
 from ...deps import get_current_user
 from ...models import User, UserExchangeRateProjection
 from ...routers.pats import _utc_iso  # SQLite naive-datetime 坑,同 pats.py:75-87
+from ...services.exchange_rate import fetcher
 from ._shared import _READ_SCOPE_DEP, router
 
 
@@ -45,3 +47,36 @@ def list_exchange_rate_overrides(
         )
         for r in rows
     ]
+
+
+class ExchangeRatesOut(BaseModel):
+    base: str
+    rate_date: str
+    source: str
+    fetched_at: str
+    stale: bool
+    rates: dict[str, str]
+
+
+@router.get("/exchange-rates", response_model=ExchangeRatesOut)
+async def get_exchange_rates(
+    base: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ExchangeRatesOut:
+    settings = get_settings()
+    if not settings.exchange_rate_proxy_enabled:
+        raise HTTPException(status_code=404, detail="exchange rate proxy disabled")
+    try:
+        row, stale = await fetcher.get_rates(db, base)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ExchangeRatesOut(
+        base=row.base_currency,
+        rate_date=row.rate_date,
+        source=row.source,
+        fetched_at=_utc_iso(row.fetched_at),
+        stale=stale,
+        rates=dict(row.payload_json),
+    )
