@@ -145,6 +145,28 @@ def _upsert(db: Session, model, pk_fields: tuple[str, ...], values: dict) -> Non
 # 单实体:upsert / delete                                                       #
 # --------------------------------------------------------------------------- #
 
+def _resolve_account_sync_id_by_name(
+    db: Session, *, user_id: str, name: str | None
+) -> str | None:
+    """按 (user_id, name) 唯一反查 user_account_projection 的 sync_id。
+
+    #41:老 web / 前端映射 miss 的交易只带账户名不带 id → 投影 account_sync_id
+    为 NULL,被 sync_id 维度的统计/过滤漏算。恰好一个命中才补(0 个或同名多账户
+    返回 None,宁缺勿错);与 mobile sync_engine_apply 的按名 fallback 同语义。
+    """
+    if not name:
+        return None
+    rows = db.scalars(
+        select(UserAccountProjection.sync_id)
+        .where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.name == name,
+        )
+        .limit(2)
+    ).all()
+    return rows[0] if len(rows) == 1 else None
+
+
 def upsert_tx(
     db: Session,
     *,
@@ -229,6 +251,19 @@ def upsert_tx(
         "last_edited_by_user_id": _as_str(payload.get("updatedByUserId")) or payload_creator,
         "source_change_id": source_change_id,
     }
+
+    # #41:payload 只带名不带 id 时(老 web / 前端映射 miss),按名唯一反查补全。
+    # 三组 account 字段各自独立处理;同名多账户保持 NULL,宁缺勿错。
+    for id_key, name_key in (
+        ("account_sync_id", "account_name"),
+        ("from_account_sync_id", "from_account_name"),
+        ("to_account_sync_id", "to_account_name"),
+    ):
+        if values[id_key] is None and values[name_key]:
+            values[id_key] = _resolve_account_sync_id_by_name(
+                db, user_id=user_id, name=values[name_key]
+            )
+
     _upsert(db, ReadTxProjection, ("ledger_id", "sync_id"), values)
 
     # 新行已落地,对 prev - new 的 fileId 查还有无引用 → GC。
