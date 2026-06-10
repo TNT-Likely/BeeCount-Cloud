@@ -478,6 +478,7 @@ class ReadLedgerOut(BaseModel):
     ledger_id: str
     ledger_name: str
     currency: str
+    month_start_day: int = 1
     transaction_count: int
     income_total: float
     expense_total: float
@@ -609,8 +610,8 @@ class ReadBudgetUsageItemOut(BaseModel):
 
 
 class ReadBudgetUsageOut(BaseModel):
-    """`/ledgers/{id}/budgets/usage` 返回。per-budget 周期窗口由后端按各自
-    start_day 算(不同 budget 可能不同),前端只用 used 数字。"""
+    """`/ledgers/{id}/budgets/usage` 返回。周期窗口统一取账本 month_start_day
+    (设计 D5:budget.start_day 弃用,所有 budget 共享同一周期),前端只用 used 数字。"""
     items: list[ReadBudgetUsageItemOut] = Field(default_factory=list)
 
 
@@ -765,11 +766,13 @@ class WriteLedgerCreateRequest(BaseModel):
     ledger_id: str | None = Field(default=None, min_length=3, max_length=128)
     ledger_name: str = Field(min_length=1, max_length=255)
     currency: str = Field(default="CNY", min_length=1, max_length=16)
+    month_start_day: int = Field(default=1, ge=1, le=28)
 
 
 class WriteLedgerMetaUpdateRequest(WriteBaseRequest):
     ledger_name: str | None = Field(default=None, min_length=1, max_length=255)
     currency: str | None = Field(default=None, min_length=1, max_length=16)
+    month_start_day: int | None = Field(default=None, ge=1, le=28)
 
 
 class WriteTransactionCreateRequest(WriteBaseRequest):
@@ -846,6 +849,7 @@ class WriteBudgetCreateRequest(WriteBaseRequest):
     category_id: str | None = None
     amount: float = Field(gt=0)
     period: Literal["monthly", "weekly", "yearly"] = "monthly"
+    # deprecated:预算周期已统一跟随账本 month_start_day(D5),该字段仅作兼容保留
     start_day: int = Field(default=1, ge=1, le=28)
     enabled: bool = True
 
@@ -853,6 +857,7 @@ class WriteBudgetCreateRequest(WriteBaseRequest):
 class WriteBudgetUpdateRequest(WriteBaseRequest):
     amount: float | None = Field(default=None, gt=0)
     period: Literal["monthly", "weekly", "yearly"] | None = None
+    # deprecated:预算周期已统一跟随账本 month_start_day(D5),该字段仅作兼容保留
     start_day: int | None = Field(default=None, ge=1, le=28)
     enabled: bool | None = None
 

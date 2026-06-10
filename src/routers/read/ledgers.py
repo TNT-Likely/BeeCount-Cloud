@@ -52,6 +52,7 @@ def list_ledgers(
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
                 currency=currency,
+                month_start_day=ledger.month_start_day or 1,
                 transaction_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,
@@ -219,6 +220,7 @@ def get_ledger(
         ledger_id=ledger.external_id,
         ledger_name=ledger_name,
         currency=currency,
+        month_start_day=ledger.month_start_day or 1,
         transaction_count=tx_count,
         income_total=income_total,
         expense_total=expense_total,
@@ -565,9 +567,14 @@ def list_budgets_usage(
 
     now = datetime.now(timezone.utc)
 
+    # 预算周期跟随账本 month_start_day(设计 D5:budget.start_day 弃用,
+    # 与 mobile local_budget_repository 同口径)
+    period_day = ledger.month_start_day or 1
+
+    start, end = _current_period_range(period_day, now)
+
     items: list[ReadBudgetUsageItemOut] = []
     for b in dedup.values():
-        start, end = _current_period_range(int(b.start_day or 1), now)
         base_q = select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
             ReadTxProjection.ledger_id == ledger.id,
             ReadTxProjection.tx_type == "expense",
@@ -598,6 +605,7 @@ def _current_period_range(
     - 当天 >= start_day → 本月 start_day 起,下月 start_day 止
     - 当天 < start_day → 上月 start_day 起,本月 start_day 止
     边界统一到 [1, 28],避免 29/30/31 在 2 月翻车。
+    调用方现统一传账本 month_start_day(设计 D5),不再传 budget.start_day。
     """
     day = max(1, min(28, start_day or 1))
     if now.day >= day:

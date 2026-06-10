@@ -15,7 +15,7 @@ import type {
   WorkspaceAnalyticsSummary,
   WorkspaceLedgerCounts
 } from '@beecount/api-client'
-import { Amount, type BudgetUsage } from '@beecount/web-features'
+import { Amount, periodRangeText, type BudgetUsage } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
 
 import { HeroInsightsRow } from './HeroInsightsRow'
@@ -72,6 +72,7 @@ export function HomeHero({
   const activeLedger =
     ledgers.find((l) => l.ledger_id === currentLedgerId) || ledgers[0]
   const currency = activeLedger?.currency || 'CNY'
+  const ledgerMonthStartDay = Math.max(1, Math.min(28, activeLedger?.month_start_day ?? 1))
 
   const summaryByScope: Record<HeroScope, WorkspaceAnalyticsSummary | undefined> = {
     month: monthSummary,
@@ -88,6 +89,7 @@ export function HomeHero({
   const activeSeries = seriesByScope[scope]
   const scopeLabel = t(`home.scope.${scope}`)
   const scopeBalanceHint = t(`home.scope.${scope}.hint`)
+  const monthRangeLabel = scope === 'month' ? periodRangeText(ledgerMonthStartDay) : null
 
   const income = activeSummary?.income_total ?? 0
   const expense = activeSummary?.expense_total ?? 0
@@ -134,9 +136,18 @@ export function HomeHero({
           {/* 顶部：账本名 + 三视角切换 */}
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                <CalendarDays className="h-3 w-3" />
-                {t('home.scope.current')} · {scopeLabel}
+              {/* flex-wrap + 分段 nowrap:窄屏被右侧切换器挤压时整段换行,
+                  而不是 CJK 逐字断行(范围括号最多整体掉到第二行) */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                <CalendarDays className="h-3 w-3 shrink-0" />
+                <span className="whitespace-nowrap">
+                  {t('home.scope.current')} · {scopeLabel}
+                </span>
+                {monthRangeLabel && (
+                  <span className="whitespace-nowrap font-normal normal-case tracking-normal text-muted-foreground/70">
+                    ({monthRangeLabel})
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex items-baseline gap-3">
                 <span className="truncate text-xl font-bold">
@@ -147,7 +158,9 @@ export function HomeHero({
                 </span>
               </div>
             </div>
-            <ScopeSwitcher value={scope} onChange={setScope} />
+            <div className="shrink-0">
+              <ScopeSwitcher value={scope} onChange={setScope} />
+            </div>
           </div>
 
           <div className="mt-4 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
@@ -236,6 +249,7 @@ export function HomeHero({
             anomalyMonths={anomalyMonths || []}
             hasEnoughMonths={!!hasEnoughMonthsForAnomaly}
             currency={currency}
+            ledgerMonthStartDay={ledgerMonthStartDay}
           />
         </div>
 

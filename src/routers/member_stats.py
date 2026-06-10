@@ -81,7 +81,8 @@ def get_member_stats(
     )
 
     start_at, end_at, normalized_period = _analytics_range(
-        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=ledger.month_start_day or 1,
     )
 
     # GROUP BY created_by_user_id 一次聚合 income / expense / tx_count

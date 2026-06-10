@@ -557,6 +557,8 @@ const en = {
   'ledgers.button.update': 'Save',
   'ledgers.field.name': 'Ledger Name',
   'ledgers.field.currency': 'Currency',
+  'ledgers.field.monthStartDay': 'Month start day',
+  'ledgers.monthStartDay.hint': 'Statistics and budgets use this day (1-28) as the start of each monthly period; 1 = calendar month',
   'ledgers.placeholder.name': 'e.g. Family Budget',
   'ledgers.meta.id': 'Ledger ID',
   'ledgers.meta.role': 'Role',

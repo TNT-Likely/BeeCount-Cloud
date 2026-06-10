@@ -495,12 +495,16 @@ def apply_change_to_projection(
             return
         new_name = payload_raw.get("ledgerName")
         new_currency = payload_raw.get("currency")
+        new_month_start_day = payload_raw.get("monthStartDay")
         ledger_row = db.scalar(select(Ledger).where(Ledger.id == ledger_id))
         if ledger_row is not None:
             if isinstance(new_name, str) and new_name.strip():
                 ledger_row.name = new_name.strip()
             if isinstance(new_currency, str) and new_currency.strip():
                 ledger_row.currency = new_currency.strip()[:16]
+            # bool 是 int 子类,显式排除;key 缺失时不动(partial-update merge 契约)
+            if isinstance(new_month_start_day, int) and not isinstance(new_month_start_day, bool):
+                ledger_row.month_start_day = max(1, min(28, new_month_start_day))
         return
 
     sync_id = change.entity_sync_id

@@ -933,18 +933,26 @@ def workspace_analytics(
     ledger_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    natural_month: bool = Query(default=False),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkspaceAnalyticsOut:
     is_admin = _is_admin(current_user)
-    start_at, end_at, normalized_period = _analytics_range(
-        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
-    )
-
     ledgers = _visible_workspace_ledgers(
         db, current_user=current_user, is_admin=is_admin,
         ledger_id=ledger_id, user_id=user_id,
+    )
+    # 单账本视图用该账本的自定义起始日;多账本聚合维持自然月(各账本周期可能
+    # 不同无法对齐)。natural_month=true 强制自然月(日历网格等按公历的消费方,D6)。
+    month_start_day = (
+        1
+        if natural_month
+        else ((ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1)
+    )
+    start_at, end_at, normalized_period = _analytics_range(
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
     )
     ledger_internal_ids = [l.id for l in ledgers]
 
@@ -988,7 +996,7 @@ def workspace_analytics(
                 first_tx_at = happened_at
             if last_tx_at is None or happened_at > last_tx_at:
                 last_tx_at = happened_at
-            bucket = _bucket_key(scope, happened_at, tz_offset_minutes)
+            bucket = _bucket_key(scope, happened_at, tz_offset_minutes, month_start_day)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
             if tx_type_val == "income":
                 income_total += amt

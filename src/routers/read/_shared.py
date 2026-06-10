@@ -456,10 +456,16 @@ def _projection_totals(
     )
 
 
+def _clamp_month_start_day(value: int | None) -> int:
+    """月度起始日统一钳到 [1, 28](2 月安全上限);None/0 → 1(自然月)。"""
+    return max(1, min(28, value or 1))
+
+
 def _bucket_key(
     scope: AnalyticsScope,
     happened_at: datetime,
     tz_offset_minutes: int = 0,
+    month_start_day: int = 1,
 ) -> str:
     """按用户本地时区把 happened_at 折成 month-bucket(YYYY-MM-DD)或 year-bucket(YYYY-MM)。
 
@@ -468,6 +474,10 @@ def _bucket_key(
     `tz_offset_minutes` 跟 `_analytics_range` 同符号(JavaScript
     `-new Date().getTimezoneOffset()`),CST 传 +480。默认 0 走 UTC,跟老客户端
     行为保持一致。
+
+    `month_start_day`(1-28):year scope 按「周期标签月」分桶 —— 本地日期
+    day >= start_day 归当月,否则归上月(周期按起始月命名)。默认 1 = 自然月,
+    老调用行为不变。
     """
     from datetime import timedelta
 
@@ -476,7 +486,11 @@ def _bucket_key(
     local = normalized + timedelta(minutes=tz_offset_minutes)
     if scope == "month":
         return local.strftime("%Y-%m-%d")
-    return local.strftime("%Y-%m")
+    day = _clamp_month_start_day(month_start_day)
+    if local.day >= day:
+        return local.strftime("%Y-%m")
+    prev = local.replace(day=1) - timedelta(days=1)
+    return prev.strftime("%Y-%m")
 
 
 def _analytics_range(
@@ -484,6 +498,7 @@ def _analytics_range(
     scope: AnalyticsScope,
     period: str | None,
     tz_offset_minutes: int = 0,
+    month_start_day: int = 1,
 ) -> tuple[datetime | None, datetime | None, str | None]:
     """计算 analytics 的 [start, end) UTC 范围。
 
@@ -493,6 +508,10 @@ def _analytics_range(
     `tz_offset_minutes`:客户端传的本地时区偏移(正数 = 东半球),与 JavaScript
     `-new Date().getTimezoneOffset()` 同符号。中国是 +480。默认 0 = UTC(老客户端不传
     这个参数时的行为保持 UTC 切月)。
+
+    `month_start_day`(1-28):周期按起始月命名 —— "2026-06"(msd=10) 表示本地
+    2026-06-10 ~ 2026-07-10。year scope 同理:[当年1月周期起点, 次年1月周期起点)。
+    默认 1 = 自然月/年,所有行为与改造前逐位一致。
     """
     from datetime import timedelta
 
@@ -503,11 +522,15 @@ def _analytics_range(
         return None, None, None
 
     if scope == "month":
-        target = (
-            period.strip()
-            if isinstance(period, str) and period.strip()
-            else now.astimezone(tz).strftime("%Y-%m")
-        )
+        day = _clamp_month_start_day(month_start_day)
+        if isinstance(period, str) and period.strip():
+            target = period.strip()
+        else:
+            # 默认 = 「当前周期」标签:今天还没到起始日时属上个标签月
+            local_now = now.astimezone(tz)
+            if local_now.day < day:
+                local_now = local_now.replace(day=1) - timedelta(days=1)
+            target = local_now.strftime("%Y-%m")
         try:
             year_part, month_part = target.split("-", 1)
             year = int(year_part)
@@ -516,26 +539,32 @@ def _analytics_range(
             raise HTTPException(status_code=400, detail="Invalid analytics period") from exc
         if month < 1 or month > 12:
             raise HTTPException(status_code=400, detail="Invalid analytics period")
-        # 本地时区月初/月末 → 转 UTC 给 SQL 用
-        start_local = datetime(year, month, 1, tzinfo=tz)
+        # 本地时区周期起点/终点 → 转 UTC 给 SQL 用;周期按起始月命名
+        start_local = datetime(year, month, day, tzinfo=tz)
         end_local = (
-            datetime(year + 1, 1, 1, tzinfo=tz)
+            datetime(year + 1, 1, day, tzinfo=tz)
             if month == 12
-            else datetime(year, month + 1, 1, tzinfo=tz)
+            else datetime(year, month + 1, day, tzinfo=tz)
         )
         return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), f"{year:04d}-{month:02d}"
 
-    target = (
-        period.strip()
-        if isinstance(period, str) and period.strip()
-        else now.astimezone(tz).strftime("%Y")
-    )
+    day = _clamp_month_start_day(month_start_day)
+    if isinstance(period, str) and period.strip():
+        target = period.strip()
+    else:
+        local_now = now.astimezone(tz)
+        target_year = local_now.year
+        # 只有 1 月里还没到起始日时才归上一年度周期;2-12 月无论 day 与 msd
+        # 关系如何,年标签都是当前日历年(勿仿 month scope 把借位推广到全月)。
+        if local_now.month == 1 and local_now.day < day:
+            target_year -= 1
+        target = str(target_year)
     try:
         year = int(target)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid analytics period") from exc
-    start_local = datetime(year, 1, 1, tzinfo=tz)
-    end_local = datetime(year + 1, 1, 1, tzinfo=tz)
+    start_local = datetime(year, 1, day, tzinfo=tz)
+    end_local = datetime(year + 1, 1, day, tzinfo=tz)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), f"{year:04d}"
 
 

@@ -394,6 +394,7 @@ function LedgerCard({ ledger, isActive, roleLabel, onEdit, onDelete, onImport, o
 export type LedgerForm = {
   ledger_name: string
   currency: string
+  month_start_day: number
 }
 
 interface LedgerEditDialogProps {
@@ -450,6 +451,27 @@ export function LedgerEditDialog({
               value={form.currency || 'CNY'}
               onChange={(code) => onChange({ ...form, currency: code })}
             />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="ledger-month-start-day">{t('ledgers.field.monthStartDay')}</Label>
+            <select
+              id="ledger-month-start-day"
+              name="month_start_day"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={form.month_start_day ?? 1}
+              onChange={(e) =>
+                onChange({ ...form, month_start_day: Number(e.target.value) })
+              }
+            >
+              {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {t('ledgers.monthStartDay.hint')}
+            </p>
           </div>
           {meta && meta.length > 0 ? (
             <div className="space-y-1 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">

@@ -268,6 +268,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "ledgerSyncId": ledger.external_id,
         "ledgerName": ledger.name or ledger.external_id,
         "currency": ledger.currency or "CNY",
+        "monthStartDay": ledger.month_start_day or 1,
         "count": len(items),
         "items": items,
         "accounts": accounts,

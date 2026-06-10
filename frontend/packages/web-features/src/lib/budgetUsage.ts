@@ -34,6 +34,29 @@ export function currentMonthRange(
   return { start, end }
 }
 
+/** date 所属记账周期的标签 "YYYY-MM"(day >= startDay 归当月,否则上月)。 */
+export function periodLabel(date: Date, startDay: number): string {
+  const day = Math.max(1, Math.min(28, Math.round(startDay || 1)))
+  const d = new Date(date.getFullYear(), date.getMonth() - (date.getDate() < day ? 1 : 0), 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+/** 当前记账周期的范围短文案,如 "6.15-7.14"(含端);startDay=1 返回 null(自然月不标注)。 */
+export function periodRangeText(startDay: number, now = new Date()): string | null {
+  const day = Math.max(1, Math.min(28, Math.round(startDay || 1)))
+  if (day === 1) return null
+  const { start, end } = currentMonthRange(day, now)
+  const endIncl = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 1)
+  return `${start.getMonth() + 1}.${start.getDate()}-${endIncl.getMonth() + 1}.${endIncl.getDate()}`
+}
+
+/** 「year 年」= [当年1月周期起点, 次年1月周期起点),12 个完整记账周期。 */
+export function yearRange(year: number, startDay: number): { start: Date; end: Date } {
+  const day = Math.max(1, Math.min(28, Math.round(startDay || 1)))
+  // 与 server _analytics_range year-scope 同口径:年 = 1月起始日 → 次年1月起始日
+  return { start: new Date(year, 0, day), end: new Date(year + 1, 0, day) }
+}
+
 export type BudgetsWithUsage = {
   budgets: ReadBudget[]
   usageById: Record<string, BudgetUsage>

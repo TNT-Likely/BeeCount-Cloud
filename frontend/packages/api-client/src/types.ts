@@ -128,17 +128,20 @@ export type LedgerCreatePayload = {
   ledger_id?: string | null
   ledger_name: string
   currency?: string | null
+  month_start_day?: number | null
 }
 
 export type LedgerMetaPayload = {
   ledger_name?: string | null
   currency?: string | null
+  month_start_day?: number | null
 }
 
 export type ReadLedger = {
   ledger_id: string
   ledger_name: string
   currency: string
+  month_start_day?: number
   transaction_count: number
   income_total: number
   expense_total: number

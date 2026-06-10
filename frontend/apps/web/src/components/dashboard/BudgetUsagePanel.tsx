@@ -11,6 +11,7 @@ interface Props {
   budgets: ReadBudget[]
   usageById: Record<string, BudgetUsage>
   currency?: string
+  ledgerMonthStartDay?: number
 }
 
 const VISIBLE_CATEGORY_COUNT = 5
@@ -73,7 +74,7 @@ export function useBudgetUsageViewModel(
   }, [budgets, usageById])
 }
 
-export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY' }: Props) {
+export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY', ledgerMonthStartDay = 1 }: Props) {
   const vm = useBudgetUsageViewModel(budgets, usageById)
   if (vm.isEmpty) return null
 
@@ -83,6 +84,7 @@ export function BudgetUsagePanel({ budgets, usageById, currency = 'CNY' }: Props
         viewModel={vm}
         usageById={usageById}
         currency={currency}
+        ledgerMonthStartDay={ledgerMonthStartDay}
         withHeader
       />
     </Card>
@@ -98,11 +100,13 @@ export function BudgetUsageBody({
   usageById,
   currency = 'CNY',
   withHeader = false,
+  ledgerMonthStartDay = 1,
 }: {
   viewModel: ReturnType<typeof useBudgetUsageViewModel>
   usageById: Record<string, BudgetUsage>
   currency?: string
   withHeader?: boolean
+  ledgerMonthStartDay?: number
 }) {
   const t = useT()
   const [expanded, setExpanded] = useState(false)
@@ -136,6 +140,7 @@ export function BudgetUsageBody({
           budget={total}
           used={usageById[total.id]?.used ?? 0}
           currency={currency}
+          ledgerMonthStartDay={ledgerMonthStartDay}
         />
       )}
 
@@ -196,17 +201,19 @@ function TotalBudgetRow({
   budget,
   used,
   currency,
+  ledgerMonthStartDay = 1,
 }: {
   budget: ReadBudget
   used: number
   currency: string
+  ledgerMonthStartDay?: number
 }) {
   const t = useT()
   const ratio = budget.amount > 0 ? Math.min(used / budget.amount, 1.5) : 0
   const displayRatio = Math.min(ratio, 1) // 进度条最多 100%
   const remaining = budget.amount - used
   const isOver = remaining < 0
-  const startDay = Math.max(1, Math.min(28, Number(budget.start_day || 1)))
+  const startDay = Math.max(1, Math.min(28, ledgerMonthStartDay))
   const { end } = currentMonthRange(startDay)
   const now = new Date()
   const msPerDay = 1000 * 60 * 60 * 24

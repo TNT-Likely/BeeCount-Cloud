@@ -232,6 +232,10 @@ class Ledger(Base):
     # 原先走 snapshot.currency,现在单独存列 —— read 路径不用再 parse snapshot。
     # 默认 CNY 对齐 mobile/web 默认币种。
     currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
+    # 自定义每月起始日(1-28):统计/预算按 [当月N日, 次月N日) 聚合,1=自然月。
+    # mobile Drift 列 ledgers.month_start_day,sync payload key `monthStartDay`。
+    # 口径与决策见 BeeCount 仓 .docs/period-start-date/design.md。
+    month_start_day: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     changes: Mapped[list["SyncChange"]] = relationship(back_populates="ledger")

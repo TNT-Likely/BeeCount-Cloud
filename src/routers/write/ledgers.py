@@ -48,6 +48,7 @@ async def create_ledger(
         external_id=external_id,
         name=name,
         currency=currency,
+        month_start_day=req.month_start_day,
     )
     db.add(ledger)
     db.flush()
@@ -70,7 +71,7 @@ async def create_ledger(
         entity_type="ledger",
         entity_sync_id=external_id,
         action="upsert",
-        payload_json={"ledgerName": name, "currency": currency},
+        payload_json={"ledgerName": name, "currency": currency, "monthStartDay": req.month_start_day},
         updated_at=now,
         updated_by_device_id="web-console",
         updated_by_user_id=current_user.id,
@@ -161,6 +162,7 @@ async def update_ledger_meta(
         next_snapshot = ensure_snapshot_v2(snapshot)
         new_name: str | None = None
         new_currency: str | None = None
+        new_month_start_day: int | None = None
         if "ledger_name" in payload:
             new_name = payload["ledger_name"]
             next_snapshot["ledgerName"] = new_name
@@ -169,13 +171,18 @@ async def update_ledger_meta(
             new_currency = payload["currency"]
             next_snapshot["currency"] = new_currency
             ledger.currency = new_currency
+        if "month_start_day" in payload and payload["month_start_day"] is not None:
+            new_month_start_day = payload["month_start_day"]
+            next_snapshot["monthStartDay"] = new_month_start_day
+            ledger.month_start_day = new_month_start_day
         # 显式 emit ledger meta change(action=upsert,跟 create_ledger 同款
-        # payload 字段)。mobile _applyLedgerChange 用 ledgerName/currency 写
-        # 本地 ledgers 表。
-        if new_name is not None or new_currency is not None:
+        # payload 字段)。mobile _applyLedgerChange 用 ledgerName/currency/
+        # monthStartDay 写本地 ledgers 表。
+        if new_name is not None or new_currency is not None or new_month_start_day is not None:
             change_payload: dict = {}
             change_payload["ledgerName"] = ledger.name
             change_payload["currency"] = ledger.currency
+            change_payload["monthStartDay"] = ledger.month_start_day or 1
             row_change = SyncChange(
                 user_id=current_user.id,
                 ledger_id=ledger.id,

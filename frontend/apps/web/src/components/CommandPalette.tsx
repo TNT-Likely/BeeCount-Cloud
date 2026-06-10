@@ -46,6 +46,7 @@ import {
   dispatchOpenSharedJoin,
   dispatchOpenSharedManage,
 } from '../lib/sharedLedgerEvents'
+import { currentMonthRange, yearRange } from '@beecount/web-features'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 import { VoiceInputButton } from './cmdk-ai/VoiceInputButton'
 
@@ -108,7 +109,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
   const t = useT()
   const navigate = useNavigate()
   const { token, logout, profileMe, isAdmin } = useAuth()
-  const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
+  const { ledgers, activeLedgerId, currentLedger, setActiveLedgerId } = useLedgers()
   const { resolved, setMode } = useTheme()
   const { locale } = useLocale()
   const toast = useToast()
@@ -192,14 +193,14 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
       }
       onClose()
       const now = new Date()
-      const dateFromDate =
-        range === 'month'
-          ? new Date(now.getFullYear(), now.getMonth(), 1)
-          : new Date(now.getFullYear(), 0, 1)
-      const dateToDate =
-        range === 'month'
-          ? new Date(now.getFullYear(), now.getMonth() + 1, 1)
-          : new Date(now.getFullYear() + 1, 0, 1)
+      const msd = Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
+      const monthRange = currentMonthRange(msd, now)
+      // 「今年」= 12 个记账周期;1月里还没到起始日时仍属上一年度周期
+      const effYear =
+        now < new Date(now.getFullYear(), 0, msd) ? now.getFullYear() - 1 : now.getFullYear()
+      const yRange = yearRange(effYear, msd)
+      const dateFromDate = range === 'month' ? monthRange.start : yRange.start
+      const dateToDate = range === 'month' ? monthRange.end : yRange.end
       try {
         await downloadWorkspaceTransactionsCsv(token, {
           ledgerId: activeLedgerId,
@@ -212,7 +213,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
         toast.error(localizeError(err, t))
       }
     },
-    [activeLedgerId, locale, onClose, t, toast, token],
+    [activeLedgerId, currentLedger, locale, onClose, t, toast, token],
   )
 
   // 「点击交易结果」— 跳到交易页 + 打开详情弹窗(从详情可二次进编辑)

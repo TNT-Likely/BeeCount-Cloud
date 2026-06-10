@@ -188,6 +188,7 @@ export function CalendarPage() {
         period: focusedMonth,
         ledgerId: activeLedgerId,
         tzOffsetMinutes,
+        naturalMonth: true,
       })
       setMonthData(data)
     } catch {

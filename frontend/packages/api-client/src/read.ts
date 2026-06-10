@@ -277,6 +277,7 @@ export async function fetchWorkspaceAnalytics(
     ledgerId?: string
     userId?: string
     tzOffsetMinutes?: number
+    naturalMonth?: boolean
   }
 ): Promise<WorkspaceAnalytics> {
   const query = new URLSearchParams()
@@ -286,6 +287,7 @@ export async function fetchWorkspaceAnalytics(
   if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
   if (options?.userId) query.set('user_id', options.userId)
   if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
+  if (options?.naturalMonth) query.set('natural_month', 'true')
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAnalytics>(`/read/workspace/analytics${suffix}`, token)
 }
