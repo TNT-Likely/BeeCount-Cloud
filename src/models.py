@@ -95,6 +95,10 @@ class UserProfile(Base):
     # bill_extraction_enabled、use_vision。
     # API key 敏感,只在登录用户自己的 profile 上传下行,不对外暴露。
     ai_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 主币种(本位币):资产折算的目标币种,user-global 偏好。mobile prefs key
+    # `baseCurrency`,PATCH /profile/me key `primary_currency`。大写 ISO 代码,
+    # 预留 16 位对齐既有币种列宽。null = 客户端按自己的规则初始化,server 不猜。
+    primary_currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -576,6 +580,53 @@ class UserAccountProjection(Base):
     bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class UserExchangeRateProjection(Base):
+    """手动汇率 override 的 user-scope projection(Q-side)。
+
+    方向约定:1 quote = rate base(与 mobile exchange_rate_overrides 表一致)。
+    rate 存 decimal 字符串,不用 Float —— 金额语义数据不走浮点。
+    业务键 (user_id, base_currency, quote_currency);主键沿用 (user_id, sync_id)
+    对齐其它 user projection。双端离线各建同币对会出现两个 sync_id 行,server
+    原样保留,App apply 端按币对收敛(BeeCount 仓 02-tech-design-app §七)。
+    """
+
+    __tablename__ = "user_exchange_rate_projection"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    base_currency: Mapped[str] = mapped_column(String(16), nullable=False)
+    quote_currency: Mapped[str] = mapped_column(String(16), nullable=False)
+    rate: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_user_rate_pair",
+    UserExchangeRateProjection.user_id,
+    UserExchangeRateProjection.base_currency,
+    UserExchangeRateProjection.quote_currency,
+)
+
+
+class ExchangeRateCache(Base):
+    """汇率代理的服务端缓存:每个 base 一行,payload 整存。
+
+    方向约定:payload_json = {"USD": "0.1477", ...} 即 1 base = x quote
+    (与上游一致,**不取倒数** —— 倒数是 App 落库时统一做的)。
+    """
+
+    __tablename__ = "exchange_rate_cache"
+
+    base_currency: Mapped[str] = mapped_column(String(16), primary_key=True)
+    rate_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class UserTagProjection(Base):
