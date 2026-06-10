@@ -938,13 +938,18 @@ def workspace_analytics(
     db: Session = Depends(get_db),
 ) -> WorkspaceAnalyticsOut:
     is_admin = _is_admin(current_user)
-    start_at, end_at, normalized_period = _analytics_range(
-        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
-    )
-
     ledgers = _visible_workspace_ledgers(
         db, current_user=current_user, is_admin=is_admin,
         ledger_id=ledger_id, user_id=user_id,
+    )
+    # 单账本视图用该账本的自定义起始日;多账本聚合维持自然月(各账本周期可能
+    # 不同无法对齐)。
+    month_start_day = (
+        (ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1
+    )
+    start_at, end_at, normalized_period = _analytics_range(
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
+        month_start_day=month_start_day,
     )
     ledger_internal_ids = [l.id for l in ledgers]
 
@@ -988,7 +993,7 @@ def workspace_analytics(
                 first_tx_at = happened_at
             if last_tx_at is None or happened_at > last_tx_at:
                 last_tx_at = happened_at
-            bucket = _bucket_key(scope, happened_at, tz_offset_minutes)
+            bucket = _bucket_key(scope, happened_at, tz_offset_minutes, month_start_day)
             slot = series_map.setdefault(bucket, {"expense": 0.0, "income": 0.0})
             if tx_type_val == "income":
                 income_total += amt
