@@ -18,7 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import Ledger
+from src.models import Ledger, SyncChange
 from src.snapshot_builder import build
 
 
@@ -243,5 +243,91 @@ def test_snapshot_includes_month_start_day() -> None:
             ledger = db.scalar(select(Ledger).where(Ledger.external_id == "L_MSD6"))
             snapshot = build(db, ledger)
         assert snapshot["monthStartDay"] == 15
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_meta_update_month_start_day() -> None:
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "msd4@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, token, device, "L_MSD4")
+
+        web_token = _login_web(client, "msd4@example.com")["access_token"]
+        res = client.get(
+            "/api/v1/read/ledgers/L_MSD4",
+            headers={"Authorization": f"Bearer {web_token}"},
+        )
+        assert res.status_code == 200, res.text
+        base = int(res.json()["source_change_id"])
+
+        res = client.patch(
+            "/api/v1/write/ledgers/L_MSD4/meta",
+            headers={"Authorization": f"Bearer {web_token}"},
+            json={"base_change_id": base, "month_start_day": 10},
+        )
+        assert res.status_code == 200, res.text
+        assert _ledger_row(TS, "L_MSD4").month_start_day == 10
+
+        # 显式 emit 的 ledger SyncChange payload 必须带 monthStartDay(mobile pull 依赖)
+        with TS() as db:
+            change = db.scalars(
+                select(SyncChange)
+                .where(
+                    SyncChange.entity_type == "ledger",
+                    SyncChange.entity_sync_id == "L_MSD4",
+                )
+                .order_by(SyncChange.change_id.desc())
+            ).first()
+            assert change is not None
+            payload = change.payload_json
+            if isinstance(payload, str):
+                import json as _json
+
+                payload = _json.loads(payload)
+            assert payload["monthStartDay"] == 10
+
+        # 越界被 pydantic 拒(422 在 handler 之前,base 值无关紧要)
+        res = client.patch(
+            "/api/v1/write/ledgers/L_MSD4/meta",
+            headers={"Authorization": f"Bearer {web_token}"},
+            json={"base_change_id": base + 1, "month_start_day": 29},
+        )
+        assert res.status_code == 422, res.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_create_ledger_with_month_start_day() -> None:
+    client, TS = _make_client()
+    try:
+        _register(client, "msd8@example.com")
+        web_token = _login_web(client, "msd8@example.com")["access_token"]
+        res = client.post(
+            "/api/v1/write/ledgers",
+            headers={"Authorization": f"Bearer {web_token}"},
+            json={"ledger_name": "新账本", "currency": "CNY", "month_start_day": 12},
+        )
+        assert res.status_code == 200, res.text
+        ledger_external_id = res.json()["ledger_id"]
+        assert _ledger_row(TS, ledger_external_id).month_start_day == 12
+
+        with TS() as db:
+            change = db.scalars(
+                select(SyncChange)
+                .where(
+                    SyncChange.entity_type == "ledger",
+                    SyncChange.entity_sync_id == ledger_external_id,
+                )
+                .order_by(SyncChange.change_id.desc())
+            ).first()
+            assert change is not None
+            payload = change.payload_json
+            if isinstance(payload, str):
+                import json as _json
+
+                payload = _json.loads(payload)
+            assert payload["monthStartDay"] == 12
     finally:
         app.dependency_overrides.clear()

@@ -766,11 +766,13 @@ class WriteLedgerCreateRequest(BaseModel):
     ledger_id: str | None = Field(default=None, min_length=3, max_length=128)
     ledger_name: str = Field(min_length=1, max_length=255)
     currency: str = Field(default="CNY", min_length=1, max_length=16)
+    month_start_day: int = Field(default=1, ge=1, le=28)
 
 
 class WriteLedgerMetaUpdateRequest(WriteBaseRequest):
     ledger_name: str | None = Field(default=None, min_length=1, max_length=255)
     currency: str | None = Field(default=None, min_length=1, max_length=16)
+    month_start_day: int | None = Field(default=None, ge=1, le=28)
 
 
 class WriteTransactionCreateRequest(WriteBaseRequest):
