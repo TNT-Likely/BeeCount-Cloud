@@ -610,8 +610,8 @@ class ReadBudgetUsageItemOut(BaseModel):
 
 
 class ReadBudgetUsageOut(BaseModel):
-    """`/ledgers/{id}/budgets/usage` 返回。per-budget 周期窗口由后端按各自
-    start_day 算(不同 budget 可能不同),前端只用 used 数字。"""
+    """`/ledgers/{id}/budgets/usage` 返回。周期窗口统一取账本 month_start_day
+    (设计 D5:budget.start_day 弃用,所有 budget 共享同一周期),前端只用 used 数字。"""
     items: list[ReadBudgetUsageItemOut] = Field(default_factory=list)
 
 

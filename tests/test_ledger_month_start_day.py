@@ -299,6 +299,130 @@ def test_web_meta_update_month_start_day() -> None:
         app.dependency_overrides.clear()
 
 
+def test_budget_usage_follows_ledger_month_start_day() -> None:
+    """预算用量周期跟随 ledger.month_start_day,无视 budget.start_day(D5)。
+
+    锚定 msd=15:对任意 now,先算包含 now 的 [15号, 次月15号) 周期起点
+    period_start,再构造:
+      - T_in:  period_start + 1h,金额 50 → 账本口径内
+      - T_out: period_start - 1h,金额 70 → 账本口径外(上一周期)
+
+    账本 msd=15,budget.start_day=1:
+      - 账本口径 used == 50(只含 T_in)
+    然后把账本 msd 改为 1(自然月口径):
+      - 若 now.day >= 15:T_out(15日前1小时 = 14日23点)落在自然月内
+        → 自然月口径 used == 120,与账本口径不同 → 强断言
+      - 若 now.day < 15:T_out 在上月14日,两种口径均不含 → used == 0.0,
+        弱断言(此窗口无判别力,可接受 CI 任意日期稳定)
+    """
+    from datetime import timedelta
+
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "msd7@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, token, device, "L_MSD7")
+
+        now = datetime.now(timezone.utc)
+
+        # 计算 msd=15 下包含 now 的周期起点
+        if now.day >= 15:
+            period_start = now.replace(
+                day=15, hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            prev_month_last = now.replace(day=1) - timedelta(days=1)
+            period_start = prev_month_last.replace(
+                day=15, hour=0, minute=0, second=0, microsecond=0
+            )
+
+        t_in_time = period_start + timedelta(hours=1)   # 周期内
+        t_out_time = period_start - timedelta(hours=1)  # 上一周期
+
+        # 设账本 msd=15
+        _push_ledger_upsert(
+            client, token, device, "L_MSD7",
+            {"syncId": "L_MSD7", "ledgerName": "L_MSD7", "currency": "CNY",
+             "monthStartDay": 15},
+        )
+
+        def _push_change(entity_type: str, sync_id: str, payload: dict) -> None:
+            res = client.post(
+                "/api/v1/sync/push",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "device_id": device,
+                    "changes": [{
+                        "ledger_id": "L_MSD7",
+                        "entity_type": entity_type,
+                        "entity_sync_id": sync_id,
+                        "action": "upsert",
+                        "updated_at": now.isoformat(),
+                        "payload": payload,
+                    }],
+                },
+            )
+            assert res.status_code == 200, res.text
+
+        # budget.start_day=1(自然月)—— 正确实现应忽略此字段
+        _push_change("budget", "B_MSD7", {
+            "syncId": "B_MSD7", "type": "total", "amount": 1000.0,
+            "period": "monthly", "startDay": 1, "enabled": True,
+        })
+        _push_change("transaction", "T_in_MSD7", {
+            "syncId": "T_in_MSD7", "type": "expense", "amount": 50.0,
+            "happenedAt": t_in_time.isoformat(),
+        })
+        _push_change("transaction", "T_out_MSD7", {
+            "syncId": "T_out_MSD7", "type": "expense", "amount": 70.0,
+            "happenedAt": t_out_time.isoformat(),
+        })
+
+        web_token = _login_web(client, "msd7@example.com")["access_token"]
+
+        # 第一次 GET:msd=15,期望 used==50(T_in 在内,T_out 在外)
+        res = client.get(
+            "/api/v1/read/ledgers/L_MSD7/budgets/usage",
+            headers={"Authorization": f"Bearer {web_token}"},
+        )
+        assert res.status_code == 200, res.text
+        items = res.json()["items"]
+        assert items, "no budget usage items returned"
+        used_15 = items[0]["used"]
+        assert used_15 == 50.0, f"msd=15: expected used=50.0, got {used_15}"
+
+        # 把账本 msd 改为 1(自然月口径)再 GET
+        _push_ledger_upsert(
+            client, token, device, "L_MSD7",
+            {"syncId": "L_MSD7", "ledgerName": "L_MSD7", "currency": "CNY",
+             "monthStartDay": 1},
+        )
+        res = client.get(
+            "/api/v1/read/ledgers/L_MSD7/budgets/usage",
+            headers={"Authorization": f"Bearer {web_token}"},
+        )
+        assert res.status_code == 200, res.text
+        items2 = res.json()["items"]
+        assert items2, "no budget usage items returned (msd=1)"
+        used_1 = items2[0]["used"]
+        if now.day >= 15:
+            # period_start = 本月15日。T_out = 14日23点。
+            # 自然月口径 [1日, 下月1日) 含 T_in(15日01点) + T_out(14日23点) → used==120
+            assert used_1 == 120.0, (
+                f"msd=1 (day>=15): expected used=120.0, got {used_1}"
+            )
+        else:
+            # period_start = 上月15日。t_in = 上月15日01点，t_out = 上月14日23点。
+            # 自然月口径(msd=1) = [本月1日, 下月1日)：两笔都在上月，均不含。
+            # msd=15 口径 = [上月15日, 本月15日)：含 t_in → 第一次 GET 已断言 used==50。
+            # 虽然第二次用量为 0，但 msd 切换确实改变了结果(50 → 0)，有判别力。
+            assert used_1 == 0.0, (
+                f"msd=1 (day<15): expected used=0.0, got {used_1}"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_web_create_ledger_with_month_start_day() -> None:
     client, TS = _make_client()
     try:
