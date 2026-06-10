@@ -15,7 +15,7 @@ import type {
   WorkspaceAnalyticsSummary,
   WorkspaceLedgerCounts
 } from '@beecount/api-client'
-import { Amount, type BudgetUsage } from '@beecount/web-features'
+import { Amount, periodRangeText, type BudgetUsage } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
 
 import { HeroInsightsRow } from './HeroInsightsRow'
@@ -89,6 +89,7 @@ export function HomeHero({
   const activeSeries = seriesByScope[scope]
   const scopeLabel = t(`home.scope.${scope}`)
   const scopeBalanceHint = t(`home.scope.${scope}.hint`)
+  const monthRangeLabel = scope === 'month' ? periodRangeText(ledgerMonthStartDay) : null
 
   const income = activeSummary?.income_total ?? 0
   const expense = activeSummary?.expense_total ?? 0
@@ -138,6 +139,11 @@ export function HomeHero({
               <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 <CalendarDays className="h-3 w-3" />
                 {t('home.scope.current')} · {scopeLabel}
+                {monthRangeLabel && (
+                  <span className="font-normal normal-case tracking-normal text-muted-foreground/70">
+                    ({monthRangeLabel})
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex items-baseline gap-3">
                 <span className="truncate text-xl font-bold">
