@@ -136,11 +136,15 @@ export function HomeHero({
           {/* 顶部：账本名 + 三视角切换 */}
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                <CalendarDays className="h-3 w-3" />
-                {t('home.scope.current')} · {scopeLabel}
+              {/* flex-wrap + 分段 nowrap:窄屏被右侧切换器挤压时整段换行,
+                  而不是 CJK 逐字断行(范围括号最多整体掉到第二行) */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                <CalendarDays className="h-3 w-3 shrink-0" />
+                <span className="whitespace-nowrap">
+                  {t('home.scope.current')} · {scopeLabel}
+                </span>
                 {monthRangeLabel && (
-                  <span className="font-normal normal-case tracking-normal text-muted-foreground/70">
+                  <span className="whitespace-nowrap font-normal normal-case tracking-normal text-muted-foreground/70">
                     ({monthRangeLabel})
                   </span>
                 )}
@@ -154,7 +158,9 @@ export function HomeHero({
                 </span>
               </div>
             </div>
-            <ScopeSwitcher value={scope} onChange={setScope} />
+            <div className="shrink-0">
+              <ScopeSwitcher value={scope} onChange={setScope} />
+            </div>
           </div>
 
           <div className="mt-4 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
