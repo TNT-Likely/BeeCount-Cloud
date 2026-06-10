@@ -51,7 +51,7 @@ importers:
         version: 2.6.1
     devDependencies:
       '@types/qrcode':
-        specifier: ^1.5.5
+        specifier: ^1.5.6
         version: 1.5.6
       '@types/react':
         specifier: ^18.3.3

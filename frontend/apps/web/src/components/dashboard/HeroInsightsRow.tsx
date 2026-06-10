@@ -20,6 +20,7 @@ interface Props {
   anomalyMonths: WorkspaceAnalyticsAnomalyMonth[]
   hasEnoughMonths: boolean
   currency?: string
+  ledgerMonthStartDay?: number
 }
 
 /**
@@ -39,6 +40,7 @@ export function HeroInsightsRow({
   anomalyMonths,
   hasEnoughMonths,
   currency = 'CNY',
+  ledgerMonthStartDay = 1,
 }: Props) {
   const t = useT()
   const budgetVM = useBudgetUsageViewModel(budgets, budgetUsageById)
@@ -64,6 +66,7 @@ export function HeroInsightsRow({
               viewModel={budgetVM}
               usageById={budgetUsageById}
               currency={currency}
+              ledgerMonthStartDay={ledgerMonthStartDay}
             />
           </div>
         </BudgetChip>

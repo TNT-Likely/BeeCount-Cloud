@@ -98,6 +98,8 @@ const zhCN = {
   'ledgers.button.update': '保存修改',
   'ledgers.field.name': '账本名称',
   'ledgers.field.currency': '币种',
+  'ledgers.field.monthStartDay': '每月起始日',
+  'ledgers.monthStartDay.hint': '统计与预算按该日作为每月周期起点（1-28），1 为自然月',
   'ledgers.placeholder.name': '如:家庭账本 / 个人账本',
   'ledgers.meta.id': '账本 ID',
   'ledgers.meta.role': '角色',

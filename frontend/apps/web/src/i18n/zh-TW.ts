@@ -556,6 +556,8 @@ const zhTW = {
   'ledgers.button.update': '儲存修改',
   'ledgers.field.name': '帳本名稱',
   'ledgers.field.currency': '幣種',
+  'ledgers.field.monthStartDay': '每月起始日',
+  'ledgers.monthStartDay.hint': '統計與預算按該日作為每月週期起點（1-28），1 為自然月',
   'ledgers.placeholder.name': '如:家庭帳本 / 個人帳本',
   'ledgers.meta.id': '帳本 ID',
   'ledgers.meta.role': '角色',

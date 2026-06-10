@@ -72,6 +72,7 @@ export function HomeHero({
   const activeLedger =
     ledgers.find((l) => l.ledger_id === currentLedgerId) || ledgers[0]
   const currency = activeLedger?.currency || 'CNY'
+  const ledgerMonthStartDay = Math.max(1, Math.min(28, activeLedger?.month_start_day ?? 1))
 
   const summaryByScope: Record<HeroScope, WorkspaceAnalyticsSummary | undefined> = {
     month: monthSummary,
@@ -236,6 +237,7 @@ export function HomeHero({
             anomalyMonths={anomalyMonths || []}
             hasEnoughMonths={!!hasEnoughMonthsForAnomaly}
             currency={currency}
+            ledgerMonthStartDay={ledgerMonthStartDay}
           />
         </div>
 

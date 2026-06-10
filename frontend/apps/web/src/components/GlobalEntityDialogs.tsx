@@ -50,7 +50,7 @@ const CATEGORY_STATS_LIMIT = 1000
 export function GlobalEntityDialogs() {
   const navigate = useNavigate()
   const { token } = useAuth()
-  const { activeLedgerId, currency: activeCurrency } = useLedgers()
+  const { activeLedgerId, currentLedger, currency: activeCurrency } = useLedgers()
   const { previewMap: iconPreviewByFileId } = useAttachmentCache()
 
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
@@ -346,6 +346,7 @@ export function GlobalEntityDialogs() {
         loading={categoryLoading}
         tags={tagsDict}
         iconPreviewUrlByFileId={iconPreviewByFileId}
+        ledgerMonthStartDay={currentLedger?.month_start_day ?? 1}
         onClose={() => setCategory(null)}
         onLoadMore={(syncId, off) => void loadCategoryTxs(syncId, categoryScope, off)}
         onEdit={handleEditCategory}

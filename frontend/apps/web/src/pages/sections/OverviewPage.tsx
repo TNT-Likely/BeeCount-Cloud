@@ -14,7 +14,7 @@ import {
   type WorkspaceLedgerCounts,
   type WorkspaceTag,
 } from '@beecount/api-client'
-import { fetchBudgetsWithUsage, type BudgetUsage } from '@beecount/web-features'
+import { fetchBudgetsWithUsage, periodLabel, type BudgetUsage } from '@beecount/web-features'
 
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
@@ -34,7 +34,7 @@ import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
 export function OverviewPage() {
   const navigate = useNavigate()
   const { token } = useAuth()
-  const { activeLedgerId } = useLedgers()
+  const { activeLedgerId, currentLedger } = useLedgers()
 
   // Overview 的所有数据按当前账本分桶 —— 切账本时读对应桶,没命中显示空
   // 态后台 refetch。accounts / tags 实体本身是 user-global,但首页 Top 卡片
@@ -152,7 +152,8 @@ export function OverviewPage() {
 
   const loadAnalytics = useCallback(async () => {
     const now = new Date()
-    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    const msd = Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
+    const currentPeriod = periodLabel(now, msd)
     const tzOffsetMinutes = -now.getTimezoneOffset()
     // allSettled:单个请求失败时其它请求的数据依然 set。
     const results = await Promise.allSettled([
@@ -215,7 +216,7 @@ export function OverviewPage() {
         first_tx_at: s?.first_tx_at ?? null,
       })
     }
-  }, [token, activeLedgerId])
+  }, [token, activeLedgerId, currentLedger])
 
   useEffect(() => {
     void loadAccountsAndTags()

@@ -14,7 +14,7 @@ import {
   useLocale,
   useT,
 } from '@beecount/ui'
-import { Amount, CategoryIcon, TransactionList } from '@beecount/web-features'
+import { Amount, CategoryIcon, periodLabel, TransactionList } from '@beecount/web-features'
 import { ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
 
 import { formatCompactTick } from '../../i18n/format'
@@ -59,6 +59,8 @@ interface Props {
   onEdit: (category: WorkspaceCategory) => void
   onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
   onJumpToTransactions?: (category: WorkspaceCategory) => void
+  /** 当前账本的每月起始日（1-28），用于把交易折算到正确的记账周期桶。默认 1 = 自然月。 */
+  ledgerMonthStartDay?: number
 }
 
 interface StatsAgg {
@@ -111,6 +113,7 @@ export function CategoryDetailDialog({
   onEdit,
   onPreviewAttachment,
   onJumpToTransactions,
+  ledgerMonthStartDay = 1,
 }: Props) {
   const t = useT()
   const { locale } = useLocale()
@@ -126,14 +129,14 @@ export function CategoryDetailDialog({
 
   const stats = useMemo<StatsAgg | null>(() => {
     if (!category) return null
-    const agg = aggregate(statsTransactions)
+    const agg = aggregate(statsTransactions, ledgerMonthStartDay)
     // 把 tag 颜色用 tags 字典回填,aggregate() 自身不依赖外部数据。
     agg.topTags = agg.topTags.map((tg) => ({
       ...tg,
       color: tagColorByName.get(tg.name) ?? null,
     }))
     return agg
-  }, [category, statsTransactions, tagColorByName])
+  }, [category, statsTransactions, tagColorByName, ledgerMonthStartDay])
 
   const kindLabel = category
     ? category.kind === 'expense'
@@ -230,6 +233,7 @@ export function CategoryDetailDialog({
                 currency={currency}
                 t={t}
                 chinese={chinese}
+                startDay={ledgerMonthStartDay}
               />
 
               <div className="grid gap-4 border-b border-border/60 px-6 py-4 sm:grid-cols-2">
@@ -389,15 +393,17 @@ function TrendBars({
   currency,
   t,
   chinese,
+  startDay = 1,
 }: {
   monthly: { bucket: string; amount: number; count: number }[]
   kind: WorkspaceCategory['kind']
   currency: string
   t: (k: string) => string
   chinese: boolean
+  startDay?: number
 }) {
   // 取最近 12 个月。如果不足 12 期,补空格保证轴长度一致,视觉上能看出"才记账几个月"。
-  const slice = useMemo(() => fillTrailingMonths(monthly, 12), [monthly])
+  const slice = useMemo(() => fillTrailingMonths(monthly, 12, startDay), [monthly, startDay])
   const hasData = slice.some((s) => s.amount > 0)
   const barFill =
     kind === 'expense'
@@ -587,7 +593,7 @@ function TopList({
 // Aggregation helpers
 // --------------------------------------------------------------------------
 
-function aggregate(transactions: WorkspaceTransaction[]): StatsAgg {
+function aggregate(transactions: WorkspaceTransaction[], startDay = 1): StatsAgg {
   let total = 0
   let maxAmount = 0
   let maxTx: WorkspaceTransaction | null = null
@@ -603,7 +609,7 @@ function aggregate(transactions: WorkspaceTransaction[]): StatsAgg {
       maxAmount = amt
       maxTx = tx
     }
-    const bucket = monthBucketLocal(tx.happened_at)
+    const bucket = monthBucketLocal(tx.happened_at, startDay)
     if (bucket) {
       const slot = monthlyMap.get(bucket) || { amount: 0, count: 0 }
       slot.amount += amt
@@ -658,25 +664,26 @@ function aggregate(transactions: WorkspaceTransaction[]): StatsAgg {
   }
 }
 
-/** 用本地时区把 ISO 时间换成 YYYY-MM。 */
-function monthBucketLocal(iso: string | null | undefined): string {
+/** 用本地时区把 ISO 时间换成记账周期标签 YYYY-MM。 */
+function monthBucketLocal(iso: string | null | undefined, startDay = 1): string {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return periodLabel(d, startDay)
 }
 
-/** 把不足 N 期的 monthly 数组从最早期开始补齐到 trailing N 个月,空月份 amount=0 用于柱图占位。 */
+/** 把不足 N 期的 monthly 数组补齐到 trailing N 个记账周期,空周期 amount=0 占位。 */
 function fillTrailingMonths(
   monthly: { bucket: string; amount: number; count: number }[],
   n: number,
+  startDay = 1,
 ): { bucket: string; amount: number; count: number }[] {
   const map = new Map<string, { amount: number; count: number }>()
   for (const m of monthly) map.set(m.bucket, { amount: m.amount, count: m.count })
   const out: { bucket: string; amount: number; count: number }[] = []
-  const now = new Date()
+  const [ly, lm] = periodLabel(new Date(), startDay).split('-').map(Number)
   for (let i = n - 1; i >= 0; i -= 1) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const d = new Date(ly, lm - 1 - i, 1)
     const bucket = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const slot = map.get(bucket)
     out.push({ bucket, amount: slot?.amount || 0, count: slot?.count || 0 })
