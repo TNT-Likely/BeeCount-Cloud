@@ -12,6 +12,7 @@ import {
   useToast,
 } from '@beecount/ui'
 import {
+  ApiError,
   deleteExchangeRateOverride,
   fetchExchangeRateOverrides,
   fetchExchangeRates,
@@ -154,7 +155,13 @@ export function SettingsExchangeRatesSection() {
       await reloadOverrides()
       if (editingQuote === quote) cancelEdit()
     } catch (err) {
-      toast.error(localizeError(err, t), t('notice.error'))
+      // 404 表示 override 本不存在(已删除或从未设置),视为成功:照常 reload。
+      if (err instanceof ApiError && err.status === 404) {
+        await reloadOverrides()
+        if (editingQuote === quote) cancelEdit()
+      } else {
+        toast.error(localizeError(err, t), t('notice.error'))
+      }
     } finally {
       setSavingQuote(null)
     }

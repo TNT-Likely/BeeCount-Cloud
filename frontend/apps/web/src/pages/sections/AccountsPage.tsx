@@ -21,9 +21,10 @@ import {
   AccountsPanel,
   Amount,
   ConfirmDialog,
-  accountBalance,
   accountDefaults,
+  computeCurrencySummary,
   effectiveRateToBase,
+  splitByCurrency,
   type AccountForm,
 } from '@beecount/web-features'
 
@@ -54,6 +55,8 @@ export function AccountsPage() {
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
+  const base = profileMe?.primary_currency || ''
+
   // 主要数据走 PageDataCache —— 切走再切回来立刻显示上次的值,不闪烁。
   // rows 用 WorkspaceAccount(包含 tx_count / balance 等聚合字段),删除前需要
   // 看 tx_count 决定是否提示用户(对齐 mobile account_edit_page._delete)。
@@ -67,9 +70,13 @@ export function AccountsPage() {
 
   // 多币种折算(只读卡)。主币种存在且账户币种 ≥2 种时,并行拉汇率 + 手动 override,
   // 任一失败置 null 不阻塞账户列表。单币种 / 无主币种则不渲染卡(零变化)。
-  const [rates, setRates] = usePageCache<ExchangeRatesResponse | null>('accounts:rates', null)
+  // key 带 base 维度:切换主币种后不会复用旧 base 的汇率缓存。
+  const [rates, setRates] = usePageCache<ExchangeRatesResponse | null>(
+    base ? `accounts:rates:${base}` : 'accounts:rates:',
+    null,
+  )
   const [rateOverrides, setRateOverrides] = usePageCache<ExchangeRateOverride[]>(
-    'accounts:rateOverrides',
+    base ? `accounts:rateOverrides:${base}` : 'accounts:rateOverrides:',
     [],
   )
 
@@ -84,8 +91,6 @@ export function AccountsPage() {
     (msg: string) => toast.success(msg, t('notice.success')),
     [toast, t]
   )
-
-  const base = profileMe?.primary_currency || ''
 
   const refresh = useCallback(async () => {
     try {
@@ -241,27 +246,24 @@ export function AccountsPage() {
     }
   }
 
-  // 折算卡:Σ 各账户 balance × 有效汇率(base 自身 ×1)。缺失币种剔除并记下,
+  // 折算卡:按币种分组 → 每币种 computeCurrencySummary(rows).netWorth × effectiveRateToBase 累加。
+  // 复用 assetAggregation 铁律原语确保负债符号契约单点。缺失汇率的币种进 missing 列表,
   // **绝不按 1 折算**。单币种 / 无主币种 → converted=null,卡不渲染。
   const converted = useMemo(() => {
     if (!base) return null
-    const distinct = new Set<string>()
-    for (const r of rows) {
-      const cur = (r.currency || '').toUpperCase()
-      if (cur) distinct.add(cur)
-    }
-    if (distinct.size < 2) return null
+    const byCur = splitByCurrency(rows)
+    if (byCur.size < 2) return null
 
     let netWorth = 0
     const missing = new Set<string>()
-    for (const r of rows) {
-      const cur = (r.currency || '').toUpperCase() || base
+    for (const [cur, curRows] of byCur) {
       const eff = effectiveRateToBase(cur, base, rates, rateOverrides)
       if (!eff) {
         missing.add(cur)
         continue
       }
-      netWorth += accountBalance(r) * eff.rate
+      const summary = computeCurrencySummary(curRows)
+      netWorth += summary.netWorth * eff.rate
     }
     return { netWorth, missing: [...missing].sort(), rateDate: rates?.rate_date }
   }, [base, rows, rates, rateOverrides])

@@ -1,7 +1,8 @@
-import type { ReadAccount } from '@beecount/api-client'
+import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 import {
   accountBalance,
   computeCurrencySummary,
+  effectiveRateToBase,
   LIABILITY_TYPES,
   splitByCurrency
 } from '@beecount/web-features'
@@ -72,5 +73,70 @@ describe('asset aggregation — 绝不跨币种相加', () => {
     }, 0)
     expect(naiveWrong).toBe(2_473_400)
     expect(cny.netWorth).not.toBe(naiveWrong)
+  })
+})
+
+/**
+ * effectiveRateToBase 契约 —— pin 住各边界分支的有意行为。
+ *
+ * 特别注意:override 存在但非法(非 finite / <=0)→ 返回 null,**不回落 auto**。
+ * 这是有意行为:用户手动填了一个坏值,宁可让折算缺失也不静默用自动值混淆来源。
+ */
+describe('effectiveRateToBase', () => {
+  // 构造辅助
+  function auto(rates: Record<string, string>, rateDate = '2025-01-01'): ExchangeRatesResponse {
+    return { rates, rate_date: rateDate } as ExchangeRatesResponse
+  }
+  function ov(base_currency: string, quote_currency: string, rate: string): ExchangeRateOverride {
+    return { base_currency, quote_currency, rate } as ExchangeRateOverride
+  }
+
+  it('① quote === base → rate 1, source auto', () => {
+    const result = effectiveRateToBase('CNY', 'CNY', null, [])
+    expect(result).not.toBeNull()
+    expect(result!.rate).toBe(1)
+    expect(result!.source).toBe('auto')
+  })
+
+  it('② override 优先于 auto —— override rate 用于计算,source=manual', () => {
+    const autoRates = auto({ USD: '7.2' })    // 1 CNY = 7.2 USD → auto: 1 USD = 1/7.2 CNY
+    const overrides = [ov('CNY', 'USD', '7.5')] // 1 USD = 7.5 CNY (手动)
+    const result = effectiveRateToBase('USD', 'CNY', autoRates, overrides)
+    expect(result).not.toBeNull()
+    expect(result!.rate).toBe(7.5)
+    expect(result!.source).toBe('manual')
+  })
+
+  it('③ auto 取倒数 —— rates["USD"]="0.25" → 1 USD = 4 base', () => {
+    // auto rates 存储的是 1 base = x quote,故 1 quote = 1/x base
+    const autoRates = auto({ USD: '0.25' })  // 1 CNY = 0.25 USD → 1 USD = 4 CNY
+    const result = effectiveRateToBase('USD', 'CNY', autoRates, [])
+    expect(result).not.toBeNull()
+    expect(result!.rate).toBeCloseTo(4)
+    expect(result!.source).toBe('auto')
+  })
+
+  it('④ override 存在但非法(非 finite/<=0) → null,不回落 auto(有意行为,pin 住)', () => {
+    const autoRates = auto({ USD: '7.2' })   // auto 有值
+    const overrides = [ov('CNY', 'USD', 'bad')] // override rate 非法
+    expect(effectiveRateToBase('USD', 'CNY', autoRates, overrides)).toBeNull()
+
+    const overridesZero = [ov('CNY', 'USD', '0')]
+    expect(effectiveRateToBase('USD', 'CNY', autoRates, overridesZero)).toBeNull()
+
+    const overridesNeg = [ov('CNY', 'USD', '-1')]
+    expect(effectiveRateToBase('USD', 'CNY', autoRates, overridesNeg)).toBeNull()
+  })
+
+  it('⑤ auto 缺失/非法 → null', () => {
+    // auto 为 null
+    expect(effectiveRateToBase('USD', 'CNY', null, [])).toBeNull()
+
+    // auto 存在但该 quote 不在 rates 里
+    expect(effectiveRateToBase('EUR', 'CNY', auto({ USD: '7.2' }), [])).toBeNull()
+
+    // auto rates 值非法
+    expect(effectiveRateToBase('USD', 'CNY', auto({ USD: 'NaN' }), [])).toBeNull()
+    expect(effectiveRateToBase('USD', 'CNY', auto({ USD: '0' }), [])).toBeNull()
   })
 })
