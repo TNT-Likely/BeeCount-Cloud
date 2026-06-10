@@ -1,4 +1,4 @@
-import type { ReadAccount } from '@beecount/api-client'
+import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 
 /**
  * 资产页多币种聚合的纯逻辑核心。
@@ -57,4 +57,21 @@ export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
     else assetTotal += raw
   }
   return { assetTotal, liabilityTotal, netWorth: assetTotal - liabilityTotal }
+}
+
+/** 有效汇率:override(1 quote = x base)优先;否则代理自动值(1 base = x quote)取倒数。缺失返回 null,绝不回落 1。 */
+export function effectiveRateToBase(
+  quote: string, base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[]
+): { rate: number; source: 'manual' | 'auto'; date?: string } | null {
+  if (quote === base) return { rate: 1, source: 'auto' }
+  const ov = overrides.find((o) => o.base_currency === base && o.quote_currency === quote)
+  if (ov) {
+    const r = Number(ov.rate)
+    return Number.isFinite(r) && r > 0 ? { rate: r, source: 'manual' } : null
+  }
+  const raw = Number(auto?.rates?.[quote])
+  if (!Number.isFinite(raw) || raw <= 0) return null
+  return { rate: 1 / raw, source: 'auto', date: auto!.rate_date }
 }

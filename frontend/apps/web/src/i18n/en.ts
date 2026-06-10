@@ -1655,6 +1655,25 @@ const en = {
   'pwa.install.apply': 'Install',
   'pwa.install.never': "Don't ask again",
   'pwa.install.accepted': 'Installed — find "BeeCount" in your dock / home screen',
+
+  // Multi-currency: primary currency setting / exchange rates / asset conversion
+  'settings.primaryCurrency': 'Primary currency',
+  'settings.primaryCurrency.hint': 'Target currency for asset conversion, synced with the app',
+  'settings.primaryCurrency.unset': 'Not set',
+  'rates.title': 'Exchange rates',
+  'rates.refresh': 'Refresh rates',
+  'rates.sourceAuto': 'Auto',
+  'rates.sourceManual': 'Manual',
+  'rates.updatedAt': 'Updated {date}',
+  'rates.notFetched': 'Not available',
+  'rates.edit': 'Edit rate',
+  'rates.resetToAuto': 'Reset to auto',
+  'rates.inverseHint': 'Inverse: 1 {base} ≈ {rate} {quote}',
+  'rates.emptyHint': 'Set different currencies on your accounts and manageable rates will appear here',
+  'rates.disclaimer': 'Source: open exchange-rate data, updated daily. Conversions are for reference only and may differ from your bank’s actual rates.',
+  'accounts.converted.netWorth': 'Net worth (in {currency})',
+  'accounts.converted.footnote': 'Converted at {date} rates',
+  'accounts.converted.missing': '{currencies} not converted',
 } as const
 
 export default en

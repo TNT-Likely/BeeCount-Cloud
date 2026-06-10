@@ -42,9 +42,17 @@ import { patchProfileMe, uploadProfileAvatar } from '@beecount/api-client'
 import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
 import { TwoFactorAuthInline } from './TwoFactorAuthSection'
+import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
 const DISPLAY_NAME_MAX = 60
+
+// 主币种候选列表 —— 跟 mobile prefs `baseCurrency` 常见取值对齐。当前值不在列表时
+// 会在下方动态补进去,保证旧值也能正常展示 / 选中。
+const PRIMARY_CURRENCY_OPTIONS = [
+  'CNY', 'USD', 'EUR', 'JPY', 'HKD', 'GBP', 'KRW', 'SGD',
+  'AUD', 'CAD', 'TWD', 'THB', 'MYR', 'RUB', 'INR', 'CHF',
+]
 
 /** 按本地时段返回欢迎语 i18n key + 配图 —— 5-11 / 11-13 / 13-18 / 18-23 /
  *  23-5。icon 用 lucide-react,不同时段 vibe 不同。 */
@@ -209,6 +217,30 @@ export function SettingsProfileAppearanceSection() {
       toast.error(localizeError(err, t))
     } finally {
       setAppearanceSaving(false)
+    }
+  }
+
+  // 主币种(本位币)—— 资产折算目标,跟 mobile prefs `baseCurrency` 同步。
+  const primaryCurrency = profileMe?.primary_currency || ''
+  const [primaryCurrencySaving, setPrimaryCurrencySaving] = useState(false)
+  // 候选列表 ∪ 当前值(旧值可能不在内置列表,补进去保证可选中)
+  const currencyOptions = useMemo(() => {
+    const set = [...PRIMARY_CURRENCY_OPTIONS]
+    if (primaryCurrency && !set.includes(primaryCurrency)) set.unshift(primaryCurrency)
+    return set
+  }, [primaryCurrency])
+
+  const handlePrimaryCurrencyChange = async (code: string) => {
+    if (primaryCurrencySaving || code === primaryCurrency) return
+    setPrimaryCurrencySaving(true)
+    try {
+      await patchProfileMe(token, { primary_currency: code })
+      await refreshProfile()
+      toast.success(t('notice.profileUpdated'))
+    } catch (err) {
+      toast.error(localizeError(err, t))
+    } finally {
+      setPrimaryCurrencySaving(false)
     }
   }
 
@@ -491,8 +523,45 @@ export function SettingsProfileAppearanceSection() {
               </button>
             </div>
           </div>
+
+          {/* 主币种(本位币)—— 资产折算目标,与 mobile prefs baseCurrency 同步。
+              空值时占位显示「未设置」;旧值不在内置列表会被 currencyOptions 补上。 */}
+          <div className="rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{t('settings.primaryCurrency')}</p>
+                <p className="text-xs text-muted-foreground">
+                  {t('settings.primaryCurrency.hint')}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {primaryCurrencySaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                ) : null}
+                <Select
+                  value={primaryCurrency}
+                  onValueChange={(value) => void handlePrimaryCurrencyChange(value)}
+                  disabled={primaryCurrencySaving}
+                >
+                  <SelectTrigger className="h-8 w-[140px] text-sm">
+                    <SelectValue placeholder={t('settings.primaryCurrency.unset')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {currencyOptions.map((code) => (
+                      <SelectItem key={code} value={code}>
+                        {code} · {t(`currency.${code}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
+
+      {/* 汇率管理小节 —— 主币种未设置时内部渲染空态、不发请求 */}
+      <SettingsExchangeRatesSection />
     </div>
   )
 }

@@ -1,22 +1,29 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   createAccount,
   deleteAccount,
+  fetchExchangeRateOverrides,
+  fetchExchangeRates,
   fetchWorkspaceAccounts,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   updateAccount,
+  type ExchangeRateOverride,
+  type ExchangeRatesResponse,
   type ReadAccount,
   type WorkspaceAccount,
   type WorkspaceTag,
   type WorkspaceTransaction,
 } from '@beecount/api-client'
-import { useT, useToast } from '@beecount/ui'
+import { Card, CardContent, useT, useToast } from '@beecount/ui'
 import {
   AccountsPanel,
+  Amount,
   ConfirmDialog,
+  accountBalance,
   accountDefaults,
+  effectiveRateToBase,
   type AccountForm,
 } from '@beecount/web-features'
 
@@ -43,7 +50,7 @@ const ACCOUNT_DETAIL_PAGE_SIZE = 20
 export function AccountsPage() {
   const t = useT()
   const toast = useToast()
-  const { token } = useAuth()
+  const { token, profileMe } = useAuth()
   const { activeLedgerId } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
@@ -58,6 +65,14 @@ export function AccountsPage() {
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // 多币种折算(只读卡)。主币种存在且账户币种 ≥2 种时,并行拉汇率 + 手动 override,
+  // 任一失败置 null 不阻塞账户列表。单币种 / 无主币种则不渲染卡(零变化)。
+  const [rates, setRates] = usePageCache<ExchangeRatesResponse | null>('accounts:rates', null)
+  const [rateOverrides, setRateOverrides] = usePageCache<ExchangeRateOverride[]>(
+    'accounts:rateOverrides',
+    [],
+  )
+
   // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
   // dispatch openDetailAccount 事件,弹窗在全局渲染。
 
@@ -70,6 +85,8 @@ export function AccountsPage() {
     [toast, t]
   )
 
+  const base = profileMe?.primary_currency || ''
+
   const refresh = useCallback(async () => {
     try {
       const [accountRows, tagRows] = await Promise.all([
@@ -78,10 +95,29 @@ export function AccountsPage() {
       ])
       setRows(accountRows)
       setTags(tagRows)
+
+      // 只有"主币种存在 + 账户涉及 ≥2 种币种"才需要折算卡。其余情况清空缓存,
+      // 让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
+      const distinct = new Set<string>()
+      for (const a of accountRows) {
+        const cur = (a.currency || '').toUpperCase()
+        if (cur) distinct.add(cur)
+      }
+      if (base && distinct.size >= 2) {
+        const [r, o] = await Promise.all([
+          fetchExchangeRates(token, base).catch(() => null),
+          fetchExchangeRateOverrides(token).catch(() => [] as ExchangeRateOverride[]),
+        ])
+        setRates(r)
+        setRateOverrides(o)
+      } else {
+        setRates(null)
+        setRateOverrides([])
+      }
     } catch (err) {
       notifyError(err)
     }
-  }, [token, notifyError])
+  }, [token, base, notifyError])
 
   useEffect(() => {
     void refresh()
@@ -205,8 +241,57 @@ export function AccountsPage() {
     }
   }
 
+  // 折算卡:Σ 各账户 balance × 有效汇率(base 自身 ×1)。缺失币种剔除并记下,
+  // **绝不按 1 折算**。单币种 / 无主币种 → converted=null,卡不渲染。
+  const converted = useMemo(() => {
+    if (!base) return null
+    const distinct = new Set<string>()
+    for (const r of rows) {
+      const cur = (r.currency || '').toUpperCase()
+      if (cur) distinct.add(cur)
+    }
+    if (distinct.size < 2) return null
+
+    let netWorth = 0
+    const missing = new Set<string>()
+    for (const r of rows) {
+      const cur = (r.currency || '').toUpperCase() || base
+      const eff = effectiveRateToBase(cur, base, rates, rateOverrides)
+      if (!eff) {
+        missing.add(cur)
+        continue
+      }
+      netWorth += accountBalance(r) * eff.rate
+    }
+    return { netWorth, missing: [...missing].sort(), rateDate: rates?.rate_date }
+  }, [base, rows, rates, rateOverrides])
+
   return (
     <>
+      {converted ? (
+        <Card className="bc-panel mb-4">
+          <CardContent className="space-y-1 p-5">
+            <p className="text-xs text-muted-foreground">
+              {t('accounts.converted.netWorth', { currency: base })}
+            </p>
+            <Amount value={converted.netWorth} currency={base} showCurrency size="2xl" bold />
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pt-1">
+              {converted.rateDate ? (
+                <span className="text-[11px] text-muted-foreground">
+                  {t('accounts.converted.footnote', { date: converted.rateDate })}
+                </span>
+              ) : null}
+              {converted.missing.length > 0 ? (
+                <span className="text-[11px] text-amber-600 dark:text-amber-500">
+                  {t('accounts.converted.missing', {
+                    currencies: converted.missing.join(', '),
+                  })}
+                </span>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
       <AccountsPanel
         form={form}
         rows={rows}
