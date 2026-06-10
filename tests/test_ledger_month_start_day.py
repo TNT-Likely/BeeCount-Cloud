@@ -455,3 +455,47 @@ def test_web_create_ledger_with_month_start_day() -> None:
             assert payload["monthStartDay"] == 12
     finally:
         app.dependency_overrides.clear()
+
+
+def test_workspace_analytics_natural_month_override() -> None:
+    """日历等公历消费方传 natural_month=true 时,单账本也按自然月切月(D6)。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "msd9@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, token, device, "L_MSD9")
+        _push_ledger_upsert(
+            client, token, device, "L_MSD9",
+            {"syncId": "L_MSD9", "ledgerName": "L_MSD9", "currency": "CNY",
+             "monthStartDay": 15},
+        )
+        web_token = _login_web(client, "msd9@example.com")["access_token"]
+
+        res = client.get(
+            "/api/v1/read/workspace/analytics",
+            params={
+                "scope": "month",
+                "period": "2026-06",
+                "ledger_id": "L_MSD9",
+                "natural_month": "true",
+            },
+            headers={"Authorization": f"Bearer {web_token}"},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        # 自然月口径:start=2026-06-01,end=2026-06-30T23:59:59Z(端点返回含首尾 -1s 表示)
+        assert body["range"]["start_at"].startswith("2026-06-01")
+        assert body["range"]["end_at"].startswith("2026-06-30")
+
+        # 不传 override 时按 msd=15
+        res = client.get(
+            "/api/v1/read/workspace/analytics",
+            params={"scope": "month", "period": "2026-06", "ledger_id": "L_MSD9"},
+            headers={"Authorization": f"Bearer {web_token}"},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["range"]["start_at"].startswith("2026-06-15")
+        assert body["range"]["end_at"].startswith("2026-07-14")
+    finally:
+        app.dependency_overrides.clear()

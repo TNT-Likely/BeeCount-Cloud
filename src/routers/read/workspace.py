@@ -933,6 +933,7 @@ def workspace_analytics(
     ledger_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    natural_month: bool = Query(default=False),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -943,9 +944,11 @@ def workspace_analytics(
         ledger_id=ledger_id, user_id=user_id,
     )
     # 单账本视图用该账本的自定义起始日;多账本聚合维持自然月(各账本周期可能
-    # 不同无法对齐)。
+    # 不同无法对齐)。natural_month=true 强制自然月(日历网格等按公历的消费方,D6)。
     month_start_day = (
-        (ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1
+        1
+        if natural_month
+        else ((ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1)
     )
     start_at, end_at, normalized_period = _analytics_range(
         scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,
