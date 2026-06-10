@@ -43,7 +43,7 @@ def list_exchange_rate_overrides(
             base_currency=r.base_currency,
             quote_currency=r.quote_currency,
             rate=r.rate,
-            updated_at=_utc_iso(r.updated_at),
+            updated_at=_utc_iso(r.updated_at) or "",  # 列 NOT NULL,or "" 仅为类型收敛
         )
         for r in rows
     ]
@@ -76,7 +76,7 @@ async def get_exchange_rates(
         base=row.base_currency,
         rate_date=row.rate_date,
         source=row.source,
-        fetched_at=_utc_iso(row.fetched_at),
+        fetched_at=_utc_iso(row.fetched_at) or "",  # 列 NOT NULL,or "" 仅为类型收敛
         stale=stale,
         rates=dict(row.payload_json),
     )
