@@ -287,7 +287,8 @@ export function AssetsCompositionMini({
   currency,
   showCurrency = false,
   embedded = false,
-  title
+  title,
+  approx = false
 }: {
   groups: AssetGroup[]
   totalAbs: number
@@ -298,6 +299,8 @@ export function AssetsCompositionMini({
   embedded?: boolean
   /** 标题文案覆盖,缺省走 accounts.composition(折算汇总视图传"资产构成(折X)")。 */
   title?: string
+  /** true 时中心合计金额前加「≈」前缀,用于折算汇总视图;分币种卡(原币)不传,缺省 false。 */
+  approx?: boolean
 }) {
   const t = useT()
   // 传进来的 groups 一定是单币种(单币种页 or 某一币种卡),subtotals 求和即该币种值。
@@ -351,14 +354,18 @@ export function AssetsCompositionMini({
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 {t('common.total')}
               </div>
-              <Amount
-                value={totalAbs}
-                currency={currency}
-                showCurrency={showCurrency}
-                size="md"
-                bold
-                className="mt-0.5"
-              />
+              <div className="mt-0.5 flex items-baseline gap-0.5">
+                {approx ? (
+                  <span className="font-mono text-[10px] text-muted-foreground">≈</span>
+                ) : null}
+                <Amount
+                  value={totalAbs}
+                  currency={currency}
+                  showCurrency={showCurrency}
+                  size="md"
+                  bold
+                />
+              </div>
             </div>
           </div>
           {/* legend */}

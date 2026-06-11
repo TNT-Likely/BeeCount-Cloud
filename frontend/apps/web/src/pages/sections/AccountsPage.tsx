@@ -349,14 +349,17 @@ export function AccountsPage() {
                   <p className="text-xs text-muted-foreground">
                     {t('accounts.converted.netWorth', { currency: base })}
                   </p>
-                  <Amount
-                    value={converted.netWorth}
-                    currency={base}
-                    showCurrency
-                    size="2xl"
-                    bold
-                    tone={converted.netWorth >= 0 ? 'positive' : 'negative'}
-                  />
+                  <div className="flex items-baseline gap-1">
+                    <span className="font-mono text-sm text-muted-foreground">≈</span>
+                    <Amount
+                      value={converted.netWorth}
+                      currency={base}
+                      showCurrency
+                      size="2xl"
+                      bold
+                      tone={converted.netWorth >= 0 ? 'positive' : 'negative'}
+                    />
+                  </div>
                 </div>
                 <ConvertedToggle
                   on={convertedView}
@@ -371,29 +374,33 @@ export function AccountsPage() {
                   <div className="text-[10px] uppercase tracking-wider text-emerald-600/80 dark:text-emerald-400/80">
                     {t('accounts.assets')}
                   </div>
-                  <Amount
-                    value={converted.assetTotal}
-                    currency={base}
-                    size="lg"
-                    bold
-                    showCurrency
-                    tone="positive"
-                    className="mt-0.5 block"
-                  />
+                  <div className="mt-0.5 flex items-baseline gap-1">
+                    <span className="font-mono text-xs text-muted-foreground">≈</span>
+                    <Amount
+                      value={converted.assetTotal}
+                      currency={base}
+                      size="lg"
+                      bold
+                      showCurrency
+                      tone="positive"
+                    />
+                  </div>
                 </div>
                 <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-wider text-rose-600/80 dark:text-rose-400/80">
                     {t('accounts.liabilities')}
                   </div>
-                  <Amount
-                    value={converted.liabilityTotal}
-                    currency={base}
-                    size="lg"
-                    bold
-                    showCurrency
-                    tone="negative"
-                    className="mt-0.5 block"
-                  />
+                  <div className="mt-0.5 flex items-baseline gap-1">
+                    <span className="font-mono text-xs text-muted-foreground">≈</span>
+                    <Amount
+                      value={converted.liabilityTotal}
+                      currency={base}
+                      size="lg"
+                      bold
+                      showCurrency
+                      tone="negative"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -405,6 +412,7 @@ export function AccountsPage() {
                   currency={base}
                   showCurrency
                   embedded
+                  approx
                   title={t('accounts.converted.composition', { currency: base })}
                 />
               ) : null}
