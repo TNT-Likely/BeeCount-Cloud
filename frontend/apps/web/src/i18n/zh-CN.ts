@@ -292,6 +292,10 @@ const zhCN = {
   'home.assetComp.totalAsset': '总资产',
   'home.assetComp.liability': '负债 {value}',
 
+  // 资产页「走势 / 构成」切换
+  'accounts.trendOrComposition.trend': '走势',
+  'accounts.trendOrComposition.composition': '构成',
+
   // OverviewHero (cross-ledger)
   'overview.hero.netWorth': '净值（资产 - 负债）',
   'overview.hero.scopeIncome': '{scope}收入 {value}',

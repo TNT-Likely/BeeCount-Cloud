@@ -45,7 +45,7 @@ import {
   type CurrencyBucket,
 } from '@beecount/web-features'
 
-import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
+import { NetWorthOrCompositionCard } from '../../components/dashboard/NetWorthOrCompositionCard'
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -466,10 +466,11 @@ export function AccountsPage() {
           </div>
         )
       ) : null}
-      {/* 净资产趋势 —— 资产页顶部汇总区,位于(可选的)折算汇总卡下方、账户列表之前。
-          对齐 App 资产页净资产卡的 sparkline;多币种脚注 / <2 期空态由组件内部处理。 */}
+      {/* 净资产走势 / 资产构成 —— 资产页顶部汇总区,位于(可选的)折算汇总卡下方、账户
+          列表之前。顶部分段切换在「走势」与「构成」间切换,选择设备级持久化。多币种脚注 /
+          空态由各子组件内部处理。 */}
       <div className="mb-4">
-        <NetWorthTrend data={netWorthHistory} />
+        <NetWorthOrCompositionCard netWorthHistory={netWorthHistory} accounts={rows} />
       </div>
       <AccountsPanel
         form={form}
