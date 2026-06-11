@@ -47,6 +47,7 @@ import {
 
 import { NetWorthOrCompositionCard } from '../../components/dashboard/NetWorthOrCompositionCard'
 import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
+import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -71,15 +72,13 @@ function readConvertedView(): boolean {
   }
 }
 
-// 折算卡内「构成 / 走势」tab 的设备级持久化 —— 与 NetWorthOrCompositionCard
-// (非折算态那张独立卡)复用同一 key,两处切换状态共享。折算卡这里原本就是构成,
-// 故默认 'composition'(NetWorthOrCompositionCard 默认 'trend',各自合理)。
-type TrendOrComposition = 'trend' | 'composition'
-const TREND_OR_COMPOSITION_KEY = 'beecount:web:accounts:trendOrComposition'
-
-function readTrendOrComposition(): TrendOrComposition {
+// 折算卡内「构成 / 走势」tab 的设备级持久化(key/类型见 assetViewPrefs)—— 与
+// NetWorthOrCompositionCard(非折算态那张独立卡)复用同一 key,两处切换状态共享。
+// 折算卡这里原本就是构成,故默认 'composition'(NetWorthOrCompositionCard 默认
+// 'trend',各自合理)。
+function readTrendOrComposition(): AssetView {
   try {
-    return localStorage.getItem(TREND_OR_COMPOSITION_KEY) === 'trend' ? 'trend' : 'composition'
+    return localStorage.getItem(ASSET_VIEW_KEY) === 'trend' ? 'trend' : 'composition'
   } catch {
     return 'composition'
   }
@@ -126,14 +125,14 @@ export function AccountsPage() {
     }
   }, [convertedView])
 
-  // 折算卡内「构成 / 走势」tab(见 TREND_OR_COMPOSITION_KEY)。设备级持久化,
+  // 折算卡内「构成 / 走势」tab(见 ASSET_VIEW_KEY)。设备级持久化,
   // 与非折算态独立卡复用同一 key。
-  const [trendOrComposition, setTrendOrComposition] = useState<TrendOrComposition>(
+  const [trendOrComposition, setTrendOrComposition] = useState<AssetView>(
     () => readTrendOrComposition(),
   )
   useEffect(() => {
     try {
-      localStorage.setItem(TREND_OR_COMPOSITION_KEY, trendOrComposition)
+      localStorage.setItem(ASSET_VIEW_KEY, trendOrComposition)
     } catch {
       // private mode / 超配额忽略
     }
@@ -451,11 +450,11 @@ export function AccountsPage() {
 
               {/* 「构成 / 走势」tab —— 占位原合并构成 donut。构成=各币种分组折算到主币种
                   后按类型聚合(currency=base)的 donut;走势=嵌入式净值走势图(无外层卡)。
-                  选择设备级持久化(见 TREND_OR_COMPOSITION_KEY)。无构成数据时构成 tab
+                  选择设备级持久化(见 ASSET_VIEW_KEY)。无构成数据时构成 tab
                   退化为空(沿用原 mergedGroups.length 守卫)。 */}
               <div>
                 <div className="mb-2 flex justify-end gap-1">
-                  {(['composition', 'trend'] as TrendOrComposition[]).map((v) => (
+                  {(['composition', 'trend'] as AssetView[]).map((v) => (
                     <button
                       key={v}
                       type="button"
@@ -475,7 +474,6 @@ export function AccountsPage() {
                 ) : converted.mergedGroups.length > 0 ? (
                   <AssetsCompositionMini
                     groups={converted.mergedGroups}
-                    totalAbs={converted.assetTotal + Math.abs(converted.liabilityTotal)}
                     currency={base}
                     showCurrency
                     embedded

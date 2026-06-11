@@ -4,16 +4,13 @@ import { useT } from '@beecount/ui'
 
 import { AssetCompositionDonut } from './AssetCompositionDonut'
 import { NetWorthTrend } from './NetWorthTrend'
+import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 
-type View = 'trend' | 'composition'
-
-// 设备级持久化用户在「走势 / 构成」之间的选择。照本仓 token 惯例(见 AccountsPage
-// 的 CONVERTED_VIEW_KEY):useState 初始化器读 localStorage,useEffect 写回。
-const VIEW_KEY = 'beecount:web:accounts:trendOrComposition'
-
-function readView(): View {
+// 设备级持久化用户在「走势 / 构成」之间的选择(key/类型见 assetViewPrefs)。
+// 与 AccountsPage 折算卡内的 tab 复用同一份状态;本卡默认 'trend'。
+function readView(): AssetView {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'composition' ? 'composition' : 'trend'
+    return localStorage.getItem(ASSET_VIEW_KEY) === 'composition' ? 'composition' : 'trend'
   } catch {
     return 'trend'
   }
@@ -33,11 +30,11 @@ export function NetWorthOrCompositionCard({
   accounts: WorkspaceAccount[]
 }) {
   const t = useT()
-  const [view, setView] = useState<View>(() => readView())
+  const [view, setView] = useState<AssetView>(() => readView())
 
   useEffect(() => {
     try {
-      localStorage.setItem(VIEW_KEY, view)
+      localStorage.setItem(ASSET_VIEW_KEY, view)
     } catch {
       // localStorage 超配额 / 私密模式 —— 持久化丢了也不致命。
     }
@@ -46,7 +43,7 @@ export function NetWorthOrCompositionCard({
   return (
     <div>
       <div className="mb-2 flex justify-end gap-1">
-        {(['trend', 'composition'] as View[]).map((v) => (
+        {(['trend', 'composition'] as AssetView[]).map((v) => (
           <button
             key={v}
             type="button"

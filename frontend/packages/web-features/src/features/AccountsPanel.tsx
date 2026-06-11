@@ -100,7 +100,6 @@ function MobileStyleAssets({
           <AssetsSummaryHero summary={single.summary} currency={single.currency} />
           <AssetsCompositionMini
             groups={single.groups}
-            totalAbs={single.summary.assetTotal + Math.abs(single.summary.liabilityTotal)}
             currency={single.currency}
           />
         </div>
@@ -290,8 +289,6 @@ export function AssetsCompositionMini({
   approx = false
 }: {
   groups: AssetGroup[]
-  /** @deprecated 资产构成已改为只含资产类、内部自算资产合计；此参数不再使用，保留仅为兼容现有调用处传参。 */
-  totalAbs?: number
   currency: string
   /** 中心总额是否带币种符号(多币种卡内需要,单币种页保持原样不带)。 */
   showCurrency?: boolean
@@ -314,8 +311,8 @@ export function AssetsCompositionMini({
       color: g.color,
       value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
     }))
-  // 中心合计 / 扇区 / 百分比分母都用「资产合计」（资产组之和），不用传入的 totalAbs
-  // —— 后者含 |负债|，会把信用卡等负债也算进资产构成（这正是之前的 bug）。
+  // 中心合计 / 扇区 / 百分比分母都用「资产合计」（资产组之和）—— 绝不把 |负债|
+  // 算进来，否则信用卡等负债会被计入资产构成（这正是之前的 bug）。
   const assetTotal = data.reduce((s, d) => s + d.value, 0)
   const total = assetTotal > 0 ? assetTotal : 1
   // conic-gradient 分段
@@ -813,7 +810,6 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
 export function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
   const t = useT()
   const { currency, summary, groups } = entry
-  const totalAbs = summary.assetTotal + Math.abs(summary.liabilityTotal)
   return (
     <div className="flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-card/60">
       <div className="flex items-center justify-between gap-2 border-b border-border/40 px-4 py-3">
@@ -867,7 +863,6 @@ export function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
       </div>
       <AssetsCompositionMini
         groups={groups}
-        totalAbs={totalAbs}
         currency={currency}
         showCurrency
         embedded
