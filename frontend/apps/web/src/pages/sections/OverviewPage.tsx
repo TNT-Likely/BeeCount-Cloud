@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
+  fetchNetWorthHistory,
   fetchWorkspaceAccounts,
   fetchWorkspaceAnalytics,
   fetchWorkspaceCategories,
   fetchWorkspaceLedgerCounts,
   fetchWorkspaceTags,
+  type NetWorthHistory,
   type ReadBudget,
   type WorkspaceAccount,
   type WorkspaceAnalytics,
@@ -81,6 +83,10 @@ export function OverviewPage() {
   const [allTimeSeries, setAllTimeSeries] = usePageCache<WorkspaceAnalytics['series']>(
     `overview:${bucket}:allSeries`,
     []
+  )
+  const [netWorthHistory, setNetWorthHistory] = usePageCache<NetWorthHistory | null>(
+    `overview:${bucket}:netWorthHistory`,
+    null
   )
   const [ledgerCounts, setLedgerCounts] = usePageCache<WorkspaceLedgerCounts | null>(
     `overview:${bucket}:ledgerCounts`,
@@ -185,8 +191,12 @@ export function OverviewPage() {
       fetchWorkspaceLedgerCounts(token, {
         ledgerId: activeLedgerId || undefined,
       }),
+      fetchNetWorthHistory(token, {
+        ledgerId: activeLedgerId || undefined,
+        tzOffsetMinutes,
+      }),
     ])
-    const [rYearExpense, rYearIncome, rMonthly, rAll, rCounts] = results
+    const [rYearExpense, rYearIncome, rMonthly, rAll, rCounts, rNetWorth] = results
     if (rYearExpense.status === 'fulfilled') {
       setAnalyticsData(rYearExpense.value)
       setCurrentYearSummary(rYearExpense.value.summary)
@@ -203,6 +213,9 @@ export function OverviewPage() {
     if (rAll.status === 'fulfilled') {
       setAllTimeSummary(rAll.value.summary)
       setAllTimeSeries(rAll.value.series || [])
+    }
+    if (rNetWorth.status === 'fulfilled') {
+      setNetWorthHistory(rNetWorth.value)
     }
     if (rCounts.status === 'fulfilled') {
       setLedgerCounts(rCounts.value)
@@ -301,6 +314,7 @@ export function OverviewPage() {
       allTimeSeries={allTimeSeries}
       analyticsData={analyticsData}
       analyticsIncomeRanks={analyticsIncomeRanks}
+      netWorthHistory={netWorthHistory}
       ledgerCounts={ledgerCounts}
       budgets={budgets}
       budgetUsageById={budgetUsageById}

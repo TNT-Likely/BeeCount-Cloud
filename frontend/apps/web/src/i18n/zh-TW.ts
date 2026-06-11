@@ -724,6 +724,13 @@ const zhTW = {
   'home.trendBars.balance': '淨額',
   'common.unit.10k': '萬',
 
+  'home.netWorthTrend.title': '淨資產趨勢',
+  'home.netWorthTrend.net_worth': '淨資產',
+  'home.netWorthTrend.assets': '總資產',
+  'home.netWorthTrend.liabilities': '總負債',
+  'home.netWorthTrend.empty': '暫無淨值資料',
+  'home.netWorthTrend.note': '歷史淨值為各幣種原值相加,未折算',
+
   'home.assetComp.title': '資產組成',
   'home.assetComp.empty': '暫無帳戶資料',
   'home.assetComp.totalAsset': '總資產',

@@ -278,6 +278,14 @@ const zhCN = {
   'home.trendBars.balance': '净额',
   'common.unit.10k': '万',
 
+  // NetWorthTrend
+  'home.netWorthTrend.title': '净资产趋势',
+  'home.netWorthTrend.net_worth': '净资产',
+  'home.netWorthTrend.assets': '总资产',
+  'home.netWorthTrend.liabilities': '总负债',
+  'home.netWorthTrend.empty': '暂无净值数据',
+  'home.netWorthTrend.note': '历史净值为各币种原值相加,未折算',
+
   // AssetCompositionDonut
   'home.assetComp.title': '资产构成',
   'home.assetComp.empty': '暂无账户数据',

@@ -1,4 +1,5 @@
 import type {
+  NetWorthHistory,
   ReadBudget,
   WorkspaceAccount,
   WorkspaceAnalytics,
@@ -23,6 +24,7 @@ import { HomeTopTags } from '../dashboard/HomeTopTags'
 import { HomeTopAccounts } from '../dashboard/HomeTopAccounts'
 import { AssetCompositionDonut } from '../dashboard/AssetCompositionDonut'
 import { MonthlyTrendBars } from '../dashboard/MonthlyTrendBars'
+import { NetWorthTrend } from '../dashboard/NetWorthTrend'
 import { TopCategoriesList } from '../dashboard/TopCategoriesList'
 
 interface Props {
@@ -37,6 +39,8 @@ interface Props {
   allTimeSeries: WorkspaceAnalyticsSeriesItem[]
   analyticsData: WorkspaceAnalytics | null
   analyticsIncomeRanks: WorkspaceAnalytics['category_ranks']
+  /** 回算的每月净资产累积序列(net-worth-history 端点)。null → 净值趋势卡空态。 */
+  netWorthHistory: NetWorthHistory | null
   ledgerCounts: WorkspaceLedgerCounts | null
   /** 当前账本预算 + 各 budget 当周期 used。空数组 → BudgetUsagePanel 不显示。 */
   budgets: ReadBudget[]
@@ -71,6 +75,7 @@ export function OverviewSection({
   allTimeSeries,
   analyticsData,
   analyticsIncomeRanks,
+  netWorthHistory,
   ledgerCounts,
   budgets,
   budgetUsageById,
@@ -127,6 +132,10 @@ export function OverviewSection({
       <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
         <AssetCompositionDonut accounts={accounts} />
         <MonthlyTrendBars data={analyticsData?.series || []} />
+      </div>
+
+      <div className="grid gap-4">
+        <NetWorthTrend data={netWorthHistory} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

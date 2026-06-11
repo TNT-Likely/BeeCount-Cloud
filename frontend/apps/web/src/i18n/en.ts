@@ -725,6 +725,13 @@ const en = {
   'home.trendBars.balance': 'Net',
   'common.unit.10k': 'k',
 
+  'home.netWorthTrend.title': 'Net Worth Trend',
+  'home.netWorthTrend.net_worth': 'Net Worth',
+  'home.netWorthTrend.assets': 'Total Assets',
+  'home.netWorthTrend.liabilities': 'Total Liabilities',
+  'home.netWorthTrend.empty': 'No net worth data',
+  'home.netWorthTrend.note': 'Historical net worth is the raw sum of each currency, not converted',
+
   'home.assetComp.title': 'Asset composition',
   'home.assetComp.empty': 'No accounts yet',
   'home.assetComp.totalAsset': 'Total assets',
