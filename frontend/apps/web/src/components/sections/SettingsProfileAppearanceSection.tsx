@@ -470,9 +470,13 @@ export function SettingsProfileAppearanceSection() {
                   <SelectItem value="waves">{t('profile.sync.headerSkin.waves')}</SelectItem>
                   <SelectItem value="sunset">{t('profile.sync.headerSkin.sunset')}</SelectItem>
                   <SelectItem value="clouds">{t('profile.sync.headerSkin.clouds')}</SelectItem>
+                  <SelectItem value="skyline">{t('profile.sync.headerSkin.skyline')}</SelectItem>
                   <SelectItem value="honeycomb">{t('profile.sync.headerSkin.honeycomb')}</SelectItem>
                   <SelectItem value="starry">{t('profile.sync.headerSkin.starry')}</SelectItem>
                   <SelectItem value="stripes">{t('profile.sync.headerSkin.stripes')}</SelectItem>
+                  <SelectItem value="sakura">{t('profile.sync.headerSkin.sakura')}</SelectItem>
+                  <SelectItem value="meteor">{t('profile.sync.headerSkin.meteor')}</SelectItem>
+                  <SelectItem value="memphis">{t('profile.sync.headerSkin.memphis')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
