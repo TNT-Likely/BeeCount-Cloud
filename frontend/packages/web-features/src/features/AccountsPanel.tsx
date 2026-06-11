@@ -283,7 +283,6 @@ function AssetsSummaryHero({
  */
 export function AssetsCompositionMini({
   groups,
-  totalAbs,
   currency,
   showCurrency = false,
   embedded = false,
@@ -291,7 +290,8 @@ export function AssetsCompositionMini({
   approx = false
 }: {
   groups: AssetGroup[]
-  totalAbs: number
+  /** @deprecated 资产构成已改为只含资产类、内部自算资产合计；此参数不再使用，保留仅为兼容现有调用处传参。 */
+  totalAbs?: number
   currency: string
   /** 中心总额是否带币种符号(多币种卡内需要,单币种页保持原样不带)。 */
   showCurrency?: boolean
@@ -303,15 +303,21 @@ export function AssetsCompositionMini({
   approx?: boolean
 }) {
   const t = useT()
-  // 传进来的 groups 一定是单币种(单币种页 or 某一币种卡),subtotals 求和即该币种值。
-  // 小计带符号(负债欠款为负),饼图分段要的是体量 —— 对组合计取 abs。
-  const data = groups.map((g) => ({
-    type: g.type,
-    label: g.label,
-    color: g.color,
-    value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
-  }))
-  const total = totalAbs > 0 ? totalAbs : 1
+  // 「资产构成」只含资产类：负债（信用卡/贷款）不进饼图，也不计入中心合计/百分比 ——
+  // 它们体现在「负债」汇总里，不属于资产构成。groups 含负债类型，按 isLiability 过滤掉。
+  // 资产小计带符号（透支资产为负），饼图分段要的是体量 —— 对资产组合计取 abs。
+  const data = groups
+    .filter((g) => !g.isLiability)
+    .map((g) => ({
+      type: g.type,
+      label: g.label,
+      color: g.color,
+      value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
+    }))
+  // 中心合计 / 扇区 / 百分比分母都用「资产合计」（资产组之和），不用传入的 totalAbs
+  // —— 后者含 |负债|，会把信用卡等负债也算进资产构成（这正是之前的 bug）。
+  const assetTotal = data.reduce((s, d) => s + d.value, 0)
+  const total = assetTotal > 0 ? assetTotal : 1
   // conic-gradient 分段
   let acc = 0
   const stops: string[] = []
@@ -360,7 +366,7 @@ export function AssetsCompositionMini({
                   <span className="font-mono text-[10px] text-muted-foreground">≈</span>
                 ) : null}
                 <Amount
-                  value={totalAbs}
+                  value={assetTotal}
                   currency={currency}
                   showCurrency={showCurrency}
                   size="md"
@@ -372,7 +378,7 @@ export function AssetsCompositionMini({
           {/* legend */}
           <ul className="min-w-0 flex-1 space-y-1.5">
             {data.map((d) => {
-              const pct = totalAbs > 0 ? (d.value / totalAbs) * 100 : 0
+              const pct = assetTotal > 0 ? (d.value / assetTotal) * 100 : 0
               return (
                 <li key={d.type} className="flex items-center gap-2 text-xs">
                   <span
