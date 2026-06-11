@@ -737,6 +737,9 @@ const en = {
   'home.assetComp.totalAsset': 'Total assets',
   'home.assetComp.liability': 'Liabilities {value}',
 
+  'accounts.trendOrComposition.trend': 'Trend',
+  'accounts.trendOrComposition.composition': 'Composition',
+
   'overview.hero.netWorth': 'Net worth (assets − liabilities)',
   'overview.hero.scopeIncome': '{scope} income {value}',
   'overview.hero.scopeExpense': '{scope} expense {value}',
