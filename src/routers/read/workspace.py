@@ -11,6 +11,7 @@ import statistics as _stats
 from pydantic import BaseModel
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
+from ...models import ExchangeRateCache, UserExchangeRateProjection
 
 # ---------------------------------------------------------------------------
 # 净值历史 — 响应 schema
@@ -1222,8 +1223,57 @@ def workspace_net_worth_history(
     ).all()
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
     is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
+    acc_currency = {a.sync_id: (a.currency or "CNY").upper() for a in accts}
     currencies = {(a.currency or "CNY").upper() for a in accts if a.sync_id in init_by_acc}
     multi_currency = len(currencies) > 1
+
+    # 主币种(base):用户设的 primary_currency;没设则单币种用唯一币种、多币种留空
+    # (留空时下方 rates_to_base 为空 → 全部账户剔除 → series 为空,由前端引导设主币种)。
+    base = (
+        db.execute(
+            select(UserProfile.primary_currency).where(
+                UserProfile.user_id == current_user.id
+            )
+        ).scalar()
+        or ""
+    ).upper()
+    if not base and len(currencies) == 1:
+        base = next(iter(currencies))
+
+    # 各币种 → base 汇率,净值序列折算到主币种(与净资产卡同口径):base 自身 1.0;
+    # 自动缓存 payload 是「1 base = x quote」取倒数;手动 override「1 quote = rate base」
+    # 覆盖自动。缺汇率的币种在 _net 内整条剔除,绝不按 1.0 裸加。
+    rates_to_base: dict[str, float] = {}
+    if base:
+        rates_to_base[base] = 1.0
+        cache_payload = db.execute(
+            select(ExchangeRateCache.payload_json).where(
+                ExchangeRateCache.base_currency == base
+            )
+        ).scalar()
+        if isinstance(cache_payload, dict):
+            for q, x in cache_payload.items():
+                try:
+                    xf = float(x)
+                except (TypeError, ValueError):
+                    continue
+                if xf > 0:
+                    rates_to_base[q.upper()] = 1.0 / xf
+        for ov in db.execute(
+            select(
+                UserExchangeRateProjection.quote_currency,
+                UserExchangeRateProjection.rate,
+            ).where(
+                UserExchangeRateProjection.user_id == current_user.id,
+                UserExchangeRateProjection.base_currency == base,
+            )
+        ).all():
+            try:
+                r = float(ov.rate)
+            except (TypeError, ValueError):
+                continue
+            if r > 0:
+                rates_to_base[ov.quote_currency.upper()] = r
 
     txs = db.execute(
         select(
@@ -1255,8 +1305,19 @@ def workspace_net_worth_history(
                 bal[ta] += amt
 
     def _net():
-        assets = sum(v for k, v in bal.items() if not is_liab.get(k, False))
-        liab = sum(v for k, v in bal.items() if is_liab.get(k, False))
+        # 折算到主币种:各账户余额 × 该币种汇率;缺汇率(或无 base)的账户整条剔除,
+        # 与净资产卡同口径,绝不按 1.0 裸加。
+        assets = 0.0
+        liab = 0.0
+        for k, v in bal.items():
+            rate = rates_to_base.get(acc_currency.get(k, base))
+            if rate is None:
+                continue
+            vb = v * rate
+            if is_liab.get(k, False):
+                liab += vb
+            else:
+                assets += vb
         return assets, liab
 
     series: list[NetWorthHistorySeriesItemOut] = []

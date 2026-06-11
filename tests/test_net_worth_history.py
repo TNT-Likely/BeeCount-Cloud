@@ -152,3 +152,53 @@ def test_net_worth_history_empty():
         assert r.json()["series"] == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_net_worth_history_converts_to_base():
+    """多币种折算到主币种:CNY 1000 + USD 100×7 = 1700(主币种 CNY,手动汇率 USD→CNY=7)。"""
+    client, TS = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "nwh3@t.com")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        hdr_web = {"Authorization": f"Bearer {web_token}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "个人", "currency": "CNY"})
+        _push(client, hdr_app, "lg1", "account", "acc-cny",
+              {"syncId": "acc-cny", "name": "现金", "type": "cash",
+               "initialBalance": 1000.0, "currency": "CNY"})
+        _push(client, hdr_app, "lg1", "account", "acc-usd",
+              {"syncId": "acc-usd", "name": "美元", "type": "bank_card",
+               "initialBalance": 100.0, "currency": "USD"})
+        # 一笔 income=0 仅用于锚定月份(不改余额),让 series 落在 2026-03
+        _push(client, hdr_app, "lg1", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "income", "amount": 0,
+               "accountId": "acc-cny",
+               "happenedAt": "2026-03-15T00:00:00+00:00"})
+
+        # 设主币种 CNY + 手动汇率 USD→CNY=7(1 USD = 7 CNY)
+        from src.models import User, UserExchangeRateProjection, UserProfile
+        db = TS()
+        uid = db.query(User).filter(User.email == "nwh3@t.com").first().id
+        prof = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
+        if prof is not None:
+            prof.primary_currency = "CNY"
+        else:
+            db.add(UserProfile(user_id=uid, primary_currency="CNY"))
+        db.add(UserExchangeRateProjection(
+            user_id=uid, sync_id="rate-usd", base_currency="CNY",
+            quote_currency="USD", rate="7.0"))
+        db.commit()
+        db.close()
+
+        r = client.get(
+            "/api/v1/read/workspace/net-worth-history", headers=hdr_web,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        series = {s["bucket"]: s["net_worth"] for s in body["series"]}
+        # 1000(CNY×1) + 100×7(USD) = 1700
+        assert series["2026-03"] == 1700.0
+        assert body["multi_currency"] is True
+    finally:
+        app.dependency_overrides.clear()
