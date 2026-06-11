@@ -736,10 +736,6 @@ const zhTW = {
   'home.assetComp.totalAsset': '總資產',
   'home.assetComp.liability': '負債 {value}',
 
-  // 資產頁「走勢 / 組成」切換
-  'accounts.trendOrComposition.trend': '走勢',
-  'accounts.trendOrComposition.composition': '組成',
-
   'overview.hero.netWorth': '淨值（資產 - 負債）',
   'overview.hero.scopeIncome': '{scope}收入 {value}',
   'overview.hero.scopeExpense': '{scope}支出 {value}',
