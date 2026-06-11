@@ -705,3 +705,15 @@ export type ExchangeRateOverride = {
   rate: string
   updated_at: string
 }
+
+export type NetWorthHistorySeriesItem = {
+  bucket: string
+  net_worth: number
+  assets: number
+  liabilities: number
+}
+
+export type NetWorthHistory = {
+  series: NetWorthHistorySeriesItem[]
+  multi_currency: boolean
+}

@@ -3,6 +3,7 @@ import { extractApiError } from './errors'
 import type {
   AnalyticsMetric,
   AnalyticsScope,
+  NetWorthHistory,
   ReadAccount,
   ReadBudget,
   ReadCategory,
@@ -290,6 +291,19 @@ export async function fetchWorkspaceAnalytics(
   if (options?.naturalMonth) query.set('natural_month', 'true')
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<WorkspaceAnalytics>(`/read/workspace/analytics${suffix}`, token)
+}
+
+export async function fetchNetWorthHistory(
+  token: string,
+  options?: { scope?: AnalyticsScope; ledgerId?: string; userId?: string; tzOffsetMinutes?: number }
+): Promise<NetWorthHistory> {
+  const query = new URLSearchParams()
+  if (options?.scope) query.set('scope', options.scope)
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.userId) query.set('user_id', options.userId)
+  if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<NetWorthHistory>(`/read/workspace/net-worth-history${suffix}`, token)
 }
 
 // ============================================================================
