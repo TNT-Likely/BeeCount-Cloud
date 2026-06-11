@@ -5,12 +5,14 @@ import {
   deleteAccount,
   fetchExchangeRateOverrides,
   fetchExchangeRates,
+  fetchNetWorthHistory,
   fetchWorkspaceAccounts,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   updateAccount,
   type ExchangeRateOverride,
   type ExchangeRatesResponse,
+  type NetWorthHistory,
   type ReadAccount,
   type WorkspaceAccount,
   type WorkspaceTag,
@@ -43,6 +45,7 @@ import {
   type CurrencyBucket,
 } from '@beecount/web-features'
 
+import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -120,6 +123,13 @@ export function AccountsPage() {
     [],
   )
 
+  // 净资产趋势(回算每月累积净值,对齐 App 资产页净资产卡的 sparkline)。
+  // 按当前账本分桶:切账本读对应桶,失败置 null 不阻塞账户列表(同 rates/overrides 容错)。
+  const [netWorthHistory, setNetWorthHistory] = usePageCache<NetWorthHistory | null>(
+    `accounts:netWorthHistory:${activeLedgerId || '__all__'}`,
+    null,
+  )
+
   // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
   // dispatch openDetailAccount 事件,弹窗在全局渲染。
 
@@ -134,12 +144,19 @@ export function AccountsPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [accountRows, tagRows] = await Promise.all([
+      const tzOffsetMinutes = -new Date().getTimezoneOffset()
+      const [accountRows, tagRows, history] = await Promise.all([
         fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { limit: 500 }),
+        // 净值趋势:按当前账本拉(不带则全账本)。失败置 null 不阻塞列表。
+        fetchNetWorthHistory(token, {
+          ledgerId: activeLedgerId || undefined,
+          tzOffsetMinutes,
+        }).catch(() => null),
       ])
       setRows(accountRows)
       setTags(tagRows)
+      setNetWorthHistory(history)
 
       // 只有"主币种存在 + 账户涉及 ≥2 种币种"才需要折算卡。其余情况清空缓存,
       // 让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
@@ -162,7 +179,7 @@ export function AccountsPage() {
     } catch (err) {
       notifyError(err)
     }
-  }, [token, base, notifyError])
+  }, [token, base, activeLedgerId, notifyError])
 
   useEffect(() => {
     void refresh()
@@ -449,6 +466,11 @@ export function AccountsPage() {
           </div>
         )
       ) : null}
+      {/* 净资产趋势 —— 资产页顶部汇总区,位于(可选的)折算汇总卡下方、账户列表之前。
+          对齐 App 资产页净资产卡的 sparkline;多币种脚注 / <2 期空态由组件内部处理。 */}
+      <div className="mb-4">
+        <NetWorthTrend data={netWorthHistory} />
+      </div>
       <AccountsPanel
         form={form}
         rows={rows}
