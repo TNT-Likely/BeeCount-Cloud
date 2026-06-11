@@ -8,7 +8,24 @@ from __future__ import annotations
 
 import statistics as _stats
 
+from pydantic import BaseModel
+
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
+
+# ---------------------------------------------------------------------------
+# 净值历史 — 响应 schema
+# ---------------------------------------------------------------------------
+
+class NetWorthHistorySeriesItemOut(BaseModel):
+    bucket: str
+    net_worth: float
+    assets: float
+    liabilities: float
+
+
+class NetWorthHistoryOut(BaseModel):
+    series: list[NetWorthHistorySeriesItemOut]
+    multi_currency: bool
 
 @router.get("/workspace/transactions", response_model=WorkspaceTransactionPageOut)
 def list_workspace_transactions(
@@ -1171,3 +1188,134 @@ def _compute_anomaly_months(
     # 按超出 baseline 的绝对值降序(最异常的排前面)
     out.sort(key=lambda a: -(a.expense - a.baseline))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 净值历史端点
+# ---------------------------------------------------------------------------
+
+@router.get("/workspace/net-worth-history", response_model=NetWorthHistoryOut)
+def workspace_net_worth_history(
+    scope: AnalyticsScope = Query(default="all"),
+    ledger_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> NetWorthHistoryOut:
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin,
+        ledger_id=ledger_id, user_id=user_id,
+    )
+    ledger_internal_ids = [l.id for l in ledgers]
+    if not ledger_internal_ids:
+        return NetWorthHistoryOut(series=[], multi_currency=False)
+
+    accts = db.execute(
+        select(
+            UserAccountProjection.sync_id,
+            UserAccountProjection.account_type,
+            UserAccountProjection.currency,
+            UserAccountProjection.initial_balance,
+        ).where(UserAccountProjection.user_id == current_user.id)
+    ).all()
+    init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
+    is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
+    currencies = {(a.currency or "CNY").upper() for a in accts if a.sync_id in init_by_acc}
+    multi_currency = len(currencies) > 1
+
+    txs = db.execute(
+        select(
+            ReadTxProjection.tx_type,
+            ReadTxProjection.amount,
+            ReadTxProjection.happened_at,
+            ReadTxProjection.account_sync_id,
+            ReadTxProjection.from_account_sync_id,
+            ReadTxProjection.to_account_sync_id,
+        )
+        .where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+        .order_by(ReadTxProjection.happened_at.asc())
+    ).all()
+
+    bal = dict(init_by_acc)
+
+    def _apply(tx_type, amt, acc, from_acc, to_acc):
+        if tx_type == "income" and acc in bal:
+            bal[acc] += amt
+        elif tx_type == "expense" and acc in bal:
+            bal[acc] -= amt
+        elif tx_type == "adjustment" and acc in bal:
+            bal[acc] += amt
+        elif tx_type == "transfer":
+            fa, ta = from_acc or acc, to_acc
+            if fa in bal:
+                bal[fa] -= amt
+            if ta in bal:
+                bal[ta] += amt
+
+    def _net():
+        assets = sum(v for k, v in bal.items() if not is_liab.get(k, False))
+        liab = sum(v for k, v in bal.items() if is_liab.get(k, False))
+        return assets, liab
+
+    series: list[NetWorthHistorySeriesItemOut] = []
+    last_bucket: str | None = None
+    for tx in txs:
+        if tx.happened_at is None:
+            continue
+        ha = _to_utc(tx.happened_at)
+        bucket = (ha + timedelta(minutes=tz_offset_minutes)).strftime("%Y-%m")
+        if last_bucket is not None and bucket != last_bucket:
+            a, l = _net()
+            series.append(NetWorthHistorySeriesItemOut(
+                bucket=last_bucket, net_worth=a + l, assets=a, liabilities=l,
+            ))
+        _apply(
+            tx.tx_type, float(tx.amount or 0.0),
+            tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id,
+        )
+        last_bucket = bucket
+    if last_bucket is not None:
+        a, l = _net()
+        series.append(NetWorthHistorySeriesItemOut(
+            bucket=last_bucket, net_worth=a + l, assets=a, liabilities=l,
+        ))
+    if not series and init_by_acc:
+        a, l = _net()
+        series.append(NetWorthHistorySeriesItemOut(
+            bucket=datetime.now(timezone.utc).strftime("%Y-%m"),
+            net_worth=a + l, assets=a, liabilities=l,
+        ))
+
+    # 补齐稀疏 series 为连续月序列:缺月沿用上月末值(净值存量,无交易即持平)。
+    if series:
+        sparse = {s.bucket: s for s in series}
+
+        def _month_range(start_ym: str, end_ym: str):
+            sy, sm = (int(x) for x in start_ym.split("-"))
+            ey, em = (int(x) for x in end_ym.split("-"))
+            y, m = sy, sm
+            while (y, m) <= (ey, em):
+                yield f"{y:04d}-{m:02d}"
+                m += 1
+                if m > 12:
+                    m, y = 1, y + 1
+
+        first_ym = series[0].bucket
+        now_ym = (datetime.now(timezone.utc) + timedelta(minutes=tz_offset_minutes)).strftime("%Y-%m")
+        end_ym = max(series[-1].bucket, now_ym)
+        filled: list[NetWorthHistorySeriesItemOut] = []
+        prev: NetWorthHistorySeriesItemOut | None = None
+        for ym in _month_range(first_ym, end_ym):
+            if ym in sparse:
+                prev = sparse[ym]
+                filled.append(prev)
+            elif prev is not None:
+                filled.append(NetWorthHistorySeriesItemOut(
+                    bucket=ym, net_worth=prev.net_worth,
+                    assets=prev.assets, liabilities=prev.liabilities))
+        series = filled
+
+    return NetWorthHistoryOut(series=series, multi_currency=multi_currency)
