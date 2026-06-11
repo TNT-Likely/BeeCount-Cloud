@@ -83,18 +83,16 @@ function MobileStyleAssets({
 
   return (
     <div className="space-y-4">
-      {/* 第一行：单币种 → 汇总 hero + 构成饼图左右分列(维持原样);
-          多币种 → 每币种一张卡(各自净值 + 构成饼图),金额绝不跨币种合并。
-          hideCurrencyCards=true(折算汇总视图)时跳过多币种卡网格 —— 由上层
-          折算卡接管多币种展示,这里只剩账户列表。 */}
-      {multiCurrency ? (
-        hideCurrencyCards ? null : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {byCurrency.map((entry) => (
-              <CurrencyAssetCard key={entry.currency} entry={entry} />
-            ))}
-          </div>
-        )
+      {/* 第一行的资产概览(单币种 hero+饼图 / 多币种每币种一张卡)。
+          hideCurrencyCards=true 时整块跳过 —— 上层资产页统一用「折算汇总卡」
+          接管净值/资产负债/构成展示(单币种亦然),这里只剩账户列表 + 新建按钮,
+          避免与汇总卡重复出 hero / 构成。缺省 false 时维持原样(其它调用方零影响)。 */}
+      {hideCurrencyCards ? null : multiCurrency ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {byCurrency.map((entry) => (
+            <CurrencyAssetCard key={entry.currency} entry={entry} />
+          ))}
+        </div>
       ) : single ? (
         <div className="grid gap-3 lg:grid-cols-[1.1fr_1fr]">
           <AssetsSummaryHero summary={single.summary} currency={single.currency} />

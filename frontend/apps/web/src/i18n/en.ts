@@ -1688,10 +1688,12 @@ const en = {
   'accounts.converted.netWorth': 'Net worth (in {currency})',
   'accounts.converted.footnote': 'Converted at {date} rates',
   'accounts.converted.missing': '{currencies} not converted',
-  'accounts.converted.toggle': 'Convert to primary currency',
   'accounts.converted.detail': 'Details',
   'accounts.converted.detailTitle': 'By-currency breakdown',
   'accounts.converted.composition': 'Composition (in {currency})',
+  'accounts.needBaseCurrency.title': 'Set a primary currency to see your asset summary',
+  'accounts.needBaseCurrency.desc': 'Your accounts span multiple currencies. Set a primary currency to convert them into one summary.',
+  'accounts.needBaseCurrency.action': 'Set primary currency',
 } as const
 
 export default en

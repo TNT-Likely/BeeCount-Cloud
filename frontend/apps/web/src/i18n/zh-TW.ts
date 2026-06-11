@@ -1685,10 +1685,12 @@ const zhTW = {
   'accounts.converted.netWorth': '淨資產(折{currency})',
   'accounts.converted.footnote': '依 {date} 匯率折算',
   'accounts.converted.missing': '{currencies} 未折算',
-  'accounts.converted.toggle': '按主幣種折算',
   'accounts.converted.detail': '詳情',
   'accounts.converted.detailTitle': '分幣種明細',
   'accounts.converted.composition': '資產構成(折{currency})',
+  'accounts.needBaseCurrency.title': '設定主幣種以檢視資產彙總',
+  'accounts.needBaseCurrency.desc': '帳戶涉及多種幣種,需先設定主幣種,才能將各幣種折算成同一口徑彙總。',
+  'accounts.needBaseCurrency.action': '前往設定主幣種',
 } as const
 
 export default zhTW
