@@ -130,7 +130,8 @@ export function AccountsPage() {
   // 净资产趋势(回算每月累积净值,对齐 App 资产页净资产卡的 sparkline)。
   // 按当前账本分桶:切账本读对应桶,失败置 null 不阻塞账户列表(同 rates/overrides 容错)。
   const [netWorthHistory, setNetWorthHistory] = usePageCache<NetWorthHistory | null>(
-    `accounts:netWorthHistory:${activeLedgerId || '__all__'}`,
+    // 净值趋势是全局资产(所有账本所有账户),与账本无关 —— 缓存键不带 activeLedgerId。
+    'accounts:netWorthHistory',
     null,
   )
 
@@ -152,11 +153,9 @@ export function AccountsPage() {
       const [accountRows, tagRows, history] = await Promise.all([
         fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { limit: 500 }),
-        // 净值趋势:按当前账本拉(不带则全账本)。失败置 null 不阻塞列表。
-        fetchNetWorthHistory(token, {
-          ledgerId: activeLedgerId || undefined,
-          tzOffsetMinutes,
-        }).catch(() => null),
+        // 净值趋势是全局资产(账户为 user-global、跨所有账本),绝不按当前账本过滤 ——
+        // 否则切到无交易的账本时趋势会空,而净资产卡(全局账户余额)仍有数据,口径不一致。
+        fetchNetWorthHistory(token, { tzOffsetMinutes }).catch(() => null),
       ])
       setRows(accountRows)
       setTags(tagRows)

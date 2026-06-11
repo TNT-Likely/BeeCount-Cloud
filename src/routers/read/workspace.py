@@ -1238,6 +1238,8 @@ def workspace_net_worth_history(
         or ""
     ).upper()
     if not base and len(currencies) == 1:
+        # 没设主币种且单币种:回退到该唯一币种(折算率 1)。多币种未设主币种则 base
+        # 为空 → rates_to_base 为空 → series 各点折算后为 0,前端据 needsBase 出引导卡。
         base = next(iter(currencies))
 
     # 各币种 → base 汇率,净值序列折算到主币种(与净资产卡同口径):base 自身 1.0;
