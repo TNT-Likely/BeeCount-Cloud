@@ -1,6 +1,8 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { WorkspaceAccount } from '@beecount/api-client'
-import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
+import { Card, CardContent, CardHeader, CardTitle, useLocale, useT } from '@beecount/ui'
+
+import { formatCompactTick } from '../../i18n/format'
 
 interface Props {
   accounts: WorkspaceAccount[]
@@ -24,6 +26,8 @@ const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }>
 
 export function AssetCompositionDonut({ accounts }: Props) {
   const t = useT()
+  const { locale } = useLocale()
+  const chinese = locale.startsWith('zh')
   // 按类型**带符号**累加(与 assetAggregation 的负债符号口径一致:欠款为负、
   // 溢缴为正,透支资产为负),饼图分段才对类型合计取 abs 当体量 —— 绝不逐账户
   // abs,否则同类型内正负互抵的账户会被虚增。
@@ -61,6 +65,8 @@ export function AssetCompositionDonut({ accounts }: Props) {
 
   const fmt = (v: number) =>
     v.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+  // 图例金额用压缩格式(如 128.5万),避免大额撑破固定宽列;精确值在 hover 扇区的 Tooltip。
+  const compact = (v: number) => formatCompactTick(v, { chinese, wanUnit: t('common.unit.10k') })
 
   return (
     <Card className="bc-panel overflow-hidden">
@@ -121,7 +127,7 @@ export function AssetCompositionDonut({ accounts }: Props) {
                     <span className="font-mono tabular-nums text-xs text-muted-foreground">
                       {pct.toFixed(1)}%
                     </span>
-                    <span className="w-20 text-right font-mono tabular-nums">{fmt(d.value)}</span>
+                    <span className="w-20 text-right font-mono tabular-nums">{compact(d.value)}</span>
                   </li>
                 )
               })}
