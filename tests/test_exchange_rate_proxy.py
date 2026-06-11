@@ -170,3 +170,26 @@ def test_proxy_disabled_404(monkeypatch):
         app.dependency_overrides.clear()
         # 还原(避免影响其他测试)
         monkeypatch.setattr(get_settings(), "exchange_rate_proxy_enabled", True)
+
+
+def test_proxy_invalid_base_422_before_fetcher(monkeypatch):
+    """非法 base 必须在进 fetcher 前被 pattern 校验拦下 → 422,
+    不进 _locks、不拼上游、不落缓存(安全评审 P0)。"""
+    client, _ = _make_client()
+
+    # 上游 mock 设成一调用就爆,证明非法 base 根本没走到 fetcher
+    async def _boom(base):  # pragma: no cover - 不应被调用
+        raise AssertionError(f"fetcher 不该被非法 base 触达: {base!r}")
+
+    monkeypatch.setattr(fetcher, "fetch_upstream", _boom)
+    locks_before = len(fetcher._locks)
+    try:
+        token = _login_web(client, "proxy5@t.com")
+        hdr = {"Authorization": f"Bearer {token}"}
+        for bad in ("../x", "us d", "ZZZZZZZZZ", "x", "C/N", "A" * 500):
+            r = client.get("/api/v1/read/exchange-rates", headers=hdr, params={"base": bad})
+            assert r.status_code == 422, f"base={bad!r} 应 422,实际 {r.status_code}: {r.text}"
+        # _locks 不因垃圾 base 增长
+        assert len(fetcher._locks) == locks_before
+    finally:
+        app.dependency_overrides.clear()

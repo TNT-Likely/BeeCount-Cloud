@@ -1,7 +1,7 @@
 """汇率读端点:手动 override 列表(本文件) + 汇率代理(Task 5 追加)。"""
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -60,7 +60,10 @@ class ExchangeRatesOut(BaseModel):
 
 @router.get("/exchange-rates", response_model=ExchangeRatesOut)
 async def get_exchange_rates(
-    base: str,
+    # base 必须先过格式校验:非法值直接 422,不进 fetcher 的 _locks(防垃圾 base
+    # 撑爆进程内锁字典)、不拼上游 URL(防 query 注入)、不落 exchange_rate_cache。
+    # pattern 与 override 端点对齐(见 .docs/multi-currency/06-exchange-rate-security-review.md P0)。
+    base: str = Query(pattern=r"^[A-Za-z]{3,8}$"),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
