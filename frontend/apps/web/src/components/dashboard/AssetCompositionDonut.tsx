@@ -24,6 +24,9 @@ const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }>
 
 export function AssetCompositionDonut({ accounts }: Props) {
   const t = useT()
+  // 按类型**带符号**累加(与 assetAggregation 的负债符号口径一致:欠款为负、
+  // 溢缴为正,透支资产为负),饼图分段才对类型合计取 abs 当体量 —— 绝不逐账户
+  // abs,否则同类型内正负互抵的账户会被虚增。
   const totals = new Map<string, number>()
   for (const a of accounts) {
     const key = a.account_type || 'other'
@@ -33,13 +36,13 @@ export function AssetCompositionDonut({ accounts }: Props) {
     const raw = typeof a.balance === 'number' && a.balance !== null
       ? a.balance
       : a.initial_balance ?? 0
-    const amount = Math.abs(raw)
-    totals.set(key, (totals.get(key) || 0) + amount)
+    totals.set(key, (totals.get(key) || 0) + raw)
   }
   const data = Array.from(totals.entries())
-    .map(([type, value]) => ({
+    .map(([type, signed]) => ({
       type,
-      value,
+      signed,
+      value: Math.abs(signed),
       label: TYPE_META[type] ? t(`accountType.${type}` as never) : type,
       color: TYPE_META[type]?.color || '#94a3b8',
       group: TYPE_META[type]?.group || 'asset'
@@ -47,8 +50,11 @@ export function AssetCompositionDonut({ accounts }: Props) {
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value)
 
-  const totalAsset = data.filter((d) => d.group === 'asset').reduce((s, d) => s + d.value, 0)
-  const totalLiability = data.filter((d) => d.group === 'liability').reduce((s, d) => s + d.value, 0)
+  // 中心数字与 App 口径一致:总资产 = 资产类带符号合计;负债脚注 = |负债类带符号合计|。
+  const totalAsset = data.filter((d) => d.group === 'asset').reduce((s, d) => s + d.signed, 0)
+  const totalLiability = Math.abs(
+    data.filter((d) => d.group === 'liability').reduce((s, d) => s + d.signed, 0)
+  )
 
   const fmt = (v: number) =>
     v.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })

@@ -11,6 +11,7 @@ import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@
 
 export type AssetSummary = {
   assetTotal: number
+  /** 带符号:欠款为负、溢缴为正。展示"总负债"时取 Math.abs,绝不在聚合层提前 abs。 */
   liabilityTotal: number
   netWorth: number
 }
@@ -29,7 +30,7 @@ export type AssetGroup = {
   subtotals: { currency: string; value: number }[]
 }
 
-/** 负债类账户类型:余额按 |balance| 计欠款,从净值里扣减。 */
+/** 负债类账户类型:余额带符号计入净值(欠款为负扣减、溢缴为正增加),展示欠款时才取 abs。 */
 export const LIABILITY_TYPES = new Set(['credit_card', 'loan'])
 
 /** 账户展示余额:优先 server 聚合后的 balance(含所有交易),否则回退 initial_balance。 */
@@ -56,8 +57,11 @@ export function splitByCurrency(rows: ReadAccount[]): Map<string, ReadAccount[]>
 }
 
 /**
- * 单币种净值汇总。负债类按 |balance| 累计欠款,资产类保留符号(透支账户 balance<0
- * 会扣减总资产),跟 mobile `local_account_repository.getNetWorthBreakdown` 口径一致。
+ * 单币种净值汇总。资产、负债都**带符号**累加,净值 = 资产 + 负债,跟 mobile
+ * `local_account_repository.getNetWorthBreakdown` 口径一致:负债账户余额通常为负
+ * (欠款,扣减净值),为正表示溢缴款(还多了的钱,经济上是资产头寸,增加净值)。
+ * 历史教训:这里曾逐账户 `Math.abs` 再做减法,正常数据(欠款为负)下结果碰巧相同,
+ * 直到溢缴/正余额负债账户出现才暴露 —— 把多打进去的钱又反向当欠款扣了一遍。
  *
  * 入参**必须是同一币种**的账户(由 {@link splitByCurrency} 保证)—— 传混币种进来
  * 得到的就是那个错的合并数字,这正是本模块要避免的。
@@ -67,10 +71,10 @@ export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
   let liabilityTotal = 0
   for (const row of rows) {
     const raw = accountBalance(row)
-    if (LIABILITY_TYPES.has(row.account_type || '')) liabilityTotal += Math.abs(raw)
+    if (LIABILITY_TYPES.has(row.account_type || '')) liabilityTotal += raw
     else assetTotal += raw
   }
-  return { assetTotal, liabilityTotal, netWorth: assetTotal - liabilityTotal }
+  return { assetTotal, liabilityTotal, netWorth: assetTotal + liabilityTotal }
 }
 
 /** 有效汇率:override(1 quote = x base)优先;否则代理自动值(1 base = x quote)取倒数。缺失返回 null,绝不回落 1。 */

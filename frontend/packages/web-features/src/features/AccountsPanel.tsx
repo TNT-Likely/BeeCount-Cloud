@@ -100,7 +100,7 @@ function MobileStyleAssets({
           <AssetsSummaryHero summary={single.summary} currency={single.currency} />
           <AssetsCompositionMini
             groups={single.groups}
-            totalAbs={single.summary.assetTotal + single.summary.liabilityTotal}
+            totalAbs={single.summary.assetTotal + Math.abs(single.summary.liabilityTotal)}
             currency={single.currency}
           />
         </div>
@@ -164,7 +164,7 @@ function MobileStyleAssets({
                     {group.subtotals.map((st) => (
                       <Amount
                         key={st.currency}
-                        value={st.value}
+                        value={group.isLiability ? Math.abs(st.value) : st.value}
                         currency={st.currency}
                         showCurrency={multiCurrency}
                         size={group.subtotals.length > 1 ? 'md' : 'xl'}
@@ -262,7 +262,7 @@ function AssetsSummaryHero({
               {t('accounts.liabilities')}
             </div>
             <Amount
-              value={summary.liabilityTotal}
+              value={Math.abs(summary.liabilityTotal)}
               currency={currency}
               size="xl"
               bold
@@ -304,11 +304,12 @@ export function AssetsCompositionMini({
 }) {
   const t = useT()
   // 传进来的 groups 一定是单币种(单币种页 or 某一币种卡),subtotals 求和即该币种值。
+  // 小计带符号(负债欠款为负),饼图分段要的是体量 —— 对组合计取 abs。
   const data = groups.map((g) => ({
     type: g.type,
     label: g.label,
     color: g.color,
-    value: g.subtotals.reduce((s, x) => s + x.value, 0)
+    value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
   }))
   const total = totalAbs > 0 ? totalAbs : 1
   // conic-gradient 分段
@@ -780,11 +781,13 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
   return ACCOUNT_ORDER.filter((type) => (buckets[type] || []).length > 0).map((type) => {
     const groupRows = (buckets[type] || []).slice().sort((a, b) => a.name.localeCompare(b.name))
     const isLiability = LIABILITY_TYPES.has(type)
+    // 小计带符号累加(与 computeCurrencySummary 同口径)——溢缴的卡会抵销欠款。
+    // 展示"共欠"时由渲染处对组合计取 abs,绝不逐账户 abs(否则 +10w 卡 + −20w 贷
+    // 会显示成欠 30w)。
     const byCur = new Map<string, number>()
     for (const r of groupRows) {
       const cur = (r.currency || 'CNY').toUpperCase()
-      const raw = accountBalance(r)
-      byCur.set(cur, (byCur.get(cur) ?? 0) + (isLiability ? Math.abs(raw) : raw))
+      byCur.set(cur, (byCur.get(cur) ?? 0) + accountBalance(r))
     }
     return {
       type,
@@ -804,7 +807,7 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
 export function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
   const t = useT()
   const { currency, summary, groups } = entry
-  const totalAbs = summary.assetTotal + summary.liabilityTotal
+  const totalAbs = summary.assetTotal + Math.abs(summary.liabilityTotal)
   return (
     <div className="flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-card/60">
       <div className="flex items-center justify-between gap-2 border-b border-border/40 px-4 py-3">
@@ -846,7 +849,7 @@ export function CurrencyAssetCard({ entry }: { entry: CurrencyBucket }) {
             {t('accounts.liabilities')}
           </div>
           <Amount
-            value={summary.liabilityTotal}
+            value={Math.abs(summary.liabilityTotal)}
             currency={currency}
             showCurrency
             size="md"
@@ -908,12 +911,12 @@ export function AccountsPanel({
         summary: computeCurrencySummary(curRows),
         groups: computeTypeGroups(curRows, t)
       }))
-      // 体量大的币种排前面(资产+负债绝对额)
+      // 体量大的币种排前面(资产 + |负债|)
       .sort(
         (a, b) =>
           b.summary.assetTotal +
-          b.summary.liabilityTotal -
-          (a.summary.assetTotal + a.summary.liabilityTotal)
+          Math.abs(b.summary.liabilityTotal) -
+          (a.summary.assetTotal + Math.abs(a.summary.liabilityTotal))
       )
   }, [rows, t])
 

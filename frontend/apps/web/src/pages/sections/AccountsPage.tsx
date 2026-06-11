@@ -325,8 +325,8 @@ export function AccountsPage() {
       buckets: buckets.sort(
         (a, b) =>
           b.summary.assetTotal +
-          b.summary.liabilityTotal -
-          (a.summary.assetTotal + a.summary.liabilityTotal),
+          Math.abs(b.summary.liabilityTotal) -
+          (a.summary.assetTotal + Math.abs(a.summary.liabilityTotal)),
       ),
       missing: [...missing].sort(),
       rateDate: rates?.rate_date,
@@ -393,7 +393,7 @@ export function AccountsPage() {
                   <div className="mt-0.5 flex items-baseline gap-1">
                     <span className="font-mono text-xs text-muted-foreground">≈</span>
                     <Amount
-                      value={converted.liabilityTotal}
+                      value={Math.abs(converted.liabilityTotal)}
                       currency={base}
                       size="lg"
                       bold
@@ -408,7 +408,7 @@ export function AccountsPage() {
               {converted.mergedGroups.length > 0 ? (
                 <AssetsCompositionMini
                   groups={converted.mergedGroups}
-                  totalAbs={converted.assetTotal + converted.liabilityTotal}
+                  totalAbs={converted.assetTotal + Math.abs(converted.liabilityTotal)}
                   currency={base}
                   showCurrency
                   embedded

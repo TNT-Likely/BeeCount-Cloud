@@ -4,7 +4,6 @@ import {
   type AssetGroup,
   computeCurrencySummary,
   effectiveRateToBase,
-  LIABILITY_TYPES,
   mergeGroupsToBase,
   splitByCurrency
 } from '@beecount/web-features'
@@ -41,16 +40,37 @@ describe('asset aggregation — 绝不跨币种相加', () => {
     expect(accountBalance(acc({}))).toBe(0)
   })
 
-  it('computeCurrencySummary:资产保留符号、负债按 |balance| 计欠款', () => {
+  it('computeCurrencySummary:资产负债都带符号,净值 = 资产 + 负债(对齐 mobile getNetWorthBreakdown)', () => {
     const s = computeCurrencySummary([
       acc({ account_type: 'cash', balance: 1000 }),
       acc({ account_type: 'bank_card', balance: -200 }), // 透支资产 → 扣减总资产
-      acc({ account_type: 'credit_card', balance: -300 }), // 负债
+      acc({ account_type: 'credit_card', balance: -300 }), // 负债(欠款为负)
       acc({ account_type: 'loan', balance: -500 }) // 负债
     ])
     expect(s.assetTotal).toBe(800) // 1000 + (-200)
-    expect(s.liabilityTotal).toBe(800) // |−300| + |−500|
-    expect(s.netWorth).toBe(0) // 800 − 800
+    expect(s.liabilityTotal).toBe(-800) // 带符号:−300 + −500,展示欠款时才 abs
+    expect(s.netWorth).toBe(0) // 800 + (−800)
+  })
+
+  it('溢缴款:负债账户正余额**增加**净值,绝不反向当欠款扣减(历史 bug:abs 后减)', () => {
+    // 复盘场景:脏数据把 76 万收入灌进信用卡,余额 +761779.84。app 端净资产
+    // 正确地 +76 万,web 端旧逻辑 abs 后减、又扣 76 万,两端差 152 万。
+    const s = computeCurrencySummary([
+      acc({ account_type: 'cash', balance: 1_000_000 }),
+      acc({ account_type: 'credit_card', balance: 761_779.84 }) // 溢缴/正余额负债
+    ])
+    expect(s.liabilityTotal).toBe(761_779.84)
+    expect(s.netWorth).toBeCloseTo(1_761_779.84, 2) // 加上,而不是 1_000_000 − 761_779.84
+  })
+
+  it('负债内部正负互抵:+10w 信用卡 + −20w 贷款 → 合计 −10w(展示欠 10w,而非逐账户 abs 的 30w)', () => {
+    const s = computeCurrencySummary([
+      acc({ account_type: 'credit_card', balance: 100_000 }),
+      acc({ account_type: 'loan', balance: -200_000 })
+    ])
+    expect(s.liabilityTotal).toBe(-100_000)
+    expect(Math.abs(s.liabilityTotal)).toBe(100_000) // 展示层口径
+    expect(s.netWorth).toBe(-100_000)
   })
 
   it('每币种汇总各自独立 —— CNY 与 USD 不合并', () => {
@@ -65,14 +85,11 @@ describe('asset aggregation — 绝不跨币种相加', () => {
 
     expect(cny.netWorth).toBe(2_472_500)
     expect(usd.assetTotal).toBe(1200)
-    expect(usd.liabilityTotal).toBe(300)
+    expect(usd.liabilityTotal).toBe(-300)
     expect(usd.netWorth).toBe(900)
 
     // 反例:旧 bug 的裸加会把 $ 当 ¥ 得到 2_473_400 这种错值。分币种后绝不会出现。
-    const naiveWrong = rows.reduce((sum, r) => {
-      const raw = accountBalance(r)
-      return sum + (LIABILITY_TYPES.has(r.account_type || '') ? -Math.abs(raw) : raw)
-    }, 0)
+    const naiveWrong = rows.reduce((sum, r) => sum + accountBalance(r), 0)
     expect(naiveWrong).toBe(2_473_400)
     expect(cny.netWorth).not.toBe(naiveWrong)
   })

@@ -1,6 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ReadAccount, ReadLedger } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
+import { accountBalance } from '@beecount/web-features'
 
 interface Props {
   ledgers: ReadLedger[]
@@ -18,14 +19,13 @@ function currencyLabel(ledgers: ReadLedger[]): string {
   return first?.currency || 'CNY'
 }
 
-// 负债类账户（信用卡、贷款）计入负债，其余全算资产。与 AccountsPanel 的
-// VALUATION_TYPES + LIABILITY_TYPES 保持一致。
-const LIABILITY_TYPES = new Set(['credit_card', 'loan'])
-
 /**
- * Hero 横幅：净值 = 资产 - 负债（按账户余额聚合）+ 周期收支副标题 + 右侧
- * 迷你 sparkline。之前用 ledger.balance 汇总 (收入-支出) 做"净资产"实际是
- * 现金流净额，和"资产-负债"不是一回事，数字跟下方资产环形图对不上。
+ * Hero 横幅：净值 = Σ 账户带符号余额（复用 assetAggregation 的负债符号口径单点：
+ * 欠款为负自然扣减、溢缴为正计入）+ 周期收支副标题 + 右侧迷你 sparkline。
+ * 之前这里手搓了一份聚合：资产负债全取 `Math.abs(initial_balance)` 再相减 ——
+ * 既丢了符号（透支/溢缴全算错）也没吃 server 聚合后的 balance，跟资产页对不上。
+ * 已知债：这里仍把所有账户裸加（未按币种切分），多币种用户的 hero 净值口径
+ * 留待多币种 dashboard 折算一并解决，不在负债符号修复范围内。
  */
 export function OverviewHero({
   ledgers,
@@ -37,17 +37,7 @@ export function OverviewHero({
   const t = useT()
   const scopeLabel = periodLabel ?? t('home.scope.year')
   const currency = currencyLabel(ledgers)
-  let assetTotal = 0
-  let liabilityTotal = 0
-  for (const a of accounts || []) {
-    const bal = Math.abs(a.initial_balance ?? 0)
-    if (LIABILITY_TYPES.has(a.account_type || '')) {
-      liabilityTotal += bal
-    } else {
-      assetTotal += bal
-    }
-  }
-  const totalBalance = assetTotal - liabilityTotal
+  const totalBalance = (accounts || []).reduce((sum, a) => sum + accountBalance(a), 0)
   // 优先吃后端给的 summary（无论 series 空不空都是权威值）；fallback 到 series 聚合。
   const periodIncome =
     periodSummary?.income_total ??
