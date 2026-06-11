@@ -38,7 +38,7 @@ export function AssetCompositionDonut({ accounts }: Props) {
       : a.initial_balance ?? 0
     totals.set(key, (totals.get(key) || 0) + raw)
   }
-  const data = Array.from(totals.entries())
+  const allRows = Array.from(totals.entries())
     .map(([type, signed]) => ({
       type,
       signed,
@@ -47,13 +47,16 @@ export function AssetCompositionDonut({ accounts }: Props) {
       color: TYPE_META[type]?.color || '#94a3b8',
       group: TYPE_META[type]?.group || 'asset'
     }))
-    .filter((d) => d.value > 0)
+  // 「资产构成」扇区/图例只含资产类:负债(信用卡/贷款)不进饼图,只在中心脚注体现。
+  // 与 App 端 asset_composition_chart 一致(资产构成 = 纯资产,不含负债)。
+  const data = allRows
+    .filter((d) => d.value > 0 && d.group === 'asset')
     .sort((a, b) => b.value - a.value)
 
   // 中心数字与 App 口径一致:总资产 = 资产类带符号合计;负债脚注 = |负债类带符号合计|。
-  const totalAsset = data.filter((d) => d.group === 'asset').reduce((s, d) => s + d.signed, 0)
+  const totalAsset = allRows.filter((d) => d.group === 'asset').reduce((s, d) => s + d.signed, 0)
   const totalLiability = Math.abs(
-    data.filter((d) => d.group === 'liability').reduce((s, d) => s + d.signed, 0)
+    allRows.filter((d) => d.group === 'liability').reduce((s, d) => s + d.signed, 0)
   )
 
   const fmt = (v: number) =>
@@ -109,8 +112,8 @@ export function AssetCompositionDonut({ accounts }: Props) {
             </div>
             <ul className="space-y-1.5">
               {data.map((d) => {
-                const total = totalAsset + totalLiability
-                const pct = total > 0 ? (d.value / total) * 100 : 0
+                // 分母只用资产合计(data 已只含资产类),百分比是「该资产占总资产比」。
+                const pct = totalAsset > 0 ? (d.value / totalAsset) * 100 : 0
                 return (
                   <li key={d.type} className="flex items-center gap-2 text-sm">
                     <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: d.color }} />
