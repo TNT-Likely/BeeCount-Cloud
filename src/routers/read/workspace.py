@@ -1196,7 +1196,6 @@ def _compute_anomaly_months(
 
 @router.get("/workspace/net-worth-history", response_model=NetWorthHistoryOut)
 def workspace_net_worth_history(
-    scope: AnalyticsScope = Query(default="all"),
     ledger_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     tz_offset_minutes: int = Query(default=0, ge=-720, le=840),

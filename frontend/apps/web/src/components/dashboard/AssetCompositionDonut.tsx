@@ -54,8 +54,12 @@ export function AssetCompositionDonut({ accounts }: Props) {
   // 「资产构成」扇区/图例只含资产类:负债(信用卡/贷款)不进饼图,只在中心脚注体现。
   // 与 App 端 asset_composition_chart 一致(资产构成 = 纯资产,不含负债)。
   const data = allRows
-    .filter((d) => d.value > 0 && d.group === 'asset')
+    // 只含「正余额」资产:负债(信用卡/贷款)与透支为负的资产都不进扇区/图例。
+    .filter((d) => d.signed > 0 && d.group === 'asset')
     .sort((a, b) => b.value - a.value)
+  // 百分比分母用「展示项之和」而非带符号的 totalAsset —— 否则有透支资产(signed<0)时
+  // totalAsset 被负值压低,会让单项百分比虚高甚至 >100%。
+  const shownAssetTotal = data.reduce((s, d) => s + d.value, 0)
 
   // 中心数字与 App 口径一致:总资产 = 资产类带符号合计;负债脚注 = |负债类带符号合计|。
   const totalAsset = allRows.filter((d) => d.group === 'asset').reduce((s, d) => s + d.signed, 0)
@@ -118,8 +122,8 @@ export function AssetCompositionDonut({ accounts }: Props) {
             </div>
             <ul className="space-y-1.5">
               {data.map((d) => {
-                // 分母只用资产合计(data 已只含资产类),百分比是「该资产占总资产比」。
-                const pct = totalAsset > 0 ? (d.value / totalAsset) * 100 : 0
+                // 分母用展示项之和(见上方 shownAssetTotal 注释),保证各项百分比合计 = 100%。
+                const pct = shownAssetTotal > 0 ? (d.value / shownAssetTotal) * 100 : 0
                 return (
                   <li key={d.type} className="flex items-center gap-2 text-sm">
                     <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: d.color }} />
