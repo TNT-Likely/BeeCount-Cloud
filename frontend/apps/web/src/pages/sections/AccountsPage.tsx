@@ -46,6 +46,7 @@ import {
 } from '@beecount/web-features'
 
 import { NetWorthOrCompositionCard } from '../../components/dashboard/NetWorthOrCompositionCard'
+import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -67,6 +68,20 @@ function readConvertedView(): boolean {
     return localStorage.getItem(CONVERTED_VIEW_KEY) !== '0'
   } catch {
     return true
+  }
+}
+
+// 折算卡内「构成 / 走势」tab 的设备级持久化 —— 与 NetWorthOrCompositionCard
+// (非折算态那张独立卡)复用同一 key,两处切换状态共享。折算卡这里原本就是构成,
+// 故默认 'composition'(NetWorthOrCompositionCard 默认 'trend',各自合理)。
+type TrendOrComposition = 'trend' | 'composition'
+const TREND_OR_COMPOSITION_KEY = 'beecount:web:accounts:trendOrComposition'
+
+function readTrendOrComposition(): TrendOrComposition {
+  try {
+    return localStorage.getItem(TREND_OR_COMPOSITION_KEY) === 'trend' ? 'trend' : 'composition'
+  } catch {
+    return 'composition'
   }
 }
 
@@ -110,6 +125,19 @@ export function AccountsPage() {
       // private mode / 超配额忽略
     }
   }, [convertedView])
+
+  // 折算卡内「构成 / 走势」tab(见 TREND_OR_COMPOSITION_KEY)。设备级持久化,
+  // 与非折算态独立卡复用同一 key。
+  const [trendOrComposition, setTrendOrComposition] = useState<TrendOrComposition>(
+    () => readTrendOrComposition(),
+  )
+  useEffect(() => {
+    try {
+      localStorage.setItem(TREND_OR_COMPOSITION_KEY, trendOrComposition)
+    } catch {
+      // private mode / 超配额忽略
+    }
+  }, [trendOrComposition])
 
   // 多币种折算(只读卡)。主币种存在且账户币种 ≥2 种时,并行拉汇率 + 手动 override,
   // 任一失败置 null 不阻塞账户列表。单币种 / 无主币种则不渲染卡(零变化)。
@@ -421,18 +449,40 @@ export function AccountsPage() {
                 </div>
               </div>
 
-              {/* 合并构成 donut —— 各币种分组折算到主币种后按类型聚合(currency=base)。 */}
-              {converted.mergedGroups.length > 0 ? (
-                <AssetsCompositionMini
-                  groups={converted.mergedGroups}
-                  totalAbs={converted.assetTotal + Math.abs(converted.liabilityTotal)}
-                  currency={base}
-                  showCurrency
-                  embedded
-                  approx
-                  title={t('accounts.converted.composition', { currency: base })}
-                />
-              ) : null}
+              {/* 「构成 / 走势」tab —— 占位原合并构成 donut。构成=各币种分组折算到主币种
+                  后按类型聚合(currency=base)的 donut;走势=嵌入式净值走势图(无外层卡)。
+                  选择设备级持久化(见 TREND_OR_COMPOSITION_KEY)。无构成数据时构成 tab
+                  退化为空(沿用原 mergedGroups.length 守卫)。 */}
+              <div>
+                <div className="mb-2 flex justify-end gap-1">
+                  {(['composition', 'trend'] as TrendOrComposition[]).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setTrendOrComposition(v)}
+                      className={`rounded-full px-2 py-0.5 text-[11px] ${
+                        trendOrComposition === v
+                          ? 'bg-primary/15 text-primary'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {t(`accounts.trendOrComposition.${v}`)}
+                    </button>
+                  ))}
+                </div>
+                {trendOrComposition === 'trend' ? (
+                  <NetWorthTrend data={netWorthHistory} embedded />
+                ) : converted.mergedGroups.length > 0 ? (
+                  <AssetsCompositionMini
+                    groups={converted.mergedGroups}
+                    totalAbs={converted.assetTotal + Math.abs(converted.liabilityTotal)}
+                    currency={base}
+                    showCurrency
+                    embedded
+                    approx
+                  />
+                ) : null}
+              </div>
 
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
@@ -466,12 +516,14 @@ export function AccountsPage() {
           </div>
         )
       ) : null}
-      {/* 净资产走势 / 资产构成 —— 资产页顶部汇总区,位于(可选的)折算汇总卡下方、账户
-          列表之前。顶部分段切换在「走势」与「构成」间切换,选择设备级持久化。多币种脚注 /
-          空态由各子组件内部处理。 */}
-      <div className="mb-4">
-        <NetWorthOrCompositionCard netWorthHistory={netWorthHistory} accounts={rows} />
-      </div>
+      {/* 净资产走势 / 资产构成独立卡 —— 仅非折算态(单币种 / 无主币种 / 折算关)渲染。
+          折算态(converted && convertedView)下走势/构成已并进折算卡内的 tab,这里不再
+          重复出卡。多币种脚注 / 空态由各子组件内部处理。 */}
+      {!(converted && convertedView) ? (
+        <div className="mb-4">
+          <NetWorthOrCompositionCard netWorthHistory={netWorthHistory} accounts={rows} />
+        </div>
+      ) : null}
       <AccountsPanel
         form={form}
         rows={rows}
