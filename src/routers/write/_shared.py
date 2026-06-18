@@ -888,6 +888,10 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["txIndex"] = row.tx_index
     if row.created_by_user_id:
         item["createdByUserId"] = row.created_by_user_id
+    # 账单标记(.docs/transaction-flags):带上当前值,update merge 不传该字段时
+    # 保留原值,且新 SyncChange payload 用 camelCase 携带它们。
+    item["excludeFromStats"] = bool(row.exclude_from_stats)
+    item["excludeFromBudget"] = bool(row.exclude_from_budget)
     return item
 
 

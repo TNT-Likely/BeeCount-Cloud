@@ -317,6 +317,10 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     attachments = payload.get("attachments")
     if isinstance(attachments, list):
         item["attachments"] = attachments
+    # 账单标记(.docs/transaction-flags):snapshot 用 camelCase,跟 mobile
+    # serializer + projection.upsert_tx(读 excludeFromStats)对齐。create 默认 False。
+    item["excludeFromStats"] = bool(payload.get("exclude_from_stats"))
+    item["excludeFromBudget"] = bool(payload.get("exclude_from_budget"))
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
@@ -393,6 +397,15 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item["attachments"] = attachments
         elif attachments is None:
             item.pop("attachments", None)
+    # 账单标记(.docs/transaction-flags):web update 请求里 None = 不变(由
+    # exclude_unset 的 payload 控制:不传该 key 就不进 payload)。带显式布尔
+    # 才写。snapshot 用 camelCase。
+    for req_key, snapshot_key in (
+        ("exclude_from_stats", "excludeFromStats"),
+        ("exclude_from_budget", "excludeFromBudget"),
+    ):
+        if req_key in payload and payload.get(req_key) is not None:
+            item[snapshot_key] = bool(payload.get(req_key))
     _mark_entity_actor(item, payload, create=False)
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。

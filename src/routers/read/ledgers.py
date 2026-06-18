@@ -327,6 +327,8 @@ def list_transactions(
                 tags_list=_tags_list(row.tags_csv),
                 tag_ids=tag_ids,
                 attachments=attachments,
+                exclude_from_stats=bool(row.exclude_from_stats),
+                exclude_from_budget=bool(row.exclude_from_budget),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,

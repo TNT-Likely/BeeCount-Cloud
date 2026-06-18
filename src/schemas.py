@@ -517,6 +517,10 @@ class ReadTransactionOut(BaseModel):
     tags_list: list[str] = Field(default_factory=list)
     tag_ids: list[str] = Field(default_factory=list)
     attachments: list[dict[str, Any]] | None
+    # 账单标记(.docs/transaction-flags)。exclude_from_stats=不计入收支统计;
+    # exclude_from_budget=不计入预算用量。两者独立,旧数据 default False。
+    exclude_from_stats: bool = False
+    exclude_from_budget: bool = False
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -795,6 +799,9 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     tags: str | list[str] | None = None
     tag_ids: list[str] | None = None
     attachments: list[dict[str, Any]] | None = None
+    # 账单标记(.docs/transaction-flags)。新建默认 False。
+    exclude_from_stats: bool = False
+    exclude_from_budget: bool = False
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -814,6 +821,9 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     tags: str | list[str] | None = None
     tag_ids: list[str] | None = None
     attachments: list[dict[str, Any]] | None = None
+    # 账单标记(.docs/transaction-flags)。None = 不变(沿用 update 其它字段语义)。
+    exclude_from_stats: bool | None = None
+    exclude_from_budget: bool | None = None
 
 
 class WriteEntityDeleteRequest(WriteBaseRequest):
