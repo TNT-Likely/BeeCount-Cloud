@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -497,6 +498,15 @@ class ReadTxProjection(Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_edited_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    # 账单标记(.docs/transaction-flags)。default false:既有行升级后不过滤,
+    # 旧 App 不发该字段时保持 false。exclude_from_stats=不计入收支统计;
+    # exclude_from_budget=不计入预算用量。两者独立。
+    exclude_from_stats: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    exclude_from_budget: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
 
 Index(
