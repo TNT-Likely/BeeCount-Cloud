@@ -193,6 +193,10 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 共享账本 Phase 1:updatedByUserId 也回写到 projection,作为
         # last_edited_by。snapshot_mutator._mark_entity_actor 写入。
         ("updatedByUserId", "last_edited_by_user_id"),
+        # 账单标记(.docs/transaction-flags)。merge 时缺键保留既有行值,
+        # 布尔强转在 projection.upsert_tx(default=False)做。
+        ("excludeFromStats", "exclude_from_stats"),
+        ("excludeFromBudget", "exclude_from_budget"),
     ]),
 }
 

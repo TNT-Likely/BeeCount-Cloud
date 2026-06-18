@@ -250,6 +250,10 @@ def upsert_tx(
         # 共享账本 Phase 1:每次 upsert 都更新 last_edited_by_user_id;
         # payload 没带就回退 created。
         "last_edited_by_user_id": _as_str(payload.get("updatedByUserId")) or payload_creator,
+        # 账单标记(.docs/transaction-flags)。缺键保留由上游 merge_with_existing
+        # 负责(payload 已含既有行值),这里只做布尔强转;default=False 兜底首次插入。
+        "exclude_from_stats": _as_bool(payload.get("excludeFromStats"), default=False),
+        "exclude_from_budget": _as_bool(payload.get("excludeFromBudget"), default=False),
         "source_change_id": source_change_id,
     }
 
