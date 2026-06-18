@@ -1060,6 +1060,11 @@ const zhTW = {
   'transactions.placeholder.fromAccountName': '轉出帳戶',
   'transactions.placeholder.toAccountName': '轉入帳戶',
   'transactions.placeholder.tags': '選擇標籤',
+  // 帳單標記(per-transaction flags,issue #340 / .docs/transaction-flags)
+  txFlagExcludeFromStats: '不計入收支',
+  txFlagExcludeFromBudget: '不計入預算',
+  txFlagExcludedTag: '不計收支',
+  txFlagBudgetExcludedTag: '不計預算',
   'transactions.dictionary.loading': '正在載入可選資料...',
   'transactions.button.create': '建立交易',
   'transactions.button.update': '更新交易',

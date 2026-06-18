@@ -14,6 +14,10 @@ export type TxForm = {
   to_account_name: string
   tags: string[]
   attachments: AttachmentRef[]
+  /** 不计入收支统计(income/expense 显示开关,transfer 隐藏)。 */
+  exclude_from_stats: boolean
+  /** 不计入预算用量(仅 expense 显示开关)。 */
+  exclude_from_budget: boolean
 }
 
 export type AccountForm = {
@@ -92,7 +96,9 @@ export const txDefaults = (): TxForm => ({
   from_account_name: '',
   to_account_name: '',
   tags: [],
-  attachments: []
+  attachments: [],
+  exclude_from_stats: false,
+  exclude_from_budget: false
 })
 
 export const accountDefaults = (): AccountForm => ({

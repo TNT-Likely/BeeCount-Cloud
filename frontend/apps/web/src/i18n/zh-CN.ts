@@ -1101,6 +1101,11 @@ const zhCN = {
   'transactions.placeholder.fromAccountName': '转出账户',
   'transactions.placeholder.toAccountName': '转入账户',
   'transactions.placeholder.tags': '选择标签',
+  // 账单标记(per-transaction flags,issue #340 / .docs/transaction-flags)
+  txFlagExcludeFromStats: '不计入收支',
+  txFlagExcludeFromBudget: '不计入预算',
+  txFlagExcludedTag: '不计收支',
+  txFlagBudgetExcludedTag: '不计预算',
   'transactions.dictionary.loading': '正在加载可选数据...',
   'transactions.button.create': '新建交易',
   'transactions.button.update': '更新交易',

@@ -134,6 +134,8 @@ export function GlobalEditDialogs() {
                 .map((s) => s.trim())
                 .filter((s) => s.length > 0),
         attachments: Array.isArray(tx.attachments) ? tx.attachments : [],
+        exclude_from_stats: Boolean(tx.exclude_from_stats),
+        exclude_from_budget: Boolean(tx.exclude_from_budget),
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
@@ -231,6 +233,11 @@ export function GlobalEditDialogs() {
           : null,
       tags: editTxForm.tags.filter((s) => s.length > 0),
       attachments: editTxForm.attachments,
+      // §三 标记按 type 条件落库:转账两者都置 false;收入只允许 stats;支出两者都允许。
+      exclude_from_stats:
+        editTxForm.tx_type === 'transfer' ? false : editTxForm.exclude_from_stats,
+      exclude_from_budget:
+        editTxForm.tx_type === 'expense' ? editTxForm.exclude_from_budget : false,
     }
 
     try {

@@ -1428,7 +1428,10 @@ export function TransactionsPage() {
         to_account_id: isTransfer ? accountByName.get(toAccountName.toLowerCase()) || null : null,
         tags: txForm.tags.length > 0 ? txForm.tags : null,
         tag_ids: txTagIds.length > 0 ? txTagIds : null,
-        attachments: txForm.attachments.length > 0 ? txForm.attachments : null
+        attachments: txForm.attachments.length > 0 ? txForm.attachments : null,
+        // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
+        exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
+        exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false
       }
       // eslint-disable-next-line no-console
       console.info('[tx-save] request', {
@@ -1939,7 +1942,9 @@ export function TransactionsPage() {
                             .split(',')
                             .map((value) => value.trim())
                             .filter((value) => value.length > 0),
-                    attachments: normalizeAttachmentRefs(tx.attachments)
+                    attachments: normalizeAttachmentRefs(tx.attachments),
+                    exclude_from_stats: Boolean(tx.exclude_from_stats),
+                    exclude_from_budget: Boolean(tx.exclude_from_budget)
                   })
                 }}
                 onDelete={(row) =>

@@ -320,12 +320,15 @@ export function TransactionsPanel({
 
   const applyTxType = (nextType: TxForm['tx_type']) => {
     if (nextType === 'transfer') {
+      // 转账两个标记都隐藏 → 清掉,避免残留脏值
       onFormChange({
         ...form,
         tx_type: nextType,
         account_name: '',
         category_name: '',
-        category_kind: 'transfer'
+        category_kind: 'transfer',
+        exclude_from_stats: false,
+        exclude_from_budget: false
       })
       return
     }
@@ -336,7 +339,9 @@ export function TransactionsPanel({
       category_kind: nextType,
       category_name: keepCategory,
       from_account_name: '',
-      to_account_name: ''
+      to_account_name: '',
+      // 不计入预算仅 expense 显示;切到 income 时清掉
+      exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false
     })
   }
 
@@ -597,6 +602,55 @@ export function TransactionsPanel({
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
+            {/* §三 标记开关 — 按当前 type 条件显示:
+                  不计入收支:income / expense(转账本就不进收支,隐藏)
+                  不计入预算:仅 expense(预算只统计支出) */}
+            {form.tx_type !== 'transfer' ? (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 md:col-span-2">
+                <p className="text-sm font-medium">{t('txFlagExcludeFromStats')}</p>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.exclude_from_stats}
+                  aria-label={t('txFlagExcludeFromStats') as string}
+                  onClick={() =>
+                    onFormChange({ ...form, exclude_from_stats: !form.exclude_from_stats })
+                  }
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                    form.exclude_from_stats ? 'bg-primary' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      form.exclude_from_stats ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null}
+            {form.tx_type === 'expense' ? (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 md:col-span-2">
+                <p className="text-sm font-medium">{t('txFlagExcludeFromBudget')}</p>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.exclude_from_budget}
+                  aria-label={t('txFlagExcludeFromBudget') as string}
+                  onClick={() =>
+                    onFormChange({ ...form, exclude_from_budget: !form.exclude_from_budget })
+                  }
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                    form.exclude_from_budget ? 'bg-primary' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      form.exclude_from_budget ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null}
           </div>
           </div>
           <DialogFooter className="shrink-0 border-t border-border/60 bg-card px-6 py-4">

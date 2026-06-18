@@ -1059,6 +1059,11 @@ const en = {
   'transactions.placeholder.fromAccountName': 'from_account_name',
   'transactions.placeholder.toAccountName': 'to_account_name',
   'transactions.placeholder.tags': 'Select tags',
+  // 账单标记(per-transaction flags,issue #340 / .docs/transaction-flags)
+  txFlagExcludeFromStats: 'Exclude from income/expense',
+  txFlagExcludeFromBudget: 'Exclude from budget',
+  txFlagExcludedTag: 'Excluded',
+  txFlagBudgetExcludedTag: 'No budget',
   'transactions.dictionary.loading': 'Loading selectable data...',
   'transactions.button.create': 'Create Tx',
   'transactions.button.update': 'Update Tx',

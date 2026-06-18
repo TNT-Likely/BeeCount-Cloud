@@ -280,6 +280,13 @@ export function TransactionRow({
               <span className="font-mono tabular-nums">{attachments.length}</span>
             </button>
           ) : null}
+          {/* §4.2 标记小灰字 — 不改金额、不加图标,只在第二排尾部追加灰字标签 */}
+          {row.exclude_from_stats ? (
+            <span>· {t('txFlagExcludedTag')}</span>
+          ) : null}
+          {row.exclude_from_budget ? (
+            <span>· {t('txFlagBudgetExcludedTag')}</span>
+          ) : null}
         </div>
 
         {/* 右下:创建/编辑头像 chip — self-end 钉到 row 底部,跟左下 meta

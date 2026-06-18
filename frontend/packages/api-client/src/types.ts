@@ -179,6 +179,10 @@ export type ReadTransaction = {
   tags_list: string[]
   tag_ids?: string[]
   attachments: AttachmentRef[] | null
+  /** 不计入收支统计(仍计入账户余额/净资产)。历史交易默认 false。 */
+  exclude_from_stats?: boolean
+  /** 不计入预算用量(仅 expense 有意义)。历史交易默认 false。 */
+  exclude_from_budget?: boolean
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -544,6 +548,10 @@ export type TxPayload = {
   tags?: string | string[] | null
   tag_ids?: string[] | null
   attachments?: AttachmentRef[] | null
+  /** 不计入收支统计(income/expense 可填,transfer 无意义)。 */
+  exclude_from_stats?: boolean | null
+  /** 不计入预算用量(仅 expense 有意义)。 */
+  exclude_from_budget?: boolean | null
 }
 
 export type BudgetCreatePayload = {
