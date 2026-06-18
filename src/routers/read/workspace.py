@@ -9,6 +9,7 @@ from __future__ import annotations
 import statistics as _stats
 
 from pydantic import BaseModel
+from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 from ...models import ExchangeRateCache, UserExchangeRateProjection
@@ -992,7 +993,14 @@ def workspace_analytics(
             ReadTxProjection.amount,
             ReadTxProjection.happened_at,
             ReadTxProjection.category_name,
-        ).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            # exclude_from_stats=True 的交易不计入收支统计(D1);该端点所有
+            # 数字(income/expense 汇总、series、分类排行、anomaly)都源自这一
+            # 查询,故在此一处过滤即覆盖全部收支口径。余额/净值口径在
+            # workspace_net_worth_history 端点,不受此过滤影响。
+            ReadTxProjection.exclude_from_stats == sa_false(),
+        )
         if start_at is not None:
             tx_query = tx_query.where(ReadTxProjection.happened_at >= start_at)
         if end_at is not None:
