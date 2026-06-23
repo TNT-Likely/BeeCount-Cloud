@@ -929,6 +929,9 @@ const zhTW = {
   'profile.sync.compactAmount': '餘額顯示格式',
   'profile.sync.compactAmount.full': '完整金額',
   'profile.sync.compactAmount.compact': '簡潔顯示',
+  'profile.sync.noteDisplay': '備註顯示方式',
+  'profile.sync.noteDisplay.category': '分類優先',
+  'profile.sync.noteDisplay.note': '備註優先',
   'profile.sync.showTime': '顯示交易時間',
 
   'calendar.monthLabel': '{year} 年 {month} 月',

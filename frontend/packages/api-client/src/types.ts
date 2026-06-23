@@ -40,6 +40,8 @@ export type ProfileAppearance = {
   compact_amount?: boolean
   /** 交易行是否显示时间 */
   show_transaction_time?: boolean
+  /** 明细行第一行显示方式:'category'(默认,分类+备注括号) | 'note'(备注优先) */
+  note_display_mode?: 'category' | 'note'
 }
 
 /**

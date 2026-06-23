@@ -502,6 +502,9 @@ const zhCN = {
   'profile.sync.compactAmount': '余额显示格式',
   'profile.sync.compactAmount.full': '完整金额',
   'profile.sync.compactAmount.compact': '简洁显示',
+  'profile.sync.noteDisplay': '备注显示方式',
+  'profile.sync.noteDisplay.category': '分类优先',
+  'profile.sync.noteDisplay.note': '备注优先',
   'profile.sync.showTime': '显示交易时间',
 
   'calendar.monthLabel': '{year} 年 {month} 月',

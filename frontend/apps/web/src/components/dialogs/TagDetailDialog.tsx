@@ -8,6 +8,7 @@ import {
 } from '@beecount/ui'
 import { TransactionList } from '@beecount/web-features'
 
+import { useAuth } from '../../context/AuthContext'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { DetailScopeToggle } from './DetailScopeToggle'
 
@@ -50,6 +51,8 @@ export function TagDetailDialog({
   resolveAttachmentPreviewUrl,
 }: Props) {
   const t = useT()
+  const { profileMe } = useAuth()
+  const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
   const stats = tag ? tagStatsById[tag.id] : null
   return (
     <Dialog open={Boolean(tag)} onOpenChange={(open) => !open && onClose()}>
@@ -99,6 +102,7 @@ export function TagDetailDialog({
                 emptyTitle={t('transactions.empty.forTag.title')}
                 emptyDescription={t('transactions.empty.forTag.desc')}
                 showLedger={scope === 'all'}
+                noteDisplayMode={noteDisplayMode}
               />
             </div>
           </div>

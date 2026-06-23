@@ -198,6 +198,7 @@ export function SettingsProfileAppearanceSection() {
   const headerSkin = appearance.header_skin ?? 'none'
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
+  const noteDisplayMode = appearance.note_display_mode ?? 'category'
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
   const saveAppearance = async (
@@ -498,6 +499,27 @@ export function SettingsProfileAppearanceSection() {
                 <SelectContent>
                   <SelectItem value="full">{t('profile.sync.compactAmount.full')}</SelectItem>
                   <SelectItem value="compact">{t('profile.sync.compactAmount.compact')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {/* 备注显示方式:下拉 — category(分类优先) / note(备注优先) */}
+            <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.noteDisplay')}
+              </p>
+              <Select
+                value={noteDisplayMode}
+                onValueChange={(value) =>
+                  void saveAppearance({ note_display_mode: value as 'category' | 'note' })
+                }
+                disabled={appearanceSaving}
+              >
+                <SelectTrigger className="mt-1 h-8 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus:ring-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="category">{t('profile.sync.noteDisplay.category')}</SelectItem>
+                  <SelectItem value="note">{t('profile.sync.noteDisplay.note')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
