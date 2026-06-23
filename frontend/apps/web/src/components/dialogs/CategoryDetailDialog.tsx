@@ -17,6 +17,7 @@ import {
 import { Amount, CategoryIcon, periodLabel, TransactionList } from '@beecount/web-features'
 import { ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
 
+import { useAuth } from '../../context/AuthContext'
 import { formatCompactTick } from '../../i18n/format'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { DetailScopeToggle } from './DetailScopeToggle'
@@ -118,6 +119,8 @@ export function CategoryDetailDialog({
   const t = useT()
   const { locale } = useLocale()
   const chinese = locale.startsWith('zh')
+  const { profileMe } = useAuth()
+  const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
 
   const tagColorByName = useMemo(() => {
     const map = new Map<string, string | null>()
@@ -291,6 +294,7 @@ export function CategoryDetailDialog({
                 emptyTitle={t('detail.category.empty.title')}
                 emptyDescription={t('detail.category.empty.desc')}
                 showLedger={scope === 'all'}
+                noteDisplayMode={noteDisplayMode}
               />
             </div>
 

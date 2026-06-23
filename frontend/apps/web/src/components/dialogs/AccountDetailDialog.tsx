@@ -13,6 +13,7 @@ import {
 import { TransactionList } from '@beecount/web-features'
 import { Banknote, Calendar as CalendarIcon, CreditCard } from 'lucide-react'
 
+import { useAuth } from '../../context/AuthContext'
 import type { DetailScope } from '../../lib/txDialogEvents'
 import { DetailScopeToggle } from './DetailScopeToggle'
 
@@ -54,6 +55,8 @@ export function AccountDetailDialog({
   resolveAttachmentPreviewUrl,
 }: Props) {
   const t = useT()
+  const { profileMe } = useAuth()
+  const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
   return (
     <Dialog open={Boolean(account)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
@@ -89,6 +92,7 @@ export function AccountDetailDialog({
                 resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl as never}
                 emptyTitle={t('transactions.empty.forAccount.title')}
                 showLedger={scope === 'all'}
+                noteDisplayMode={noteDisplayMode}
               />
             </div>
           </div>
