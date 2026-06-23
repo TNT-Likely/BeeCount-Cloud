@@ -86,6 +86,8 @@ type TransactionsPanelProps = {
   showCreator?: boolean
   /** §7 共享账本:当前 caller user_id,自己创建+编辑的 tx 不显示 chip。 */
   currentUserId?: string | null
+  /** 备注显示方式,透传到 TransactionList。默认 'category'。 */
+  noteDisplayMode?: 'category' | 'note'
 }
 
 type AttachmentCarouselCellProps = {
@@ -261,7 +263,8 @@ export function TransactionsPanel({
   selectedIds,
   onToggleSelect,
   showCreator = false,
-  currentUserId
+  currentUserId,
+  noteDisplayMode = 'category'
 }: TransactionsPanelProps) {
   const t = useT()
   const open = dialogOpen
@@ -361,6 +364,7 @@ export function TransactionsPanel({
             variant="default"
             showCreator={showCreator}
             currentUserId={currentUserId}
+            noteDisplayMode={noteDisplayMode}
             canManage={canWrite}
             onEdit={(row) => {
               onEdit(row)

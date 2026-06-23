@@ -55,6 +55,8 @@ interface Props {
   currentUserId?: string | null
   /** 跨账本场景显示账本名 chip(详情弹窗 scope='all' 时开启)。透传给行组件。 */
   showLedger?: boolean
+  /** 备注显示方式,透传到 TransactionRow。默认 'category'。 */
+  noteDisplayMode?: 'category' | 'note'
 }
 
 /**
@@ -88,7 +90,8 @@ export function TransactionList({
   onToggleSelect,
   showCreator = false,
   currentUserId,
-  showLedger = false
+  showLedger = false,
+  noteDisplayMode = 'category'
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -158,6 +161,7 @@ export function TransactionList({
                 selected={selectedIds?.has(row.id) ?? false}
                 onToggleSelect={onToggleSelect}
                 showLedger={showLedger}
+                noteDisplayMode={noteDisplayMode}
               />
             </li>
           ))}
