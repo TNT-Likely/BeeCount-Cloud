@@ -928,6 +928,9 @@ const en = {
   'profile.sync.compactAmount': 'Balance display',
   'profile.sync.compactAmount.full': 'Full amount',
   'profile.sync.compactAmount.compact': 'Compact',
+  'profile.sync.noteDisplay': 'Note display',
+  'profile.sync.noteDisplay.category': 'Category first',
+  'profile.sync.noteDisplay.note': 'Note first',
   'profile.sync.showTime': 'Show transaction time',
 
   'calendar.monthLabel': '{month}/{year}',
