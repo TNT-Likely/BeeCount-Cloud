@@ -1185,6 +1185,7 @@ const en = {
   'currency.region.middleEast': 'Middle East',
   'currency.region.europe': 'Europe',
   'currency.region.northAmerica': 'North America',
+  'currency.region.centralAmericaCaribbean': 'Central America & Caribbean',
   'currency.region.southAmerica': 'South America',
   'currency.region.oceania': 'Oceania',
   'currency.region.africa': 'Africa',

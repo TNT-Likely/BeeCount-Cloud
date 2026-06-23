@@ -1186,6 +1186,7 @@ const zhTW = {
   'currency.region.middleEast': '西亞 / 中東',
   'currency.region.europe': '歐洲',
   'currency.region.northAmerica': '北美',
+  'currency.region.centralAmericaCaribbean': '中美洲及加勒比',
   'currency.region.southAmerica': '南美',
   'currency.region.oceania': '大洋洲',
   'currency.region.africa': '非洲',
