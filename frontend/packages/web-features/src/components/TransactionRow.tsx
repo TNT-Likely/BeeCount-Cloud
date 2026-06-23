@@ -3,6 +3,7 @@ import { useT } from '@beecount/ui'
 
 import { CategoryIcon } from './CategoryIcon'
 import { TagChip } from './TagChip'
+import { composeTransactionRowTitle, type NoteDisplayMode } from '../lib/transactionRowTitle'
 
 export type TransactionRowVariant = 'default' | 'compact'
 
@@ -48,6 +49,8 @@ type CommonProps = {
   /** 跨账本场景(详情弹窗 scope='all')—— 在 meta 行追加账本名 chip,帮用户
    *  区分同一分类/标签/账户在不同账本里的记录。同账本场景不传,避免噪声。 */
   showLedger?: boolean
+  /** 备注显示方式:'note' = 备注优先(有备注显示备注);默认 'category' = 分类 + 备注括号。 */
+  noteDisplayMode?: NoteDisplayMode
 }
 
 /**
@@ -77,7 +80,8 @@ export function TransactionRow({
   selectionMode = false,
   selected = false,
   onToggleSelect,
-  showLedger = false
+  showLedger = false,
+  noteDisplayMode = 'category'
 }: CommonProps) {
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
@@ -85,6 +89,12 @@ export function TransactionRow({
   const amountTone = row.tx_type === 'expense' ? 'negative' : row.tx_type === 'income' ? 'positive' : 'default'
   const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
   const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  const rowTitle = composeTransactionRowTitle({
+    mode: noteDisplayMode,
+    categoryName: row.category_name,
+    categoryText,
+    note: row.note,
+  })
   const accountText =
     row.tx_type === 'transfer'
       ? `${row.from_account_name || '-'} → ${row.to_account_name || '-'}`
@@ -185,10 +195,10 @@ export function TransactionRow({
               className="shrink-0 text-muted-foreground"
             />
           ) : null}
-          <span className="truncate text-sm font-medium">{categoryText}</span>
-          {row.note ? (
+          <span className="truncate text-sm font-medium">{rowTitle.primary}</span>
+          {rowTitle.parenNote ? (
             <span className="truncate text-xs text-muted-foreground">
-              ({row.note})
+              ({rowTitle.parenNote})
             </span>
           ) : null}
           {showLedger && row.ledger_name ? (
