@@ -1874,6 +1874,7 @@ export function TransactionsPage() {
                 />
               ) : null}
               <TransactionsPanel
+                noteDisplayMode={profileMe?.appearance?.note_display_mode ?? 'category'}
                 selectionMode={selectionMode}
                 selectedIds={selectedTxIds}
                 onToggleSelect={handleToggleSelect}
