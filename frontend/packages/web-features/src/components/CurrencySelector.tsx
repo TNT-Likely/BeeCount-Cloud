@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import {
   Button,
@@ -8,10 +8,11 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  useLocale,
   useT,
 } from '@beecount/ui'
 
-import { CURRENCY_REGION_GROUPS } from '../lib/currencies'
+import { CURRENCY_REGION_GROUPS, currencyDisplayName } from '../lib/currencies'
 
 type CurrencySelectorProps = {
   open: boolean
@@ -47,9 +48,21 @@ export function CurrencySelector({
   readOnlyHint,
 }: CurrencySelectorProps) {
   const t = useT()
+  const { locale } = useLocale()
   const [query, setQuery] = useState('')
 
   const normalizedValue = (value || '').trim().toUpperCase()
+
+  // 币种显示名:优先用 i18n key(主流币种人工译名)覆盖,否则用 Intl.DisplayNames
+  // 按当前语言本地化(长尾币种也能出名字)。
+  const resolveName = useCallback(
+    (code: string): string => {
+      const i18nKey = `currency.${code}`
+      const i18n = t(i18nKey)
+      return i18n === i18nKey ? currencyDisplayName(code, locale) : i18n
+    },
+    [t, locale],
+  )
 
   // 把分组结构按搜索词过滤一遍,空 region 不渲染。
   const filteredGroups = useMemo(() => {
@@ -57,14 +70,12 @@ export function CurrencySelector({
     return CURRENCY_REGION_GROUPS.map((group) => {
       const codes = group.codes.filter((code) => {
         if (!q) return true
-        const i18nKey = `currency.${code}`
-        const name = t(i18nKey)
-        const localized = name === i18nKey ? '' : name.toLowerCase()
-        return code.toLowerCase().includes(q) || localized.includes(q)
+        const name = resolveName(code).toLowerCase()
+        return code.toLowerCase().includes(q) || name.includes(q)
       })
       return { ...group, codes }
     }).filter((group) => group.codes.length > 0)
-  }, [query, t])
+  }, [query, resolveName])
 
   return (
     <Dialog
@@ -107,9 +118,8 @@ export function CurrencySelector({
                   </div>
                   <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                     {group.codes.map((code) => {
-                      const i18nKey = `currency.${code}`
-                      const name = t(i18nKey)
-                      const display = name === i18nKey ? code : `${name} (${code})`
+                      const name = resolveName(code)
+                      const display = name && name !== code ? `${name} (${code})` : code
                       const selected = normalizedValue === code
                       return (
                         <button
