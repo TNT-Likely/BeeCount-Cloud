@@ -138,7 +138,7 @@ Once connected, ask the LLM:
 | Message back-channel | `https://your-domain.com/api/v1/mcp/messages/` |
 | Auth | `Authorization: Bearer bcmcp_…` (PAT) |
 
-PAT and access tokens are strictly partitioned: **PATs only work against `/api/v1/mcp/*`** — every other API rejects PATs with 403. Conversely, regular access tokens cannot call MCP endpoints.
+PATs and access tokens are strictly partitioned: **MCP-scoped PATs only work against `/api/v1/mcp/*`**. For external read-only sync clients, create a separate PAT with the `read:api` scope for `/api/v1/read/*`. Conversely, regular access tokens cannot call MCP endpoints.
 
 ---
 
@@ -149,9 +149,9 @@ PAT and access tokens are strictly partitioned: **PATs only work against `/api/v
 | Token storage | Server stores `sha256` hash only, constant-time compare; plaintext returned exactly once at creation |
 | Token deletion | One-shot physical delete — the row leaves the DB and the token becomes invalid immediately |
 | Token expiration | Optional at creation; expired tokens get 401 |
-| Scope separation | `mcp:read` / `mcp:write` are independently selected; read-only tokens cannot be escalated |
+| Scope separation | `mcp:read` / `mcp:write` / `read:api` are independently selected; read-only tokens cannot be escalated |
 | Destructive ops | `delete_transaction` requires `confirm=true`; the first call returns a "needs confirmation" placeholder and the LLM must ask the user first |
-| Boundary | PATs cannot call regular `/api/v1/*` endpoints — only MCP tools |
+| Boundary | MCP PATs cannot call regular `/api/v1/*` endpoints; `read:api` PATs can only call `/api/v1/read/*` |
 | Audit | Every PAT use bumps `last_used_at` + `last_used_ip`, visible in the web settings page |
 
 **If a PAT leaks**: delete it from the web settings page immediately, then check `last_used_ip` for suspicious sources.

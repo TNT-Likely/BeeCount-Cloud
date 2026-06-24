@@ -16,6 +16,7 @@ SCOPE_APP_WRITE = "app_write"
 SCOPE_WEB_READ = "web_read"
 SCOPE_WEB_WRITE = "web_write"
 SCOPE_OPS_WRITE = "ops_write"
+SCOPE_READ_API = "read:api"
 # MCP 专用 scope。PAT 创建时用户选这两个之一或两个都选。MCP server 的
 # read tools 要求 `mcp:read`,write tools 要求 `mcp:write`。详见 .docs/mcp-
 # server-design.md。

@@ -3,7 +3,7 @@
 覆盖:
 1. 创建 / 列表 / 撤销
 2. 列表只返 prefix,不返明文
-3. PAT 不能调常规 API endpoint (`/profile/me` 等) — 必须 403
+3. PAT 默认不能调常规 API endpoint；只有 read:api PAT 能调 `/read/*`
 4. JWT access token 不能调 MCP endpoint (`/api/v1/mcp/*`) — 必须 403
 5. 无 auth 头 / 错 PAT 调 MCP — 必须 401
 6. PAT 自己不能创新 PAT — 防止泄露后自我续期(由 _require_jwt_only 保证)
@@ -130,6 +130,25 @@ def test_create_pat_rejects_invalid_scope(monkeypatch) -> None:
         )
         # Pydantic Literal 校验失败
         assert res.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_pat_allows_read_api_scope(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    try:
+        user = _register(client)
+        token = user["access_token"]
+        res = client.post(
+            "/api/v1/profile/pats",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "Radar sync", "scopes": ["read:api"], "expires_in_days": None},
+        )
+        assert res.status_code == 201, res.text
+        body = res.json()
+        assert body["token"].startswith("bcmcp_")
+        assert body["scopes"] == ["read:api"]
+        assert body["expires_at"] is None
     finally:
         app.dependency_overrides.clear()
 
@@ -277,7 +296,7 @@ def test_user_a_cannot_see_user_b_pat(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 严格分流:PAT 不能调常规 API
+# 严格分流:PAT 默认不能调常规 API；read:api 只放行 /read/*
 # ---------------------------------------------------------------------------
 
 
@@ -301,6 +320,79 @@ def test_pat_cannot_call_profile_me(monkeypatch) -> None:
         )
         assert res.status_code == 403
         assert "PAT" in res.json().get("detail", "")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_read_api_pat_can_call_read_endpoints(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    try:
+        user = _register(client)
+        token = user["access_token"]
+        create_res = client.post(
+            "/api/v1/profile/pats",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "Radar sync", "scopes": ["read:api"], "expires_in_days": None},
+        )
+        assert create_res.status_code == 201, create_res.text
+        pat_plaintext = create_res.json()["token"]
+
+        res = client.get(
+            "/api/v1/read/ledgers",
+            headers={"Authorization": f"Bearer {pat_plaintext}"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mcp_pat_cannot_call_read_api(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    try:
+        user = _register(client)
+        token = user["access_token"]
+        create_res = client.post(
+            "/api/v1/profile/pats",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "MCP only", "scopes": ["mcp:read"]},
+        )
+        pat_plaintext = create_res.json()["token"]
+
+        res = client.get(
+            "/api/v1/read/ledgers",
+            headers={"Authorization": f"Bearer {pat_plaintext}"},
+        )
+        assert res.status_code == 403
+        assert "read:api" in res.json().get("detail", "")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_read_api_pat_cannot_call_write_or_profile(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    try:
+        user = _register(client)
+        token = user["access_token"]
+        create_res = client.post(
+            "/api/v1/profile/pats",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "Radar sync", "scopes": ["read:api"], "expires_in_days": None},
+        )
+        pat_plaintext = create_res.json()["token"]
+
+        profile_res = client.get(
+            "/api/v1/profile/me",
+            headers={"Authorization": f"Bearer {pat_plaintext}"},
+        )
+        assert profile_res.status_code == 403
+
+        write_res = client.post(
+            "/api/v1/write/ledgers/ledger-1/accounts",
+            headers={"Authorization": f"Bearer {pat_plaintext}"},
+            json={"base_change_id": 0, "name": "Cash", "account_type": "cash"},
+        )
+        assert write_res.status_code == 403
     finally:
         app.dependency_overrides.clear()
 

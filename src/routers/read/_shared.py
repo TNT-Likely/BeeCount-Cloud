@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from ...config import get_settings
 from ...database import get_db
-from ...deps import get_current_user, require_any_scopes, require_scopes
+from ...deps import get_current_user, require_any_scopes, require_read_api_scopes, require_scopes
 from ...ledger_access import (
     get_accessible_ledger_by_external_id,
 )
@@ -74,9 +74,9 @@ from ... import snapshot_cache
 router = APIRouter()
 settings = get_settings()
 _READ_SCOPE_DEP = (
-    require_any_scopes(SCOPE_WEB_READ, SCOPE_APP_WRITE)
+    require_read_api_scopes(SCOPE_WEB_READ, SCOPE_APP_WRITE)
     if settings.allow_app_rw_scopes
-    else require_scopes(SCOPE_WEB_READ)
+    else require_read_api_scopes(SCOPE_WEB_READ)
 )
 
 

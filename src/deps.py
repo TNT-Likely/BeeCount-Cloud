@@ -12,6 +12,7 @@ from .ledger_access import get_accessible_ledger_by_external_id
 from .models import Device, Ledger, PersonalAccessToken, User
 from .security import (
     PAT_PREFIX,
+    SCOPE_READ_API,
     decode_token,
     looks_like_pat,
     verify_pat_hash,
@@ -254,6 +255,52 @@ def require_any_scopes(*required_any: str) -> Callable:
     return _dep
 
 
+def require_read_api_scopes(*required_any_jwt: str) -> Callable:
+    """Read API auth boundary.
+
+    JWT callers keep the existing web/app scope behavior. Long-lived PAT callers
+    are accepted only when explicitly scoped for read API access.
+    """
+    required_any_jwt_set = set(required_any_jwt)
+
+    def _dep(
+        request: Request,
+        token: str = Depends(oauth2_scheme),
+        db: Session = Depends(get_db),
+    ) -> set[str]:
+        if looks_like_pat(token):
+            user, scopes = _resolve_pat(token, request, db)
+            if SCOPE_READ_API not in scopes:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="PAT missing required scope: read:api",
+                )
+            request.state.bc_user = user
+            request.state.bc_auth_kind = "pat"
+            return scopes
+
+        try:
+            payload = decode_token(token)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            ) from exc
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+        request.state.bc_jwt_payload = payload
+        request.state.bc_auth_kind = "jwt"
+        scopes_raw = payload.get("scopes", [])
+        scopes = {str(scope) for scope in scopes_raw if scope} if isinstance(scopes_raw, list) else set()
+        if required_any_jwt_set and required_any_jwt_set.isdisjoint(scopes):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient scope",
+            )
+        return scopes
+
+    return _dep
+
+
 def require_ledger_role(*roles: str) -> Callable:
     role_set = set(roles)
 
@@ -289,16 +336,16 @@ def get_current_user(
 ) -> User:
     """常规 endpoint 取 user。**PAT 在这里被显式拒绝** — PAT 走 `get_mcp_user`。
     """
+    cached = getattr(request.state, "bc_user", None)
+    if isinstance(cached, User):
+        return cached
+
     # PAT 不允许走常规 API
     if looks_like_pat(token):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="PAT can only be used for MCP endpoints",
         )
-
-    cached = getattr(request.state, "bc_user", None)
-    if isinstance(cached, User):
-        return cached
 
     try:
         payload = decode_token(token)
