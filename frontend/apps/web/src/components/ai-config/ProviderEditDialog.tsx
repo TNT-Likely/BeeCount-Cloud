@@ -77,6 +77,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
   // 当前 form 拼出来的 provider snapshot —— 测试按钮用,允许"先填再测再存"
   const draftProvider = useMemo<AIProvider>(
     () => ({
+      ...(initial ?? {}),
       id: initial?.id || 'draft',
       name: name.trim(),
       isBuiltIn,
@@ -106,6 +107,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
         ? crypto.randomUUID()
         : `prov_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
     const next: AIProvider = {
+      ...(initial ?? {}),
       id,
       name: name.trim(),
       isBuiltIn,

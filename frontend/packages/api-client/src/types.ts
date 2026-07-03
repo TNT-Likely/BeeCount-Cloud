@@ -58,6 +58,8 @@ export type AIProvider = {
   textModel?: string
   visionModel?: string
   audioModel?: string
+  /** 语音识别模式：transcription | multimodal_chat（mobile-only，透传） */
+  audioMode?: string
   createdAt?: string // ISO 8601
 }
 
@@ -78,6 +80,14 @@ export type AIConfig = {
   strategy?: string
   bill_extraction_enabled?: boolean
   use_vision?: boolean
+  /** mobile-only：语音触发方式 auto | hold_to_talk */
+  voice_trigger_mode?: string
+  /** mobile-only：自动检测静音阈值（毫秒） */
+  voice_silence_timeout_ms?: number
+  /** mobile-only：深度思考档位 off | low | medium | high */
+  ai_reasoning_level?: string
+  /** mobile-only：深度思考厂商协议 none | volcengine | zhipu | openai_compat */
+  ai_reasoning_vendor?: string
 }
 
 /** 内置「智谱GLM」provider id —— 跟 mobile `zhipuDefault.id` 对齐,删除 fallback 用。 */
