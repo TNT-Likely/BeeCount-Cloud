@@ -19,10 +19,10 @@ import { BUILTIN_PROVIDER_ID } from '@beecount/api-client'
  *  - `...(current ?? {})` spread 让所有现有字段(含未来 mobile 加的)透传保留
  *  - 只对 web 管的字段(providers / binding)给默认值兜底
  *  - **不**给 mobile-only 字段(custom_prompt / strategy / bill_extraction_enabled
- *    / use_vision)写默认值 —— 否则 current 没有这字段时,我们写 `''` 或 `false`
- *    会通过 PATCH 推到 server,server 广播给 mobile,**mobile applyFromServer
- *    会把本地真实值覆盖成空**。曾经触发过 mobile 端用户 prompt 被 web 端清掉
- *    的回归。
+ *    / use_vision / voice_trigger_mode / voice_silence_timeout_ms /
+ *    ai_reasoning_level / ai_reasoning_vendor)写默认值 —— 否则 current 没有这字段时,
+ *    我们写 `''` 或 `false` 会通过 PATCH 推到 server,server 广播给 mobile,
+ *    **mobile applyFromServer 会把本地真实值覆盖成空**。
  *
  *    判断规则:仅在 patch 显式传入时才写;否则交给 ...current spread 透传(有
  *    就保留,没有就保持没有)。

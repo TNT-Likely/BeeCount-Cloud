@@ -105,6 +105,43 @@ describe('mergeAiConfig', () => {
     expect(next.another_unknown).toEqual({ nested: true })
     expect(next.providers).toHaveLength(1)
   })
+
+  it('preserves audioMode and reasoning when patch only changes binding', () => {
+    const current = {
+      providers: [
+        {
+          id: 'a',
+          name: 'A',
+          audioMode: 'multimodal_chat',
+        },
+      ],
+      binding: { speechProviderId: 'a' },
+      ai_reasoning_level: 'low',
+      ai_reasoning_vendor: 'volcengine',
+    }
+    const next = mergeAiConfig(current, {
+      binding: { speechProviderId: 'a', textProviderId: 'a' },
+    }) as Record<string, any>
+    expect(next.providers[0].audioMode).toBe('multimodal_chat')
+    expect(next.ai_reasoning_level).toBe('low')
+    expect(next.ai_reasoning_vendor).toBe('volcengine')
+  })
+
+  it('does NOT add default ai_reasoning_level when current lacks it', () => {
+    const current = { providers: [{ id: 'a', name: 'A' }], binding: {} }
+    const next = mergeAiConfig(current, {
+      providers: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+    }) as Record<string, any>
+    expect('ai_reasoning_level' in next).toBe(false)
+    expect('ai_reasoning_vendor' in next).toBe(false)
+    expect('voice_trigger_mode' in next).toBe(false)
+  })
+
+  it('merges empty current without crash (old config compat)', () => {
+    const next = mergeAiConfig({}, { binding: { textProviderId: 'zhipu_glm' } })
+    expect(next.binding).toEqual({ textProviderId: 'zhipu_glm' })
+    expect(next.providers).toEqual([])
+  })
 })
 
 describe('applyDeleteFallback', () => {
