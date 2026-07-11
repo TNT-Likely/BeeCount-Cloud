@@ -106,25 +106,18 @@ describe('mergeAiConfig', () => {
     expect(next.providers).toHaveLength(1)
   })
 
-  it('preserves audioMode and reasoning when patch only changes binding', () => {
+  it('preserves audio_mode and reasoning when patch only changes binding', () => {
     const current = {
-      providers: [
-        {
-          id: 'a',
-          name: 'A',
-          audioMode: 'multimodal_chat',
-        },
-      ],
+      providers: [{ id: 'a', name: 'A' }],
       binding: { speechProviderId: 'a' },
+      audio_mode: 'multimodal_chat',
       ai_reasoning_level: 'low',
-      ai_reasoning_vendor: 'volcengine',
     }
     const next = mergeAiConfig(current, {
       binding: { speechProviderId: 'a', textProviderId: 'a' },
     }) as Record<string, any>
-    expect(next.providers[0].audioMode).toBe('multimodal_chat')
+    expect(next.audio_mode).toBe('multimodal_chat')
     expect(next.ai_reasoning_level).toBe('low')
-    expect(next.ai_reasoning_vendor).toBe('volcengine')
   })
 
   it('does NOT add default ai_reasoning_level when current lacks it', () => {
@@ -133,7 +126,7 @@ describe('mergeAiConfig', () => {
       providers: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
     }) as Record<string, any>
     expect('ai_reasoning_level' in next).toBe(false)
-    expect('ai_reasoning_vendor' in next).toBe(false)
+    expect('audio_mode' in next).toBe(false)
     expect('voice_trigger_mode' in next).toBe(false)
   })
 

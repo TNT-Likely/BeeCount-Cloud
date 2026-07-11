@@ -20,7 +20,7 @@ import { BUILTIN_PROVIDER_ID } from '@beecount/api-client'
  *  - 只对 web 管的字段(providers / binding)给默认值兜底
  *  - **不**给 mobile-only 字段(custom_prompt / strategy / bill_extraction_enabled
  *    / use_vision / voice_trigger_mode / voice_silence_timeout_ms /
- *    ai_reasoning_level / ai_reasoning_vendor)写默认值 —— 否则 current 没有这字段时,
+ *    audio_mode / ai_reasoning_level)写默认值 —— 否则 current 没有这字段时,
  *    我们写 `''` 或 `false` 会通过 PATCH 推到 server,server 广播给 mobile,
  *    **mobile applyFromServer 会把本地真实值覆盖成空**。
  *
