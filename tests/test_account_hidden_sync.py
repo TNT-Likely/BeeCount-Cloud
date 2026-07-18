@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import User, UserAccountProjection
+from src.models import SyncChange, User, UserAccountProjection
 
 
 def _make_client():
@@ -293,5 +293,206 @@ def test_workspace_accounts_expose_hidden_and_do_not_filter_stats():
         assert acc["expense_total"] == 30.0
         assert acc["balance"] == 70.0
         assert acc["tx_count"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Task 4: Web 写端点(可编辑 hidden)                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _latest_account_change(TS, email: str, sync_id: str) -> SyncChange:
+    with TS() as db:
+        user_id = db.scalar(select(User.id).where(User.email == email))
+        assert user_id is not None
+        row = db.scalar(
+            select(SyncChange)
+            .where(
+                SyncChange.user_id == user_id,
+                SyncChange.entity_type == "account",
+                SyncChange.entity_sync_id == sync_id,
+            )
+            .order_by(SyncChange.change_id.desc())
+        )
+        assert row is not None, f"no SyncChange for account {sync_id}"
+        return row
+
+
+def test_web_create_account_with_hidden():
+    """POST /write/ledgers/{id}/accounts 带 hidden=true → 落投影 + 读端点可见。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hiddenw1@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hiddenw1@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _push(client, hdr_app, "lgw1", "ledger", "lgw1",
+              {"syncId": "lgw1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgw1/accounts",
+            headers=hdr_web,
+            json={"base_change_id": 0, "name": "隐藏卡", "hidden": True},
+        )
+        assert r.status_code == 200, r.text
+        account_id = r.json()["entity_id"]
+        assert account_id
+
+        row = _account_row(TS, "hiddenw1@t.com", account_id)
+        assert row.hidden is True
+
+        r2 = client.get("/api/v1/read/ledgers/lgw1/accounts", headers=hdr_web)
+        assert r2.status_code == 200, r2.text
+        acc = next(x for x in r2.json() if x["id"] == account_id)
+        assert acc["hidden"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_update_account_toggles_hidden_and_syncs_to_app():
+    """PATCH hidden=true → snapshot 变更落投影 + 反向发射 SyncChange(payload 带
+    hidden,键名跟 App serializeAccount 对齐)→ App 端正常 /sync/pull 收敛。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hiddenw2@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hiddenw2@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _push(client, hdr_app, "lgw2", "ledger", "lgw2",
+              {"syncId": "lgw2", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgw2", "account", "acc-w2",
+              {"syncId": "acc-w2", "name": "旧卡", "type": "cash", "currency": "CNY"},
+              device_id="d-app")
+
+        r = client.patch(
+            "/api/v1/write/ledgers/lgw2/accounts/acc-w2",
+            headers=hdr_web,
+            json={"base_change_id": 0, "hidden": True},
+        )
+        assert r.status_code == 200, r.text
+
+        row = _account_row(TS, "hiddenw2@t.com", "acc-w2")
+        assert row.hidden is True
+
+        # 反向 SyncChange:payload 带 hidden=True(camelCase 同名,跟 App
+        # serializeAccount 对齐)。
+        change = _latest_account_change(TS, "hiddenw2@t.com", "acc-w2")
+        assert change.payload_json.get("hidden") is True, change.payload_json
+
+        # App 端走正常 /sync/pull 收敛(增量同步,不带 device_id 免得被自己
+        # 的 push 过滤掉)。
+        r3 = client.get("/api/v1/sync/pull?since=0", headers=hdr_app)
+        assert r3.status_code == 200, r3.text
+        changes = [
+            c for c in r3.json()["changes"]
+            if c["entity_type"] == "account" and c["entity_sync_id"] == "acc-w2"
+        ]
+        assert len(changes) >= 1
+        assert changes[-1]["payload"]["hidden"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_update_account_hidden_omitted_keeps_existing():
+    """web PATCH 只改 note、不带 hidden 键 → hidden 保持不变。跟 mobile push 的
+    merge 缺键保留契约一致,web 写路径也不能把已有隐藏标记冲成 false。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hiddenw3@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hiddenw3@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _push(client, hdr_app, "lgw3", "ledger", "lgw3",
+              {"syncId": "lgw3", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgw3", "account", "acc-w3",
+              {"syncId": "acc-w3", "name": "旧卡", "type": "cash", "currency": "CNY",
+               "hidden": True}, device_id="d-app")
+
+        r = client.patch(
+            "/api/v1/write/ledgers/lgw3/accounts/acc-w3",
+            headers=hdr_web,
+            json={"base_change_id": 0, "note": "备注"},
+        )
+        assert r.status_code == 200, r.text
+
+        row = _account_row(TS, "hiddenw3@t.com", "acc-w3")
+        assert row.hidden is True, "web update 不带 hidden 键时不能冲掉已有隐藏标记"
+        assert row.note == "备注"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_update_account_hidden_can_explicitly_restore():
+    """web PATCH 显式带 hidden=false(用户点「恢复」)→ 正常覆盖为 False。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hiddenw5@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hiddenw5@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _push(client, hdr_app, "lgw5", "ledger", "lgw5",
+              {"syncId": "lgw5", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgw5", "account", "acc-w5",
+              {"syncId": "acc-w5", "name": "旧卡", "type": "cash", "currency": "CNY",
+               "hidden": True}, device_id="d-app")
+
+        r = client.patch(
+            "/api/v1/write/ledgers/lgw5/accounts/acc-w5",
+            headers=hdr_web,
+            json={"base_change_id": 0, "hidden": False},
+        )
+        assert r.status_code == 200, r.text
+
+        row = _account_row(TS, "hiddenw5@t.com", "acc-w5")
+        assert row.hidden is False
+
+        change = _latest_account_change(TS, "hiddenw5@t.com", "acc-w5")
+        assert change.payload_json.get("hidden") is False, change.payload_json
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_update_account_hidden_idempotent_replay():
+    """同一 Idempotency-Key 重放 PATCH → 不重复推进 change_id,直接 replay 原响应
+    (往返 + 幂等契约)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hiddenw4@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hiddenw4@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {
+            "Authorization": f"Bearer {web_tok}",
+            "X-Device-ID": "d-web",
+            "Idempotency-Key": "idem-hidden-1",
+        }
+
+        _push(client, hdr_app, "lgw4", "ledger", "lgw4",
+              {"syncId": "lgw4", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lgw4", "account", "acc-w4",
+              {"syncId": "acc-w4", "name": "旧卡", "type": "cash", "currency": "CNY"},
+              device_id="d-app")
+
+        body = {"base_change_id": 0, "hidden": True}
+        r1 = client.patch(
+            "/api/v1/write/ledgers/lgw4/accounts/acc-w4", headers=hdr_web, json=body,
+        )
+        assert r1.status_code == 200, r1.text
+        first_change_id = r1.json()["new_change_id"]
+        assert r1.json()["idempotency_replayed"] is False
+
+        r2 = client.patch(
+            "/api/v1/write/ledgers/lgw4/accounts/acc-w4", headers=hdr_web, json=body,
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["new_change_id"] == first_change_id
+        assert r2.json()["idempotency_replayed"] is True
+
+        row = _account_row(TS, "hiddenw4@t.com", "acc-w4")
+        assert row.hidden is True
     finally:
         app.dependency_overrides.clear()

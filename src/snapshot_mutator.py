@@ -101,6 +101,10 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     ("payment_due_day", "paymentDueDay", "int"),
     ("bank_name", "bankName", "str"),
     ("card_last_four", "cardLastFour", "str"),
+    # 账户隐藏(issue #240):Web create/update 请求体带 hidden(bool)时才写;
+    # 不带 key → 保留原值(不冲掉已有隐藏标记,契约对齐 mobile push 的 merge
+    # 缺键保留语义)。
+    ("hidden", "hidden", "bool"),
 )
 
 
@@ -118,6 +122,10 @@ def _apply_account_optional_fields(account: dict, payload: dict) -> None:
             account[snapshot_key] = _to_optional_float(raw)
         elif kind == "int":
             account[snapshot_key] = _to_optional_int(raw)
+        elif kind == "bool":
+            # hidden 是投影里的 NOT NULL 布尔列,没有"清空"语义 —— 显式带
+            # key 但 value 是 None 时按 False(未隐藏)处理,不留 null。
+            account[snapshot_key] = bool(raw) if raw is not None else False
         else:
             account[snapshot_key] = _to_optional_str(raw)
 
