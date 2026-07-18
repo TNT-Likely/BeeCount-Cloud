@@ -258,6 +258,8 @@ export function AccountsPage() {
         payment_due_day: isCreditCard ? paymentDueDayNum : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
+        // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
+        hidden: form.hidden,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -279,6 +281,28 @@ export function AccountsPage() {
     }
   }
 
+
+  // 「已隐藏」分区卡片上的快捷「恢复」按钮 —— 不经编辑弹窗,直接 PATCH
+  // hidden=false(对齐产品设计:恢复"即时生效,卡片回到在用分区")。
+  // 入参用 ReadAccount(跟 AccountsPanel.onRestore 的回调签名对齐,只用得到 id)。
+  const onRestore = async (row: ReadAccount) => {
+    if (!activeLedgerId) {
+      toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
+      return
+    }
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        updateAccount(token, activeLedgerId, row.id, base, { hidden: false }),
+      )
+      await refresh()
+      notifySuccess(t('notice.accountRestored'))
+    } catch (err) {
+      if (isWriteConflict(err)) {
+        await refresh()
+      }
+      notifyError(err)
+    }
+  }
 
   // 删除流程:点删除按钮 → 弹 ConfirmDialog,dialog 里根据 tx_count 决定文案。
   // 跟 mobile account_edit_page._delete 对齐:有交易则警示总条数 + 红色按钮。
@@ -544,8 +568,10 @@ export function AccountsPage() {
               : '',
             bank_name: row.bank_name ?? '',
             card_last_four: row.card_last_four ?? '',
+            hidden: row.hidden ?? false,
           })
         }}
+        onRestore={(row) => void onRestore(row)}
         onClickAccount={(row) =>
           dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' })
         }

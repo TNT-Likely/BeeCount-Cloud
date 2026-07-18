@@ -283,11 +283,26 @@ export function TransactionsPanel({
   const textDangerActionClass =
     'text-sm text-destructive underline-offset-4 hover:text-destructive/90 hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
 
-  const accountOptions = accounts
-    .map((row) => row.name.trim())
-    .filter((name) => name.length > 0)
-    .filter((name, index, self) => self.indexOf(name) === index)
-    .sort((a, b) => a.localeCompare(b))
+  const dedupSortNames = (names: string[]) =>
+    names
+      .filter((name) => name.length > 0)
+      .filter((name, index, self) => self.indexOf(name) === index)
+      .sort((a, b) => a.localeCompare(b))
+  // 账户隐藏(issue #240):记账/转账选择器排除隐藏账户 —— 不能再往它记新账。
+  const hiddenAccountNames = new Set(
+    accounts.filter((row) => row.hidden).map((row) => row.name.trim())
+  )
+  const accountOptions = dedupSortNames(accounts.map((row) => row.name.trim()).filter((name) => !hiddenAccountNames.has(name)))
+  // E1 唯一例外:编辑一笔本就挂在某隐藏账户上的历史交易时,选择器钉住显示该
+  // 隐藏账户(带「已隐藏」灰标),让用户可原样保存;其它隐藏账户仍不出现。
+  // 一旦改选走其它选项,该隐藏名字就不会再被钉回来(下次渲染 currentValue 已变)。
+  const accountOptionsWithPinned = (currentValue: string) => {
+    const trimmed = currentValue.trim()
+    if (trimmed && hiddenAccountNames.has(trimmed)) {
+      return dedupSortNames([...accountOptions, trimmed])
+    }
+    return accountOptions
+  }
   const categoryOptions = categories
     .filter((row) => row.kind === form.tx_type)
     .map((row) => row.name.trim())
@@ -525,9 +540,14 @@ export function TransactionsPanel({
                       <SelectValue placeholder={t('transactions.placeholder.fromAccountName')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {accountOptions.map((name) => (
+                      {accountOptionsWithPinned(form.from_account_name).map((name) => (
                         <SelectItem key={name} value={name}>
                           {name}
+                          {hiddenAccountNames.has(name) ? (
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              {t('accounts.hidden.optionSuffix')}
+                            </span>
+                          ) : null}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -544,9 +564,14 @@ export function TransactionsPanel({
                       <SelectValue placeholder={t('transactions.placeholder.toAccountName')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {accountOptions.map((name) => (
+                      {accountOptionsWithPinned(form.to_account_name).map((name) => (
                         <SelectItem key={name} value={name}>
                           {name}
+                          {hiddenAccountNames.has(name) ? (
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              {t('accounts.hidden.optionSuffix')}
+                            </span>
+                          ) : null}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -575,9 +600,14 @@ export function TransactionsPanel({
                         {t('transactions.placeholder.noAccount')}
                       </span>
                     </SelectItem>
-                    {accountOptions.map((name) => (
+                    {accountOptionsWithPinned(form.account_name).map((name) => (
                       <SelectItem key={name} value={name}>
                         {name}
+                        {hiddenAccountNames.has(name) ? (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {t('accounts.hidden.optionSuffix')}
+                          </span>
+                        ) : null}
                       </SelectItem>
                     ))}
                   </SelectContent>

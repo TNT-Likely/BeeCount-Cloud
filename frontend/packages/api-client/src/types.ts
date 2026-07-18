@@ -229,6 +229,10 @@ export type ReadAccount = {
   bank_name?: string | null
   /** 卡号后四位,bank_card / credit_card。 */
   card_last_four?: string | null
+  /** 账户隐藏(issue #240):true = 已隐藏 —— 记账/转账选择器不再出现,主列表
+   *  退场收进「已隐藏」分区;但仍计入净资产/资产/收支(D1,服务端不做统计过滤)。
+   *  缺省 false(旧接口未提供该字段时视为未隐藏)。 */
+  hidden?: boolean
 }
 
 export type ReadCategory = {
@@ -593,6 +597,9 @@ export type AccountPayload = {
   payment_due_day?: number | null
   bank_name?: string | null
   card_last_four?: string | null
+  /** 账户隐藏(issue #240)。create 缺省 false;update 不传 = 不改(服务端
+   *  merge 缺键保留,见 snapshot_mutator._apply_account_optional_fields)。 */
+  hidden?: boolean | null
 }
 
 export type CategoryPayload = {

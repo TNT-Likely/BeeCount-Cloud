@@ -73,7 +73,9 @@ export function TxDraftList({
     ])
       .then(([cats, accts]) => {
         setCategories(cats)
-        setAccounts(accts)
+        // 账户隐藏(issue #240):AI 快速记账新建的草稿不应落到隐藏账户上 ——
+        // 跟正常记账表单(TransactionsPanel)的选择器排除规则保持一致。
+        setAccounts(accts.filter((a) => !a.hidden))
       })
       .catch(() => {})
   }, [token, ledgerId])

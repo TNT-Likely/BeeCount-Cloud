@@ -39,6 +39,9 @@ type MobileStyleAssetsProps = {
   byCurrency: CurrencyBucket[]
   /** 底部分组列表:跨币种按类型分组,每组小计按币种拆。 */
   listGroups: AssetGroup[]
+  /** 账户隐藏(issue #240):已隐藏的账户原始行,渲染在所有在用分组之后的
+   *  「已隐藏」折叠分区里;不参与 byCurrency/listGroups 的分组展示。 */
+  hiddenRows: ReadAccount[]
   canManage: boolean
   onEdit: (row: ReadAccount) => void
   onDelete?: (row: ReadAccount) => void
@@ -49,6 +52,9 @@ type MobileStyleAssetsProps = {
   /** true 时跳过多币种「每币种一张卡」网格区(折算汇总视图接管了多币种展示);
    *  账户列表/新建按钮等其余内容照常。缺省 false —— 其它调用方零影响。 */
   hideCurrencyCards?: boolean
+  /** 账户隐藏(issue #240):底部「已隐藏」分区里,每张隐藏卡的快捷「恢复」
+   *  按钮回调(不经编辑弹窗,直接 PATCH hidden=false)。不传则不渲染该按钮。 */
+  onRestore?: (row: ReadAccount) => void
 }
 
 /**
@@ -60,12 +66,14 @@ type MobileStyleAssetsProps = {
 function MobileStyleAssets({
   byCurrency,
   listGroups,
+  hiddenRows,
   canManage,
   onEdit,
   onDelete,
   onClickAccount,
   onCreate,
-  hideCurrencyCards = false
+  hideCurrencyCards = false,
+  onRestore
 }: MobileStyleAssetsProps) {
   const t = useT()
   // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
@@ -200,6 +208,133 @@ function MobileStyleAssets({
           )
         })}
       </div>
+
+      {/* 账户隐藏(issue #240):所有在用分组之后,「已隐藏」折叠分区(默认折叠)。
+          净资产/资产构成(上面的 hero + 饼图)已按 D1 用全量 rows 计算,不受此分区影响。 */}
+      <HiddenAccountsSection
+        rows={hiddenRows}
+        canManage={canManage}
+        onEdit={onEdit}
+        onRestore={onRestore}
+        onClickAccount={onClickAccount}
+      />
+    </div>
+  )
+}
+
+/**
+ * 「已隐藏」分区 —— 置于所有在用分组之后,默认折叠;分区头露 count + 按币种
+ * 小计(对账用,不跨币种相加)。行内弱化展示(降不透明度),点行名进详情看历史,
+ * 「恢复」按钮直接 PATCH hidden=false 回到在用分区(不经编辑弹窗)。
+ */
+function HiddenAccountsSection({
+  rows,
+  canManage,
+  onEdit,
+  onRestore,
+  onClickAccount
+}: {
+  rows: ReadAccount[]
+  canManage: boolean
+  onEdit: (row: ReadAccount) => void
+  onRestore?: (row: ReadAccount) => void
+  onClickAccount?: (row: ReadAccount) => void
+}) {
+  const t = useT()
+  const [collapsed, setCollapsed] = useState(true)
+
+  if (rows.length === 0) return null
+
+  // 小计按币种分别累加,绝不跨币种相加(与 computeTypeGroups 同口径)。
+  const byCurrency = new Map<string, number>()
+  for (const row of rows) {
+    const cur = (row.currency || 'CNY').toUpperCase()
+    byCurrency.set(cur, (byCurrency.get(cur) ?? 0) + accountBalance(row))
+  }
+  const subtotals = [...byCurrency.entries()]
+  const sortedRows = rows.slice().sort((a, b) => a.name.localeCompare(b.name))
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-dashed border-border/50 bg-muted/10">
+      <button
+        type="button"
+        onClick={() => setCollapsed((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition-colors hover:bg-muted/20"
+      >
+        <span className="text-[13px] font-medium text-muted-foreground">
+          {t('accounts.hidden.sectionTitle', { count: rows.length })}
+        </span>
+        <div className="flex items-center gap-3">
+          <div className="flex flex-col items-end gap-0.5">
+            {subtotals.map(([cur, value]) => (
+              <Amount
+                key={cur}
+                value={value}
+                currency={cur}
+                showCurrency={subtotals.length > 1}
+                size="sm"
+                className="text-muted-foreground"
+              />
+            ))}
+          </div>
+          <span
+            className={`text-lg text-muted-foreground transition-transform ${
+              collapsed ? '' : 'rotate-90'
+            }`}
+            aria-hidden
+          >
+            ›
+          </span>
+        </div>
+      </button>
+      {!collapsed ? (
+        <div className="divide-y divide-border/40 border-t border-border/40">
+          {sortedRows.map((row) => (
+            <div
+              key={row.id}
+              className="flex items-center justify-between gap-3 px-5 py-2.5 opacity-70 transition-opacity hover:opacity-100"
+            >
+              <button
+                type="button"
+                onClick={() => onClickAccount?.(row)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              >
+                <TypeIcon type={row.account_type || 'other'} size={20} />
+                <span className="truncate text-sm">{row.name}</span>
+                <span className="shrink-0 rounded bg-muted px-1 py-[1px] text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {t('accounts.hidden.badge')}
+                </span>
+              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <Amount
+                  value={accountBalance(row)}
+                  currency={row.currency || 'CNY'}
+                  size="sm"
+                  className="text-muted-foreground"
+                />
+                <button
+                  type="button"
+                  disabled={!canManage}
+                  onClick={() => onEdit(row)}
+                  className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {t('common.edit')}
+                </button>
+                {onRestore ? (
+                  <button
+                    type="button"
+                    disabled={!canManage}
+                    onClick={() => onRestore(row)}
+                    className="rounded-md border border-primary/40 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-40"
+                  >
+                    {t('accounts.hidden.restore')}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -883,6 +1018,9 @@ type AccountsPanelProps = {
   /** true 时跳过多币种「每币种一张卡」网格区(用于折算汇总视图);缺省 false,
    *  其它调用方零影响。详见 MobileStyleAssets。 */
   hideCurrencyCards?: boolean
+  /** 账户隐藏(issue #240):底部「已隐藏」分区每张卡的快捷「恢复」按钮回调。
+   *  不传则该按钮不渲染(调用方尚未接线时零影响)。 */
+  onRestore?: (row: ReadAccount) => void
 }
 
 export function AccountsPanel({
@@ -896,13 +1034,20 @@ export function AccountsPanel({
   onEdit,
   onDelete,
   onClickAccount,
-  hideCurrencyCards = false
+  hideCurrencyCards = false,
+  onRestore
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
 
+  // 账户隐藏(issue #240):净资产 hero / 资产构成饼图按 D1 用全量 rows 计算
+  // (隐藏不改「钱在哪」);只有「底部分组列表」拆成在用/已隐藏两部分展示。
+  const visibleRows = useMemo(() => rows.filter((row) => !row.hidden), [rows])
+  const hiddenRows = useMemo(() => rows.filter((row) => row.hidden), [rows])
+
   // 按币种切分后再聚合 —— 资产统计绝不跨币种相加(见 computeCurrencySummary)。
   // 单币种(绝大多数场景)→ currencyBuckets 只有 1 条,顶部展示完全维持原样。
+  // 用全量 rows(含隐藏)算,对齐 D1:隐藏账户仍计入净资产/资产构成。
   const currencyBuckets = useMemo<CurrencyBucket[]>(() => {
     return [...splitByCurrency(rows).entries()]
       .map(([currency, curRows]) => ({
@@ -920,7 +1065,8 @@ export function AccountsPanel({
   }, [rows, t])
 
   // 底部列表:跨币种按类型分组(每组小计按币种拆,见 computeTypeGroups)。
-  const listGroups = useMemo(() => computeTypeGroups(rows, t), [rows, t])
+  // 只用在用账户 —— 隐藏账户退场到底部「已隐藏」分区(HiddenAccountsSection)。
+  const listGroups = useMemo(() => computeTypeGroups(visibleRows, t), [visibleRows, t])
 
   // 顶部"新建账户"按钮 —— rows 空时也要显示,否则首次使用没法建账户。
   // 复用现有 dialog,form 重置成 defaults 让 dialog 进入 create 模式。
@@ -960,6 +1106,7 @@ export function AccountsPanel({
         <MobileStyleAssets
           byCurrency={currencyBuckets}
           listGroups={listGroups}
+          hiddenRows={hiddenRows}
           canManage={canManage}
           onEdit={(row) => {
             onEdit(row)
@@ -969,6 +1116,7 @@ export function AccountsPanel({
           onClickAccount={onClickAccount}
           onCreate={handleOpenCreate}
           hideCurrencyCards={hideCurrencyCards}
+          onRestore={onRestore}
         />
       )}
 
@@ -1145,6 +1293,36 @@ export function AccountsPanel({
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
             </div>
+
+            {/* 账户隐藏(issue #240):只在编辑已有账户时提供切换 —— 新建账户
+                隐藏没有产品意义(对齐 mobile:入口在账户编辑页)。切换保存后经
+                写端点反向生成同步变更,App 端正常 pull 收敛。 */}
+            {form.editingId ? (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <div className="min-w-0 pr-3">
+                  <p className="text-sm font-medium">{t('accounts.hidden.toggleLabel')}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t('accounts.hidden.toggleHint')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.hidden}
+                  aria-label={t('accounts.hidden.toggleLabel') as string}
+                  onClick={() => onFormChange({ ...form, hidden: !form.hidden })}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                    form.hidden ? 'bg-primary' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      form.hidden ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
