@@ -153,6 +153,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.payment_due_day,
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
+        UserAccountProjection.hidden,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -166,6 +167,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         payment_due_day,
         bank_name,
         card_last_four,
+        hidden,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -186,6 +188,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["bankName"] = bank_name
         if card_last_four:
             acc["cardLastFour"] = card_last_four
+        # 账户隐藏(issue #240):无条件输出(不像其它扩展字段那样"有值才带
+        # key"),与 App serializeAccount 无条件发 hidden 对齐,保 /sync/full
+        # 重装 / 新设备首次同步时隐藏标记不丢(03-tech-design-cloud.md §二 (B))。
+        acc["hidden"] = bool(hidden)
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。

@@ -130,6 +130,11 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("paymentDueDay", "payment_due_day"),
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
+        # 账户隐藏(issue #240):payload 键 hidden(camelCase 同名,跟 App
+        # serializeAccount 对齐)。缺键时 _merge_from_spec 从 existing 行补齐,
+        # 不被 partial-update 冲成 False(merge 契约测试见
+        # tests/test_account_hidden_sync.py::test_mobile_push_account_partial_update_keeps_hidden)。
+        ("hidden", "hidden"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),
