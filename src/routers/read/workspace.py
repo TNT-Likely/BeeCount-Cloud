@@ -675,6 +675,7 @@ def list_workspace_accounts(
                 payment_due_day=acct.payment_due_day,
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
+                hidden=acct.hidden,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,

@@ -561,6 +561,9 @@ class ReadAccountOut(BaseModel):
     payment_due_day: int | None = None
     bank_name: str | None = None
     card_last_four: str | None = None
+    # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
+    # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
+    hidden: bool = False
 
 
 class ReadCategoryOut(BaseModel):
@@ -854,6 +857,9 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
+    # (mutator / write handler)是 Task 4,本字段暂不生效。
+    hidden: bool = False
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -867,6 +873,8 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
+    hidden: bool | None = None
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

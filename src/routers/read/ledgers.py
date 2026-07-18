@@ -393,6 +393,7 @@ def list_accounts(
             payment_due_day=row.payment_due_day,
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
+            hidden=row.hidden,
         )
         for row in rows
     ]

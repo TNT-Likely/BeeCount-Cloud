@@ -7,8 +7,8 @@
 - `/sync/full` 从 projection 懒构建(snapshot_builder.build)必须带 hidden,
   否则重装 / 新设备丢隐藏标记(纯 payload 透传方案最大的坑,03-tech-design §二)
 - pull 原样透传 hidden(mobile ↔ mobile 增量同步靠这个存活)
-
-读端点(schema/D1 反向断言)由 Task 3 追加。
+- Read/Workspace 响应补 hidden 字段(Web 可见)+ D1 反向断言:隐藏账户仍进
+  WorkspaceAccountOut 的 balance/income/expense 聚合,服务端不做任何统计过滤
 """
 from __future__ import annotations
 
@@ -231,5 +231,67 @@ def test_snapshot_builder_keeps_account_hidden():
         by_id = {acc["syncId"]: acc for acc in snap["accounts"]}
         assert by_id["acc-hidden"]["hidden"] is True
         assert by_id["acc-visible"]["hidden"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: schemas + 读端点(Web 可见)+ 无统计过滤反向断言(D1)                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_read_ledger_accounts_expose_hidden():
+    """/read/ledgers/{id}/accounts(ReadAccountOut)带 hidden 字段。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hidden7@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hidden7@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lg1", "account", "acc-r1",
+              {"syncId": "acc-r1", "name": "隐藏卡", "type": "cash",
+               "currency": "CNY", "hidden": True}, device_id="d-app")
+
+        r = client.get("/api/v1/read/ledgers/lg1/accounts", headers=hdr_web)
+        assert r.status_code == 200, r.text
+        acc = next(x for x in r.json() if x["id"] == "acc-r1")
+        assert acc["hidden"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_workspace_accounts_expose_hidden_and_do_not_filter_stats():
+    """/read/workspace/accounts(WorkspaceAccountOut)带 hidden 字段;**D1 反向断言**:
+    隐藏账户仍然正常进 balance/income/expense 聚合,服务端不因 hidden 加任何
+    统计过滤 —— 隐藏只影响前端选择器/列表呈现。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "hidden8@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "hidden8@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}"}
+
+        _push(client, hdr_app, "lg1", "ledger", "lg1",
+              {"syncId": "lg1", "ledgerName": "账本", "currency": "CNY"}, device_id="d-app")
+        _push(client, hdr_app, "lg1", "account", "acc-w1",
+              {"syncId": "acc-w1", "name": "隐藏卡", "type": "cash",
+               "currency": "CNY", "initialBalance": 100.0, "hidden": True},
+              device_id="d-app")
+        _push(client, hdr_app, "lg1", "transaction", "tx-w1",
+              {"syncId": "tx-w1", "type": "expense", "amount": 30.0,
+               "happenedAt": _iso(), "accountId": "acc-w1", "accountName": "隐藏卡"},
+              device_id="d-app")
+
+        r = client.get("/api/v1/read/workspace/accounts", headers=hdr_web)
+        assert r.status_code == 200, r.text
+        acc = next(x for x in r.json() if x["id"] == "acc-w1")
+        assert acc["hidden"] is True
+        # D1:隐藏账户仍照常计入统计 —— balance = initialBalance(100) - expense(30) = 70
+        assert acc["expense_total"] == 30.0
+        assert acc["balance"] == 70.0
+        assert acc["tx_count"] == 1
     finally:
         app.dependency_overrides.clear()
