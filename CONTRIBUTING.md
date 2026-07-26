@@ -19,7 +19,20 @@ BeeCount / BeeCount Cloud 采用「免费非商用 + 付费商业授权」的双
 
 你保留自己贡献的著作权，这不是版权转让。若不同意上述条款，请不要提交贡献。
 
-## Contributor License Terms (English)
+---
+
+## Contributing (English)
+
+Thanks for your interest in BeeCount Cloud! Issues and pull requests are welcome.
+
+### Submitting a PR
+
+1. Fork the repository and create a feature branch;
+2. See the [README](README.en.md) for development setup;
+3. Make sure backend/frontend tests pass, and describe the what & why in your PR;
+4. Check the Contributor License Terms box in the PR template.
+
+### Contributor License Terms
 
 BeeCount / BeeCount Cloud is dual-licensed: free for non-commercial use, paid license for commercial use (see [LICENSE_EN](LICENSE_EN)). By submitting a contribution (PR / patch / translation, etc.) to this repository, you agree that:
 

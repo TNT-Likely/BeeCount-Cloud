@@ -4,6 +4,8 @@
 
 > 下表为**直接依赖**及其上游申明的协议（截至 2026-07 整理，以各包发布页为准）。完整含传递依赖的清单可随时用 `pip-licenses`（后端）/ `pnpm licenses list`（前端）生成。
 
+> **English**: This repository does **not vendor** any third-party source code. All dependencies are fetched at build/deploy time by pip / pnpm under their own licenses, independent of this project's dual-license model (see [LICENSE_EN](LICENSE_EN)). The tables below list **direct dependencies** with their upstream-declared licenses (as of 2026-07; upstream prevails). Note on **psycopg (LGPL-3.0)**: it is pip-installed, unmodified and used dynamically as a library, which does not affect the licensing of this project's own code (including closed-source commercial deployments); only redistributing psycopg itself triggers LGPL obligations.
+
 ## 后端（Python，见 requirements.txt）
 
 | 组件 | 协议 |
