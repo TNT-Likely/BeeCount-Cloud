@@ -144,6 +144,8 @@ jobs:
       - name: Generate release notes (tag push only)
         if: ${{ github.event_name == 'push' }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           current="${{ steps.vars.outputs.version }}"
@@ -163,6 +165,22 @@ jobs:
             range="$current"
           fi
 
+          # 提交列表带提交人：优先走 compare API 拿 GitHub login（渲染成
+          # @user 可点进主页），拿不到时退回 git log 的 author name。
+          commits_file=$(mktemp)
+          if [[ -n "$prev" ]]; then
+            if ! gh api --paginate "repos/$repo/compare/$prev...$current" --jq '
+                  .commits[]
+                  | select((.parents | length) == 1)
+                  | "- \(.commit.message | split("\n")[0]) (\(.sha[0:7])) — \(
+                      if .author.login then "@" + .author.login
+                      else .commit.author.name end)"
+                ' > "$commits_file"; then
+              echo "compare API failed, falling back to git log" >&2
+              git log --no-merges --pretty=format:'- %s (%h) — %an' "$range" > "$commits_file" || true
+            fi
+          fi
+
           {
             echo "## Docker"
             echo "- $IMAGE_NAME:$current"
@@ -172,7 +190,7 @@ jobs:
             if [[ -n "$prev" ]]; then
               echo "Compare: https://github.com/$repo/compare/$prev...$current"
               echo ""
-              git log --no-merges --pretty=format:'- %s (%h)' "$range" || true
+              cat "$commits_file"
             else
               echo "First release tag."
             fi
