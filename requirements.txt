@@ -26,7 +26,10 @@ cryptography>=42.0.0
 # mcp: Model Context Protocol SDK (Anthropic) — `src/mcp/server.py` 用 FastMCP
 # 暴露 17 个 tool 给 LLM(Claude Desktop / Cursor / Cline 等)。SSE transport
 # 挂在 `/api/v1/mcp`,PAT 鉴权。
-mcp>=1.27.0
+# 锁 <2:mcp 2.0.0(2026-07-28)删掉了整个 `mcp.server.fastmcp`(FastMCP 换成
+# `mcp.server.mcpserver`),`src/mcp/server.py` 的 18 个 tool + Context 签名 +
+# StreamableHTTPASGIApp 全部依赖 1.x API,升 2.x 要整模块重写。解锁前先迁移。
+mcp>=1.27.0,<2
 pytest>=8.3.2
 httpx>=0.27.0
 # numpy: AI 文档 Q&A(/api/v1/ai/ask)的 cosine similarity 检索。
