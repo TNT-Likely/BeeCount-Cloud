@@ -70,7 +70,7 @@ const S3_PROVIDERS: Array<{ value: string; label: string }> = [
   { value: 'AWS', label: 'AWS' },
   { value: 'Cloudflare', label: 'Cloudflare R2' },
   { value: 'Alibaba', label: '阿里云 OSS' },
-  { value: 'Tencent', label: '腾讯云 COS' },
+  { value: 'TencentCOS', label: '腾讯云 COS' },
   { value: 'Backblaze', label: 'Backblaze B2 (S3 API)' },
   { value: 'Wasabi', label: 'Wasabi' },
   { value: 'DigitalOcean', label: 'DigitalOcean Spaces' },
@@ -109,7 +109,7 @@ const BACKEND_FIELDS: Record<string, FieldSpec[]> = {
       hint: 'R2:https://<account-id>.r2.cloudflarestorage.com。AWS 留空(自动选 region)。MinIO:你的服务器地址。',
       showWhen: {
         key: 'provider',
-        equals: ['Cloudflare', 'Alibaba', 'Tencent', 'Wasabi', 'DigitalOcean', 'Minio', 'IBMCOS', 'Other'],
+        equals: ['Cloudflare', 'Alibaba', 'TencentCOS', 'Wasabi', 'DigitalOcean', 'Minio', 'IBMCOS', 'Other'],
       },
     },
   ],
