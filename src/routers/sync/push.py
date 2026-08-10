@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from ...services.transaction_tags import (
     SharedTransactionTagError,
+    is_shared_ledger,
+    load_owner_transaction_tags,
     normalize_shared_transaction_tags,
+)
+from ...projection import (
+    defer_attachment_unlinks,
+    flush_deferred_attachment_unlinks,
 )
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
 
@@ -42,6 +48,12 @@ async def push_changes(
     conflict_samples: list[dict[str, Any]] = []
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
+    shared_ledger_cache: dict[str, bool] = {}
+    owner_tag_rows_cache: dict[str, list[Any]] = {}
+    locked_ledgers: set[str] = set()
+    # DB rollback 无法恢复已 unlink 的附件。整批成功 commit 后才真正删除文件；
+    # 任一 change 抛错时 Session 关闭并丢弃待删队列，保持 DB/磁盘一致。
+    defer_attachment_unlinks(db)
     # 共享账本 Phase 1:user-global category/account/tag 变更要 fan-out 给
     # 该 user 作为 owner 的所有共享账本的非 owner member。收集后 commit 后广播。
     pending_shared_resource_events: list[dict[str, Any]] = []
@@ -112,36 +124,6 @@ async def push_changes(
                         "sync.push.reject ledger-meta change from non-owner "
                         "user=%s ledger=%s role=%s entity=%s",
                         current_user.id, change.ledger_id, caller_role, change.entity_type,
-                    )
-                    rejected += 1
-                    continue
-
-            # 共享账本交易只允许引用账本 Owner 的 user-global 标签。
-            # 老协议只有 tags(name)时可解析已有 Owner 标签；无法解析就拒绝该
-            # change，不能让 projection / pull fallback 在任一成员端创建新标签。
-            if (
-                change.entity_type == "transaction"
-                and change.action == "upsert"
-                and isinstance(change.payload, dict)
-            ):
-                try:
-                    normalize_shared_transaction_tags(
-                        db,
-                        ledger=ledger,
-                        payload=change.payload,
-                        tag_ids_key="tagIds",
-                        tags_as_list=False,
-                    )
-                except SharedTransactionTagError as exc:
-                    logger.warning(
-                        "sync.push.reject shared transaction tag user=%s "
-                        "ledger=%s sync_id=%s code=%s ids=%s names=%s",
-                        current_user.id,
-                        change.ledger_id,
-                        change.entity_sync_id,
-                        exc.code,
-                        exc.unknown_tag_ids,
-                        exc.unknown_tag_names,
                     )
                     rejected += 1
                     continue
@@ -249,6 +231,65 @@ async def push_changes(
             )
             continue
 
+        # 只校验实际会赢得 LWW、准备落库的新 change。若放在 replay/conflict
+        # 判断之前，Owner 后续重命名/删除标签会让完全相同的幂等重放反而失败。
+        #
+        # 标签校验失败必须让整批请求返回非 2xx：现有 mobile 收到任意 2xx 后会
+        # 把整批 local_changes 标成 pushed，若这里只累计 rejected 并继续，交易
+        # 未落库却会在客户端永久出队，形成静默数据丢失。抛 400 会回滚本批此前
+        # 尚未 commit 的变更，客户端也会保留本地 change 供用户修正后重试。
+        if (
+            not is_user_global
+            and change.entity_type == "transaction"
+            and change.action == "upsert"
+            and isinstance(change.payload, dict)
+        ):
+            assert ledger is not None
+            if ledger.id not in locked_ledgers:
+                lock_ledger_for_materialize(db, ledger.id)
+                locked_ledgers.add(ledger.id)
+            shared = shared_ledger_cache.get(ledger.id)
+            if shared is None:
+                shared = is_shared_ledger(db, ledger)
+                shared_ledger_cache[ledger.id] = shared
+            try:
+                owner_tag_rows = None
+                if shared and (
+                    "tags" in change.payload or "tagIds" in change.payload
+                ):
+                    owner_tag_rows = owner_tag_rows_cache.get(ledger.user_id)
+                    if owner_tag_rows is None:
+                        owner_tag_rows = load_owner_transaction_tags(
+                            db,
+                            ledger=ledger,
+                        )
+                        owner_tag_rows_cache[ledger.user_id] = owner_tag_rows
+                normalize_shared_transaction_tags(
+                    db,
+                    ledger=ledger,
+                    payload=change.payload,
+                    tag_ids_key="tagIds",
+                    tags_as_list=False,
+                    shared_ledger=shared,
+                    owner_tag_rows=owner_tag_rows,
+                )
+            except SharedTransactionTagError as exc:
+                logger.warning(
+                    "sync.push.reject shared transaction tag user=%s "
+                    "ledger=%s sync_id=%s code=%s ids=%s names=%s ambiguous=%s",
+                    current_user.id,
+                    change.ledger_id,
+                    change.entity_sync_id,
+                    exc.code,
+                    exc.unknown_tag_ids,
+                    exc.unknown_tag_names,
+                    exc.ambiguous_tag_names,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=exc.as_detail(),
+                ) from exc
+
         # ============================================================
         # SyncChange row + apply 路径
         # ============================================================
@@ -294,6 +335,10 @@ async def push_changes(
                     "sync_id": change.entity_sync_id,
                     "payload": change.payload or {"sync_id": change.entity_sync_id},
                 })
+            if change.entity_type == "tag":
+                # 同一 push 可先创建/重命名 Owner 标签、再写交易。清缓存让后续
+                # 交易看到刚刚 materialize 的最新标签集合。
+                owner_tag_rows_cache.pop(current_user.id, None)
         else:
             assert ledger is not None
             # §7 共享账本:mobile 历史路径未在本地 transactions.created_by_user_id
@@ -337,7 +382,9 @@ async def push_changes(
             # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
             if change.entity_type in INDIVIDUAL_ENTITY_TYPES:
                 # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
-                lock_ledger_for_materialize(db, ledger.id)
+                if ledger.id not in locked_ledgers:
+                    lock_ledger_for_materialize(db, ledger.id)
+                    locked_ledgers.add(ledger.id)
                 try:
                     apply_change_to_projection(
                         db,
@@ -379,6 +426,7 @@ async def push_changes(
         max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
 
     db.commit()
+    flush_deferred_attachment_unlinks(db)
 
     if touched_ledgers:
         ws_manager = request.app.state.ws_manager

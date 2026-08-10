@@ -541,6 +541,7 @@ async def _commit_create_tx_fast(
     device_id: str,
     audit_action: str,
     mutate_payload: dict,
+    precommit_validate: Callable[[], None] | None = None,
 ) -> WriteCommitMeta:
     """Fast path:新建单笔 tx,跳过全量 snapshot build(issue #31 A1b)。
 
@@ -558,6 +559,8 @@ async def _commit_create_tx_fast(
     def _core() -> tuple[WriteCommitMeta, bool]:
         """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
         lock_ledger_for_materialize(db, ledger.id)
+        if precommit_validate is not None:
+            precommit_validate()
         now = _utcnow()
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
         _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
@@ -676,6 +679,7 @@ async def _commit_write_fast_tx(
     tx_id: str,
     mutate_payload: dict,
     action: str,  # "upsert" | "delete"
+    precommit_validate: Callable[[], None] | None = None,
 ) -> WriteCommitMeta:
     """Fast path:单 tx update/delete,跳过全 snapshot build。只 SELECT 目标 tx
     (1 条 query by PK)→ 合并 payload → 写 SyncChange + projection。~10-15ms。
@@ -686,6 +690,8 @@ async def _commit_write_fast_tx(
     def _core() -> tuple[WriteCommitMeta, bool]:
         """同步 DB 核心,返回 (response, did_replay)。在 worker thread 里跑。"""
         lock_ledger_for_materialize(db, ledger.id)
+        if precommit_validate is not None:
+            precommit_validate()
         now = _utcnow()
 
         # 1. 读目标 tx from projection

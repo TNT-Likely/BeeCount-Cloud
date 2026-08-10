@@ -70,7 +70,6 @@ async def create_tx(
     )
     if replay:
         return replay
-    _normalize_shared_tx_tags_or_400(db, ledger=ledger, payload=payload)
     # 旧架构这里要跑 _resolve_tx_dictionary_payload 去 UserAccount/Category/Tag
     # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
@@ -89,6 +88,11 @@ async def create_tx(
         device_id=device_id,
         audit_action="web_tx_create",
         mutate_payload=mutate_payload,
+        precommit_validate=lambda: _normalize_shared_tx_tags_or_400(
+            db,
+            ledger=ledger,
+            payload=mutate_payload,
+        ),
     )
 
 
@@ -123,7 +127,6 @@ async def update_tx(
     )
     if replay:
         return replay
-    _normalize_shared_tx_tags_or_400(db, ledger=ledger, payload=payload)
     _assert_can_modify_entity(
         db=db,
         ledger=ledger,
@@ -146,6 +149,11 @@ async def update_tx(
         tx_id=tx_id,
         mutate_payload=mutate_payload,
         action="upsert",
+        precommit_validate=lambda: _normalize_shared_tx_tags_or_400(
+            db,
+            ledger=ledger,
+            payload=mutate_payload,
+        ),
     )
 
 

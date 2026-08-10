@@ -33,6 +33,50 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+_DEFER_ATTACHMENT_UNLINKS = "defer_attachment_unlinks"
+_PENDING_ATTACHMENT_UNLINKS = "pending_attachment_unlinks"
+
+
+def defer_attachment_unlinks(db: Session) -> None:
+    """把本 Session 的附件物理删除延迟到调用方确认 commit 成功后。
+
+    数据库 rollback 能恢复 ``AttachmentFile`` 行，却无法恢复已经 unlink 的
+    文件。需要整批原子语义的入口（目前是 mobile sync push）在开始处理前调用
+    本函数，并在成功 commit 后调用 :func:`flush_deferred_attachment_unlinks`。
+    若事务抛错，Session 关闭即可丢弃队列，物理文件保持不变。
+    """
+    db.info[_DEFER_ATTACHMENT_UNLINKS] = True
+    db.info.setdefault(_PENDING_ATTACHMENT_UNLINKS, set())
+
+
+def flush_deferred_attachment_unlinks(db: Session) -> None:
+    """在数据库 commit 成功后执行本 Session 排队的附件物理删除。"""
+    paths = db.info.pop(_PENDING_ATTACHMENT_UNLINKS, set())
+    db.info.pop(_DEFER_ATTACHMENT_UNLINKS, None)
+    for storage_path in paths:
+        _unlink_attachment_path(storage_path)
+
+
+def _unlink_or_defer_attachment(db: Session, storage_path: str) -> None:
+    if db.info.get(_DEFER_ATTACHMENT_UNLINKS):
+        pending = db.info.setdefault(_PENDING_ATTACHMENT_UNLINKS, set())
+        pending.add(storage_path)
+        return
+    _unlink_attachment_path(storage_path)
+
+
+def _unlink_attachment_path(storage_path: str) -> None:
+    try:
+        path = Path(storage_path)
+        if path.exists():
+            path.unlink()
+    except OSError as exc:
+        logger.warning(
+            "attachment gc unlink failed path=%s err=%s",
+            storage_path,
+            exc,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Payload 字段提取                                                              #
@@ -902,15 +946,7 @@ def gc_orphan_attachments_for_ledger(
         storage_path = att.storage_path
         db.delete(att)
 
-        try:
-            p = Path(storage_path)
-            if p.exists():
-                p.unlink()
-        except OSError as exc:
-            logger.warning(
-                "attachment gc unlink failed ledger=%s file=%s path=%s err=%s",
-                ledger_id, file_id, storage_path, exc,
-            )
+        _unlink_or_defer_attachment(db, storage_path)
 
         cleaned += 1
 
@@ -967,17 +1003,7 @@ def gc_orphan_attachments(
         storage_path = att.storage_path
         db.delete(att)
 
-        # Best-effort unlink。DB 提交失败时这里改不回来,但事务 rollback 后
-        # AttachmentFile 行还在,下次 GC 再来。
-        try:
-            p = Path(storage_path)
-            if p.exists():
-                p.unlink()
-        except OSError as exc:
-            logger.warning(
-                "attachment gc unlink failed user=%s file=%s path=%s err=%s",
-                user_id, file_id, storage_path, exc,
-            )
+        _unlink_or_defer_attachment(db, storage_path)
 
         cleaned += 1
 

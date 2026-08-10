@@ -44,6 +44,7 @@ from ...services.ai.image_cache import consume_image
 from ...services.transaction_tags import (
     SharedTransactionTagError,
     is_shared_ledger,
+    resolve_owner_transaction_tag_names,
 )
 from ...snapshot_mutator import create_tag, create_transaction
 from ._shared import (
@@ -144,34 +145,7 @@ async def create_tx_batch(
         # 幂等回放 — 直接拿之前的 BatchCreateTxResponse
         return BatchCreateTxResponse(**replay.model_dump()) if hasattr(replay, "model_dump") else replay  # type: ignore[return-value]
 
-    # 1. (可选)attach_image_id → 转正式 attachment 一份
-    attachment_dict: dict | None = None
-    attachment_file_id: str | None = None
-    if req.attach_image_id:
-        cached = consume_image(image_id=req.attach_image_id, user_id=current_user.id)
-        if cached is None:
-            logger.warning(
-                "tx.batch image_id=%s not found / expired / user_id mismatch",
-                req.attach_image_id,
-            )
-        else:
-            af = _create_attachment_from_bytes(
-                db=db,
-                ledger=ledger,
-                user_id=current_user.id,
-                image_bytes=cached.image_bytes,
-                mime_type=cached.mime_type,
-            )
-            attachment_file_id = af.id
-            attachment_dict = {
-                "cloudFileId": af.id,
-                "fileName": af.file_name or "screenshot.jpg",
-                "mimeType": af.mime_type,
-                "sha256": af.sha256,
-                "sizeBytes": af.size_bytes,
-            }
-
-    # 2. 解析自动 tag(AI 记账 + 可选 extra_tag),lookup ledger 已有名 → 没命中走 locale 默认
+    # 1. 解析自动 tag(AI 记账 + 可选 extra_tag),lookup ledger 已有名 → 没命中走 locale 默认
     auto_tag_names: list[str] = []
     if req.auto_ai_tag:
         ai_tag = _resolve_or_make_ai_tag_name(db, ledger, req.locale)
@@ -216,10 +190,28 @@ async def create_tx_batch(
             if n:
                 tag_name_to_sync_id.setdefault(n, str(t.get("syncId") or ""))
 
-        needed_names: set[str] = {n for n in auto_tag_names if n}
+        needed_names: set[str] = {n.strip() for n in auto_tag_names if n.strip()}
         for _item in req.transactions:
             if _item.tags:
-                needed_names.update(t for t in _item.tags if t)
+                needed_names.update(t.strip() for t in _item.tags if t.strip())
+
+        # snapshot 里同名标签若有多个 syncId，setdefault 会依赖查询顺序随机选
+        # 一个。共享账本中统一走 Owner projection 检测歧义，并用权威 ID 覆盖
+        # snapshot map；未知名称仍只允许 Owner 在下方创建。
+        if shared_ledger and needed_names:
+            try:
+                owner_tags, _missing_names = resolve_owner_transaction_tag_names(
+                    db,
+                    ledger=ledger,
+                    names=list(needed_names),
+                )
+            except SharedTransactionTagError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=exc.as_detail(),
+                ) from exc
+            for name, row in owner_tags.items():
+                tag_name_to_sync_id[name] = row.sync_id
 
         for name in needed_names:
             if name in tag_name_to_sync_id and tag_name_to_sync_id[name]:
@@ -244,6 +236,38 @@ async def create_tx_batch(
                     if (t.get("name") or "").strip() == name:
                         tag_name_to_sync_id[name] = str(t.get("syncId") or "")
                         break
+
+        # 标签权限校验必须早于一次性图片缓存消费和磁盘写入。否则 Editor 的
+        # 未知标签返回 400 时，图片已从缓存删除且 rollback 只能回滚 DB，无法
+        # 恢复物理文件/缓存，用户修正标签后重试会静默丢附件。
+        attachment_dict: dict | None = None
+        attachment_file_id: str | None = None
+        if req.attach_image_id:
+            cached = consume_image(
+                image_id=req.attach_image_id,
+                user_id=current_user.id,
+            )
+            if cached is None:
+                logger.warning(
+                    "tx.batch image_id=%s not found / expired / user_id mismatch",
+                    req.attach_image_id,
+                )
+            else:
+                af = _create_attachment_from_bytes(
+                    db=db,
+                    ledger=ledger,
+                    user_id=current_user.id,
+                    image_bytes=cached.image_bytes,
+                    mime_type=cached.mime_type,
+                )
+                attachment_file_id = af.id
+                attachment_dict = {
+                    "cloudFileId": af.id,
+                    "fileName": af.file_name or "screenshot.jpg",
+                    "mimeType": af.mime_type,
+                    "sha256": af.sha256,
+                    "sizeBytes": af.size_bytes,
+                }
 
         # 5. 循环 mutate snapshot,创建 N 笔
         created_sync_ids: list[str] = []
@@ -407,8 +431,11 @@ def _build_tx_payload(
     if item.native_amount is not None:
         payload["native_amount"] = item.native_amount
     # 合并 auto_tag(LLM 已识别的 tags + 自动加的 AI 记账 / 图片记账)
-    user_tags = list(item.tags or [])
-    merged_tags = user_tags + [t for t in auto_tag_names if t and t not in user_tags]
+    user_tags = list(dict.fromkeys(t.strip() for t in (item.tags or []) if t.strip()))
+    normalized_auto_tags = [
+        t.strip() for t in auto_tag_names if t.strip() and t.strip() not in user_tags
+    ]
+    merged_tags = user_tags + list(dict.fromkeys(normalized_auto_tags))
     if merged_tags:
         payload["tags"] = merged_tags
         # 反查 sync_id 一起传 — 让 projection.tag_sync_ids_json 完整填充。

@@ -42,6 +42,11 @@ from ...services.import_data import (
 )
 from ...services.import_data.cache import save_token_data, update_token
 from ...services.import_data.stats import build_existing_sets, compute_stats
+from ...services.transaction_tags import (
+    SharedTransactionTagError,
+    is_shared_ledger,
+    resolve_owner_transaction_tag_names,
+)
 from ...snapshot_mutator import (
     create_account,
     create_category,
@@ -421,8 +426,52 @@ async def _do_execute(
     existing_account_names, existing_category_keys, existing_tag_names, existing_dedup = build_existing_sets(snapshot)
 
     actor_payload_base = _payload_with_actor({}, _user_stub(user_id))
+    all_tag_names = _collect_new_tags(txs, auto_tags, existing_tag_names)
+    requested_tag_names = list(
+        dict.fromkeys(
+            name.strip()
+            for source in (auto_tags, *(tx.tag_names for tx in txs))
+            for name in source
+            if name.strip()
+        )
+    )
+    tag_name_to_sync_id: dict[str, str] = {}
+    for tag in snapshot.get("tags") or []:
+        name = str(tag.get("name") or "").strip()
+        sync_id = str(tag.get("syncId") or "").strip()
+        if name and sync_id:
+            tag_name_to_sync_id.setdefault(name, sync_id)
 
     try:
+        if is_shared_ledger(db, ledger) and requested_tag_names:
+            try:
+                owner_tags, missing_names = resolve_owner_transaction_tag_names(
+                    db,
+                    ledger=ledger,
+                    names=requested_tag_names,
+                )
+            except SharedTransactionTagError as exc:
+                raise _ImportFailed(
+                    code=exc.code,
+                    row_number=0,
+                    field_name="tag",
+                    message=exc.message,
+                    raw_line="",
+                ) from exc
+            for name, row in owner_tags.items():
+                tag_name_to_sync_id[name] = row.sync_id
+            if user_id != ledger.user_id and missing_names:
+                raise _ImportFailed(
+                    code="SHARED_TX_TAG_NOT_OWNER",
+                    row_number=0,
+                    field_name="tag",
+                    message=(
+                        "Unknown shared transaction tags must be created by the "
+                        f"ledger owner first: {', '.join(missing_names)}"
+                    ),
+                    raw_line="",
+                )
+
         # 1. accounts
         account_diff_names = _collect_new_accounts(txs, existing_account_names)
         for i, name in enumerate(account_diff_names, 1):
@@ -472,12 +521,12 @@ async def _do_execute(
             )
 
         # 3. tags(包括 auto_tags)
-        all_tag_names = _collect_new_tags(txs, auto_tags, existing_tag_names)
         for i, name in enumerate(all_tag_names, 1):
             try:
-                snapshot, _ = create_tag(
+                snapshot, new_tag_id = create_tag(
                     snapshot, {**actor_payload_base, "name": name}
                 )
+                tag_name_to_sync_id[name] = new_tag_id
             except (KeyError, ValueError, PermissionError) as exc:
                 raise _ImportFailed(
                     code="WRITE_TAG_FAILED",
@@ -503,7 +552,12 @@ async def _do_execute(
                 skipped += 1
             else:
                 seen_keys.add(dedup_key)
-                tx_payload = _build_tx_payload(tx, auto_tags, actor_payload_base)
+                tx_payload = _build_tx_payload(
+                    tx,
+                    auto_tags,
+                    actor_payload_base,
+                    tag_name_to_sync_id,
+                )
                 try:
                     snapshot, _ = create_transaction(snapshot, tx_payload)
                 except (KeyError, ValueError, PermissionError) as exc:
@@ -814,9 +868,17 @@ def _collect_new_tags(txs, auto_tags: list[str], existing: set[str]) -> list[str
     return seen
 
 
-def _build_tx_payload(tx, auto_tags: list[str], actor_base: dict) -> dict:
-    user_tags = list(tx.tag_names)
-    merged = user_tags + [t for t in auto_tags if t and t not in user_tags]
+def _build_tx_payload(
+    tx,
+    auto_tags: list[str],
+    actor_base: dict,
+    tag_name_to_sync_id: dict[str, str] | None = None,
+) -> dict:
+    user_tags = list(dict.fromkeys(t.strip() for t in tx.tag_names if t.strip()))
+    normalized_auto = [
+        t.strip() for t in auto_tags if t.strip() and t.strip() not in user_tags
+    ]
+    merged = user_tags + list(dict.fromkeys(normalized_auto))
     payload = {
         **actor_base,
         "tx_type": tx.tx_type,
@@ -836,4 +898,12 @@ def _build_tx_payload(tx, auto_tags: list[str], actor_base: dict) -> dict:
     }
     if merged:
         payload["tags"] = merged
+        if tag_name_to_sync_id:
+            tag_ids = [
+                tag_name_to_sync_id[name]
+                for name in merged
+                if name in tag_name_to_sync_id
+            ]
+            if tag_ids:
+                payload["tag_ids"] = list(dict.fromkeys(tag_ids))
     return payload

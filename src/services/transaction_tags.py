@@ -30,12 +30,14 @@ class SharedTransactionTagError(ValueError):
         *,
         unknown_tag_ids: list[str] | None = None,
         unknown_tag_names: list[str] | None = None,
+        ambiguous_tag_names: list[str] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.unknown_tag_ids = unknown_tag_ids or []
         self.unknown_tag_names = unknown_tag_names or []
+        self.ambiguous_tag_names = ambiguous_tag_names or []
 
     def as_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -46,6 +48,8 @@ class SharedTransactionTagError(ValueError):
             detail["unknown_tag_ids"] = self.unknown_tag_ids
         if self.unknown_tag_names:
             detail["unknown_tag_names"] = self.unknown_tag_names
+        if self.ambiguous_tag_names:
+            detail["ambiguous_tag_names"] = self.ambiguous_tag_names
         return detail
 
 
@@ -70,6 +74,8 @@ def normalize_shared_transaction_tags(
     tag_ids_key: str,
     tags_key: str = "tags",
     tags_as_list: bool,
+    shared_ledger: bool | None = None,
+    owner_tag_rows: list[UserTagProjection] | None = None,
 ) -> None:
     """原地校验并规范化共享交易 payload 的标签字段。
 
@@ -81,7 +87,9 @@ def normalize_shared_transaction_tags(
     ids_present = tag_ids_key in payload
     if not tags_present and not ids_present:
         return
-    if not is_shared_ledger(db, ledger):
+    if shared_ledger is None:
+        shared_ledger = is_shared_ledger(db, ledger)
+    if not shared_ledger:
         return
 
     names = _normalize_names(payload.get(tags_key))
@@ -94,14 +102,16 @@ def normalize_shared_transaction_tags(
         return
 
     if tag_ids:
-        rows = list(
-            db.scalars(
-                select(UserTagProjection).where(
-                    UserTagProjection.user_id == ledger.user_id,
-                    UserTagProjection.sync_id.in_(tag_ids),
-                )
-            ).all()
-        )
+        rows = owner_tag_rows
+        if rows is None:
+            rows = list(
+                db.scalars(
+                    select(UserTagProjection).where(
+                        UserTagProjection.user_id == ledger.user_id,
+                        UserTagProjection.sync_id.in_(tag_ids),
+                    )
+                ).all()
+            )
         by_id = {row.sync_id: row for row in rows}
         unknown_ids = [tag_id for tag_id in tag_ids if tag_id not in by_id]
         if unknown_ids:
@@ -125,20 +135,12 @@ def normalize_shared_transaction_tags(
                 unknown_tag_ids=invalid_ids,
             )
     else:
-        rows = list(
-            db.scalars(
-                select(UserTagProjection).where(
-                    UserTagProjection.user_id == ledger.user_id,
-                    UserTagProjection.name.in_(names),
-                )
-            ).all()
+        by_name, unknown_names = resolve_owner_transaction_tag_names(
+            db,
+            ledger=ledger,
+            names=names,
+            owner_tag_rows=owner_tag_rows,
         )
-        by_name = {
-            str(row.name or "").strip(): row
-            for row in rows
-            if str(row.name or "").strip()
-        }
-        unknown_names = [name for name in names if name not in by_name]
         if unknown_names:
             raise SharedTransactionTagError(
                 "SHARED_TX_TAG_NOT_OWNER",
@@ -150,6 +152,67 @@ def normalize_shared_transaction_tags(
 
     payload[tag_ids_key] = tag_ids
     payload[tags_key] = canonical_names if tags_as_list else ",".join(canonical_names)
+
+
+def resolve_owner_transaction_tag_names(
+    db: Session,
+    *,
+    ledger: Ledger,
+    names: list[str],
+    owner_tag_rows: list[UserTagProjection] | None = None,
+) -> tuple[dict[str, UserTagProjection], list[str]]:
+    """按名称解析 Owner 标签，并拒绝同名多 ID 的歧义引用。
+
+    返回 ``(name -> row, missing_names)``，由调用方决定缺失名称是允许 Owner
+    创建，还是必须拒绝 Editor。歧义名称没有安全的 fallback：不同入口或不同
+    数据库执行计划可能选择不同 ``sync_id``，因此统一要求调用方改用明确 ID。
+    """
+    wanted = _dedupe_non_empty(names)
+    if not wanted:
+        return {}, []
+
+    rows = owner_tag_rows
+    if rows is None:
+        rows = list(
+            db.scalars(
+                select(UserTagProjection).where(
+                    UserTagProjection.user_id == ledger.user_id,
+                    UserTagProjection.name.in_(wanted),
+                )
+            ).all()
+        )
+    grouped: dict[str, list[UserTagProjection]] = {}
+    for row in rows:
+        name = str(row.name or "").strip()
+        if name:
+            grouped.setdefault(name, []).append(row)
+
+    ambiguous_names = [name for name in wanted if len(grouped.get(name, [])) > 1]
+    if ambiguous_names:
+        raise SharedTransactionTagError(
+            "SHARED_TX_TAG_AMBIGUOUS",
+            "Ambiguous shared transaction tag names require explicit owner tag IDs",
+            ambiguous_tag_names=ambiguous_names,
+        )
+
+    by_name = {name: grouped[name][0] for name in wanted if grouped.get(name)}
+    missing_names = [name for name in wanted if name not in by_name]
+    return by_name, missing_names
+
+
+def load_owner_transaction_tags(
+    db: Session,
+    *,
+    ledger: Ledger,
+) -> list[UserTagProjection]:
+    """一次载入 Owner 的标签，供一个同步批次内多笔交易复用。"""
+    return list(
+        db.scalars(
+            select(UserTagProjection).where(
+                UserTagProjection.user_id == ledger.user_id,
+            )
+        ).all()
+    )
 
 
 def _normalize_names(raw: Any) -> list[str]:
