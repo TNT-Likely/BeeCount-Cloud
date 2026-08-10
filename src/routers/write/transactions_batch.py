@@ -41,6 +41,10 @@ from ...models import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 from ...services.ai.image_cache import consume_image
+from ...services.transaction_tags import (
+    SharedTransactionTagError,
+    is_shared_ledger,
+)
 from ...snapshot_mutator import create_tag, create_transaction
 from ._shared import (
     _TRANSACTION_WRITE_ROLES,
@@ -195,6 +199,7 @@ async def create_tx_batch(
                 )
 
         snapshot = snapshot_builder.build(db, ledger)
+        shared_ledger = is_shared_ledger(db, ledger)
         prev_snapshot = {**snapshot}
         for _k in ("items", "accounts", "categories", "tags", "budgets"):
             arr = snapshot.get(_k)
@@ -219,6 +224,16 @@ async def create_tx_batch(
         for name in needed_names:
             if name in tag_name_to_sync_id and tag_name_to_sync_id[name]:
                 continue
+            if shared_ledger and current_user.id != ledger.user_id:
+                exc = SharedTransactionTagError(
+                    "SHARED_TX_TAG_NOT_OWNER",
+                    "Unknown shared transaction tags must be created by the ledger owner first",
+                    unknown_tag_names=[name],
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=exc.as_detail(),
+                )
             tag_payload = _payload_with_actor({"name": name}, current_user)
             try:
                 snapshot, new_sync_id = create_tag(snapshot, tag_payload)

@@ -7,10 +7,37 @@ WRITE 响应表。Endpoint 自身只管参数校验 + mutate lambda 的构造。
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
+from ...models import Ledger
+from ...services.transaction_tags import (
+    SharedTransactionTagError,
+    normalize_shared_transaction_tags,
+)
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 
 router = APIRouter()
+
+
+def _normalize_shared_tx_tags_or_400(
+    db: Session,
+    *,
+    ledger: Ledger,
+    payload: dict,
+) -> None:
+    try:
+        normalize_shared_transaction_tags(
+            db,
+            ledger=ledger,
+            payload=payload,
+            tag_ids_key="tag_ids",
+            tags_as_list=True,
+        )
+    except SharedTransactionTagError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exc.as_detail(),
+        ) from exc
 
 
 @router.post(
@@ -29,6 +56,7 @@ async def create_tx(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json")
+    request_payload = dict(payload)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -38,10 +66,11 @@ async def create_tx(
         device_id=device_id,
         method=request.method,
         path=request.url.path,
-        payload=payload,
+        payload=request_payload,
     )
     if replay:
         return replay
+    _normalize_shared_tx_tags_or_400(db, ledger=ledger, payload=payload)
     # 旧架构这里要跑 _resolve_tx_dictionary_payload 去 UserAccount/Category/Tag
     # 三张投影表里查 id / 建 row。新架构所有实体都是 snapshot 里的 syncId,
     # web UI 下拉选项也从 snapshot 读,account_id / category_id / tag_ids 直接
@@ -55,7 +84,7 @@ async def create_tx(
         current_user=current_user,
         ledger=ledger,
         base_change_id=req.base_change_id,
-        request_payload=payload,
+        request_payload=request_payload,
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_tx_create",
@@ -80,6 +109,7 @@ async def update_tx(
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
     payload = req.model_dump(mode="json", exclude_unset=True)
+    request_payload = dict(payload)
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,
@@ -89,10 +119,11 @@ async def update_tx(
         device_id=device_id,
         method=request.method,
         path=request.url.path,
-        payload=payload,
+        payload=request_payload,
     )
     if replay:
         return replay
+    _normalize_shared_tx_tags_or_400(db, ledger=ledger, payload=payload)
     _assert_can_modify_entity(
         db=db,
         ledger=ledger,
@@ -108,7 +139,7 @@ async def update_tx(
         current_user=current_user,
         ledger=ledger,
         base_change_id=req.base_change_id,
-        request_payload=payload,
+        request_payload=request_payload,
         idempotency_key=idempotency_key,
         device_id=device_id,
         audit_action="web_tx_update",
@@ -169,5 +200,3 @@ async def delete_tx(
         mutate_payload=mutate_payload,
         action="delete",
     )
-
-

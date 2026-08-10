@@ -6,7 +6,12 @@
 """
 from __future__ import annotations
 
+from ...services.transaction_tags import (
+    SharedTransactionTagError,
+    normalize_shared_transaction_tags,
+)
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
+
 
 @router.post("/push", response_model=SyncPushResponse)
 async def push_changes(
@@ -107,6 +112,36 @@ async def push_changes(
                         "sync.push.reject ledger-meta change from non-owner "
                         "user=%s ledger=%s role=%s entity=%s",
                         current_user.id, change.ledger_id, caller_role, change.entity_type,
+                    )
+                    rejected += 1
+                    continue
+
+            # 共享账本交易只允许引用账本 Owner 的 user-global 标签。
+            # 老协议只有 tags(name)时可解析已有 Owner 标签；无法解析就拒绝该
+            # change，不能让 projection / pull fallback 在任一成员端创建新标签。
+            if (
+                change.entity_type == "transaction"
+                and change.action == "upsert"
+                and isinstance(change.payload, dict)
+            ):
+                try:
+                    normalize_shared_transaction_tags(
+                        db,
+                        ledger=ledger,
+                        payload=change.payload,
+                        tag_ids_key="tagIds",
+                        tags_as_list=False,
+                    )
+                except SharedTransactionTagError as exc:
+                    logger.warning(
+                        "sync.push.reject shared transaction tag user=%s "
+                        "ledger=%s sync_id=%s code=%s ids=%s names=%s",
+                        current_user.id,
+                        change.ledger_id,
+                        change.entity_sync_id,
+                        exc.code,
+                        exc.unknown_tag_ids,
+                        exc.unknown_tag_names,
                     )
                     rejected += 1
                     continue
@@ -422,5 +457,3 @@ async def push_changes(
         server_cursor=max_cursor,
         server_timestamp=now,
     )
-
-
