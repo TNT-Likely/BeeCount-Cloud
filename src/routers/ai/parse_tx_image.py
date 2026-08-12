@@ -260,13 +260,20 @@ _ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 def _norm_currency(raw: object) -> str:
     """LLM 给的币种 → ISO 4217 大写码;不合法返 ""(= 跟账本主币种)。
 
-    **server 端不做别名映射**(「美元」→USD 之类):server 既没有 App 的 151
-    币种表,也没有账本上下文做 `$`/`¥` 消歧,统一让 prompt 直出 ISO 更可控。
+    **server 端基本不做别名映射**(「美元」→USD 之类):server 既没有 App 的 151
+    币种表,也没有账本上下文做 `¥` 消歧,统一让 prompt 直出 ISO 更可控。
     App 侧面对本地/口语输入才做宽松解析(.docs/multi-currency-ai §3.2)。
+
+    唯一例外是裸 `$` → USD:实测 LLM 明明识别出「45 美元」却常把字段回成
+    `"$"`,而这条映射既不需要币种表也不需要上下文(要区分 AUD/CAD/SGD/HKD 时
+    书写惯例都是 `A$`/`C$`/`S$`/`HK$`)。`¥` 仍**不映射** —— CNY 与 JPY 都写裸
+    `¥`,猜错是 ~20 倍金额差,宁可退回账本主币种。
     """
     if not isinstance(raw, str):
         return ""
     code = raw.strip().upper()
+    if code == "$":
+        return "USD"
     return code if _ISO_CURRENCY_RE.match(code) else ""
 
 

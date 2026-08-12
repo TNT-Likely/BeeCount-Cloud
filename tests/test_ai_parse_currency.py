@@ -25,7 +25,10 @@ from src.services.ai.prompts import (
         ("USD", "USD"),
         ("usd", "USD"),
         ("  jpy  ", "JPY"),
-        ("美元", ""),      # server 不做别名映射(§3.2:交给 prompt 直出 ISO)
+        ("美元", ""),      # server 不做中文别名映射(§3.2:交给 prompt 直出 ISO)
+        ("$", "USD"),      # 唯一例外:实测 LLM 常把「45 美元」的 currency 回成 "$"
+        (" $ ", "USD"),
+        ("¥", ""),         # 真歧义(CNY/JPY 都写裸 ¥)→ 退回账本主币种
         ("US", ""),        # 长度不对
         ("USDD", ""),
         ("U$D", ""),

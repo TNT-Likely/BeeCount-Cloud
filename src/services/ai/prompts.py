@@ -102,8 +102,12 @@ _TX_DRAFTS_SCHEMA_ZH = """\
   - `account_name`: 从「可用账户」选,选不到用 "";仅 expense/income 有意义
   - `from_account_name` / `to_account_name`: 仅 transfer 用
   - `note`: ≤15 字商家名 / 商品名 / 简短描述
-  - `currency`: 币种 ISO 4217 代码(如 USD / JPY / EUR)。**与账本主币种相同时留 ""**;
-    只有原文/图片明确是外币(如「100 美元」「1200 円」「$45」)才填
+  - `currency`: 币种,必须是 3 位大写 ISO 4217 代码,**不要填货币符号,也不要填中文名**
+    - 常见对应:美元/美金/$ → USD,日元/日圆/円 → JPY,欧元/欧/€ → EUR,
+      英镑/£ → GBP,港币/港元 → HKD,新台币 → TWD,韩元 → KRW,泰铢 → THB
+    - 与账本主币种相同时留 ""(主币种是 CNY 时,「花了 50 元」留 "")
+    - 原文/图片出现任何外币说法(中文名、符号、代码都算)就必须填,别漏
+    - 例:「花了 45 美元」→ "USD";「星巴克 $6.5」→ "USD";「1200 日元」→ "JPY"
   - `tags`: array,可空
   - `confidence`: "high" | "medium" | "low"
     - high: 金额 + 类型 + 时间 都明确从原始内容抠出来
@@ -127,9 +131,14 @@ Each draft has fields:
   - `account_name`: pick from available accounts; "" if no match (for expense/income)
   - `from_account_name` / `to_account_name`: only for transfer
   - `note`: ≤15 chars merchant/item/short description
-  - `currency`: ISO 4217 code (e.g. USD / JPY / EUR). **Leave "" when it equals the
-    ledger's base currency**; only fill it when the source clearly states a foreign
-    currency (e.g. "100 dollars", "1200 yen", "$45")
+  - `currency`: MUST be a 3-letter uppercase ISO 4217 code — **never a currency
+    symbol, never a currency name**
+    - Mapping: dollar/dollars/$ → USD, yen/円 → JPY, euro/€ → EUR, pound/£ → GBP,
+      HK dollar → HKD, NT dollar → TWD, won → KRW, baht → THB
+    - Leave "" when it equals the ledger's base currency
+    - Fill it whenever the source states a foreign currency in ANY form (name,
+      symbol or code) — don't skip it
+    - e.g. "spent 45 dollars" → "USD"; "Starbucks $6.5" → "USD"; "1200 yen" → "JPY"
   - `tags`: array, can be empty
   - `confidence`: "high" | "medium" | "low"
 """
