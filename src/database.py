@@ -1,15 +1,44 @@
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 
 settings = get_settings()
 
-engine_kwargs: dict = {"pool_pre_ping": True}
-if settings.database_url.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+def _is_file_sqlite(database_url: str) -> bool:
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        return False
+    database = url.database or ""
+    # 除了常见的 :memory:,SQLite 还支持 URI named-memory database:
+    # sqlite:///file:name?mode=memory&cache=shared&uri=true。
+    return bool(database and database != ":memory:" and url.query.get("mode") != "memory")
+
+
+def _engine_kwargs(database_url: str) -> dict:
+    kwargs: dict = {"pool_pre_ping": True}
+    if database_url.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+        if _is_file_sqlite(database_url):
+            # SQLAlchemy 2.x 对文件型 SQLite 默认使用 QueuePool(5 + 10,
+            # pool_timeout=30s)。Web 首屏会同时拉 profile / ledgers / analytics /
+            # budgets 等,单个 tab 就可能超过 15 个请求,导致后续请求精确等待
+            # 30s 后报 QueuePool TimeoutError。
+            #
+            # SQLite 连接创建成本很低,真正的并发控制由 WAL + busy_timeout
+            # 负责。NullPool 让每个 request session 在结束时直接关闭连接,不会
+            # 再人为套一层固定 15 个连接的进程内瓶颈。内存 SQLite 不能使用
+            # NullPool(每条连接会得到不同数据库),所以只应用于文件型 SQLite。
+            kwargs["poolclass"] = NullPool
+    return kwargs
+
+
+engine_kwargs = _engine_kwargs(settings.database_url)
 engine = create_engine(settings.database_url, **engine_kwargs)
 
 
