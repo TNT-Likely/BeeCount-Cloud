@@ -64,10 +64,10 @@ async def parse_tx_text(
             detail={"error_code": "AI_NO_CHAT_PROVIDER", "message": str(exc)},
         )
 
-    cats, accts = _load_ledger_context(db, req.ledger_id, current_user.id)
+    cats, accts, ledger_currency = _load_ledger_context(db, req.ledger_id, current_user.id)
     logger.debug(
-        "ai.parse_tx_text ledger_context cats=%d accts=%d sample_cats=%s",
-        len(cats), len(accts), cats[:10],
+        "ai.parse_tx_text ledger_context cats=%d accts=%d base=%s sample_cats=%s",
+        len(cats), len(accts), ledger_currency, cats[:10],
     )
 
     custom = get_user_custom_prompt(profile, key="parseTxTextPrompt")
@@ -75,6 +75,7 @@ async def parse_tx_text(
         text=req.text,
         categories=cats,
         accounts=accts,
+        ledger_currency=ledger_currency,
         now=datetime.now(timezone.utc),
         locale=req.locale,
         custom_prompt_template=custom,

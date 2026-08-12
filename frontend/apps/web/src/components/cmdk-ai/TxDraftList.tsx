@@ -23,9 +23,15 @@ import {
   useT,
   useToast,
 } from '@beecount/ui'
-import { CategoryPickerDialog } from '@beecount/web-features'
+import {
+  CategoryPickerDialog,
+  CurrencySelectorTrigger,
+  loadRatesToBase,
+  resolveCurrencyFields,
+} from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
+import { useLedgers } from '../../context/LedgersContext'
 
 export type TxDraftListProps = {
   drafts: TxDraft[]
@@ -58,12 +64,17 @@ export function TxDraftList({
   const t = useT()
   const { token } = useAuth()
   const toast = useToast()
+  const { currentLedger } = useLedgers()
+
+  // v30 多币种:账本本位币 = 草稿币种的默认值与折算目标(.docs/multi-currency-ai)
+  const baseCurrency = (currentLedger?.currency || 'CNY').trim().toUpperCase()
 
   const [categories, setCategories] = useState<WorkspaceCategory[]>([])
   const [accounts, setAccounts] = useState<WorkspaceAccount[]>([])
   const [editable, setEditable] = useState<Editable[]>([])
   const [autoAiTag, setAutoAiTag] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [currencyRates, setCurrencyRates] = useState<Record<string, number>>({})
 
   // 加载 ledger candidates(必须先加载,然后才能初始化 editable 把 LLM name 映射到 id)
   useEffect(() => {
@@ -82,8 +93,29 @@ export function TxDraftList({
 
   // 候选数据 ready 后初始化 editable;drafts 变化(重新解析)也重置
   useEffect(() => {
-    setEditable(initialDrafts.map((d) => toEditable(d, categories, accounts)))
-  }, [initialDrafts, categories, accounts])
+    setEditable(initialDrafts.map((d) => toEditable(d, categories, accounts, baseCurrency)))
+  }, [initialDrafts, categories, accounts, baseCurrency])
+
+  // 汇率只在真的沾多币种时才拉:账本里有外币账户,或某笔草稿选了外币。
+  // 纯单币种用户不会因为这个功能多一次网络请求(loadRatesToBase 自带 5min 缓存)。
+  const needRates = useMemo(
+    () =>
+      accounts.some((a) => (a.currency || baseCurrency).toUpperCase() !== baseCurrency) ||
+      editable.some((d) => d.currency && d.currency !== baseCurrency),
+    [accounts, editable, baseCurrency],
+  )
+  useEffect(() => {
+    if (!needRates) return
+    let alive = true
+    loadRatesToBase(token, baseCurrency)
+      .then((r) => {
+        if (alive) setCurrencyRates(r)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [needRates, token, baseCurrency])
 
   const selected = useMemo(() => editable.filter((d) => d.selected), [editable])
   const allChecked = editable.length > 0 && editable.every((d) => d.selected)
@@ -117,11 +149,37 @@ export function TxDraftList({
     }
     setSaving(true)
     try {
+      // v30 多币种:逐笔折算到账本本位币。transfer 不带币种字段(跨币种转账
+      // 本就有守卫);拉不到汇率 → 阻断保存,绝不静默按 1:1 入账(App L8 同源)。
+      // Web 是有人值守的确认式交互,所以这里阻断而不像 App 无人值守通道那样降级。
+      let currencyByLocalId: Record<string, { currency_code: string; native_amount: number }> = {}
+      try {
+        const resolved = await Promise.all(
+          selected.map(async (d) => {
+            if (d.type === 'transfer') return null
+            const fields = await resolveCurrencyFields({
+              token,
+              ledgerBase: baseCurrency,
+              currency: d.currency,
+              amount: Number(d.amountText) || 0,
+            })
+            return fields ? ([d.localId, fields] as const) : null
+          }),
+        )
+        currencyByLocalId = Object.fromEntries(resolved.filter(Boolean) as [string, { currency_code: string; native_amount: number }][])
+      } catch {
+        // 复用单笔记账的同一句文案(三语已有),不新造 key
+        toast.error(t('transactions.error.rateMissing'), t('cmdk.parseTx.saveFailed'))
+        setSaving(false)
+        return
+      }
+
       const items: BatchTxItem[] = selected.map((d) => ({
         tx_type: d.type,
         amount: Number(d.amountText) || 0,
         happened_at: d.happenedAtIso,
         note: d.note || null,
+        ...(currencyByLocalId[d.localId] || {}),
         // 关键:同时传 name + id(server projection 用 id 关联,name 用作显示)
         category_name: d.categoryName || null,
         category_id: d.categoryId || null,
@@ -173,6 +231,8 @@ export function TxDraftList({
             draft={d}
             categories={categories}
             accounts={accounts}
+            baseCurrency={baseCurrency}
+            currencyRates={currencyRates}
             onChange={(patch) => updateOne(idx, patch)}
             onRemove={() => removeOne(idx)}
             t={t}
@@ -226,6 +286,8 @@ function TxCard({
   draft,
   categories,
   accounts,
+  baseCurrency,
+  currencyRates,
   onChange,
   onRemove,
   t,
@@ -233,6 +295,8 @@ function TxCard({
   draft: Editable
   categories: WorkspaceCategory[]
   accounts: WorkspaceAccount[]
+  baseCurrency: string
+  currencyRates: Record<string, number>
   onChange: (patch: Partial<Editable>) => void
   onRemove: () => void
   t: T
@@ -242,7 +306,17 @@ function TxCard({
   const missingCategory = !isTransfer && !draft.categoryId
   const [catPickerOpen, setCatPickerOpen] = useState(false)
 
-  const accountNames = useMemo(() => accounts.map((a) => a.name).filter(Boolean), [accounts])
+  // v30 多币种:账户候选跟着**这笔的币种**走(与 TransactionsPanel 的
+  // 「选非本位币 → 账户下拉按币种过滤」同构)。单币种账本下该过滤是恒真的。
+  const txCurrency = draft.currency || baseCurrency
+  const accountNames = useMemo(
+    () =>
+      accounts
+        .filter((a) => (a.currency || baseCurrency).toUpperCase() === txCurrency.toUpperCase())
+        .map((a) => a.name)
+        .filter(Boolean),
+    [accounts, txCurrency, baseCurrency],
+  )
 
   // type 变化时同步 categoryKind 候选
   const pickerKind: 'expense' | 'income' = draft.type === 'income' ? 'income' : 'expense'
@@ -307,6 +381,28 @@ function TxCard({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* v30 多币种:币种行,与 TransactionsPanel 的单笔表单同构(那边也是非
+          transfer 就常驻)。常驻而非「只在外币时显示」是因为 AI 有可能漏识别
+          币种 —— 用户必须能在保存前改回来,否则只能存完再逐笔编辑(#437)。 */}
+      {!isTransfer ? (
+        <div className="mt-2">
+          <CurrencySelectorTrigger
+            value={draft.currency || baseCurrency}
+            onChange={(code) => {
+              const next = code.trim().toUpperCase()
+              onChange({
+                currency: next === baseCurrency ? '' : next,
+                // 币种变了,原账户多半不再同币种 → 清空,让用户在新候选里重选
+                accountName: '',
+                accountId: '',
+              })
+            }}
+            ratesToBase={currencyRates}
+            rateBase={baseCurrency}
+          />
+        </div>
+      ) : null}
 
       {/* 类目 + 账户(transfer 换 from/to) */}
       <div className="mt-2 grid grid-cols-2 gap-2">
@@ -512,6 +608,8 @@ type Editable = {
   amountText: string
   happenedAtIso: string
   note: string
+  /** 原币种 ISO;'' = 账本本位币(与 TxForm.currency 同约定) */
+  currency: string
   tags: string[]
   confidence: TxDraft['confidence']
   categoryId: string
@@ -528,6 +626,7 @@ function toEditable(
   d: TxDraft,
   categories: WorkspaceCategory[],
   accounts: WorkspaceAccount[],
+  baseCurrency: string,
 ): Editable {
   // 「有子分类的父类」不能被作为交易分类(产品规则跟 mobile 一致)。如果 LLM 返
   // 了这种父类名字,我们 lookup 时拒绝命中,categoryId 留空 → 用户在 Picker
@@ -554,8 +653,21 @@ function toEditable(
     return accounts.find((a) => a.name === name) || null
   }
 
+  // v30 多币种:LLM 给的币种(server 已校验成 ISO 或 "")。等于本位币就归一成
+  // '' —— 与 TxForm.currency 同约定,提交时才展开成显式 currency_code。
+  const draftCurrency = (d.currency || '').trim().toUpperCase()
+  const currency = draftCurrency === baseCurrency ? '' : draftCurrency
+  const txCurrency = currency || baseCurrency
+
   const cat = matchCategory(d.category_name, d.type)
-  const acct = matchAccount(d.account_name)
+  // 账户必须与这笔的币种一致 —— 卡片里的账户下拉就是按币种过滤的,匹配到一个
+  // 不在候选里的账户会让 Select 显示一个选不中的值。币种不符视为未匹配,
+  // 用户在过滤后的候选里重选(与 mobile BillCreationService 的匹配池同口径)。
+  const acctByName = matchAccount(d.account_name)
+  const acct =
+    acctByName && (acctByName.currency || baseCurrency).toUpperCase() === txCurrency
+      ? acctByName
+      : null
   const fromAcct = d.from_account_name ? matchAccount(d.from_account_name) : null
   const toAcct = d.to_account_name ? matchAccount(d.to_account_name) : null
 
@@ -566,6 +678,7 @@ function toEditable(
     amountText: String(d.amount),
     happenedAtIso: d.happened_at || new Date().toISOString(),
     note: d.note || '',
+    currency,
     tags: d.tags || [],
     confidence: d.confidence,
     categoryId: cat?.id || '',

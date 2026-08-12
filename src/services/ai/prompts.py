@@ -102,6 +102,8 @@ _TX_DRAFTS_SCHEMA_ZH = """\
   - `account_name`: 从「可用账户」选,选不到用 "";仅 expense/income 有意义
   - `from_account_name` / `to_account_name`: 仅 transfer 用
   - `note`: ≤15 字商家名 / 商品名 / 简短描述
+  - `currency`: 币种 ISO 4217 代码(如 USD / JPY / EUR)。**与账本主币种相同时留 ""**;
+    只有原文/图片明确是外币(如「100 美元」「1200 円」「$45」)才填
   - `tags`: array,可空
   - `confidence`: "high" | "medium" | "low"
     - high: 金额 + 类型 + 时间 都明确从原始内容抠出来
@@ -125,6 +127,9 @@ Each draft has fields:
   - `account_name`: pick from available accounts; "" if no match (for expense/income)
   - `from_account_name` / `to_account_name`: only for transfer
   - `note`: ≤15 chars merchant/item/short description
+  - `currency`: ISO 4217 code (e.g. USD / JPY / EUR). **Leave "" when it equals the
+    ledger's base currency**; only fill it when the source clearly states a foreign
+    currency (e.g. "100 dollars", "1200 yen", "$45")
   - `tags`: array, can be empty
   - `confidence`: "high" | "medium" | "low"
 """
@@ -137,6 +142,7 @@ _PARSE_TX_IMAGE_ZH = """\
 当前时间:{NOW}
 账本可用类目:{CATEGORIES}
 账本可用账户:{ACCOUNTS}
+{CURRENCY_HINT}
 
 {SCHEMA}
 
@@ -156,6 +162,7 @@ transaction visible.
 Current time: {NOW}
 Available categories in this ledger: {CATEGORIES}
 Available accounts in this ledger: {ACCOUNTS}
+{CURRENCY_HINT}
 
 {SCHEMA}
 
@@ -178,6 +185,7 @@ _PARSE_TX_TEXT_ZH = """\
 当前时间:{NOW}
 账本可用类目:{CATEGORIES}
 账本可用账户:{ACCOUNTS}
+{CURRENCY_HINT}
 
 文本:
 {TEXT}
@@ -204,6 +212,7 @@ transactions). Extract every transaction.
 Current time: {NOW}
 Available categories in this ledger: {CATEGORIES}
 Available accounts in this ledger: {ACCOUNTS}
+{CURRENCY_HINT}
 
 Text:
 {TEXT}
@@ -230,16 +239,49 @@ def _format_categories_hint(categories: list[str]) -> str:
     return ", ".join(c for c in categories if c)
 
 
-def _format_accounts_hint(accounts: list[str]) -> str:
+def _format_accounts_hint(
+    accounts: list[tuple[str, str | None]], ledger_currency: str,
+) -> str:
+    """账户清单。**只有币种 ≠ 账本主币种的账户才标注币种** —— 单币种用户看到的
+    字符串与加多币种支持之前逐字相同(零噪声、零回归)。"""
     if not accounts:
         return "(none — leave account_name empty for user to pick)"
-    return ", ".join(a for a in accounts if a)
+    base = (ledger_currency or "").strip().upper()
+    parts: list[str] = []
+    for name, ccy in accounts:
+        if not name:
+            continue
+        code = (ccy or "").strip().upper()
+        parts.append(f"{name}({code})" if code and code != base else name)
+    return ", ".join(parts)
+
+
+def _format_currency_hint(
+    accounts: list[tuple[str, str | None]], ledger_currency: str, *, is_zh: bool,
+) -> str:
+    """币种提示行。账本内只有一种币种时只报主币种(一行,极短);出现外币账户时
+    额外列出可用币种。无论哪种情况都告诉 LLM「也可返回其它 ISO 代码」是多余的
+    —— schema 里已经写了,这里只给上下文。"""
+    base = (ledger_currency or "CNY").strip().upper()
+    others = sorted(
+        {(c or "").strip().upper() for _, c in accounts if (c or "").strip()} - {base, ""}
+    )
+    if is_zh:
+        line = f"账本主币种:{base}"
+        if others:
+            line += f";账本内已有外币账户:{'、'.join(others)}"
+        return line
+    line = f"Ledger base currency: {base}"
+    if others:
+        line += f"; foreign-currency accounts present: {', '.join(others)}"
+    return line
 
 
 def build_parse_tx_image_messages(
     *,
     categories: list[str],
-    accounts: list[str],
+    accounts: list[tuple[str, str | None]],
+    ledger_currency: str = "CNY",
     now: datetime,
     locale: str = "zh",
     image_data_url: str,
@@ -248,7 +290,9 @@ def build_parse_tx_image_messages(
     """B2 截图记账 — 拼 OpenAI vision API messages。
 
     image_data_url: `data:image/jpeg;base64,...` 格式
+    accounts: (名称, 币种) 列表;币种 ≠ 账本主币种时会在 prompt 里标注
     custom_prompt_template: 用户自定义 prompt(从 user.ai_config_json 来),为 None 则用 default
+        —— 自定义模板不含 `{CURRENCY_HINT}` 时 `.format()` 直接忽略该 kwarg,老模板零影响
     """
     is_zh = (locale or "zh").lower().startswith("zh")
     template = custom_prompt_template or (_PARSE_TX_IMAGE_ZH if is_zh else _PARSE_TX_IMAGE_EN)
@@ -256,7 +300,8 @@ def build_parse_tx_image_messages(
     prompt = template.format(
         NOW=now.isoformat(timespec="seconds"),
         CATEGORIES=_format_categories_hint(categories),
-        ACCOUNTS=_format_accounts_hint(accounts),
+        ACCOUNTS=_format_accounts_hint(accounts, ledger_currency),
+        CURRENCY_HINT=_format_currency_hint(accounts, ledger_currency, is_zh=is_zh),
         SCHEMA=schema,
     )
     return [
@@ -274,19 +319,21 @@ def build_parse_tx_text_messages(
     *,
     text: str,
     categories: list[str],
-    accounts: list[str],
+    accounts: list[tuple[str, str | None]],
+    ledger_currency: str = "CNY",
     now: datetime,
     locale: str = "zh",
     custom_prompt_template: str | None = None,
 ) -> list[dict[str, object]]:
-    """B3 文字记账 — 拼 OpenAI chat API messages。"""
+    """B3 文字记账 — 拼 OpenAI chat API messages。参数语义同 [build_parse_tx_image_messages]。"""
     is_zh = (locale or "zh").lower().startswith("zh")
     template = custom_prompt_template or (_PARSE_TX_TEXT_ZH if is_zh else _PARSE_TX_TEXT_EN)
     schema = _TX_DRAFTS_SCHEMA_ZH if is_zh else _TX_DRAFTS_SCHEMA_EN
     prompt = template.format(
         NOW=now.isoformat(timespec="seconds"),
         CATEGORIES=_format_categories_hint(categories),
-        ACCOUNTS=_format_accounts_hint(accounts),
+        ACCOUNTS=_format_accounts_hint(accounts, ledger_currency),
+        CURRENCY_HINT=_format_currency_hint(accounts, ledger_currency, is_zh=is_zh),
         TEXT=text,
         SCHEMA=schema,
     )
