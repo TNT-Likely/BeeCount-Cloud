@@ -350,6 +350,7 @@ async def create_transaction(
     note: str | None = None,
     tags: list[str] | None = None,
     ledger_id: str | None = None,
+    currency: str | None = None,
 ) -> dict[str, Any]:
     """Create a new transaction.
 
@@ -362,10 +363,15 @@ async def create_transaction(
         note: Optional memo.
         tags: Optional list of tag names.
         ledger_id: Optional; uses active ledger if omitted.
+        currency: ISO 4217 code (e.g. 'USD', 'JPY') when the amount is in a
+            foreign currency. Omit to follow the account's currency, or the
+            ledger's base currency when no account is given. The server converts
+            to the ledger base at current rates and stores both amounts.
     """
     kw = dict(
         amount=amount, tx_type=tx_type, category=category, account=account,
         happened_at=happened_at, note=note, tags=tags, ledger_id=ledger_id,
+        currency=currency,
     )
     return await _logged_call(
         ctx, name="create_transaction", scope=SCOPE_MCP_WRITE, kwargs=kw,
@@ -388,7 +394,8 @@ async def create_transactions(
     Args:
         transactions: list of objects, each like create_transaction's args —
             {amount (>0), tx_type (expense|income|transfer, default expense),
-             category, account, happened_at (ISO, default now), note, tags}.
+             category, account, happened_at (ISO, default now), note, tags,
+             currency (ISO 4217, only for foreign-currency amounts)}.
             category/account must be existing names (server rejects unknown ones).
         ledger_id: Optional. If omitted and you have multiple ledgers, the tool
             refuses to guess and returns the candidate list — re-call with an id.

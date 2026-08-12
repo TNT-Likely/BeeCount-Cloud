@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -102,10 +103,10 @@ async def parse_tx_image(
 
     # 3. 取 ledger 上下文(categories + accounts 给 LLM 选)
     # 「父类有子分类」的父类不喂给 LLM(产品规则:tx 不能直接落到这种父类)
-    cats, accts = _load_ledger_context(db, ledger_id, current_user.id)
+    cats, accts, ledger_currency = _load_ledger_context(db, ledger_id, current_user.id)
     logger.debug(
-        "ai.parse_tx_image ledger_context cats=%d accts=%d sample_cats=%s",
-        len(cats), len(accts), cats[:10],
+        "ai.parse_tx_image ledger_context cats=%d accts=%d base=%s sample_cats=%s",
+        len(cats), len(accts), ledger_currency, cats[:10],
     )
 
     # 4. 拼 prompt + 调 vision LLM
@@ -114,6 +115,7 @@ async def parse_tx_image(
     messages = build_parse_tx_image_messages(
         categories=cats,
         accounts=accts,
+        ledger_currency=ledger_currency,
         now=datetime.now(timezone.utc),
         locale=locale,
         image_data_url=image_data_url,
@@ -176,11 +178,17 @@ async def parse_tx_image(
 
 def _load_ledger_context(
     db: Session, ledger_id: str | None, user_id: str,
-) -> tuple[list[str], list[str]]:
-    """取当前账本的 category / account 名字列表(给 LLM hint)。
+) -> tuple[list[str], list[tuple[str, str | None]], str]:
+    """取当前账本的 category / account / 本位币(给 LLM hint)。
 
-    没传 ledger_id → 跨账本聚合所有用户可见的(让 LLM 至少有现成名字可选)。
+    没传 ledger_id → 跨账本聚合所有用户可见的(让 LLM 至少有现成名字可选);
+    此时本位币取「用户只有一个账本就用它,否则 CNY」—— 草稿的落库账本要等
+    用户在前端选,这里只能给 best-effort 上下文。
+
+    账户返回 `(名称, 币种)`:多币种记账要让 LLM 能选中外币账户(.docs/
+    multi-currency-ai A3)。
     """
+    fallback_currency = "CNY"
     if ledger_id:
         ledger = db.scalar(
             select(Ledger).where(
@@ -188,15 +196,20 @@ def _load_ledger_context(
             )
         )
         if ledger is None:
-            return [], []
+            return [], [], fallback_currency
         ledger_int_ids = [ledger.id]
+        ledger_currency = (ledger.currency or fallback_currency).strip().upper()
     else:
-        ledger_int_ids = [
-            l.id for l in db.scalars(select(Ledger).where(Ledger.user_id == user_id)).all()
-        ]
+        all_ledgers = db.scalars(select(Ledger).where(Ledger.user_id == user_id)).all()
+        ledger_int_ids = [l.id for l in all_ledgers]
+        ledger_currency = (
+            (all_ledgers[0].currency or fallback_currency).strip().upper()
+            if len(all_ledgers) == 1
+            else fallback_currency
+        )
 
     if not ledger_int_ids:
-        return [], []
+        return [], [], ledger_currency
 
     # category 是 user-global,按 user_id 拉(跨 ledger 统一)。
     cat_rows = db.scalars(
@@ -223,15 +236,45 @@ def _load_ledger_context(
             selectable_cats.append(c.name)
         # else: 父分类有子 → 跳过,LLM 看不到它,只看到具体的子分类
 
-    accts = [
-        a.name for a in db.scalars(
-            select(UserAccountProjection).where(
-                UserAccountProjection.user_id == user_id
-            )
-        ).all()
-        if a.name
-    ]
-    return sorted(set(selectable_cats)), sorted(set(accts))
+    # 账户隐藏(#240):隐藏账户不再作为新交易的记账目标 —— 不喂给 LLM 作候选,
+    # 与 mobile 的 AiExtractionContext / 手动选择器口径一致。
+    acct_rows = db.scalars(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == user_id
+        )
+    ).all()
+    accts = sorted(
+        {
+            (a.name, (a.currency or "").strip().upper() or None)
+            for a in acct_rows
+            if a.name and not a.hidden
+        },
+        key=lambda pair: pair[0],
+    )
+    return sorted(set(selectable_cats)), accts, ledger_currency
+
+
+_ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def _norm_currency(raw: object) -> str:
+    """LLM 给的币种 → ISO 4217 大写码;不合法返 ""(= 跟账本主币种)。
+
+    **server 端基本不做别名映射**(「美元」→USD 之类):server 既没有 App 的 151
+    币种表,也没有账本上下文做 `¥` 消歧,统一让 prompt 直出 ISO 更可控。
+    App 侧面对本地/口语输入才做宽松解析(.docs/multi-currency-ai §3.2)。
+
+    唯一例外是裸 `$` → USD:实测 LLM 明明识别出「45 美元」却常把字段回成
+    `"$"`,而这条映射既不需要币种表也不需要上下文(要区分 AUD/CAD/SGD/HKD 时
+    书写惯例都是 `A$`/`C$`/`S$`/`HK$`)。`¥` 仍**不映射** —— CNY 与 JPY 都写裸
+    `¥`,猜错是 ~20 倍金额差,宁可退回账本主币种。
+    """
+    if not isinstance(raw, str):
+        return ""
+    code = raw.strip().upper()
+    if code == "$":
+        return "USD"
+    return code if _ISO_CURRENCY_RE.match(code) else ""
 
 
 def _normalize_drafts(result: object) -> list[dict]:
@@ -264,6 +307,9 @@ def _normalize_drafts(result: object) -> list[dict]:
         out.append({
             "type": tx_type,
             "amount": float(abs(amt)),  # 强制正数
+            # 交易级多币种(.docs/multi-currency-ai A4):"" = 跟账本主币种。
+            # 非法值降级成 "" 而不是丢弃整笔 —— AI 幻觉出的假币种不该让记账失败。
+            "currency": _norm_currency(d.get("currency")),
             "happened_at": d.get("happened_at") or "",
             "category_name": (d.get("category_name") or "").strip(),
             "account_name": (d.get("account_name") or "").strip(),

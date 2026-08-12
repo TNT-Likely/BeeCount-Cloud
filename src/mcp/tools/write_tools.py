@@ -620,6 +620,9 @@ async def parse_and_create_from_text(
     account = draft.get("account_name")
     happened_at = draft.get("happened_at")
     note = draft.get("note") or text
+    # 多币种(.docs/multi-currency-ai A9):draft 的 currency 已被 server 端
+    # _norm_currency 校验成 ISO 码或 "";空串要传 None 才会走「随账户/本位币」。
+    currency = (draft.get("currency") or "").strip().upper() or None
 
     created = await create_transaction(
         user,
@@ -630,6 +633,7 @@ async def parse_and_create_from_text(
         happened_at=happened_at,
         note=note,
         ledger_id=ledger_id,
+        currency=currency,
     )
     return {"status": "created", "parsed": draft, "transaction": created}
 

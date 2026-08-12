@@ -108,6 +108,8 @@ export type TxDraft = {
   from_account_name: string | null
   to_account_name: string | null
   note: string
+  /** 原币种 ISO 4217(server 已校验);'' = 跟账本主币种。老 server 不返此字段。 */
+  currency?: string
   tags: string[]
   confidence: 'high' | 'medium' | 'low'
 }
