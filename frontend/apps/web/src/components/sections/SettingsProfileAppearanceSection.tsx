@@ -29,7 +29,9 @@ import {
   PrimaryColorPicker,
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
   useT,
@@ -40,6 +42,13 @@ import {
 import { patchProfileMe, uploadProfileAvatar } from '@beecount/api-client'
 
 import { useAuth } from '../../context/AuthContext'
+import {
+  HEADER_SKINS,
+  HEADER_SKIN_GROUP_ORDER,
+  boundPrimaryOf,
+  headerSkinGroupLabelKey,
+  headerSkinLabelKey,
+} from '../../lib/header-skins'
 import { localizeError } from '../../i18n/errors'
 import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
@@ -198,6 +207,8 @@ export function SettingsProfileAppearanceSection() {
   const headerSkin = appearance.header_skin ?? 'none'
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
+  // 动态皮肤默认播放动效;关掉后 mobile 那边皮肤停在静态帧(省电)
+  const skinAnimation = appearance.skin_animation ?? true
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
@@ -211,6 +222,33 @@ export function SettingsProfileAppearanceSection() {
         // 整体替换语义:把 server 现有 appearance 全量带上再 patch,否则会清掉
         // mobile 设的 header_skin 等本页未直接管理的字段。
         appearance: { ...appearance, ...patch },
+      })
+      await refreshProfile()
+      toast.success(t('profile.sync.appearanceSaved'))
+    } catch (err) {
+      toast.error(localizeError(err, t))
+    } finally {
+      setAppearanceSaving(false)
+    }
+  }
+
+  // 切换皮肤。自带配色的皮肤(如周年蛋糕)在 mobile 上会把主题色
+  // 锁成皮肤色,web 这边必须把同一个颜色也写回 server —— 否则 server 的
+  // theme_primary_color 停在旧值,app 收到 appearance 广播时会先应用旧色再被本地
+  // 绑定逻辑改回皮肤色,主题色在两个颜色之间闪。
+  //
+  // 顺序固定为「先颜色、后 appearance」:两者是 server 上两个字段、两次广播,
+  // 先把颜色落地,对端收到 header_skin 变更时读到的颜色才是对的。
+  const handleHeaderSkinChange = async (skinId: string) => {
+    if (appearanceSaving || skinId === headerSkin) return
+    const bound = boundPrimaryOf(skinId)
+    setAppearanceSaving(true)
+    try {
+      if (bound) {
+        await patchProfileMe(token, { theme_primary_color: bound })
+      }
+      await patchProfileMe(token, {
+        appearance: { ...appearance, header_skin: skinId },
       })
       await refreshProfile()
       toast.success(t('profile.sync.appearanceSaved'))
@@ -447,17 +485,16 @@ export function SettingsProfileAppearanceSection() {
           </div>
 
           <div className="grid gap-2 sm:grid-cols-3">
-            {/* 皮肤 —— 跟 mobile 端 headerSkin(kHeaderSkins)对齐:none + 渐变 /
-                场景 / 图案皮肤。改完整体 PATCH 整个 appearance dict。 */}
+            {/* 皮肤 —— 选项来自 lib/header-skins.ts，与 mobile 的 kHeaderSkins
+                一一对齐（周年 / 秋日 / 经典三组）。自带配色的皮肤会连同主题色
+                一起写回 server，见 handleHeaderSkinChange。 */}
             <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 {t('profile.sync.headerSkin')}
               </p>
               <Select
                 value={headerSkin}
-                onValueChange={(value) =>
-                  void saveAppearance({ header_skin: value })
-                }
+                onValueChange={(value) => void handleHeaderSkinChange(value)}
                 disabled={appearanceSaving}
               >
                 <SelectTrigger className="mt-1 h-8 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus:ring-0">
@@ -465,19 +502,31 @@ export function SettingsProfileAppearanceSection() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">{t('profile.sync.headerSkin.none')}</SelectItem>
-                  <SelectItem value="aurora">{t('profile.sync.headerSkin.aurora')}</SelectItem>
-                  <SelectItem value="mountains">{t('profile.sync.headerSkin.mountains')}</SelectItem>
-                  <SelectItem value="bokeh">{t('profile.sync.headerSkin.bokeh')}</SelectItem>
-                  <SelectItem value="waves">{t('profile.sync.headerSkin.waves')}</SelectItem>
-                  <SelectItem value="sunset">{t('profile.sync.headerSkin.sunset')}</SelectItem>
-                  <SelectItem value="clouds">{t('profile.sync.headerSkin.clouds')}</SelectItem>
-                  <SelectItem value="skyline">{t('profile.sync.headerSkin.skyline')}</SelectItem>
-                  <SelectItem value="honeycomb">{t('profile.sync.headerSkin.honeycomb')}</SelectItem>
-                  <SelectItem value="starry">{t('profile.sync.headerSkin.starry')}</SelectItem>
-                  <SelectItem value="stripes">{t('profile.sync.headerSkin.stripes')}</SelectItem>
-                  <SelectItem value="sakura">{t('profile.sync.headerSkin.sakura')}</SelectItem>
-                  <SelectItem value="meteor">{t('profile.sync.headerSkin.meteor')}</SelectItem>
-                  <SelectItem value="memphis">{t('profile.sync.headerSkin.memphis')}</SelectItem>
+                  {HEADER_SKIN_GROUP_ORDER.map((group) => (
+                    <SelectGroup key={group}>
+                      <SelectLabel>{t(headerSkinGroupLabelKey(group))}</SelectLabel>
+                      {HEADER_SKINS.filter((s) => s.group === group).map((skin) => (
+                        <SelectItem key={skin.id} value={skin.id}>
+                          <span className="flex items-center gap-1.5">
+                            {t(headerSkinLabelKey(skin.id))}
+                            {skin.animated ? (
+                              <span className="rounded-sm bg-primary/12 px-1 text-[9px] font-medium leading-4 text-primary">
+                                {t('profile.sync.headerSkin.animated')}
+                              </span>
+                            ) : null}
+                            {skin.boundPrimary ? (
+                              <span
+                                aria-label={t('profile.sync.headerSkin.boundPalette')}
+                                title={t('profile.sync.headerSkin.boundPalette')}
+                                className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-border"
+                                style={{ backgroundColor: skin.boundPrimary }}
+                              />
+                            ) : null}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -544,6 +593,31 @@ export function SettingsProfileAppearanceSection() {
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                     showTransactionTime ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 皮肤动效:关掉后 mobile 的动态皮肤停在静态帧 —— 那些皮肤是持续
+                重绘的,长时间用会发烫,这是给用户的省电出口。web 不渲染皮肤,
+                这里只负责把开关写回 server。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.skinAnimation')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={skinAnimation}
+                aria-label={t('profile.sync.skinAnimation') as string}
+                disabled={appearanceSaving}
+                onClick={() => void saveAppearance({ skin_animation: !skinAnimation })}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  skinAnimation ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    skinAnimation ? 'translate-x-[18px]' : 'translate-x-0.5'
                   }`}
                 />
               </button>

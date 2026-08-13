@@ -21,3 +21,6 @@ node_modules/
 *.db-wal
 *.db-shm
 *.tsbuildinfo
+
+# Claude Code 本地工作区(含 git worktree,绝不入库)
+.claude/
