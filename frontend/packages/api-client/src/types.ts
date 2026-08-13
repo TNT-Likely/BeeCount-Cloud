@@ -40,6 +40,12 @@ export type ProfileAppearance = {
   compact_amount?: boolean
   /** 交易行是否显示时间 */
   show_transaction_time?: boolean
+  /**
+   * 动态皮肤是否播放动效。关掉后皮肤停在各自的静态帧(构图最完整的一刻)。
+   * 存在的理由是功耗 —— 动态皮肤是持续重绘,长时间用会发烫。
+   * web 自身不渲染皮肤,这里只做开关的展示与写回。
+   */
+  skin_animation?: boolean
   /** 明细行第一行显示方式:'category'(默认,分类+备注括号) | 'note'(备注优先) */
   note_display_mode?: 'category' | 'note'
 }

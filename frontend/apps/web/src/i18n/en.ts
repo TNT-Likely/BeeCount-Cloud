@@ -945,6 +945,7 @@ const en = {
   'profile.sync.noteDisplay.category': 'Category first',
   'profile.sync.noteDisplay.note': 'Note first',
   'profile.sync.showTime': 'Show transaction time',
+  'profile.sync.skinAnimation': 'Skin animation',
 
   'calendar.monthLabel': '{month}/{year}',
   'calendar.prevMonth': 'Previous month',

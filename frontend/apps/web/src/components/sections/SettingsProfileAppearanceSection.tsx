@@ -207,6 +207,8 @@ export function SettingsProfileAppearanceSection() {
   const headerSkin = appearance.header_skin ?? 'none'
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
+  // 动态皮肤默认播放动效;关掉后 mobile 那边皮肤停在静态帧(省电)
+  const skinAnimation = appearance.skin_animation ?? true
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
@@ -591,6 +593,31 @@ export function SettingsProfileAppearanceSection() {
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                     showTransactionTime ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 皮肤动效:关掉后 mobile 的动态皮肤停在静态帧 —— 那些皮肤是持续
+                重绘的,长时间用会发烫,这是给用户的省电出口。web 不渲染皮肤,
+                这里只负责把开关写回 server。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.skinAnimation')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={skinAnimation}
+                aria-label={t('profile.sync.skinAnimation') as string}
+                disabled={appearanceSaving}
+                onClick={() => void saveAppearance({ skin_animation: !skinAnimation })}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  skinAnimation ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    skinAnimation ? 'translate-x-[18px]' : 'translate-x-0.5'
                   }`}
                 />
               </button>

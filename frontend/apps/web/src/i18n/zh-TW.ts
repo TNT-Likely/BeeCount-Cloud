@@ -946,6 +946,7 @@ const zhTW = {
   'profile.sync.noteDisplay.category': '分類優先',
   'profile.sync.noteDisplay.note': '備註優先',
   'profile.sync.showTime': '顯示交易時間',
+  'profile.sync.skinAnimation': '面板動效',
 
   'calendar.monthLabel': '{year} 年 {month} 月',
   'calendar.prevMonth': '上月',
