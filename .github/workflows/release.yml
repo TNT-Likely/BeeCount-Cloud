@@ -216,9 +216,9 @@ jobs:
 
           PREV_TAG=$(git tag --list --sort=-version:refname | grep -v "^${TAG}$" | head -n1)
           if [ -n "$PREV_TAG" ]; then
-            COMMITS=$(git log --no-merges --pretty=format:"- %s" "$PREV_TAG"..HEAD)
+            COMMITS=$(git log --no-merges --pretty=format:"- %s (%an)" "$PREV_TAG"..HEAD)
           else
-            COMMITS=$(git log --no-merges --pretty=format:"- %s")
+            COMMITS=$(git log --no-merges --pretty=format:"- %s (%an)")
           fi
 
           COMMITS_ESCAPED=$(echo "$COMMITS" | sed 's/\*/\\*/g; s/_/\\_/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g')
