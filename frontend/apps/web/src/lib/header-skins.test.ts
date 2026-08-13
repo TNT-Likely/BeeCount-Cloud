@@ -48,9 +48,12 @@ describe('header skin catalog', () => {
   })
 
   it('自带配色的皮肤能查到绑定色,跟随主题色的查不到', () => {
+    // 周年两款都绑定,值必须和 mobile 侧完全一致(蛋糕 _kCakeCandleL /
+    // 星座 BeeTheme.honeyGold),对不上会导致两端结算出不同主题色
     expect(boundPrimaryOf('anniv_cake')).toBe('#FF7A45')
-    // 一岁星座跟随用户主题色
-    expect(boundPrimaryOf('anniversary')).toBeUndefined()
+    expect(boundPrimaryOf('anniversary')).toBe('#F8C91C')
+    // 经典皮肤跟随用户主题色
+    expect(boundPrimaryOf('aurora')).toBeUndefined()
     // 未知 id(比如 mobile 新加了 web 还没跟上)不能抛,静默返回 undefined
     expect(boundPrimaryOf('not_a_skin')).toBeUndefined()
     expect(headerSkinById('not_a_skin')).toBeUndefined()

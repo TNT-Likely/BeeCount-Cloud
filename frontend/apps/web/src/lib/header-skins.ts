@@ -27,8 +27,9 @@ export interface HeaderSkinMeta {
 
 /** 顺序 = 下拉里的展示顺序，与 mobile 皮肤页保持一致（周年置顶）。 */
 export const HEADER_SKINS: HeaderSkinMeta[] = [
-  // 一周年纪念款(2025.9.10—2026.9.10)
-  { id: 'anniversary', group: 'anniversary', animated: true },
+  // 一周年纪念款(2025.9.10—2026.9.10),两款都自带配色
+  // (星座绑蜜金:星空的星光只有暖白/金不显假,纪念款用品牌色也贴题)
+  { id: 'anniversary', group: 'anniversary', animated: true, boundPrimary: '#F8C91C' },
   { id: 'anniv_cake', group: 'anniversary', animated: true, boundPrimary: '#FF7A45' },
   // 渐变
   { id: 'aurora', group: 'classic' },
