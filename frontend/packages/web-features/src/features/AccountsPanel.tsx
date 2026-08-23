@@ -32,6 +32,7 @@ import {
   LIABILITY_TYPES,
   splitByCurrency
 } from '../lib/assetAggregation'
+import { useSingleFlight } from '../lib/singleFlight'
 
 
 type MobileStyleAssetsProps = {
@@ -1039,6 +1040,8 @@ export function AccountsPanel({
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  // #450 同款:保存请求返回前的连点会重复创建 —— 单飞守卫 + 按钮禁用。
+  const { saving, guard } = useSingleFlight()
 
   // 账户隐藏(issue #240):净资产 hero / 资产构成饼图按 D1 用全量 rows 计算
   // (隐藏不改「钱在哪」);只有「底部分组列表」拆成在用/已隐藏两部分展示。
@@ -1335,13 +1338,15 @@ export function AccountsPanel({
               {t('dialog.cancel')}
             </Button>
             <Button
-              disabled={!canManage}
-              onClick={async () => {
-                const success = await onSave()
-                if (success) {
-                  setOpen(false)
-                }
-              }}
+              disabled={!canManage || saving}
+              onClick={() =>
+                guard(async () => {
+                  const success = await onSave()
+                  if (success) {
+                    setOpen(false)
+                  }
+                })
+              }
             >
               {form.editingId ? t('accounts.button.update') : t('accounts.button.create')}
             </Button>
