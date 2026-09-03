@@ -448,6 +448,24 @@ export type AdminHealth = {
   time: string
 }
 
+export type RagIndexLanguageStatus = {
+  build_time: string | null
+  chunk_count: number
+  dim: number
+}
+
+export type RagIndexStatus = {
+  source: string
+  corpus_hash: string | null
+  embedding_model: string | null
+  languages: Record<string, RagIndexLanguageStatus>
+  last_checked_at: string | null
+  last_updated_at: string | null
+  last_error: string | null
+  remote_corpus_hash: string | null
+  is_latest: boolean | null
+}
+
 // ────────── 数据清理(替代旧 IntegrityScan)──────────
 
 export type DataCleanupOrphanType =

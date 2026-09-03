@@ -15,6 +15,7 @@ import {
 import type {
   AdminHealth,
   AdminOverview,
+  RagIndexStatus,
 } from '@beecount/api-client'
 import {
   Button,
@@ -22,14 +23,17 @@ import {
   CardContent,
   useT,
 } from '@beecount/ui'
-import { formatIsoDateTime } from '@beecount/web-features'
+import { formatIsoDateTime, formatIsoDateTimeLocal } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
 
 interface Props {
   adminHealth: AdminHealth | null
   adminOverview: AdminOverview | null
+  ragStatus: RagIndexStatus | null
+  isRefreshingRag: boolean
   onRefresh: () => void
+  onRefreshRag: () => void
 }
 
 /**
@@ -40,7 +44,10 @@ interface Props {
 export function SettingsHealthSection({
   adminHealth,
   adminOverview,
+  ragStatus,
+  isRefreshingRag,
   onRefresh,
+  onRefreshRag,
 }: Props) {
   const t = useT()
   const { isAdmin } = useAuth()
@@ -103,6 +110,67 @@ export function SettingsHealthSection({
                 value={formatIsoDateTime(adminHealth.time)}
               />
             </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="bc-panel">
+        <CardContent className="p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold">{t('ops.rag.title')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {ragStatus?.embedding_model || t('ops.rag.unavailable')}
+              </p>
+            </div>
+            {isAdmin ? (
+              <Button size="sm" variant="outline" disabled={isRefreshingRag} onClick={onRefreshRag}>
+                <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+                {isRefreshingRag ? t('ops.rag.refreshing') : t('ops.rag.updateNow')}
+              </Button>
+            ) : null}
+          </div>
+          {ragStatus ? (
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <HealthMetaTile
+                icon={<BookOpen className="h-4 w-4" />}
+                label={t('ops.rag.meta.zh')}
+                value={formatIsoDateTimeLocal(ragStatus.languages.zh?.build_time || '') || '—'}
+              />
+              <HealthMetaTile
+                icon={<BookOpen className="h-4 w-4" />}
+                label={t('ops.rag.meta.en')}
+                value={formatIsoDateTimeLocal(ragStatus.languages.en?.build_time || '') || '—'}
+              />
+              <HealthMetaTile
+                icon={<FolderTree className="h-4 w-4" />}
+                label={t('ops.rag.meta.chunks')}
+                value={`${ragStatus.languages.zh?.chunk_count || 0} / ${ragStatus.languages.en?.chunk_count || 0}`}
+              />
+              <HealthMetaTile
+                icon={<Activity className="h-4 w-4" />}
+                label={t('ops.rag.meta.source')}
+                value={ragStatus.source}
+              />
+              <HealthMetaTile
+                icon={<RefreshCcw className="h-4 w-4" />}
+                label={t('ops.rag.meta.version')}
+                value={
+                  ragStatus.last_error
+                    ? t('ops.rag.version.checkFailed')
+                    : ragStatus.is_latest === true
+                      ? t('ops.rag.version.latest')
+                      : ragStatus.is_latest === false
+                        ? t('ops.rag.version.updateAvailable')
+                        : t('ops.rag.version.pending')
+                }
+              />
+            </div>
+          ) : null}
+          {ragStatus?.last_error ? (
+            <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+              {t('ops.rag.lastError')}: {ragStatus.last_error}
+            </p>
           ) : null}
         </CardContent>
       </Card>

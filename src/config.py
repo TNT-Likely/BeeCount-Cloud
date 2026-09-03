@@ -104,6 +104,17 @@ class Settings(BaseSettings):
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     embedding_model: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL")
     embedding_timeout: float = Field(default=10.0, alias="EMBEDDING_TIMEOUT")
+    # RAG index is bundled in the image for offline use. A validated newer copy
+    # is cached on the persistent volume and hot-swapped without restart.
+    rag_index_cache_dir: str = Field(default="./data/rag-index", alias="RAG_INDEX_CACHE_DIR")
+    rag_index_source_url: str = Field(
+        default="https://raw.githubusercontent.com/TNT-Likely/BeeCount-Website/main/data",
+        alias="RAG_INDEX_SOURCE_URL",
+    )
+    rag_index_refresh_interval_seconds: int = Field(
+        default=21600, alias="RAG_INDEX_REFRESH_INTERVAL_SECONDS",
+    )
+    rag_index_refresh_timeout: float = Field(default=15.0, alias="RAG_INDEX_REFRESH_TIMEOUT")
     # AI outbound HTTP SSL 校验。本地走自签根证书代理(MITM)调试时可临时关掉。
     # 默认 true — 生产 / docker 部署千万别关,关了会被中间人篡改流量也不知。
     ai_http_verify_ssl: bool = Field(default=True, alias="AI_HTTP_VERIFY_SSL")

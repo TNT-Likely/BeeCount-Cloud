@@ -7,6 +7,7 @@ import type {
   AdminHealth,
   AdminLogList,
   AdminOverview,
+  RagIndexStatus,
   AdminSyncErrors,
   DataCleanupRecord,
   DataCleanupResult,
@@ -103,6 +104,18 @@ export async function fetchAdminOverview(token: string): Promise<AdminOverview> 
 
 export async function fetchAdminHealth(token: string): Promise<AdminHealth> {
   return authedGet<AdminHealth>('/admin/health', token)
+}
+
+export async function fetchRagIndexStatus(
+  token: string,
+  options?: { checkLatest?: boolean },
+): Promise<RagIndexStatus> {
+  const suffix = options?.checkLatest ? '?check_latest=true' : ''
+  return authedGet<RagIndexStatus>(`/admin/rag/status${suffix}`, token)
+}
+
+export async function refreshRagIndex(token: string): Promise<RagIndexStatus> {
+  return authedPost<RagIndexStatus>('/admin/rag/refresh', token, {})
 }
 
 export async function fetchDataCleanupScan(

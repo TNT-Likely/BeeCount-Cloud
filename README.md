@@ -147,6 +147,8 @@ services:
 
 > 兼容的 embedding provider 完整列表(SiliconFlow / OpenAI / 智谱 / 阿里 / 火山 / Voyage / Mistral / Jina / Together / 自托管 Ollama...)+ 切换说明 见 [`.env.example`](./.env.example)。**关键约束**:`EMBEDDING_MODEL` 必须跟 docker image 里自带的 sqlite 索引 build 时一致(默认 `BAAI/bge-m3`),换 model 必须双侧同步重 build 索引。
 
+> 文档索引会保留镜像内置版本作为离线兜底，并默认每 6 小时从 BeeCount-Website 检查一次更新；更新会校验完整中英文索引后热切换，不需要重启或重建镜像。可在「设置 → 健康」查看构建时间并由管理员手动更新；用 `RAG_INDEX_REFRESH_INTERVAL_SECONDS=0` 关闭自动检查。
+
 ### 2) 启动
 
 ```bash

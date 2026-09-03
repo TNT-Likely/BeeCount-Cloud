@@ -148,6 +148,8 @@ services:
 
 > Full list of compatible embedding providers (SiliconFlow / OpenAI / Zhipu / Aliyun / Doubao / Voyage / Mistral / Jina / Together / self-hosted Ollama / ...) and switching notes — see [`.env.example`](./.env.example). **Key constraint**: `EMBEDDING_MODEL` must match the embedding model used to build the bundled sqlite index (default `BAAI/bge-m3`); switching models requires rebuilding the index on both sides.
 
+> The image-bundled index remains the offline fallback. By default Cloud checks BeeCount-Website for a newer index every six hours, validates the complete Chinese and English pair, then hot-swaps it without a restart or image rebuild. Settings → Health shows build times and lets administrators update now; set `RAG_INDEX_REFRESH_INTERVAL_SECONDS=0` to disable automatic checks.
+
 ### 2) Start
 
 ```bash

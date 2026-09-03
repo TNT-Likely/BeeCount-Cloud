@@ -38,6 +38,7 @@ from ...services.ai import (
     resolve_chat_provider,
     stream_chat_completion,
 )
+from ...services.ai.docs_refresh import get_docs_refresh_service
 from ...services.ai.provider_client import EmbeddingNotConfiguredError
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,18 @@ class AskRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=_MAX_QUERY_CHARS)
     locale: str = Field(default="zh", pattern=r"^(zh|zh-CN|zh-TW|en)$")
+
+
+@router.get("/docs-index/status")
+async def docs_index_status(
+    check_latest: bool = False,
+    _scopes: set[str] = Depends(_ASK_SCOPE_DEP),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Authenticated users may view the active docs-index status, not refresh it."""
+    service = get_docs_refresh_service()
+    status = await service.check_latest() if check_latest else service.status()
+    return status.as_dict()
 
 
 def _sse(event_type: str, data: object) -> str:
