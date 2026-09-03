@@ -18,6 +18,7 @@ import type {
   RagIndexStatus,
 } from '@beecount/api-client'
 import {
+  Badge,
   Button,
   Card,
   CardContent,
@@ -116,12 +117,18 @@ export function SettingsHealthSection({
       </Card>
 
       <Card className="bc-panel">
-        <CardContent className="p-6">
+        <CardContent className="p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold">{t('ops.rag.title')}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <BookOpen className="h-4 w-4 text-muted-foreground" />
+                <p className="text-sm font-semibold">{t('ops.rag.title')}</p>
+                {ragStatus ? <RagLatestBadge ragStatus={ragStatus} t={t} /> : null}
+              </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                {ragStatus?.embedding_model || t('ops.rag.unavailable')}
+                {ragStatus
+                  ? `${ragStatus.embedding_model || '—'} · ${ragStatus.source}`
+                  : t('ops.rag.unavailable')}
               </p>
             </div>
             {isAdmin ? (
@@ -132,28 +139,19 @@ export function SettingsHealthSection({
             ) : null}
           </div>
           {ragStatus ? (
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <HealthMetaTile
-                icon={<BookOpen className="h-4 w-4" />}
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs">
+              <RagSummaryItem
                 label={t('ops.rag.meta.zh')}
                 value={formatIsoDateTimeLocal(ragStatus.languages.zh?.build_time || '') || '—'}
               />
-              <HealthMetaTile
-                icon={<BookOpen className="h-4 w-4" />}
+              <RagSummaryItem
                 label={t('ops.rag.meta.en')}
                 value={formatIsoDateTimeLocal(ragStatus.languages.en?.build_time || '') || '—'}
               />
-              <HealthMetaTile
-                icon={<FolderTree className="h-4 w-4" />}
+              <RagSummaryItem
                 label={t('ops.rag.meta.chunks')}
                 value={`${ragStatus.languages.zh?.chunk_count || 0} / ${ragStatus.languages.en?.chunk_count || 0}`}
               />
-              <HealthMetaTile
-                icon={<Activity className="h-4 w-4" />}
-                label={t('ops.rag.meta.source')}
-                value={ragStatus.source}
-              />
-              <RagLatestVersionTile ragStatus={ragStatus} t={t} />
             </div>
           ) : null}
           {ragStatus?.last_error ? (
@@ -224,7 +222,7 @@ export function SettingsHealthSection({
   )
 }
 
-function RagLatestVersionTile({
+function RagLatestBadge({
   ragStatus,
   t,
 }: {
@@ -232,23 +230,30 @@ function RagLatestVersionTile({
   t: ReturnType<typeof useT>
 }) {
   const latestState = getRagLatestState(ragStatus)
-  const value =
-    latestState === 'failed'
-      ? t('ops.rag.version.checkFailed')
-      : latestState === 'latest'
-        ? t('ops.rag.version.latest')
-        : latestState === 'outdated'
-          ? t('ops.rag.version.updateAvailable')
-          : t('ops.rag.version.pending')
+  const config =
+    latestState === 'latest'
+      ? { label: t('ops.rag.badge.latest'), className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' }
+      : latestState === 'outdated'
+        ? { label: t('ops.rag.badge.outdated'), className: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400' }
+        : latestState === 'failed'
+          ? { label: t('ops.rag.badge.failed'), className: 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400' }
+          : { label: t('ops.rag.badge.pending'), className: 'border-border/60 bg-muted text-muted-foreground' }
   return (
-    <HealthMetaTile
-      icon={<RefreshCcw className="h-4 w-4" />}
-      label={t('ops.rag.meta.version')}
-      value={value}
-    />
+    <Badge variant="outline" className={`h-5 gap-1 px-1.5 text-[10px] font-medium ${config.className}`}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {config.label}
+    </Badge>
   )
 }
 
+function RagSummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium text-foreground">{value}</span>
+    </div>
+  )
+}
 
 /** Health hero 下方的 meta 方块(DB / 在线 / 时间):icon chip + label + value。 */
 function HealthMetaTile({
