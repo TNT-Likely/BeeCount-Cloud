@@ -11,3 +11,10 @@ export function getRagLatestState(
   if (status?.is_latest === false) return 'outdated'
   return 'pending'
 }
+
+/** 检查明确确认当前版本已是最新时，才隐藏手动更新入口。 */
+export function shouldShowRagUpdate(
+  status: Pick<RagIndexStatus, 'is_latest' | 'last_error'> | null | undefined,
+): boolean {
+  return getRagLatestState(status) !== 'latest'
+}

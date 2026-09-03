@@ -27,7 +27,7 @@ import {
 import { formatIsoDateTime, formatIsoDateTimeLocal } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
-import { getRagLatestState } from '../../lib/ragStatus'
+import { getRagLatestState, shouldShowRagUpdate } from '../../lib/ragStatus'
 
 interface Props {
   adminHealth: AdminHealth | null
@@ -54,6 +54,7 @@ export function SettingsHealthSection({
   const t = useT()
   const { isAdmin } = useAuth()
   const healthy = adminHealth?.status === 'ok'
+  const showRagUpdate = isAdmin && shouldShowRagUpdate(ragStatus)
 
   return (
     <div className="space-y-6">
@@ -131,7 +132,7 @@ export function SettingsHealthSection({
                   : t('ops.rag.unavailable')}
               </p>
             </div>
-            {isAdmin ? (
+            {showRagUpdate ? (
               <Button size="sm" variant="outline" disabled={isRefreshingRag} onClick={onRefreshRag}>
                 <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
                 {isRefreshingRag ? t('ops.rag.refreshing') : t('ops.rag.updateNow')}

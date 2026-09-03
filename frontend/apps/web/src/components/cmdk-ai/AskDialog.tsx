@@ -33,7 +33,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
-import { getRagLatestState } from '../../lib/ragStatus'
+import { getRagLatestState, shouldShowRagUpdate } from '../../lib/ragStatus'
 
 type Status = 'idle' | 'streaming' | 'done' | 'error' | 'fallback'
 
@@ -385,7 +385,7 @@ function DocsIndexStatusLine({
     <span className="inline-flex items-center gap-1.5" title={title}>
       <BookOpen className="h-3 w-3" />
       <span>{label}</span>
-      {isAdmin ? (
+      {isAdmin && shouldShowRagUpdate(status) ? (
         <Button
           type="button"
           size="sm"
