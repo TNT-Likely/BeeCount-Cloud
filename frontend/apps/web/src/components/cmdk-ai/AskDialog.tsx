@@ -13,8 +13,11 @@ import {
 
 import {
   ApiError,
+  fetchAskDocsIndexStatus,
+  refreshRagIndex,
   type AskEvent,
   type AskSource,
+  type RagIndexStatus,
   streamAsk,
 } from '@beecount/api-client'
 import {
@@ -30,6 +33,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
+import { getRagLatestState, shouldShowRagUpdate } from '../../lib/ragStatus'
 
 type Status = 'idle' | 'streaming' | 'done' | 'error' | 'fallback'
 
@@ -59,7 +63,7 @@ export type AskDialogProps = {
 export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) {
   const t = useT()
   const { locale } = useLocale()
-  const { token } = useAuth()
+  const { token, isAdmin } = useAuth()
   const toast = useToast()
 
   // 「正在跑的问题」— 跟用户输入的 follow-up 区分
@@ -72,6 +76,8 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [fallback, setFallback] = useState<FallbackKind | null>(null)
+  const [docsStatus, setDocsStatus] = useState<RagIndexStatus | null>(null)
+  const [isRefreshingDocs, setIsRefreshingDocs] = useState(false)
 
   const cancelRef = useRef(false)
   const answerScrollRef = useRef<HTMLDivElement>(null)
@@ -87,6 +93,22 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
       setFallback(null)
     }
   }, [open])
+
+  // 弹窗只做一次轻量 hash 检查；不会下载索引。管理员可再显式点更新。
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    void fetchAskDocsIndexStatus(token, { checkLatest: true })
+      .then((next) => {
+        if (active) setDocsStatus(next)
+      })
+      .catch(() => {
+        // 状态条是增强信息；AI 问答本身不因检查失败而中断。
+      })
+    return () => {
+      active = false
+    }
+  }, [open, token])
 
   // 打开 / activeQuery 变化 → 触发 stream
   useEffect(() => {
@@ -166,6 +188,18 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
     // 用一个 epoch 触发 effect 重跑
     setActiveQuery((prev) => prev + ' ') // 加空格让 effect dep 变,完事 trim
   }, [])
+
+  const handleRefreshDocs = useCallback(async () => {
+    setIsRefreshingDocs(true)
+    try {
+      setDocsStatus(await refreshRagIndex(token))
+      toast.success(t('cmdk.ai.index.updated'))
+    } catch (err) {
+      toast.error(String(err), t('notice.error'))
+    } finally {
+      setIsRefreshingDocs(false)
+    }
+  }, [t, toast, token])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -282,7 +316,7 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
         </div>
 
         {/* footer */}
-        <div className="flex items-center justify-between border-t border-border/40 bg-muted/30 px-4 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 bg-muted/30 px-4 py-2.5">
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -305,12 +339,66 @@ export function AskDialog({ open, initialQuery, onOpenChange }: AskDialogProps) 
               {t('cmdk.ai.retry')}
             </Button>
           </div>
-          <span className="text-[10px] text-muted-foreground">
-            {t('cmdk.ai.dialog.poweredBy')}
-          </span>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <DocsIndexStatusLine
+              status={docsStatus}
+              isAdmin={isAdmin}
+              isRefreshing={isRefreshingDocs}
+              onRefresh={() => void handleRefreshDocs()}
+              t={t}
+            />
+            <span>{t('cmdk.ai.dialog.poweredBy')}</span>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function DocsIndexStatusLine({
+  status,
+  isAdmin,
+  isRefreshing,
+  onRefresh,
+  t,
+}: {
+  status: RagIndexStatus | null
+  isAdmin: boolean
+  isRefreshing: boolean
+  onRefresh: () => void
+  t: T
+}) {
+  const latestState = getRagLatestState(status)
+  const label =
+    latestState === 'failed'
+      ? t('cmdk.ai.index.checkFailed')
+      : latestState === 'latest'
+        ? t('cmdk.ai.index.latest')
+        : latestState === 'outdated'
+          ? t('cmdk.ai.index.updateAvailable')
+          : t('cmdk.ai.index.pending')
+  const title = status
+    ? `${status.source} · ${status.languages.zh?.chunk_count ?? 0} / ${status.languages.en?.chunk_count ?? 0}`
+    : undefined
+
+  return (
+    <span className="inline-flex items-center gap-1.5" title={title}>
+      <BookOpen className="h-3 w-3" />
+      <span>{label}</span>
+      {isAdmin && shouldShowRagUpdate(status) ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-6 px-1.5 text-[10px]"
+          disabled={isRefreshing}
+          onClick={onRefresh}
+        >
+          <RotateCw className={`mr-1 h-3 w-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+          {isRefreshing ? t('cmdk.ai.index.updating') : t('cmdk.ai.index.update')}
+        </Button>
+      ) : null}
+    </span>
   )
 }
 

@@ -3,8 +3,11 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   fetchAdminHealth,
   fetchAdminOverview,
+  fetchRagIndexStatus,
+  refreshRagIndex,
   type AdminHealth,
   type AdminOverview,
+  type RagIndexStatus,
 } from '@beecount/api-client'
 import { useT, useToast } from '@beecount/ui'
 
@@ -27,6 +30,8 @@ export function SettingsHealthPage() {
 
   const [health, setHealth] = useState<AdminHealth | null>(null)
   const [overview, setOverview] = useState<AdminOverview | null>(null)
+  const [ragStatus, setRagStatus] = useState<RagIndexStatus | null>(null)
+  const [isRefreshingRag, setIsRefreshingRag] = useState(false)
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -35,17 +40,30 @@ export function SettingsHealthPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [h, ov] = await Promise.allSettled([
+      const [h, ov, rag] = await Promise.allSettled([
         fetchAdminHealth(token),
         isAdmin ? fetchAdminOverview(token) : Promise.resolve<AdminOverview | null>(null),
+        fetchRagIndexStatus(token, { checkLatest: true }),
       ])
       if (h.status === 'fulfilled') setHealth(h.value)
       if (ov.status === 'fulfilled') setOverview(ov.value)
+      if (rag.status === 'fulfilled') setRagStatus(rag.value)
       if (h.status === 'rejected') notifyError(h.reason)
     } catch (err) {
       notifyError(err)
     }
   }, [token, isAdmin, notifyError])
+
+  const refreshRag = useCallback(async () => {
+    setIsRefreshingRag(true)
+    try {
+      setRagStatus(await refreshRagIndex(token))
+    } catch (err) {
+      notifyError(err)
+    } finally {
+      setIsRefreshingRag(false)
+    }
+  }, [token, notifyError])
 
   useEffect(() => {
     if (!isAdminResolved) return
@@ -60,7 +78,10 @@ export function SettingsHealthPage() {
     <SettingsHealthSection
       adminHealth={health}
       adminOverview={overview}
+      ragStatus={ragStatus}
+      isRefreshingRag={isRefreshingRag}
       onRefresh={() => void refresh()}
+      onRefreshRag={() => void refreshRag()}
     />
   )
 }

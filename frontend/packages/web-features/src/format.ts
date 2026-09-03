@@ -102,6 +102,39 @@ export function formatIsoDateTime(value: string | null | undefined): string {
   return date.toISOString().slice(0, 19).replace('T', ' ')
 }
 
+/**
+ * 将带时区的 API 时间戳转换为当前浏览器的本地时间。
+ *
+ * 文档索引的 build_time 由构建端以 UTC（`Z`）保存；不能用
+ * `formatIsoDateTime`，否则会继续以 UTC 文本展示，却没有时区标识。
+ * `timeZone` 仅用于测试或需要显式指定展示时区的场景。
+ */
+export function formatIsoDateTimeLocal(
+  value: string | null | undefined,
+  timeZone?: string,
+): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const fields = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  )
+  return `${fields.year}-${fields.month}-${fields.day} ${fields.hour}:${fields.minute}:${fields.second}`
+}
+
 export function formatLedgerLabel(ledger: ReadLedger, roleLabel: string): string {
   return `${ledger.ledger_name} [${roleLabel}]`
 }

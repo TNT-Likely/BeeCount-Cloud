@@ -188,6 +188,38 @@ app.include_router(members_router.router, prefix=settings.api_prefix, tags=["mem
 app.include_router(shared_resources_router.router, prefix=settings.api_prefix, tags=["shared-resources"])
 app.include_router(member_stats_router.router, prefix=settings.api_prefix, tags=["member-stats"])
 
+
+# ============================================================================
+# RAG docs index refresh — a packaged index always remains usable; this task
+# merely checks whether BeeCount-Website published a newer validated pair.
+# ============================================================================
+
+
+@app.on_event("startup")
+async def _start_rag_index_refresh() -> None:  # noqa: B008
+    import asyncio
+
+    from .services.ai.docs_refresh import get_docs_refresh_service
+
+    service = get_docs_refresh_service()  # also selects a persisted cache at boot
+    interval = settings.rag_index_refresh_interval_seconds
+    if interval <= 0:
+        return
+
+    async def _loop() -> None:
+        while True:
+            await service.refresh()
+            await asyncio.sleep(interval)
+
+    app.state.rag_index_refresh_task = asyncio.create_task(_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_rag_index_refresh() -> None:  # noqa: B008
+    task = getattr(app.state, "rag_index_refresh_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
 _static_dir = Path(settings.web_static_dir)
 
 if _static_dir.exists():

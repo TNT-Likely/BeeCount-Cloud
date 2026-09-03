@@ -13,7 +13,12 @@ import en from './i18n/en'
 import zhCN from './i18n/zh-CN'
 import zhTW from './i18n/zh-TW'
 import { localizeError } from './i18n/errors'
-import { formatAmountCny, formatCompactTick, formatIsoDateTime } from './i18n/format'
+import {
+  formatAmountCny,
+  formatCompactTick,
+  formatIsoDateTime,
+  formatIsoDateTimeLocal,
+} from './i18n/format'
 
 describe('i18n locale runtime', () => {
   afterEach(() => {
@@ -74,6 +79,12 @@ describe('i18n error mapping and formatting', () => {
   it('formats amount and datetime in fixed mode', () => {
     expect(formatAmountCny(12.5)).toBe('CNY 12.50')
     expect(formatIsoDateTime('2026-02-25T10:20:30Z')).toBe('2026-02-25 10:20:30')
+  })
+
+  it('formats RAG build timestamps in the selected local timezone', () => {
+    expect(formatIsoDateTimeLocal('2026-09-03T12:56:13Z', 'Asia/Shanghai')).toBe(
+      '2026-09-03 20:56:13'
+    )
   })
 })
 

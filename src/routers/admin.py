@@ -60,6 +60,7 @@ from ..schemas import (
     UserAdminPatchRequest,
 )
 from ..services import data_cleanup as data_cleanup_svc
+from ..services.ai.docs_refresh import get_docs_refresh_service
 from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, hash_password, verify_password
 from .. import projection, snapshot_cache
 
@@ -589,6 +590,27 @@ def health(
         "online_ws_users": len(list(ws_manager.online_user_ids())),
         "time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/rag/status")
+async def rag_status(
+    check_latest: bool = False,
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    _current_user: User = Depends(get_current_user),
+) -> dict:
+    """Active RAG index version and last runtime-refresh outcome."""
+    service = get_docs_refresh_service()
+    status = await service.check_latest() if check_latest else service.status()
+    return status.as_dict()
+
+
+@router.post("/rag/refresh")
+async def refresh_rag_index(
+    _scopes: set[str] = Depends(require_scopes(SCOPE_OPS_WRITE)),
+    _admin_user: User = Depends(require_admin_user),
+) -> dict:
+    """Administrator-only immediate check for a newer Website docs index."""
+    return (await get_docs_refresh_service().refresh()).as_dict()
 
 
 @router.get("/devices/online")

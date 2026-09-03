@@ -15,21 +15,27 @@ import {
 import type {
   AdminHealth,
   AdminOverview,
+  RagIndexStatus,
 } from '@beecount/api-client'
 import {
+  Badge,
   Button,
   Card,
   CardContent,
   useT,
 } from '@beecount/ui'
-import { formatIsoDateTime } from '@beecount/web-features'
+import { formatIsoDateTime, formatIsoDateTimeLocal } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
+import { getRagLatestState, shouldShowRagUpdate } from '../../lib/ragStatus'
 
 interface Props {
   adminHealth: AdminHealth | null
   adminOverview: AdminOverview | null
+  ragStatus: RagIndexStatus | null
+  isRefreshingRag: boolean
   onRefresh: () => void
+  onRefreshRag: () => void
 }
 
 /**
@@ -40,11 +46,15 @@ interface Props {
 export function SettingsHealthSection({
   adminHealth,
   adminOverview,
+  ragStatus,
+  isRefreshingRag,
   onRefresh,
+  onRefreshRag,
 }: Props) {
   const t = useT()
   const { isAdmin } = useAuth()
   const healthy = adminHealth?.status === 'ok'
+  const showRagUpdate = isAdmin && shouldShowRagUpdate(ragStatus)
 
   return (
     <div className="space-y-6">
@@ -103,6 +113,52 @@ export function SettingsHealthSection({
                 value={formatIsoDateTime(adminHealth.time)}
               />
             </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="bc-panel">
+        <CardContent className="p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <BookOpen className="h-4 w-4 text-muted-foreground" />
+                <p className="text-sm font-semibold">{t('ops.rag.title')}</p>
+                {ragStatus ? <RagLatestBadge ragStatus={ragStatus} t={t} /> : null}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {ragStatus
+                  ? `${ragStatus.embedding_model || '—'} · ${ragStatus.source}`
+                  : t('ops.rag.unavailable')}
+              </p>
+            </div>
+            {showRagUpdate ? (
+              <Button size="sm" variant="outline" disabled={isRefreshingRag} onClick={onRefreshRag}>
+                <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+                {isRefreshingRag ? t('ops.rag.refreshing') : t('ops.rag.updateNow')}
+              </Button>
+            ) : null}
+          </div>
+          {ragStatus ? (
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5 text-xs">
+              <RagSummaryItem
+                label={t('ops.rag.meta.zh')}
+                value={formatIsoDateTimeLocal(ragStatus.languages.zh?.build_time || '') || '—'}
+              />
+              <RagSummaryItem
+                label={t('ops.rag.meta.en')}
+                value={formatIsoDateTimeLocal(ragStatus.languages.en?.build_time || '') || '—'}
+              />
+              <RagSummaryItem
+                label={t('ops.rag.meta.chunks')}
+                value={`${ragStatus.languages.zh?.chunk_count || 0} / ${ragStatus.languages.en?.chunk_count || 0}`}
+              />
+            </div>
+          ) : null}
+          {ragStatus?.last_error ? (
+            <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+              {t('ops.rag.lastError')}: {ragStatus.last_error}
+            </p>
           ) : null}
         </CardContent>
       </Card>
@@ -167,6 +223,38 @@ export function SettingsHealthSection({
   )
 }
 
+function RagLatestBadge({
+  ragStatus,
+  t,
+}: {
+  ragStatus: RagIndexStatus
+  t: ReturnType<typeof useT>
+}) {
+  const latestState = getRagLatestState(ragStatus)
+  const config =
+    latestState === 'latest'
+      ? { label: t('ops.rag.badge.latest'), className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' }
+      : latestState === 'outdated'
+        ? { label: t('ops.rag.badge.outdated'), className: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400' }
+        : latestState === 'failed'
+          ? { label: t('ops.rag.badge.failed'), className: 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400' }
+          : { label: t('ops.rag.badge.pending'), className: 'border-border/60 bg-muted text-muted-foreground' }
+  return (
+    <Badge variant="outline" className={`h-5 gap-1 px-1.5 text-[10px] font-medium ${config.className}`}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {config.label}
+    </Badge>
+  )
+}
+
+function RagSummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium text-foreground">{value}</span>
+    </div>
+  )
+}
 
 /** Health hero 下方的 meta 方块(DB / 在线 / 时间):icon chip + label + value。 */
 function HealthMetaTile({

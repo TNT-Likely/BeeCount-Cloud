@@ -53,6 +53,7 @@ class DocsIndex:
         self.matrix: np.ndarray = np.empty((0, 0), dtype=np.float32)
         self.dim: int = 0
         self.embedding_model: str | None = None
+        self.build_time: str | None = None
         self._load()
 
     def _load(self) -> None:
@@ -73,6 +74,8 @@ class DocsIndex:
                         self.dim = int(value)
                     except (ValueError, TypeError):
                         pass
+                elif key == "build_time":
+                    self.build_time = value
 
             chunks: list[DocChunk] = []
             vectors: list[np.ndarray] = []
@@ -163,6 +166,8 @@ class DocsIndex:
 _cache: dict[str, DocsIndex] = {}
 _cache_lock = Lock()
 _DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+_runtime_data_dir: Path | None = None
+_bundled_data_dir: Path | None = None
 
 
 def get_docs_index(lang: str) -> DocsIndex:
@@ -175,7 +180,7 @@ def get_docs_index(lang: str) -> DocsIndex:
     with _cache_lock:
         idx = _cache.get(key)
         if idx is None:
-            sqlite_path = _DATA_DIR / f"docs-index.{key}.sqlite"
+            sqlite_path = _index_path(key)
             idx = DocsIndex(lang=key, sqlite_path=sqlite_path)
             _cache[key] = idx
         return idx
@@ -185,6 +190,38 @@ def reset_docs_index_cache() -> None:
     """测试用 — 清空缓存,下次 get_docs_index 会重新 load。"""
     with _cache_lock:
         _cache.clear()
+        global _runtime_data_dir, _bundled_data_dir
+        _runtime_data_dir = None
+        _bundled_data_dir = None
+
+
+def configure_docs_index_dirs(*, cache_dir: Path | None, bundled_dir: Path | None = None) -> None:
+    """Set runtime and fallback directories, then discard stale in-memory indexes."""
+    global _runtime_data_dir, _bundled_data_dir
+    with _cache_lock:
+        _runtime_data_dir = cache_dir
+        _bundled_data_dir = bundled_dir
+        _cache.clear()
+
+
+def replace_docs_indexes(indexes: dict[str, DocsIndex]) -> None:
+    """Atomically publish a fully validated zh/en index pair to new requests."""
+    with _cache_lock:
+        _cache.clear()
+        _cache.update(indexes)
+
+
+def _index_path(key: str) -> Path:
+    """Prefer a complete persisted runtime pair; retain image data as fallback."""
+    if _runtime_data_dir is not None:
+        runtime_files = [
+            _runtime_data_dir / "docs-index.zh.sqlite",
+            _runtime_data_dir / "docs-index.en.sqlite",
+            _runtime_data_dir / "docs-index.hash",
+        ]
+        if all(path.exists() for path in runtime_files):
+            return _runtime_data_dir / f"docs-index.{key}.sqlite"
+    return (_bundled_data_dir or _DATA_DIR) / f"docs-index.{key}.sqlite"
 
 
 def _normalize_lang(lang: str | None) -> str:

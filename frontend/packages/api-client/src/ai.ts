@@ -1,5 +1,6 @@
-import { API_BASE, authedPost } from './http'
+import { API_BASE, authedGet, authedPost } from './http'
 import { ApiError, extractApiError } from './errors'
+import type { RagIndexStatus } from './types'
 
 export type AskSource = {
   doc_path: string
@@ -18,6 +19,15 @@ export type AskRequest = {
   query: string
   /** 'zh' | 'zh-CN' | 'zh-TW' | 'en' */
   locale: string
+}
+
+/** 当前用户可读取文档索引状态；实际更新仍由管理员接口控制。 */
+export async function fetchAskDocsIndexStatus(
+  token: string,
+  options?: { checkLatest?: boolean },
+): Promise<RagIndexStatus> {
+  const suffix = options?.checkLatest ? '?check_latest=true' : ''
+  return authedGet<RagIndexStatus>(`/ai/docs-index/status${suffix}`, token)
 }
 
 /**

@@ -26,6 +26,8 @@ services:
       EMBEDDING_BASE_URL: https://api.siliconflow.cn/v1
       EMBEDDING_MODEL: BAAI/bge-m3
       EMBEDDING_API_KEY: ""  # ← 填你的 SiliconFlow key 启用 AI 文档 Q&A
+      # 每 6 小时检查 BeeCount-Website 是否发布新 RAG 索引;0 可关闭。
+      RAG_INDEX_REFRESH_INTERVAL_SECONDS: 21600
 
       # ===== 汇率代理(多币种 MVP)=====
       # EXCHANGE_RATE_PROXY_ENABLED: "true"
