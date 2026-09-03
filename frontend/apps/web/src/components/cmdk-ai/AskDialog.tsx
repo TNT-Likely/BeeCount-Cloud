@@ -33,6 +33,7 @@ import {
 } from '@beecount/ui'
 
 import { useAuth } from '../../context/AuthContext'
+import { getRagLatestState } from '../../lib/ragStatus'
 
 type Status = 'idle' | 'streaming' | 'done' | 'error' | 'fallback'
 
@@ -367,13 +368,15 @@ function DocsIndexStatusLine({
   onRefresh: () => void
   t: T
 }) {
-  const label = status?.last_error
-    ? t('cmdk.ai.index.checkFailed')
-    : status?.is_latest === true
-      ? t('cmdk.ai.index.latest')
-      : status?.is_latest === false
-        ? t('cmdk.ai.index.updateAvailable')
-        : t('cmdk.ai.index.pending')
+  const latestState = getRagLatestState(status)
+  const label =
+    latestState === 'failed'
+      ? t('cmdk.ai.index.checkFailed')
+      : latestState === 'latest'
+        ? t('cmdk.ai.index.latest')
+        : latestState === 'outdated'
+          ? t('cmdk.ai.index.updateAvailable')
+          : t('cmdk.ai.index.pending')
   const title = status
     ? `${status.source} · ${status.languages.zh?.chunk_count ?? 0} / ${status.languages.en?.chunk_count ?? 0}`
     : undefined

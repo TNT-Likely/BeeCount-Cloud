@@ -26,6 +26,7 @@ import {
 import { formatIsoDateTime, formatIsoDateTimeLocal } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
+import { getRagLatestState } from '../../lib/ragStatus'
 
 interface Props {
   adminHealth: AdminHealth | null
@@ -152,19 +153,7 @@ export function SettingsHealthSection({
                 label={t('ops.rag.meta.source')}
                 value={ragStatus.source}
               />
-              <HealthMetaTile
-                icon={<RefreshCcw className="h-4 w-4" />}
-                label={t('ops.rag.meta.version')}
-                value={
-                  ragStatus.last_error
-                    ? t('ops.rag.version.checkFailed')
-                    : ragStatus.is_latest === true
-                      ? t('ops.rag.version.latest')
-                      : ragStatus.is_latest === false
-                        ? t('ops.rag.version.updateAvailable')
-                        : t('ops.rag.version.pending')
-                }
-              />
+              <RagLatestVersionTile ragStatus={ragStatus} t={t} />
             </div>
           ) : null}
           {ragStatus?.last_error ? (
@@ -232,6 +221,31 @@ export function SettingsHealthSection({
       ) : null}
 
     </div>
+  )
+}
+
+function RagLatestVersionTile({
+  ragStatus,
+  t,
+}: {
+  ragStatus: RagIndexStatus
+  t: ReturnType<typeof useT>
+}) {
+  const latestState = getRagLatestState(ragStatus)
+  const value =
+    latestState === 'failed'
+      ? t('ops.rag.version.checkFailed')
+      : latestState === 'latest'
+        ? t('ops.rag.version.latest')
+        : latestState === 'outdated'
+          ? t('ops.rag.version.updateAvailable')
+          : t('ops.rag.version.pending')
+  return (
+    <HealthMetaTile
+      icon={<RefreshCcw className="h-4 w-4" />}
+      label={t('ops.rag.meta.version')}
+      value={value}
+    />
   )
 }
 
