@@ -1,20 +1,97 @@
 {
   "id": "/?source=pwa",
   "name": "蜜蜂记账",
+  "name_localized": {
+    "zh-TW": "蜜蜂記帳",
+    "ko": "꿀벌 가계부",
+    "en": "BeeCount",
+    "fa": "حساب زنبور"
+  },
   "short_name": "蜜蜂记账",
+  "short_name_localized": {
+    "zh-TW": "蜜蜂記帳",
+    "ko": "꿀벌 가계부",
+    "en": "BeeCount",
+    "fa": "حساب زنبور"
+  },
   "description": "自部署的个人记账云 · 移动端 / 网页端实时同步",
+  "description_localized": {
+    "zh-TW": "自部署的個人記帳雲 · 行動版 / 網頁版即時同步",
+    "ko": "직접 배포하는 개인 가계부 클라우드 · 모바일 / 웹 실시간 동기화",
+    "en": "Self-hosted personal bookkeeping cloud · Real-time sync between mobile / web",
+    "fa": "ابر حساب‌وکتاب شخصیِ خودمیزبان · همگام‌سازی لحظه‌ای موبایل / وب"
+  },
   "lang": "zh-CN",
   "dir": "ltr",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
   "orientation": "any",
   "background_color": "#000000",
   "theme_color": "#F59E0B",
-  "categories": ["finance", "productivity", "utilities"],
+  "categories": [
+    "finance",
+    "productivity",
+    "utilities"
+  ],
+  "keywords": [
+    "钱",
+    "账户",
+    "余额",
+    "交易",
+    "付款",
+    "收入",
+    "支出",
+    "转账",
+    "存款",
+    "取款",
+    "錢",
+    "帳戶",
+    "餘額",
+    "轉帳",
+    "提款",
+    "돈",
+    "계좌",
+    "잔액",
+    "거래",
+    "결제",
+    "수입",
+    "지출",
+    "이체",
+    "입금",
+    "출금",
+    "money",
+    "account",
+    "balance",
+    "transaction",
+    "payment",
+    "income",
+    "expense",
+    "transfer",
+    "deposit",
+    "withdrawal",
+    "پول",
+    "حساب",
+    "موجودی",
+    "تراکنش",
+    "پرداخت",
+    "درآمد",
+    "هزینه",
+    "انتقال",
+    "واریز",
+    "برداشت"
+  ],
   "launch_handler": {
-    "client_mode": ["focus-existing", "auto"]
+    "client_mode": [
+      "focus-existing",
+      "auto"
+    ]
   },
   "icons": [
     {
@@ -51,8 +128,26 @@
   "shortcuts": [
     {
       "name": "记一笔",
+      "name_localized": {
+        "zh-TW": "記一筆",
+        "ko": "기록하기",
+        "en": "Add Transaction",
+        "fa": "ثبت تراکنش"
+      },
       "short_name": "记账",
+      "short_name_localized": {
+        "zh-TW": "記帳",
+        "ko": "가계부",
+        "en": "Bookkeeping",
+        "fa": "حساب‌وکتاب"
+      },
       "description": "快速新建一笔交易",
+      "description_localized": {
+        "zh-TW": "快速新增一筆交易",
+        "ko": "빠르게 거래 내역을 추가하세요",
+        "en": "Quickly add a transaction",
+        "fa": "به‌سرعت یک تراکنش جدید ثبت کنید"
+      },
       "url": "/app/transactions?action=quick-add&source=shortcut",
       "icons": [
         {
@@ -64,8 +159,26 @@
     },
     {
       "name": "今日账单",
+      "name_localized": {
+        "zh-TW": "今日帳單",
+        "ko": "오늘의 내역",
+        "en": "Today's Transactions",
+        "fa": "تراکنش‌های امروز"
+      },
       "short_name": "今日",
+      "short_name_localized": {
+        "zh-TW": "今日",
+        "ko": "오늘",
+        "en": "Today",
+        "fa": "امروز"
+      },
       "description": "查看今天的所有交易",
+      "description_localized": {
+        "zh-TW": "查看今天的所有交易",
+        "ko": "오늘의 모든 거래 내역을 확인하세요",
+        "en": "View all transactions from today",
+        "fa": "همه‌ی تراکنش‌های امروز را مشاهده کنید"
+      },
       "url": "/app/transactions?range=today&source=shortcut",
       "icons": [
         {
@@ -77,8 +190,26 @@
     },
     {
       "name": "本月预算",
+      "name_localized": {
+        "zh-TW": "本月預算",
+        "ko": "이번 달 예산",
+        "en": "This Month's Budget",
+        "fa": "بودجه‌ی این ماه"
+      },
       "short_name": "预算",
+      "short_name_localized": {
+        "zh-TW": "預算",
+        "ko": "예산",
+        "en": "Budget",
+        "fa": "بودجه"
+      },
       "description": "查看本月预算执行情况",
+      "description_localized": {
+        "zh-TW": "查看本月預算執行情況",
+        "ko": "이번 달 예산 현황을 확인하세요",
+        "en": "View this month's budget status",
+        "fa": "وضعیت بودجه‌ی این ماه را مشاهده کنید"
+      },
       "url": "/app/budgets?source=shortcut",
       "icons": [
         {
@@ -100,7 +231,13 @@
       "files": [
         {
           "name": "files",
-          "accept": ["image/*", "text/csv", ".csv", ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+          "accept": [
+            "image/*",
+            "text/csv",
+            ".csv",
+            ".xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          ]
         }
       ]
     }
@@ -109,9 +246,15 @@
     {
       "action": "/app/share-incoming?source=file-handler",
       "accept": {
-        "text/csv": [".csv"],
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
-        "application/vnd.ms-excel": [".xls"]
+        "text/csv": [
+          ".csv"
+        ],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx"
+        ],
+        "application/vnd.ms-excel": [
+          ".xls"
+        ]
       },
       "icons": [
         {
