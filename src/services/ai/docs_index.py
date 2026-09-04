@@ -10,16 +10,19 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Iterable
 
 import numpy as np
 
-
 logger = logging.getLogger(__name__)
+
+_RRF_OFFSET = 60
+_MIN_TRIGRAM_QUERY_CHARS = 3
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class DocsIndex:
         self.dim: int = 0
         self.embedding_model: str | None = None
         self.build_time: str | None = None
+        self._chunk_positions: dict[int, int] = {}
         self._load()
 
     def _load(self) -> None:
@@ -93,6 +97,7 @@ class DocsIndex:
                 ))
                 vectors.append(np.frombuffer(vec_bytes, dtype=np.float32))
             self.chunks = chunks
+            self._chunk_positions = {chunk.id: position for position, chunk in enumerate(chunks)}
 
             if vectors:
                 m = np.vstack(vectors).astype(np.float32)
@@ -158,6 +163,93 @@ class DocsIndex:
             RetrievedChunk(chunk=self.chunks[i], score=float(sims[i]))
             for i in top_idx
         ]
+
+    def hybrid_search(
+        self,
+        *,
+        query: str,
+        query_vector: Iterable[float],
+        k: int = 4,
+        vector_k: int = 12,
+        keyword_k: int = 12,
+    ) -> list[RetrievedChunk]:
+        """Fuse dense and lexical candidates with reciprocal-rank fusion.
+
+        Old packaged indexes have no ``chunks_fts`` table. They deliberately
+        retain vector-only behavior instead of making a docs update mandatory.
+        """
+        if self.is_empty or k <= 0:
+            return []
+
+        vector_results = self.search(query_vector, k=max(vector_k, 0))
+        keyword_ids = self._keyword_chunk_ids(query, limit=max(keyword_k, 0))
+
+        fused: dict[int, float] = {}
+        for rank, result in enumerate(vector_results, start=1):
+            fused[result.chunk.id] = fused.get(result.chunk.id, 0.0) + 1.0 / (_RRF_OFFSET + rank)
+        for rank, chunk_id in enumerate(keyword_ids, start=1):
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + 1.0 / (_RRF_OFFSET + rank)
+
+        ranked_ids = sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))[:k]
+        return [
+            RetrievedChunk(
+                chunk=self.chunks[self._chunk_positions[chunk_id]],
+                score=fused[chunk_id],
+            )
+            for chunk_id in ranked_ids
+        ]
+
+    def _keyword_chunk_ids(self, query: str, *, limit: int) -> list[int]:
+        """Return FTS5 candidates in BM25 order, or none if it is unavailable."""
+        normalized_query = query.strip()
+        if limit <= 0 or len(normalized_query) < _MIN_TRIGRAM_QUERY_CHARS:
+            return []
+
+        # ``trigram`` only matches contiguous text. Turn a natural-language
+        # question into OR-ed trigrams so "如何删除附件" can still retrieve the
+        # section titled "删除附件". Quoting each term keeps FTS operators out
+        # of user-controlled text.
+        chinese_text = re.sub(r"[^\u4e00-\u9fff]", "", normalized_query)
+        tokens = [
+            *([chinese_text] if chinese_text else []),
+            *re.findall(r"[A-Za-z0-9_]+", normalized_query),
+        ]
+        trigrams = [
+            token[offset:offset + _MIN_TRIGRAM_QUERY_CHARS]
+            for token in tokens
+            for offset in range(len(token) - _MIN_TRIGRAM_QUERY_CHARS + 1)
+        ]
+        if not trigrams:
+            return []
+        phrase = " OR ".join(
+            f'"{trigram.replace(chr(34), chr(34) * 2)}"'
+            for trigram in dict.fromkeys(trigrams)
+        )
+        try:
+            conn = sqlite3.connect(self.sqlite_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT rowid
+                    FROM chunks_fts
+                    WHERE chunks_fts MATCH ?
+                    ORDER BY bm25(chunks_fts, 1.0, 5.0, 4.0)
+                    LIMIT ?
+                    """,
+                    (phrase, limit),
+                )
+                return [
+                    int(row[0]) for row in rows
+                    if int(row[0]) in self._chunk_positions
+                ]
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            logger.debug(
+                "docs keyword search unavailable lang=%s path=%s: %s",
+                self.lang, self.sqlite_path, exc,
+            )
+            return []
 
 
 # 单例缓存 ─────────────────────────────────────────────────────────────────
