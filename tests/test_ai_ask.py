@@ -14,20 +14,19 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import UserProfile
+from src.models import User, UserProfile
 from src.services.ai import docs_index as docs_index_module
-
 
 # ──────────────────────────────────────────────────────────────────────
 # fixtures
@@ -82,8 +81,6 @@ def _register_and_token(client: TestClient, email: str = "ai@test.com") -> tuple
     )
     token = r.json()["access_token"]
     # 查 DB 拿 user_id
-    from sqlalchemy import select
-    from src.models import User
     db = next(app.dependency_overrides[get_db]())
     try:
         user = db.scalar(select(User).where(User.email == email))
@@ -317,6 +314,47 @@ def test_ask_happy_path_streams_chunks_and_sources(fake_index_dir, monkeypatch):
         sources = [e for e in events if e["type"] == "sources"][0]["items"]
         assert len(sources) == 3
         assert all(s["url"].startswith("https://count.beejz.com/docs/") for s in sources)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ask_uses_hybrid_retrieval(monkeypatch):
+    """The question text must reach the hybrid retriever with its embedding."""
+    calls: list[tuple[str, list[float], int]] = []
+
+    class HybridOnlyIndex:
+        is_empty = False
+
+        def hybrid_search(self, *, query, query_vector, k):
+            calls.append((query, query_vector, k))
+            return []
+
+    async def fake_embed(query):
+        assert query == "删除附件"
+        return [0.25, 0.75]
+
+    async def fake_stream(*, config, messages, timeout=30.0):
+        yield "文档中没有更多说明。"
+
+    monkeypatch.setattr("src.routers.ai.ask.get_docs_index", lambda locale: HybridOnlyIndex())
+    monkeypatch.setattr("src.routers.ai.ask.embed_query", fake_embed)
+    monkeypatch.setattr("src.routers.ai.ask.stream_chat_completion", fake_stream)
+    monkeypatch.setattr(
+        "src.routers.ai.ask.resolve_chat_provider",
+        lambda user, profile: SimpleNamespace(provider_id="test-provider"),
+    )
+
+    client = _make_client()
+    try:
+        token, _ = _register_and_token(client)
+        response = client.post(
+            "/api/v1/ai/ask",
+            json={"query": "删除附件", "locale": "zh"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert calls == [("删除附件", [0.25, 0.75], 4)]
     finally:
         app.dependency_overrides.clear()
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -91,7 +91,7 @@ async def ask(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error_code": "AI_NO_CHAT_PROVIDER", "message": str(exc)},
-        )
+        ) from exc
 
     # 2. 索引可用性检查 — 不可用也直接 503,不进 stream
     docs_idx = get_docs_index(req.locale)
@@ -111,10 +111,10 @@ async def ask(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "AI_EMBEDDING_UNAVAILABLE", "message": str(exc)},
-        )
+        ) from exc
 
-    # 4. 检索 top-K
-    retrieved = docs_idx.search(qvec, k=_TOP_K)
+    # 4. 混合检索 top-K — 新索引用 FTS5 + RRF，旧索引自动回退向量检索。
+    retrieved = docs_idx.hybrid_search(query=req.query, query_vector=qvec, k=_TOP_K)
     if not retrieved:
         # 检索 0 命中也走流程,让 LLM 答「文档没找到」(prompt 已约束)
         logger.info("ai.ask top-K empty user=%s query=%s", current_user.id, req.query[:50])
