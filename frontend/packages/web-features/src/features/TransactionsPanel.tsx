@@ -33,6 +33,7 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
+import { useSingleFlight } from '../lib/singleFlight'
 import { tagTextColorOn } from '../lib/tagColorPalette'
 import type { TxForm } from '../forms'
 
@@ -278,6 +279,8 @@ export function TransactionsPanel({
   const setOpen = onDialogOpenChange
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  // #450:保存是网络请求,请求返回前的连点会重复建交易 —— 单飞守卫 + 按钮禁用。
+  const { saving, guard } = useSingleFlight()
   const textActionClass =
     'text-sm text-foreground underline-offset-4 hover:text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline'
   const textDangerActionClass =
@@ -728,13 +731,15 @@ export function TransactionsPanel({
               {t('dialog.cancel')}
             </Button>
             <Button
-              disabled={!canWrite || !canSubmit}
-              onClick={async () => {
-                const success = await onSave()
-                if (success) {
-                  setOpen(false)
-                }
-              }}
+              disabled={!canWrite || !canSubmit || saving}
+              onClick={() =>
+                guard(async () => {
+                  const success = await onSave()
+                  if (success) {
+                    setOpen(false)
+                  }
+                })
+              }
             >
               {form.editingId ? t('transactions.button.update') : t('transactions.button.create')}
             </Button>

@@ -23,6 +23,7 @@ import type { ReadCategory, WorkspaceCategory } from '@beecount/api-client'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
+import { useSingleFlight } from '../lib/singleFlight'
 import type { CategoryForm } from '../forms'
 
 type CategoryKind = 'expense' | 'income' | 'transfer'
@@ -629,6 +630,8 @@ export function CategoriesPanel({
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
   const [parentPickerOpen, setParentPickerOpen] = useState(false)
   const [duplicateError, setDuplicateError] = useState<string | null>(null)
+  // #450 同款:保存请求返回前的连点会重复创建 —— 单飞守卫 + 按钮禁用。
+  const { saving, guard } = useSingleFlight()
 
   // 父分类候选:跟当前编辑/新建的 kind 一致 + 必须是 level=1(顶级) + 排除自
   // 己(避免自己挂自己当父的死循环)。app 端 createSubCategory 只允许 level=2
@@ -1005,8 +1008,8 @@ export function CategoriesPanel({
               {t('dialog.cancel')}
             </Button>
             <Button
-              disabled={!canManage}
-              onClick={() => void handleSave()}
+              disabled={!canManage || saving}
+              onClick={() => void guard(handleSave)}
             >
               {form.editingId ? t('categories.button.update') : t('categories.button.create')}
             </Button>
