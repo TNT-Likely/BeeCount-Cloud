@@ -2,7 +2,7 @@
 
 setup-backend:
 	python3 -m venv .venv
-	. .venv/bin/activate && pip install -r requirements.txt
+	. .venv/bin/activate && pip install .
 	@if [ ! -f .env ]; then cp .env.example .env; fi
 
 migrate:

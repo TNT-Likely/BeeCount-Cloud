@@ -50,7 +50,7 @@ WORKDIR /app
 #  - curl: HEALTHCHECK 用(比 Python urllib 省事)
 #  - rclone: 备份模块用,subprocess 调用推数据到对象存储。
 #    Debian 12 仓库版本 1.60.x,S3/R2/WebDAV/B2/GDrive/OneDrive 全支持。
-# 注:age 加密走 pyrage Python binding(见 requirements.txt),不需要装
+# 注:age 加密走 pyrage Python binding(见 pyproject.toml),不需要装
 # age CLI。用户灾难恢复在自己机器装 age 即可。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
@@ -59,8 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 先装 Python 依赖（单独一层，改业务代码时不用重装）
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml /app/pyproject.toml
+RUN pip install --no-cache-dir .
 
 # 后端代码
 COPY alembic.ini /app/alembic.ini
