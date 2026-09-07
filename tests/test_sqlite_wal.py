@@ -9,8 +9,10 @@ import threading
 import time
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
-from src.database import SessionLocal, engine
+from src.database import SessionLocal, _engine_kwargs, engine
 
 
 def _is_file_sqlite() -> bool:
@@ -38,6 +40,65 @@ def test_engine_uses_wal_mode():
         assert conn.exec_driver_sql("PRAGMA synchronous").scalar() == 1
         # foreign_keys=ON 让 ondelete=CASCADE 真生效
         assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+
+
+def test_file_sqlite_disables_queue_pool():
+    """文件型 SQLite 不应受 QueuePool 默认 15 连接 / 30 秒超时限制。"""
+    kwargs = _engine_kwargs("sqlite:////tmp/beecount-pool-regression.db")
+    assert kwargs["poolclass"] is NullPool
+    assert kwargs["connect_args"] == {"check_same_thread": False}
+
+
+def test_memory_sqlite_keeps_default_pool():
+    """内存 SQLite 的数据库跟连接绑定,不能使用每次断开的 NullPool。"""
+    kwargs = _engine_kwargs("sqlite:///:memory:")
+    assert "poolclass" not in kwargs
+
+
+def test_named_memory_sqlite_keeps_default_pool():
+    kwargs = _engine_kwargs(
+        "sqlite:///file:beecount_test?mode=memory&cache=shared&uri=true"
+    )
+    assert "poolclass" not in kwargs
+
+
+def test_postgres_pooling_is_unchanged():
+    kwargs = _engine_kwargs("postgresql+psycopg://user:pass@db/beecount")
+    assert kwargs == {"pool_pre_ping": True}
+
+
+def test_initial_read_burst_can_open_more_than_15_connections(tmp_path):
+    """回归 #73:首屏 16 个并发读不能卡在 QueuePool 默认容量上。"""
+    database_url = f"sqlite:///{tmp_path / 'initial-read-burst.db'}"
+    test_engine = create_engine(database_url, **_engine_kwargs(database_url))
+    assert isinstance(test_engine.pool, NullPool)
+
+    concurrency = 16
+    start = threading.Barrier(concurrency + 1)
+    all_connected = threading.Barrier(concurrency)
+    errors: list[Exception] = []
+
+    def reader():
+        try:
+            start.wait(timeout=10)
+            with test_engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1").scalar()
+                # 所有连接同时保持 checkout；QueuePool 默认最多只能让 15
+                # 个线程到这里，第 16 个会等待，因此 barrier 会超时。
+                all_connected.wait(timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=reader, daemon=True) for _ in range(concurrency)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=10)
+    for thread in threads:
+        thread.join(timeout=12)
+
+    test_engine.dispose()
+    assert not [thread for thread in threads if thread.is_alive()]
+    assert not errors, f"16 个并发 SQLite 读连接都应立即可用: {errors}"
 
 
 def test_concurrent_reader_writer_no_lock():

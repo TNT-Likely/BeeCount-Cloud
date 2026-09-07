@@ -10,7 +10,7 @@ import {
   type ProfileMe,
   type ReadLedger,
 } from '@beecount/api-client'
-import { usePrimaryColor } from '@beecount/ui'
+import { usePrimaryColor, useT } from '@beecount/ui'
 import type { AppSection } from '@beecount/web-features'
 
 import { AboutDialog } from '../components/AboutDialog'
@@ -60,9 +60,16 @@ export function AppShell({ token, onLogout }: Props) {
   const [profileMe, setProfileMe] = useState<ProfileMe | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [isAdminResolved, setIsAdminResolved] = useState(false)
+  const [loadedShellUserId, setLoadedShellUserId] = useState<string | null>()
+  const [shellErrorUserId, setShellErrorUserId] = useState<string | null>()
+  const [shellLoadAttempt, setShellLoadAttempt] = useState(0)
   const [logsOpen, setLogsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const sessionUserId = useMemo(() => jwtUserId(token), [token])
+  // access token 定期刷新时 user id 不变,不应重新闪一次骨架屏；只有首次进入
+  // 或真正切换账号时才重新建立 shell 启动边界。
+  const shellLoading = loadedShellUserId !== sessionUserId
+  const shellLoadFailed = shellLoading && shellErrorUserId === sessionUserId
 
   const activeLedgerStorageKey = useMemo(
     () => `beecount.active-ledger.${sessionUserId || 'anon'}`,
@@ -123,24 +130,37 @@ export function AppShell({ token, onLogout }: Props) {
   useEffect(() => {
     if (!token) return
     let cancelled = false
+    const isInitialBootstrap = loadedShellUserId !== sessionUserId
     const run = async () => {
-      try {
-        await Promise.all([refreshLedgers(), refreshProfile()])
-      } catch (err) {
-        if (cancelled) return
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          onLogout()
-        }
-        // eslint-disable-next-line no-console
-        console.warn('[AppShell] initial load error', err)
+      const results = await Promise.allSettled([refreshLedgers(), refreshProfile()])
+      if (cancelled) return
+      const errors = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      )
+      const authError = errors.find(
+        (err) => err instanceof ApiError && (err.status === 401 || err.status === 403),
+      )
+      if (authError) {
+        onLogout()
+        return
       }
+      if (errors.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn('[AppShell] initial load error', errors)
+        // token 轮换后的后台刷新失败不能卸载已经工作的页面；首次加载失败
+        // 则停在明确的 error/retry 状态,不能把 [] 误当成“确实没有账本”。
+        if (isInitialBootstrap) setShellErrorUserId(sessionUserId)
+        return
+      }
+      setShellErrorUserId(undefined)
+      setLoadedShellUserId(sessionUserId)
     }
     void run()
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
+  }, [token, shellLoadAttempt])
 
   useEffect(() => {
     if (!token) return
@@ -202,47 +222,108 @@ export function AppShell({ token, onLogout }: Props) {
         setActiveLedgerId={setActiveLedgerId}
         refreshLedgers={refreshLedgers}
       >
-        <SyncSocketProvider>
-        <PageDataCacheProvider>
-        <AttachmentCacheProvider>
-        <SharedLedgerResourcesProvider>
-        <CategoryIconPrefetcher token={token} />
-        <AppShellSyncReactor
-          refreshLedgers={refreshLedgers}
-          refreshProfile={refreshProfile}
-          applyServerPrimaryColor={applyServerPrimaryColor}
-        />
+        {shellLoading ? (
           <AppLayout
             header={
               <AppHeader
+                loading
                 onOpenLogs={() => setLogsOpen(true)}
                 onOpenAbout={() => setAboutOpen(true)}
               />
             }
           >
-            <div className="space-y-4 pb-20 md:pb-0">
-              <Outlet />
-            </div>
-            <MobileBottomNav
-              activeSection={currentSection}
-              onNavigate={handleSectionNavigate}
-            />
+            {shellLoadFailed ? (
+              <InitialShellError
+                onRetry={() => {
+                  // 立即卸载 retry 按钮、切回 skeleton，避免连续点击叠加多组
+                  // profile + ledgers 请求。
+                  setShellErrorUserId(undefined)
+                  setShellLoadAttempt((value) => value + 1)
+                }}
+              />
+            ) : (
+              <InitialShellSkeleton />
+            )}
           </AppLayout>
-          <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
-          <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
-          <PwaUpdateBanner />
-          <PwaInstallBanner />
-          <GlobalEntityDialogs />
-          <GlobalEditDialogs />
-          <GlobalAskDialog />
-          <GlobalParseTxDialog />
-          <GlobalSharedLedgerDialogs />
-        </SharedLedgerResourcesProvider>
-        </AttachmentCacheProvider>
-        </PageDataCacheProvider>
-        </SyncSocketProvider>
+        ) : (
+          <SyncSocketProvider>
+            <PageDataCacheProvider>
+              <AttachmentCacheProvider>
+                <SharedLedgerResourcesProvider>
+                  <CategoryIconPrefetcher token={token} />
+                  <AppShellSyncReactor
+                    refreshLedgers={refreshLedgers}
+                    refreshProfile={refreshProfile}
+                    applyServerPrimaryColor={applyServerPrimaryColor}
+                  />
+                  <AppLayout
+                    header={
+                      <AppHeader
+                        onOpenLogs={() => setLogsOpen(true)}
+                        onOpenAbout={() => setAboutOpen(true)}
+                      />
+                    }
+                  >
+                    <div className="space-y-4 pb-20 md:pb-0">
+                      <Outlet />
+                    </div>
+                    <MobileBottomNav
+                      activeSection={currentSection}
+                      onNavigate={handleSectionNavigate}
+                    />
+                  </AppLayout>
+                  <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
+                  <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+                  <PwaUpdateBanner />
+                  <PwaInstallBanner />
+                  <GlobalEntityDialogs />
+                  <GlobalEditDialogs />
+                  <GlobalAskDialog />
+                  <GlobalParseTxDialog />
+                  <GlobalSharedLedgerDialogs />
+                </SharedLedgerResourcesProvider>
+              </AttachmentCacheProvider>
+            </PageDataCacheProvider>
+          </SyncSocketProvider>
+        )}
       </LedgersProvider>
     </AuthProvider>
+  )
+}
+
+/**
+ * profile + ledgers 是整个 Web app 的启动边界。它们完成前不挂载 Outlet、
+ * WebSocket/poller 和页面预取，避免 Overview 的十余个并发请求抢占这两条
+ * 首屏关键请求；同时明确告诉用户页面仍在加载，而不是显示成空账号。
+ */
+function InitialShellSkeleton() {
+  const t = useT()
+  return (
+    <div className="space-y-4 pb-20 md:pb-0" aria-busy="true" role="status">
+      <span className="sr-only">{t('common.loading')}</span>
+      <div className="grid gap-4 md:grid-cols-3">
+        {[0, 1, 2].map((key) => (
+          <div key={key} className="card h-28 animate-pulse bg-muted/60" aria-hidden="true" />
+        ))}
+      </div>
+      <div className="card h-72 animate-pulse bg-muted/60" aria-hidden="true" />
+    </div>
+  )
+}
+
+function InitialShellError({ onRetry }: { onRetry: () => void }) {
+  const t = useT()
+  return (
+    <div className="card mx-auto max-w-lg space-y-4 p-8 text-center" role="alert">
+      <p className="text-sm text-muted-foreground">{t('shell.initialLoadError')}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+      >
+        {t('shell.initialLoadRetry')}
+      </button>
+    </div>
   )
 }
 

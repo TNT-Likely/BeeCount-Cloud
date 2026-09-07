@@ -33,6 +33,8 @@ const zhTW = {
   'login.twofa.hint': '請在 5 分鐘內完成驗證,超時需重新登入。',
   'shell.ledger': '帳本',
   'shell.ledger.empty': '新建帳本',
+  'shell.initialLoadError': '無法載入個人資料和帳本，請重試。',
+  'shell.initialLoadRetry': '重新載入',
   'shell.ledgerFilter': '帳本篩選',
   'shell.accountFilter': '帳戶篩選',
   'shell.userFilter': '使用者篩選',

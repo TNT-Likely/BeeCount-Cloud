@@ -33,6 +33,8 @@ const zhCN = {
   'login.twofa.hint': '请在 5 分钟内完成验证,超时需重新登录。',
   'shell.ledger': '账本',
   'shell.ledger.empty': '新建账本',
+  'shell.initialLoadError': '无法加载个人资料和账本，请重试。',
+  'shell.initialLoadRetry': '重新加载',
   'shell.ledgerFilter': '账本筛选',
   'shell.accountFilter': '账户筛选',
   'shell.userFilter': '用户筛选',
