@@ -381,7 +381,9 @@ async def _log_sync_changes_size() -> None:  # noqa: B008
     try:
         with SessionLocal() as db:
             row = db.execute(text(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes "
+                # CAST 成文本再 LENGTH:PG 的 LENGTH 不认 json 类型,SQLite
+                # 下 CAST(text AS TEXT) 是 no-op,两种库同一条 SQL。
+                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(payload_json AS TEXT))), 0) AS bytes "
                 "FROM sync_changes"
             )).first()
             if row is None:
