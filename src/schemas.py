@@ -790,7 +790,7 @@ class WriteLedgerMetaUpdateRequest(WriteBaseRequest):
 
 
 class WriteTransactionCreateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    tx_type: Literal["expense", "income", "transfer", "balance_adjustment"] = "expense"
     amount: float
     happened_at: datetime
     note: str | None = None
@@ -816,7 +816,7 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: Literal["expense", "income", "transfer", "balance_adjustment"] | None = None
     amount: float | None = None
     happened_at: datetime | None = None
     note: str | None = None

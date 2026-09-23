@@ -30,6 +30,10 @@ from .models import (
     UserExchangeRateProjection,
     UserTagProjection,
 )
+from .transaction_types import (
+    BALANCE_ADJUSTMENT_TAG_NAME,
+    BALANCE_ADJUSTMENT_TRANSACTION_TYPE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +214,12 @@ def upsert_tx(
         or _as_str(payload.get("type"))
         or "expense"
     )
+    is_balance_adjustment = tx_type == BALANCE_ADJUSTMENT_TRANSACTION_TYPE
+    if is_balance_adjustment:
+        tag_parts = [part.strip() for part in (tags_csv or "").split(",") if part.strip()]
+        if BALANCE_ADJUSTMENT_TAG_NAME not in tag_parts:
+            tag_parts.append(BALANCE_ADJUSTMENT_TAG_NAME)
+        tags_csv = ",".join(dict.fromkeys(tag_parts))
 
     # Upsert 前抓 prev 附件 fileIds,跟 new 做 diff 找到被移除的那些。
     # 覆盖"一张交易有 N 个附件,只删掉其中一个"的场景 —— 老逻辑只管写新的
@@ -240,9 +250,9 @@ def upsert_tx(
             payload.get("happenedAt") or payload.get("happened_at")
         ),
         "note": _as_str(payload.get("note")),
-        "category_sync_id": _as_str(payload.get("categoryId")),
-        "category_name": _as_str(payload.get("categoryName")),
-        "category_kind": _as_str(payload.get("categoryKind")),
+        "category_sync_id": None if is_balance_adjustment else _as_str(payload.get("categoryId")),
+        "category_name": None if is_balance_adjustment else _as_str(payload.get("categoryName")),
+        "category_kind": None if is_balance_adjustment else _as_str(payload.get("categoryKind")),
         "account_sync_id": _as_str(payload.get("accountId")),
         "account_name": _as_str(payload.get("accountName")),
         "from_account_sync_id": _as_str(payload.get("fromAccountId")),
@@ -263,8 +273,8 @@ def upsert_tx(
         "last_edited_by_user_id": _as_str(payload.get("updatedByUserId")) or payload_creator,
         # 账单标记(.docs/transaction-flags)。缺键保留由上游 merge_with_existing
         # 负责(payload 已含既有行值),这里只做布尔强转;default=False 兜底首次插入。
-        "exclude_from_stats": _as_bool(payload.get("excludeFromStats"), default=False),
-        "exclude_from_budget": _as_bool(payload.get("excludeFromBudget"), default=False),
+        "exclude_from_stats": is_balance_adjustment or _as_bool(payload.get("excludeFromStats"), default=False),
+        "exclude_from_budget": is_balance_adjustment or _as_bool(payload.get("excludeFromBudget"), default=False),
         # 交易级多币种(0018):缺键保留由上游 merge_with_existing 负责;首次
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),

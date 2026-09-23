@@ -170,7 +170,7 @@ export type ReadLedgerDetail = ReadLedger & {
 export type ReadTransaction = {
   id: string
   tx_index: number
-  tx_type: 'expense' | 'income' | 'transfer'
+  tx_type: 'expense' | 'income' | 'transfer' | 'balance_adjustment'
   amount: number
   happened_at: string
   note: string | null
@@ -566,7 +566,7 @@ export type AdminBackupRestoreResponse = {
 }
 
 export type TxPayload = {
-  tx_type: 'expense' | 'income' | 'transfer'
+  tx_type: 'expense' | 'income' | 'transfer' | 'balance_adjustment'
   amount: number
   happened_at: string
   /** 交易级多币种(0018):原币种;不传 = 账本本位币(不产生字段)。 */

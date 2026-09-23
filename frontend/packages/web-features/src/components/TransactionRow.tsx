@@ -87,15 +87,35 @@ export function TransactionRow({
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
 
-  const amountTone = row.tx_type === 'expense' ? 'negative' : row.tx_type === 'income' ? 'positive' : 'default'
-  const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
+  const isBalanceAdjustment = row.tx_type === 'balance_adjustment'
+  const editableOnEdit = isBalanceAdjustment ? undefined : onEdit
+  const amountTone = isBalanceAdjustment
+    ? row.amount >= 0
+      ? 'positive'
+      : 'negative'
+    : row.tx_type === 'expense'
+      ? 'negative'
+      : row.tx_type === 'income'
+        ? 'positive'
+        : 'default'
+  const sign = isBalanceAdjustment
+    ? row.amount >= 0
+      ? '+'
+      : '−'
+    : row.tx_type === 'expense'
+      ? '-'
+      : row.tx_type === 'income'
+        ? '+'
+        : ''
   // 交易级多币种:折算快照存在且 ≠ 原币值 → 外币交易,金额旁标币种 + ≈ 折算行。
   // 同币种交易 native === amount 恒成立,自然不显示;无需引入账本本位币 prop。
   const isForeignCurrency =
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
-  const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  const categoryText = isBalanceAdjustment
+    ? t('enum.txType.balance_adjustment')
+    : row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
     categoryName: row.category_name,
@@ -220,15 +240,15 @@ export function TransactionRow({
 
         {/* 右上:hover 动作 + 金额 — self-start 钉顶 */}
         <div className="flex shrink-0 items-center justify-end gap-2 self-start">
-          {(onEdit || onDelete) && !isCompact && !selectionMode ? (
+          {(editableOnEdit || onDelete) && !isCompact && !selectionMode ? (
             <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-              {onEdit ? (
+              {editableOnEdit ? (
                 <button
                   type="button"
                   disabled={!canManage}
                   onClick={(event) => {
                     event.stopPropagation()
-                    onEdit(row)
+                    editableOnEdit(row)
                   }}
                   className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
                 >
@@ -468,4 +488,3 @@ function formatDateTime(value: string | null | undefined): string {
   const mi = String(d.getMinutes()).padStart(2, '0')
   return `${d.getFullYear()}-${mm}-${dd} ${hh}:${mi}`
 }
-

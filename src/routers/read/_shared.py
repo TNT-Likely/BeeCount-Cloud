@@ -464,6 +464,7 @@ def _projection_totals(
                 sa_case(
                     (ReadTxProjection.tx_type == "income", _native),
                     (ReadTxProjection.tx_type == "expense", -_native),
+                    (ReadTxProjection.tx_type == "balance_adjustment", _native),
                     else_=0.0,
                 )
             ), 0.0),

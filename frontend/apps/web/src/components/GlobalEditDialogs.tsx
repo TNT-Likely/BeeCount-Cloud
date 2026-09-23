@@ -132,6 +132,7 @@ export function GlobalEditDialogs() {
   // 先 await fetch refs 再 open dialog,避免下拉空数据闪现
   useEffect(() => {
     return onOpenEditTx(async (tx) => {
+      if (tx.tx_type === 'balance_adjustment') return
       const ledgerId =
         tx.ledger_id || writableLedgers[0]?.ledger_id || ''
       setEditTxLedgerId(ledgerId)

@@ -476,7 +476,7 @@ class ReadTxProjection(Base):
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    tx_type: Mapped[str] = mapped_column(String(16))
+    tx_type: Mapped[str] = mapped_column(String(32))
     amount: Mapped[float] = mapped_column(Float, default=0.0)
     happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(Text, nullable=True)

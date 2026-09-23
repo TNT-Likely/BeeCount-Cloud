@@ -1969,6 +1969,7 @@ export function TransactionsPage() {
                 onPreviewAttachment={onPreviewTxAttachment}
                 resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
                 onEdit={(tx) => {
+                  if (tx.tx_type === 'balance_adjustment') return
                   setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
                   setTxDialogOpen(true)
                   setTxForm({

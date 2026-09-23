@@ -29,11 +29,19 @@ export async function fetchAnnualReportData(
   ])
 
   return aggregate({
-    thisYearTxs: thisYear.map(toLite),
-    prevYearTxs: prevYear.map(toLite),
+    thisYearTxs: thisYear.filter(isReportTransaction).map(toLite),
+    prevYearTxs: prevYear.filter(isReportTransaction).map(toLite),
     year,
     ledger,
   })
+}
+
+function isReportTransaction(
+  t: WorkspaceTransaction,
+): t is WorkspaceTransaction & {
+  tx_type: 'expense' | 'income' | 'transfer'
+} {
+  return !t.exclude_from_stats && t.tx_type !== 'balance_adjustment'
 }
 
 async function fetchAllPaged(
@@ -61,7 +69,9 @@ async function fetchAllPaged(
   return all
 }
 
-function toLite(t: WorkspaceTransaction): TransactionLite {
+function toLite(
+  t: WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'transfer' },
+): TransactionLite {
   return {
     id: t.id,
     txType: t.tx_type,

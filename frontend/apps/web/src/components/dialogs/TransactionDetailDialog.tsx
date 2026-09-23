@@ -49,15 +49,30 @@ export function TransactionDetailDialog({
   const tagColorByName = useMemo(() => buildTagColorMap(tags), [tags])
 
   const open = Boolean(tx)
-  const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
+  const isBalanceAdjustment = tx?.tx_type === 'balance_adjustment'
+  const sign = isBalanceAdjustment
+    ? tx && tx.amount >= 0
+      ? '+'
+      : '−'
+    : tx?.tx_type === 'expense'
+      ? '−'
+      : tx?.tx_type === 'income'
+        ? '+'
+        : ''
   const tone =
-    tx?.tx_type === 'expense'
+    isBalanceAdjustment && tx && tx.amount < 0
+      ? 'text-expense'
+      : isBalanceAdjustment
+        ? 'text-income'
+        : tx?.tx_type === 'expense'
       ? 'text-expense'
       : tx?.tx_type === 'income'
         ? 'text-income'
         : 'text-foreground'
   const typeLabel = tx
-    ? t(`enum.txType.${tx.tx_type}`)
+    ? isBalanceAdjustment
+      ? t('enum.txType.balance_adjustment')
+      : t(`enum.txType.${tx.tx_type}`)
     : ''
   const accountText = tx
     ? tx.tx_type === 'transfer'
@@ -200,14 +215,16 @@ export function TransactionDetailDialog({
           <Button variant="outline" size="sm" onClick={onClose}>
             {t('dialog.cancel')}
           </Button>
-          <Button
-            size="sm"
-            disabled={!canManage}
-            onClick={() => tx && onEdit(tx)}
-          >
-            <Edit3 className="mr-1 h-3.5 w-3.5" />
-            {t('common.edit')}
-          </Button>
+          {!isBalanceAdjustment ? (
+            <Button
+              size="sm"
+              disabled={!canManage}
+              onClick={() => tx && onEdit(tx)}
+            >
+              <Edit3 className="mr-1 h-3.5 w-3.5" />
+              {t('common.edit')}
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

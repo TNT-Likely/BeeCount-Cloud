@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   createAccount,
+  createTransaction,
   deleteAccount,
   fetchExchangeRateOverrides,
   fetchExchangeRates,
@@ -27,6 +28,9 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
+  Input,
+  Label,
   useT,
   useToast,
 } from '@beecount/ui'
@@ -41,6 +45,7 @@ import {
   computeTypeGroups,
   effectiveRateToBase,
   mergeGroupsToBase,
+  resolveCurrencyFields,
   splitByCurrency,
   type AccountForm,
   type CurrencyBucket,
@@ -58,6 +63,14 @@ import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
 const ACCOUNT_DETAIL_PAGE_SIZE = 20
+
+type BalanceAdjustmentDraft = {
+  row: WorkspaceAccount
+  target: string
+  current: number
+  difference: number | null
+  step: 'input' | 'choice'
+}
 
 // 资产汇总卡内「构成 / 走势」tab 的设备级持久化(key/类型见 assetViewPrefs)。
 // 默认 'composition'(资产页更看重当下构成,走势放第二个 tab)。
@@ -84,7 +97,7 @@ export function AccountsPage() {
   const toast = useToast()
   const navigate = useNavigate()
   const { token, profileMe } = useAuth()
-  const { activeLedgerId } = useLedgers()
+  const { activeLedgerId, ledgers } = useLedgers()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
   const base = profileMe?.primary_currency || ''
@@ -99,6 +112,8 @@ export function AccountsPage() {
   // confirm dialog 直接读它,不再发额外请求。
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAccount | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [balanceAdjustment, setBalanceAdjustment] =
+    useState<BalanceAdjustmentDraft | null>(null)
 
   // 分币种明细 dialog(折算汇总卡的「详情」入口;单币种时该卡不出详情按钮)。
   const [detailOpen, setDetailOpen] = useState(false)
@@ -300,6 +315,97 @@ export function AccountsPage() {
       if (isWriteConflict(err)) {
         await refresh()
       }
+      notifyError(err)
+    }
+  }
+
+  const openBalanceAdjustment = (row: ReadAccount) => {
+    const workspaceRow = rows.find((item) => item.id === row.id) || (row as WorkspaceAccount)
+    const current = workspaceRow.balance ?? workspaceRow.initial_balance ?? 0
+    setBalanceAdjustment({
+      row: workspaceRow,
+      target: current.toFixed(2),
+      current,
+      difference: null,
+      step: 'input',
+    })
+  }
+
+  const continueBalanceAdjustment = () => {
+    if (!balanceAdjustment) return
+    const target = Number(balanceAdjustment.target.trim())
+    if (!Number.isFinite(target)) {
+      toast.error(t('accounts.error.balanceInvalid'), t('notice.error'))
+      return
+    }
+    const difference = target - balanceAdjustment.current
+    if (Math.abs(difference) < 0.0000001) {
+      setBalanceAdjustment(null)
+      toast.success(t('accounts.balance.adjust.unchanged'), t('notice.success'))
+      return
+    }
+    setBalanceAdjustment({ ...balanceAdjustment, difference, step: 'choice' })
+  }
+
+  const commitBalanceAdjustment = async (createAdjustment: boolean) => {
+    if (!balanceAdjustment || balanceAdjustment.difference === null || !activeLedgerId) return
+    const target = Number(balanceAdjustment.target.trim())
+    try {
+      // 余额可能在打开弹窗后被其它设备改过；提交前重新取快照，保证差额和
+      // 基线计算使用同一份最新数据，而不是依赖弹窗打开时的旧值。
+      const freshRows = await fetchWorkspaceAccounts(token, { limit: 500 })
+      const row = freshRows.find((item) => item.id === balanceAdjustment.row.id)
+      if (!row) throw new Error('account not found')
+      const current = row.balance ?? row.initial_balance ?? 0
+      const difference = target - current
+      if (Math.abs(difference) < 0.0000001) {
+        setBalanceAdjustment(null)
+        notifySuccess(t('accounts.balance.adjust.unchanged'))
+        return
+      }
+      if (createAdjustment) {
+        const ledgerBase = (
+          ledgers.find((ledger) => ledger.ledger_id === activeLedgerId)?.currency || 'CNY'
+        ).toUpperCase()
+        const accountCurrency = (row.currency || ledgerBase).toUpperCase()
+        const resolvedCurrencyFields = await resolveCurrencyFields({
+          token,
+          ledgerBase,
+          currency: accountCurrency,
+          amount: difference,
+        })
+        const currencyFields = resolvedCurrencyFields || {}
+        await retryOnConflict(activeLedgerId, (base) =>
+          createTransaction(token, activeLedgerId, base, {
+            tx_type: 'balance_adjustment',
+            amount: difference,
+            happened_at: new Date().toISOString(),
+            note: `${t('enum.txType.balance_adjustment')}: ${current.toFixed(2)} → ${target.toFixed(2)}`,
+            category_name: null,
+            category_kind: null,
+            category_id: null,
+            account_name: row.name,
+            account_id: row.id,
+            tags: ['平账'],
+            exclude_from_stats: true,
+            exclude_from_budget: true,
+            ...currencyFields,
+          }),
+        )
+      } else {
+        const initial = row.initial_balance ?? 0
+        const newInitialBalance = target - (current - initial)
+        await retryOnConflict(activeLedgerId, (base) =>
+          updateAccount(token, activeLedgerId, row.id, base, {
+            initial_balance: newInitialBalance,
+          }),
+        )
+      }
+      setBalanceAdjustment(null)
+      await refresh()
+      notifySuccess(t('notice.accountUpdated'))
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
       notifyError(err)
     }
   }
@@ -572,6 +678,7 @@ export function AccountsPage() {
           })
         }}
         onRestore={(row) => void onRestore(row)}
+        onAdjustBalance={(row) => openBalanceAdjustment(row)}
         onClickAccount={(row) =>
           dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' })
         }
@@ -594,6 +701,75 @@ export function AccountsPage() {
           setPendingDelete(ws)
         }}
       />
+      <Dialog
+        open={balanceAdjustment !== null}
+        onOpenChange={(open) => {
+          if (!open) setBalanceAdjustment(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('accounts.balance.adjust.title')}</DialogTitle>
+          </DialogHeader>
+          {balanceAdjustment ? (
+            <div className="grid gap-3">
+              {balanceAdjustment.step === 'input' ? (
+                <>
+                  <div className="text-sm text-muted-foreground">
+                    {t('accounts.balance.adjust.current', {
+                      value: balanceAdjustment.current.toFixed(2),
+                    })}
+                  </div>
+                  <div className="space-y-1">
+                    <Label>{t('accounts.balance.adjust.target')}</Label>
+                    <Input
+                      autoFocus
+                      inputMode="decimal"
+                      value={balanceAdjustment.target}
+                      onChange={(event) =>
+                        setBalanceAdjustment({
+                          ...balanceAdjustment,
+                          target: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-sm">
+                    {t('accounts.balance.adjust.difference', {
+                      value: balanceAdjustment.difference?.toFixed(2) || '0.00',
+                    })}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {t('accounts.balance.adjust.choiceHint')}
+                  </p>
+                </>
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBalanceAdjustment(null)}>
+              {t('dialog.cancel')}
+            </Button>
+            {balanceAdjustment?.step === 'input' ? (
+              <Button onClick={continueBalanceAdjustment}>
+                {t('common.next')}
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => void commitBalanceAdjustment(false)}>
+                  {t('accounts.balance.adjust.baseline')}
+                </Button>
+                <Button onClick={() => void commitBalanceAdjustment(true)}>
+                  {t('accounts.balance.adjust.transaction')}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* AccountDetailDialog 已迁到 GlobalEntityDialogs */}
       {/* 删除确认 — 有 tx 时显示 warning 文案 + count(对齐 mobile);无 tx
           就普通确认。dialog confirm 后调 deleteAccount,server 端会 silent
