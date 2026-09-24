@@ -583,7 +583,7 @@ def list_workspace_accounts(
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
-    # Transfer adjustments: from_account = minus, to_account = plus
+    # Transfer balance effects: from_account = minus, to_account = plus
     transfer_from = db.execute(
         select(
             ReadTxProjection.from_account_sync_id,
@@ -1328,8 +1328,6 @@ def workspace_net_worth_history(
             bal[acc] += amt
         elif tx_type == "expense" and acc in bal:
             bal[acc] -= amt
-        elif tx_type == "adjustment" and acc in bal:
-            bal[acc] += amt
         elif tx_type == "transfer":
             fa, ta = from_acc or acc, to_acc
             if fa in bal:
