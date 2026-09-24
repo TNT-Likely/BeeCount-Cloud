@@ -576,13 +576,10 @@ def list_workspace_accounts(
             func.coalesce(func.sum(sa_case(
                 (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
                 else_=0.0)), 0.0).label("expense"),
-            func.coalesce(func.sum(sa_case(
-                (ReadTxProjection.tx_type == "balance_adjustment", ReadTxProjection.amount),
-                else_=0.0)), 0.0).label("adjustment"),
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.account_sync_id.is_not(None),
-            ReadTxProjection.tx_type.in_(["income", "expense", "balance_adjustment"]),
+            ReadTxProjection.tx_type.in_(["income", "expense"]),
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
@@ -612,9 +609,9 @@ def list_workspace_accounts(
 
     # 合并成 per-account 的 dict(跨 ledger,key 只是 sync_id)
     stats: dict[str, dict[str, float | int]] = {}
-    for acc, cnt, inc, exp, adjustment in main_stats:
+    for acc, cnt, inc, exp in main_stats:
         stats[acc] = {"count": int(cnt), "income": float(inc),
-                      "expense": float(exp), "balance": float(inc) - float(exp) + float(adjustment)}
+                      "expense": float(exp), "balance": float(inc) - float(exp)}
     for acc, cnt, amt in transfer_from:
         bucket = stats.setdefault(acc,
                                    {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
@@ -1331,7 +1328,7 @@ def workspace_net_worth_history(
             bal[acc] += amt
         elif tx_type == "expense" and acc in bal:
             bal[acc] -= amt
-        elif tx_type in {"adjustment", "balance_adjustment"} and acc in bal:
+        elif tx_type == "adjustment" and acc in bal:
             bal[acc] += amt
         elif tx_type == "transfer":
             fa, ta = from_acc or acc, to_acc

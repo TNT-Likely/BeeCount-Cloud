@@ -3,12 +3,14 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   createAccount,
+  createCategory,
   createTransaction,
   deleteAccount,
   fetchExchangeRateOverrides,
   fetchExchangeRates,
   fetchNetWorthHistory,
   fetchWorkspaceAccounts,
+  fetchWorkspaceCategories,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   updateAccount,
@@ -63,6 +65,7 @@ import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
 const ACCOUNT_DETAIL_PAGE_SIZE = 20
+const BALANCE_SETTLEMENT_CATEGORY_NAME = '平账'
 
 type BalanceAdjustmentDraft = {
   row: WorkspaceAccount
@@ -364,6 +367,29 @@ export function AccountsPage() {
         return
       }
       if (createAdjustment) {
+        const transactionType = difference > 0 ? 'income' : 'expense'
+        const categories = await fetchWorkspaceCategories(token, {
+          ledgerId: activeLedgerId,
+          limit: 500,
+        })
+        let categoryId =
+          categories.find(
+            (category) =>
+              category.name === BALANCE_SETTLEMENT_CATEGORY_NAME &&
+              category.kind === transactionType,
+          )?.id || null
+        if (!categoryId) {
+          const created = await retryOnConflict(activeLedgerId, (base) =>
+            createCategory(token, activeLedgerId, base, {
+              name: BALANCE_SETTLEMENT_CATEGORY_NAME,
+              kind: transactionType,
+            }),
+          )
+          categoryId = created.entity_id
+        }
+        if (!categoryId) {
+          throw new Error('balance settlement category could not be created')
+        }
         const ledgerBase = (
           ledgers.find((ledger) => ledger.ledger_id === activeLedgerId)?.currency || 'CNY'
         ).toUpperCase()
@@ -372,23 +398,20 @@ export function AccountsPage() {
           token,
           ledgerBase,
           currency: accountCurrency,
-          amount: difference,
+          amount: Math.abs(difference),
         })
         const currencyFields = resolvedCurrencyFields || {}
         await retryOnConflict(activeLedgerId, (base) =>
           createTransaction(token, activeLedgerId, base, {
-            tx_type: 'balance_adjustment',
-            amount: difference,
+            tx_type: transactionType,
+            amount: Math.abs(difference),
             happened_at: new Date().toISOString(),
-            note: `${t('enum.txType.balance_adjustment')}: ${current.toFixed(2)} → ${target.toFixed(2)}`,
-            category_name: null,
-            category_kind: null,
-            category_id: null,
+            note: `平账：${current.toFixed(2)} → ${target.toFixed(2)}`,
+            category_name: BALANCE_SETTLEMENT_CATEGORY_NAME,
+            category_kind: transactionType,
+            category_id: categoryId,
             account_name: row.name,
             account_id: row.id,
-            tags: ['平账'],
-            exclude_from_stats: true,
-            exclude_from_budget: true,
             ...currencyFields,
           }),
         )

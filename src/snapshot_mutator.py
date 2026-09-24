@@ -6,12 +6,6 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .transaction_types import (
-    BALANCE_ADJUSTMENT_TAG_NAME,
-    BALANCE_ADJUSTMENT_TRANSACTION_TYPE,
-    is_balance_adjustment_transaction,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -278,55 +272,6 @@ def _normalize_tx_tags(raw: object) -> str | None:
     return None
 
 
-def _normalize_balance_adjustment_item(item: dict) -> None:
-    """Re-assert invariants for the dedicated balance correction transaction."""
-    if not is_balance_adjustment_transaction(str(item.get("type") or "")):
-        return
-    if not str(item.get("accountId") or item.get("accountName") or "").strip():
-        raise ValueError("write validation failed: balance adjustment requires an account")
-    if any(
-        str(item.get(key) or "").strip()
-        for key in ("categoryId", "categoryName", "categoryKind")
-    ):
-        raise ValueError("write validation failed: balance adjustment cannot have a category")
-    if _to_float(item.get("amount")) == 0.0:
-        raise ValueError("write validation failed: balance adjustment amount cannot be zero")
-    tags = _normalize_tx_tags(item.get("tags"))
-    tag_names = [] if tags is None else tags.split(",")
-    if BALANCE_ADJUSTMENT_TAG_NAME not in tag_names:
-        tag_names.append(BALANCE_ADJUSTMENT_TAG_NAME)
-    item["tags"] = ",".join(dict.fromkeys(tag_names))
-    item["excludeFromStats"] = True
-    item["excludeFromBudget"] = True
-
-
-def _ensure_balance_adjustment_tag(snapshot: dict, item: dict) -> None:
-    if not is_balance_adjustment_transaction(str(item.get("type") or "")):
-        return
-    tags = _ensure_list(snapshot, "tags")
-    tag = next(
-        (
-            row
-            for row in tags
-            if str(row.get("name") or "").strip() == BALANCE_ADJUSTMENT_TAG_NAME
-        ),
-        None,
-    )
-    if tag is None:
-        tag = {
-            "syncId": _new_sync_id("tag"),
-            "name": BALANCE_ADJUSTMENT_TAG_NAME,
-            "color": None,
-        }
-        tags.append(tag)
-    tag_ids = item.get("tagIds")
-    if not isinstance(tag_ids, list):
-        tag_ids = []
-    if tag.get("syncId") not in tag_ids:
-        tag_ids.append(tag["syncId"])
-    item["tagIds"] = tag_ids
-
-
 def _sort_transactions(snapshot: dict) -> None:
     items = _ensure_list(snapshot, "items")
     items.sort(key=lambda item: _to_iso8601(item.get("happenedAt")), reverse=True)
@@ -335,7 +280,7 @@ def _sort_transactions(snapshot: dict) -> None:
 def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     tx_type = str(payload.get("tx_type") or "expense")
-    if tx_type not in {"expense", "income", "transfer", BALANCE_ADJUSTMENT_TRANSACTION_TYPE}:
+    if tx_type not in {"expense", "income", "transfer"}:
         raise ValueError("write validation failed: invalid transaction type")
 
     tx_id = _new_sync_id("tx")
@@ -390,8 +335,6 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     # serializer + projection.upsert_tx(读 excludeFromStats)对齐。create 默认 False。
     item["excludeFromStats"] = bool(payload.get("exclude_from_stats"))
     item["excludeFromBudget"] = bool(payload.get("exclude_from_budget"))
-    _normalize_balance_adjustment_item(item)
-    _ensure_balance_adjustment_tag(target, item)
     _mark_entity_actor(item, payload, create=True)
 
     _ensure_list(target, "items").append(item)
@@ -427,7 +370,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
 
     if "tx_type" in payload:
         tx_type = str(payload.get("tx_type") or "")
-        if tx_type not in {"expense", "income", "transfer", BALANCE_ADJUSTMENT_TRANSACTION_TYPE}:
+        if tx_type not in {"expense", "income", "transfer"}:
             raise ValueError("write validation failed: invalid transaction type")
         item["type"] = tx_type
     if "amount" in payload:
@@ -517,8 +460,6 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
     ):
         if req_key in payload and payload.get(req_key) is not None:
             item[snapshot_key] = bool(payload.get(req_key))
-    _normalize_balance_adjustment_item(item)
-    _ensure_balance_adjustment_tag(target, item)
     _mark_entity_actor(item, payload, create=False)
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
@@ -777,8 +718,6 @@ def create_tag(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     tags = _ensure_list(target, "tags")
     name = _normalize_name(payload.get("name"))
-    if name == BALANCE_ADJUSTMENT_TAG_NAME:
-        raise ValueError("write validation failed: reserved system tag")
     if any(str(row.get("name", "")).strip().lower() == name.lower() for row in tags):
         raise ValueError("write validation failed: duplicated tag")
     sync_id = _new_sync_id("tag")
@@ -794,11 +733,6 @@ def update_tag(snapshot: dict, tag_id: str, payload: dict) -> dict:
     _, tag = _find_by_sync_id(tags, tag_id, expected_prefix="tag")
     _assert_actor_can_modify(tag, payload)
     old_name = str(tag.get("name") or "").strip()
-    if old_name == BALANCE_ADJUSTMENT_TAG_NAME and (
-        "name" in payload
-        or "color" in payload
-    ):
-        raise ValueError("write validation failed: reserved system tag")
     if "name" in payload:
         new_name = _normalize_name(payload.get("name"))
         if any(
@@ -833,8 +767,6 @@ def delete_tag(snapshot: dict, tag_id: str, payload: dict | None = None) -> dict
     idx, tag = _find_by_sync_id(tags, tag_id, expected_prefix="tag")
     _assert_actor_can_modify(tag, payload or {})
     old_name = str(tag.get("name") or "").strip()
-    if old_name == BALANCE_ADJUSTMENT_TAG_NAME:
-        raise ValueError("write validation failed: reserved system tag")
 
     # 拦截关联交易:有交易引用此 tag 时禁止删除,让用户先把标签从交易里
     # 摘掉(或删交易)再来删标签。之前是"静默把 tag 从所有引用它的 tx

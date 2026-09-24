@@ -87,35 +87,17 @@ export function TransactionRow({
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
 
-  const isBalanceAdjustment = row.tx_type === 'balance_adjustment'
-  const editableOnEdit = isBalanceAdjustment ? undefined : onEdit
-  const amountTone = isBalanceAdjustment
-    ? row.amount >= 0
-      ? 'positive'
-      : 'negative'
-    : row.tx_type === 'expense'
-      ? 'negative'
-      : row.tx_type === 'income'
-        ? 'positive'
-        : 'default'
-  const sign = isBalanceAdjustment
-    ? row.amount >= 0
-      ? '+'
-      : '−'
-    : row.tx_type === 'expense'
-      ? '-'
-      : row.tx_type === 'income'
-        ? '+'
-        : ''
+  const editableOnEdit = onEdit
+  const amountTone =
+    row.tx_type === 'expense' ? 'negative' : row.tx_type === 'income' ? 'positive' : 'default'
+  const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
   // 交易级多币种:折算快照存在且 ≠ 原币值 → 外币交易,金额旁标币种 + ≈ 折算行。
   // 同币种交易 native === amount 恒成立,自然不显示;无需引入账本本位币 prop。
   const isForeignCurrency =
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
-  const categoryText = isBalanceAdjustment
-    ? t('enum.txType.balance_adjustment')
-    : row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
     categoryName: row.category_name,

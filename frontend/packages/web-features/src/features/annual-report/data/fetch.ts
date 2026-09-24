@@ -41,7 +41,7 @@ function isReportTransaction(
 ): t is WorkspaceTransaction & {
   tx_type: 'expense' | 'income' | 'transfer'
 } {
-  return !t.exclude_from_stats && t.tx_type !== 'balance_adjustment'
+  return !t.exclude_from_stats
 }
 
 async function fetchAllPaged(

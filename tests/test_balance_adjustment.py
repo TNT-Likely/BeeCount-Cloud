@@ -1,55 +1,50 @@
-"""Dedicated balance-adjustment transaction invariants."""
+"""账户平账使用普通收支交易和固定分类。"""
 
-import pytest
-
-from src.snapshot_mutator import create_transaction, update_transaction
+from src.snapshot_mutator import create_transaction
 
 
-def test_create_balance_adjustment_forces_tag_and_exclusions() -> None:
+def test_balance_settlement_uses_regular_income_and_category() -> None:
     snapshot = {"items": [], "accounts": [], "categories": [], "tags": []}
     result, tx_id = create_transaction(
         snapshot,
         {
-            "tx_type": "balance_adjustment",
-            "amount": -12.5,
+            "tx_type": "income",
+            "amount": 12.5,
             "account_id": "acc-1",
             "account_name": "Cash",
-            "tags": ["自定义"],
-            "exclude_from_stats": False,
-            "exclude_from_budget": False,
+            "category_id": "cat-income",
+            "category_name": "平账",
+            "category_kind": "income",
         },
     )
 
     item = next(row for row in result["items"] if row["syncId"] == tx_id)
-    assert item["type"] == "balance_adjustment"
-    assert item["amount"] == -12.5
-    assert item["tags"] == "自定义,平账"
-    assert item["excludeFromStats"] is True
-    assert item["excludeFromBudget"] is True
-    assert item["tagIds"] == [result["tags"][0]["syncId"]]
-    assert result["tags"][0]["name"] == "平账"
+    assert item["type"] == "income"
+    assert item["amount"] == 12.5
+    assert item["categoryId"] == "cat-income"
+    assert item["categoryName"] == "平账"
+    assert item["categoryKind"] == "income"
+    assert item["excludeFromStats"] is False
+    assert item["excludeFromBudget"] is False
 
 
-def test_balance_adjustment_cannot_gain_category_or_lose_fixed_tag() -> None:
+def test_negative_balance_settlement_uses_regular_expense_and_category() -> None:
     snapshot = {"items": [], "accounts": [], "categories": [], "tags": []}
     result, tx_id = create_transaction(
         snapshot,
         {
-            "tx_type": "balance_adjustment",
-            "amount": 5,
+            "tx_type": "expense",
+            "amount": 7.5,
             "account_id": "acc-1",
+            "account_name": "Cash",
+            "category_id": "cat-expense",
+            "category_name": "平账",
+            "category_kind": "expense",
         },
     )
 
-    with pytest.raises(ValueError, match="cannot have a category"):
-        update_transaction(
-            result,
-            tx_id,
-            {
-                "category_name": "Should be rejected",
-                "tags": [],
-                "exclude_from_stats": False,
-            },
-        )
-    # The mutator rejects the category before persisting a malformed item.
-    assert result["items"][0]["tags"] == "平账"
+    item = next(row for row in result["items"] if row["syncId"] == tx_id)
+    assert item["type"] == "expense"
+    assert item["amount"] == 7.5
+    assert item["categoryName"] == "平账"
+    assert item["categoryKind"] == "expense"
