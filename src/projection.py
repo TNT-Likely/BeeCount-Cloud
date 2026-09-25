@@ -210,7 +210,6 @@ def upsert_tx(
         or _as_str(payload.get("type"))
         or "expense"
     )
-
     # Upsert 前抓 prev 附件 fileIds,跟 new 做 diff 找到被移除的那些。
     # 覆盖"一张交易有 N 个附件,只删掉其中一个"的场景 —— 老逻辑只管写新的
     # attachments_json,没清理从列表里被剔除的 AttachmentFile 行 + 物理文件。

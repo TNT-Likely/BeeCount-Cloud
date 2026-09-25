@@ -49,16 +49,17 @@ export function TransactionDetailDialog({
   const tagColorByName = useMemo(() => buildTagColorMap(tags), [tags])
 
   const open = Boolean(tx)
-  const sign = tx?.tx_type === 'expense' ? '−' : tx?.tx_type === 'income' ? '+' : ''
-  const tone =
-    tx?.tx_type === 'expense'
+  const sign = tx?.tx_type === 'expense'
+      ? '−'
+      : tx?.tx_type === 'income'
+        ? '+'
+        : ''
+  const tone = tx?.tx_type === 'expense'
       ? 'text-expense'
       : tx?.tx_type === 'income'
         ? 'text-income'
         : 'text-foreground'
-  const typeLabel = tx
-    ? t(`enum.txType.${tx.tx_type}`)
-    : ''
+  const typeLabel = tx ? t(`enum.txType.${tx.tx_type}`) : ''
   const accountText = tx
     ? tx.tx_type === 'transfer'
       ? `${tx.from_account_name || '-'} → ${tx.to_account_name || '-'}`
