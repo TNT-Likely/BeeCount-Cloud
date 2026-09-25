@@ -16,13 +16,14 @@ from src.database import SessionLocal, engine
 def _is_file_sqlite() -> bool:
     """只在 file-backed sqlite 跑 — in-memory db 的 journal_mode 永远是 'memory',
     不可能切 WAL;CI 用 `sqlite:///:memory:` 跑测试,这套断言跑不通。"""
-    url = str(engine.url)
-    if not url.startswith("sqlite"):
+    url = engine.url
+    if url.get_backend_name() != "sqlite":
         return False
-    if ":memory:" in url:
+    database = url.database
+    if database in {None, "", ":memory:"}:
         return False
     # sqlite:// 没 path 也是 in-memory
-    if url.rstrip("/") in {"sqlite:", "sqlite://"}:
+    if database.startswith("file:") and url.query.get("mode") == "memory":
         return False
     return True
 
