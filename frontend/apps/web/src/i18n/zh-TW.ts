@@ -1499,6 +1499,8 @@ const zhTW = {
   'ai.editor.providers.empty': '點擊右上角「新增服務商」開始',
   'ai.editor.providers.noModelsConfigured': '未配置任何模型',
   'ai.editor.providers.field.name': '名稱',
+  'ai.editor.providers.family.openai': 'OpenAI 體系',
+  'ai.editor.providers.family.gemini': 'Gemini 原生體系',
   'ai.editor.binding.title': '能力綁定',
   'ai.editor.binding.notSupportedShort': '不支援',
   'ai.editor.saved': 'AI 設定已更新',

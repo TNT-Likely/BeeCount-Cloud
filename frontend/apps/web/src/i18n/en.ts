@@ -1499,6 +1499,8 @@ const en = {
   'ai.editor.providers.empty': 'Click "Add provider" to start',
   'ai.editor.providers.noModelsConfigured': 'No models configured',
   'ai.editor.providers.field.name': 'Name',
+  'ai.editor.providers.family.openai': 'OpenAI-compatible',
+  'ai.editor.providers.family.gemini': 'Gemini native',
   'ai.editor.binding.title': 'Capability binding',
   'ai.editor.binding.notSupportedShort': 'unsupported',
   'ai.editor.saved': 'AI config updated',

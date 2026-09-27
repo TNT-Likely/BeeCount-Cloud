@@ -63,6 +63,9 @@ export type AIProvider = {
   isBuiltIn?: boolean
   apiKey?: string
   baseUrl?: string
+  /** "openai"(默认,OpenAI-compatible /chat/completions) | "gemini"(Gemini 原生
+   *  generateContent API)。跟 mobile `apiFamily` 对齐,省略时按 'openai' 处理。 */
+  apiFamily?: 'openai' | 'gemini'
   textModel?: string
   visionModel?: string
   audioModel?: string

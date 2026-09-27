@@ -898,6 +898,8 @@ const zhCN = {
   'ai.editor.providers.empty': '点击右上角「添加服务商」开始',
   'ai.editor.providers.noModelsConfigured': '未配置任何模型',
   'ai.editor.providers.field.name': '名称',
+  'ai.editor.providers.family.openai': 'OpenAI 体系',
+  'ai.editor.providers.family.gemini': 'Gemini 原生体系',
   'ai.editor.binding.title': '能力绑定',
   'ai.editor.binding.notSupportedShort': '不支持',
   'ai.editor.saved': 'AI 配置已更新',

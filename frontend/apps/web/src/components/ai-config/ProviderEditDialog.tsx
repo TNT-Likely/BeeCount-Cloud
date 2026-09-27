@@ -10,6 +10,8 @@ import {
   DialogTitle,
   Input,
   Label,
+  TabsList,
+  TabsTrigger,
   useT,
 } from '@beecount/ui'
 import {
@@ -23,6 +25,10 @@ import {
 import { useAuth } from '../../context/AuthContext'
 
 import { ProviderTestButton } from './ProviderTestButton'
+
+/** 跟 mobile `_AIProviderEditPageState` 的默认值对齐 —— 切到 gemini 时,
+ * baseUrl 为空才自动填这个,不覆盖用户已填的值。 */
+const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
 
 interface Props {
   open: boolean
@@ -50,6 +56,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
   const [name, setName] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  const [apiFamily, setApiFamily] = useState<'openai' | 'gemini'>('openai')
   const [textModel, setTextModel] = useState('')
   const [visionModel, setVisionModel] = useState('')
   const [audioModel, setAudioModel] = useState('')
@@ -67,6 +74,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
     setName(initial?.name ?? '')
     setApiKey(initial?.apiKey ?? '')
     setBaseUrl(initial?.baseUrl ?? '')
+    setApiFamily(initial?.apiFamily ?? 'openai')
     setTextModel(initial?.textModel ?? '')
     setVisionModel(initial?.visionModel ?? '')
     setAudioModel(initial?.audioModel ?? '')
@@ -82,18 +90,28 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
       isBuiltIn,
       apiKey: apiKey.trim(),
       baseUrl: baseUrl.trim(),
+      apiFamily,
       textModel: textModel.trim(),
       visionModel: visionModel.trim(),
       audioModel: audioModel.trim(),
       createdAt: initial?.createdAt,
     }),
-    [initial, name, apiKey, baseUrl, textModel, visionModel, audioModel, isBuiltIn],
+    [initial, name, apiKey, baseUrl, apiFamily, textModel, visionModel, audioModel, isBuiltIn],
   )
 
   // form 改动 → 清测试结果(旧值不再有效)
   useEffect(() => {
     setTestResults({ text: null, vision: null, speech: null })
-  }, [apiKey, baseUrl, textModel, visionModel, audioModel])
+  }, [apiKey, baseUrl, apiFamily, textModel, visionModel, audioModel])
+
+  // 切换 OpenAI / Gemini 体系:baseUrl 为空时才带默认值,不覆盖用户已填的内容
+  // (跟 mobile `_AIProviderEditPageState` 的 onSelectionChanged 行为一致)
+  const handleFamilyChange = (next: 'openai' | 'gemini') => {
+    setApiFamily(next)
+    if (next === 'gemini' && baseUrl.trim().length === 0) {
+      setBaseUrl(GEMINI_DEFAULT_BASE_URL)
+    }
+  }
 
   const canSave =
     name.trim().length > 0 && apiKey.trim().length > 0 && baseUrl.trim().length > 0
@@ -111,6 +129,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
       isBuiltIn,
       apiKey: apiKey.trim(),
       baseUrl: baseUrl.trim(),
+      apiFamily,
       textModel: textModel.trim(),
       visionModel: visionModel.trim(),
       audioModel: audioModel.trim(),
@@ -186,6 +205,31 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             ) : null}
           </Field>
 
+          {/* OpenAI-compatible / Gemini 原生 体系切换 —— 内建 provider 走专属 SDK,
+              不支持切换,跟 mobile 行为一致 */}
+          {!isBuiltIn ? (
+            <TabsList className="w-full">
+              <TabsTrigger
+                type="button"
+                className="flex-1 justify-center"
+                active={apiFamily === 'openai'}
+                disabled={saving}
+                onClick={() => handleFamilyChange('openai')}
+              >
+                {t('ai.editor.providers.family.openai')}
+              </TabsTrigger>
+              <TabsTrigger
+                type="button"
+                className="flex-1 justify-center"
+                active={apiFamily === 'gemini'}
+                disabled={saving}
+                onClick={() => handleFamilyChange('gemini')}
+              >
+                {t('ai.editor.providers.family.gemini')}
+              </TabsTrigger>
+            </TabsList>
+          ) : null}
+
           <Field label={t('ai.providers.field.apiKey')} required>
             <Input
               value={apiKey}
@@ -203,7 +247,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               disabled={saving || initial?.id === BUILTIN_PROVIDER_ID}
-              placeholder="https://api.example.com/v1"
+              placeholder={apiFamily === 'gemini' ? GEMINI_DEFAULT_BASE_URL : 'https://api.example.com/v1'}
               className="font-mono text-xs"
             />
           </Field>
@@ -216,6 +260,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             disabled={saving}
             provider={draftProvider}
             capability="text"
+            placeholder={apiFamily === 'gemini' ? 'gemini-3.5-flash' : 'gpt-4o-mini'}
             externalResult={testResults.text}
             externalStatus={resolveStatus(testResults.text, runAllStatus === 'running' && !!textModel.trim() && testResults.text === null)}
             onResult={(cap, r) => setTestResults((prev) => ({ ...prev, [cap]: r }))}
@@ -227,6 +272,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             disabled={saving}
             provider={draftProvider}
             capability="vision"
+            placeholder={apiFamily === 'gemini' ? 'gemini-3.5-flash' : 'gpt-4o'}
             externalResult={testResults.vision}
             externalStatus={resolveStatus(testResults.vision, runAllStatus === 'running' && !!visionModel.trim() && testResults.vision === null)}
             onResult={(cap, r) => setTestResults((prev) => ({ ...prev, [cap]: r }))}
@@ -238,6 +284,7 @@ export function ProviderEditDialog({ open, initial, saving = false, onClose, onS
             disabled={saving}
             provider={draftProvider}
             capability="speech"
+            placeholder={apiFamily === 'gemini' ? 'gemini-3.5-flash' : 'whisper-1'}
             externalResult={testResults.speech}
             externalStatus={resolveStatus(testResults.speech, runAllStatus === 'running' && !!audioModel.trim() && testResults.speech === null)}
             onResult={(cap, r) => setTestResults((prev) => ({ ...prev, [cap]: r }))}
@@ -318,6 +365,7 @@ function ModelFieldWithTest({
   disabled,
   provider,
   capability,
+  placeholder,
   externalStatus,
   externalResult,
   onResult,
@@ -328,6 +376,7 @@ function ModelFieldWithTest({
   disabled?: boolean
   provider: AIProvider
   capability: TestProviderCapability
+  placeholder?: string
   externalStatus?: 'idle' | 'running' | 'success' | 'fail'
   externalResult?: TestProviderResult | null
   onResult: (cap: TestProviderCapability, result: TestProviderResult) => void
@@ -345,7 +394,7 @@ function ModelFieldWithTest({
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className="flex-1 font-mono text-xs"
-          placeholder="(optional)"
+          placeholder={placeholder ? `(optional) ${placeholder}` : '(optional)'}
         />
         <ProviderTestButton
           provider={provider}

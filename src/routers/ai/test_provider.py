@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from collections import defaultdict, deque
@@ -23,8 +24,13 @@ from pydantic import BaseModel, Field
 from ...config import get_settings
 from ...deps import get_current_user
 from ...models import User
-from ...services.ai.provider_client import _post_chat_adaptive
+from ...services.ai.provider_client import (
+    _extract_gemini_text,
+    _gemini_generate_raw,
+    _post_chat_adaptive,
+)
 from ...services.ai.test_samples import (
+    TEST_JPEG_BYTES,
     TEST_JPEG_DATA_URL,
     TEST_WAV_BYTES,
 )
@@ -45,6 +51,7 @@ class TestProviderProvider(BaseModel):
     isBuiltIn: bool = False
     apiKey: str = ""
     baseUrl: str = ""
+    apiFamily: str = "openai"  # "openai" | "gemini"
     textModel: str = ""
     visionModel: str = ""
     audioModel: str = ""
@@ -88,13 +95,17 @@ def _check_rate_limit(user_id: str) -> bool:
 
 def _classify_error(status_code: int, body: str) -> str:
     """把上游 HTTP 错误归类到 frontend 认的 error_code。"""
+    body_lower = body.lower() if isinstance(body, str) else ""
+    # Gemini 的 key 无效常见走 400(INVALID_ARGUMENT)而非 401 —— 按文案兜底识别,
+    # 否则会被下面的 400 分支误判成 AI_TEST_UNKNOWN。
+    if "api key not valid" in body_lower or "api_key_invalid" in body_lower:
+        return "AI_TEST_AUTH"
     if status_code == 401 or status_code == 403:
         return "AI_TEST_AUTH"
     if status_code == 429:
         # 上游 LLM 限流,跟我们的 RATE_LIMITED 区分(那个是 server 自己限);
         # 但 frontend 文案可以共用一份 — 用户体感都是"等等再试"
         return "AI_TEST_RATE_LIMITED"
-    body_lower = body.lower() if isinstance(body, str) else ""
     if status_code == 404:
         return "AI_TEST_MODEL_NOT_FOUND"
     if status_code in (400, 422):
@@ -151,14 +162,15 @@ async def test_provider(
         )
 
     base_url = p.baseUrl.rstrip("/")
+    is_gemini = p.apiFamily == "gemini"
     started = time.monotonic()
     try:
         if cap == "text":
-            preview = await _test_text(base_url, p.apiKey, model)
+            preview = await (_test_text_gemini if is_gemini else _test_text)(base_url, p.apiKey, model)
         elif cap == "vision":
-            preview = await _test_vision(base_url, p.apiKey, model)
+            preview = await (_test_vision_gemini if is_gemini else _test_vision)(base_url, p.apiKey, model)
         else:
-            preview = await _test_speech(base_url, p.apiKey, model)
+            preview = await (_test_speech_gemini if is_gemini else _test_speech)(base_url, p.apiKey, model)
         latency = int((time.monotonic() - started) * 1000)
         logger.info(
             "ai.test_provider success user=%s capability=%s model=%s latency=%dms",
@@ -297,3 +309,70 @@ async def _test_speech(base_url: str, api_key: str, model: str) -> str:
         raise _UpstreamHTTPError(resp.status_code, resp.text)
     body = resp.json()
     return (body.get("text") or "").strip()
+
+
+# ──────────────── Gemini 原生 helpers ────────────────
+#
+# 跟上面三个 openai-compatible 版本一一对应,只是走 generateContent + contents/
+# parts 格式(见 provider_client._gemini_generate_raw / _extract_gemini_text)。
+
+
+async def _test_text_gemini(base_url: str, api_key: str, model: str) -> str:
+    resp = await _gemini_generate_raw(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        contents=[{"role": "user", "parts": [{"text": "hi"}]}],
+        temperature=0.2,
+        timeout=15.0,
+    )
+    if resp.status_code >= 400:
+        raise _UpstreamHTTPError(resp.status_code, resp.text)
+    return _extract_gemini_text(resp.json())
+
+
+async def _test_vision_gemini(base_url: str, api_key: str, model: str) -> str:
+    image_b64 = base64.b64encode(TEST_JPEG_BYTES).decode()
+    resp = await _gemini_generate_raw(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "describe"},
+                    {"inlineData": {"mimeType": "image/jpeg", "data": image_b64}},
+                ],
+            }
+        ],
+        temperature=0.2,
+        timeout=20.0,
+    )
+    if resp.status_code >= 400:
+        raise _UpstreamHTTPError(resp.status_code, resp.text)
+    return _extract_gemini_text(resp.json())
+
+
+async def _test_speech_gemini(base_url: str, api_key: str, model: str) -> str:
+    """静音 WAV 转写 —— 空文本也算成功(跟 openai 分支 / mobile 行为一致)。"""
+    audio_b64 = base64.b64encode(TEST_WAV_BYTES).decode()
+    resp = await _gemini_generate_raw(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "Transcribe this audio to text. If there is no speech, respond with an empty string."},
+                    {"inlineData": {"mimeType": "audio/wav", "data": audio_b64}},
+                ],
+            }
+        ],
+        temperature=0.0,
+        timeout=20.0,
+    )
+    if resp.status_code >= 400:
+        raise _UpstreamHTTPError(resp.status_code, resp.text)
+    return _extract_gemini_text(resp.json())

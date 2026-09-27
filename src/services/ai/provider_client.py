@@ -27,6 +27,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -83,6 +84,7 @@ class ChatProviderConfig:
     api_key: str
     model: str           # textModel
     name: str | None = None
+    api_family: str = "openai"  # "openai" | "gemini" —— 跟 mobile apiFamily 对齐
 
 
 class ChatProviderError(RuntimeError):
@@ -154,6 +156,7 @@ def _resolve_provider_by_kind(
     api_key = matched.get("apiKey") or ""
     base_url = matched.get("baseUrl") or ""
     model = matched.get(model_key) or ""
+    api_family = matched.get("apiFamily") if isinstance(matched.get("apiFamily"), str) else None
 
     if not api_key:
         raise not_found_exc(f"provider {provider_id!r} apiKey empty")
@@ -168,6 +171,7 @@ def _resolve_provider_by_kind(
         api_key=api_key,
         model=model,
         name=matched.get("name"),
+        api_family=api_family or "openai",
     )
 
 
@@ -192,6 +196,220 @@ def get_user_custom_prompt(profile: UserProfile | None, key: str) -> str | None:
     if isinstance(val, str) and val.strip():
         return val
     return None
+
+
+# Gemini 原生 API 支持 ───────────────────────────────────────────────────────
+#
+# apiFamily == "gemini" 时跟 openai-compatible 完全不同的请求/响应格式,对齐
+# mobile lib/ai/providers/ai_provider_factory.dart 的 _buildGeminiUrl /
+# _generateGemini / _extractGeminiText:
+# - endpoint 是 `{base}/models/{model}:generateContent`(或 stream 变体),
+#   不是固定的 `/chat/completions`
+# - key 走 `x-goog-api-key` header,不是 Bearer,也不是 query param
+# - body 是 `contents[].parts[]`(text / inlineData),不是 `messages`
+
+
+def _build_gemini_url(base_url: str, model: str, *, stream: bool = False) -> str:
+    """拼 Gemini generateContent endpoint —— 容忍用户粘贴的各种 base_url 形态
+    (尾部带 /openai 或 /models、model 名带 models/ 前缀等),跟 mobile 端一致。
+    """
+    parsed = urlsplit((base_url or "").rstrip("/"))
+    segments = [s for s in parsed.path.split("/") if s]
+    while segments and segments[-1] in ("openai", "models"):
+        segments.pop()
+    if not segments:
+        segments = ["v1beta"]
+    model_name = model.split("/")[-1] if model and "/" in model else model
+    action = "streamGenerateContent" if stream else "generateContent"
+    path = "/" + "/".join([*segments, "models", f"{model_name}:{action}"])
+    url = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return f"{url}?alt=sse" if stream else url
+
+
+def _gemini_headers(api_key: str) -> dict[str, str]:
+    return {"Content-Type": "application/json", "x-goog-api-key": api_key}
+
+
+def _parse_data_url(url: str) -> tuple[str, str]:
+    """`data:image/jpeg;base64,xxxx` → (mime, base64_data);非 data URL 时 data 留空。"""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return "image/jpeg", ""
+    header, _, data = url.partition(",")
+    mime = header[len("data:"):].split(";")[0] or "image/jpeg"
+    return mime, data
+
+
+def _openai_content_to_gemini_parts(content: object) -> list[dict]:
+    """OpenAI message.content(str,或 multimodal parts 列表)→ Gemini parts。"""
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts: list[dict] = []
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "text":
+                parts.append({"text": part.get("text", "")})
+            elif ptype == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                mime, data = _parse_data_url(url)
+                if data:
+                    parts.append({"inlineData": {"mimeType": mime, "data": data}})
+    return parts or [{"text": ""}]
+
+
+def _openai_messages_to_gemini(
+    messages: list[dict[str, object]],
+) -> tuple[list[dict], dict | None]:
+    """OpenAI messages(system/user/assistant)→ Gemini contents + systemInstruction。"""
+    system_instruction: dict | None = None
+    contents: list[dict] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "system":
+            parts = _openai_content_to_gemini_parts(content)
+            system_instruction = {"parts": parts}
+            continue
+        gemini_role = "model" if role == "assistant" else "user"
+        contents.append({"role": gemini_role, "parts": _openai_content_to_gemini_parts(content)})
+    return contents, system_instruction
+
+
+def _extract_gemini_text(data: dict) -> str:
+    """跟 mobile `_extractGeminiText` 对齐:先查 blockReason / finishReason,
+    再拼 parts 里的 text(跳过 thought=true 的「思考」part)。
+    候选为空输出(如静音音频转写)不算错误,返回空字符串。
+    """
+    feedback = data.get("promptFeedback")
+    if isinstance(feedback, dict) and feedback.get("blockReason"):
+        raise ChatProviderError(f"gemini blocked: {feedback.get('blockReason')}")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise ChatProviderError("gemini returned no candidates")
+    finish_reason = candidates[0].get("finishReason")
+    if finish_reason not in (None, "STOP", "MAX_TOKENS"):
+        raise ChatProviderError(f"gemini finishReason={finish_reason}")
+    parts = ((candidates[0].get("content") or {}).get("parts")) or []
+    texts = [
+        p.get("text", "")
+        for p in parts
+        if isinstance(p, dict) and not p.get("thought") and p.get("text")
+    ]
+    return "".join(texts)
+
+
+async def _gemini_generate_raw(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    contents: list[dict],
+    system_instruction: dict | None = None,
+    temperature: float = 0.2,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    """POST Gemini generateContent,返回原始 response(不 raise) —— 调用方按
+    status_code 处理,跟 `_post_chat_adaptive` 的返回约定一致。
+    """
+    url = _build_gemini_url(base_url, model, stream=False)
+    payload: dict[str, object] = {
+        "contents": contents,
+        "generationConfig": {"temperature": temperature},
+    }
+    if system_instruction is not None:
+        payload["systemInstruction"] = system_instruction
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        verify=get_settings().ai_http_verify_ssl,
+    ) as client:
+        return await client.post(url, headers=_gemini_headers(api_key), json=payload)
+
+
+async def _call_chat_json_gemini(
+    *, config: ChatProviderConfig, messages: list[dict[str, object]], timeout: float,
+) -> dict | list:
+    contents, system_instruction = _openai_messages_to_gemini(messages)
+    try:
+        resp = await _gemini_generate_raw(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model=config.model,
+            contents=contents,
+            system_instruction=system_instruction,
+            temperature=0.2,
+            timeout=timeout,
+        )
+    except httpx.TimeoutException as exc:
+        raise ChatProviderError(f"provider {config.provider_id} timed out: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise ChatProviderError(f"network error: {exc}") from exc
+    if resp.status_code >= 400:
+        raise ChatProviderError(
+            f"provider {config.provider_id} returned {resp.status_code}: {resp.text[:200]}"
+        )
+    text = _extract_gemini_text(resp.json())
+    parsed = _try_parse_json(text or "")
+    if parsed is None:
+        raise JsonParseFailedError(
+            f"LLM did not return parseable JSON; raw[:120]={text[:120]!r}",
+            raw_content=text or "",
+        )
+    return parsed
+
+
+async def _stream_chat_completion_gemini(
+    *, config: ChatProviderConfig, messages: list[dict[str, str]], timeout: float,
+) -> AsyncIterator[str]:
+    contents, system_instruction = _openai_messages_to_gemini(messages)
+    url = _build_gemini_url(config.base_url, config.model, stream=True)
+    payload: dict[str, object] = {
+        "contents": contents,
+        "generationConfig": {"temperature": 0.3},
+    }
+    if system_instruction is not None:
+        payload["systemInstruction"] = system_instruction
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            verify=get_settings().ai_http_verify_ssl,
+        ) as client:
+            async with client.stream(
+                "POST", url, headers=_gemini_headers(config.api_key), json=payload
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    raise ChatProviderError(
+                        f"provider {config.provider_id} returned {resp.status_code}: {body[:200]}"
+                    )
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload_str = line[len("data:"):].strip()
+                    if not payload_str or payload_str == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(payload_str)
+                    except (ValueError, TypeError):
+                        logger.warning("ai.chat malformed gemini SSE chunk: %s", payload_str[:80])
+                        continue
+                    candidates = chunk.get("candidates") or []
+                    if not candidates:
+                        continue
+                    parts = ((candidates[0].get("content") or {}).get("parts")) or []
+                    text = "".join(
+                        p.get("text", "")
+                        for p in parts
+                        if isinstance(p, dict) and not p.get("thought") and p.get("text")
+                    )
+                    if text:
+                        yield text
+    except httpx.HTTPError as exc:
+        raise ChatProviderError(f"network error: {exc}") from exc
 
 
 # JSON-mode chat call(非 streaming,B2/B3 用) ─────────────────────────────
@@ -327,7 +545,14 @@ async def call_chat_json(
     - attempt 0:带 `response_format={"type": "json_object"}`(部分 provider 支持,提高准确率)
     - attempt 1+:去掉 `response_format`(兼容不支持该参数的 provider,有些网关传了会卡死)
     - 都依赖 `_try_parse_json` 鲁棒抽 JSON(允许 markdown code block 包裹 / 前后缀文字)
+
+    `config.api_family == "gemini"` 时整个走 Gemini 原生 generateContent(不是
+    `/chat/completions`),见 `_call_chat_json_gemini`——参数自适应剥离(上面这段
+    文档说的重试策略)是 openai-compatible 专属,gemini 路径不需要。
     """
+    if config.api_family == "gemini":
+        return await _call_chat_json_gemini(config=config, messages=messages, timeout=timeout)
+
     import time
 
     last_exc: Exception | None = None
@@ -429,7 +654,17 @@ async def stream_chat_completion(
     SSE 解析:每行 `data: {...}`,看 choices[0].delta.content。`data: [DONE]` 结束。
 
     出错抛 ChatProviderError(不细分:对前端来说就是「AI 服务出错,请重试 / 检查 key」)。
+
+    `config.api_family == "gemini"` 时走 `:streamGenerateContent?alt=sse`,
+    见 `_stream_chat_completion_gemini`。
     """
+    if config.api_family == "gemini":
+        async for chunk in _stream_chat_completion_gemini(
+            config=config, messages=messages, timeout=timeout
+        ):
+            yield chunk
+        return
+
     payload = {
         "model": config.model,
         "messages": messages,

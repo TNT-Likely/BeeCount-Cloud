@@ -366,6 +366,115 @@ def test_temperature_rejected_retries_without_it():
         app.dependency_overrides.clear()
 
 
+# ──────────────────── apiFamily="gemini" 分支 ────────────────────
+
+
+def test_text_capability_gemini_happy_path():
+    async def fake_post(self, url, headers=None, json=None, **_):
+        # Gemini 走 generateContent + x-goog-api-key,不是 /chat/completions + Bearer
+        assert url.endswith(":generateContent")
+        assert headers["x-goog-api-key"] == "AIza-fake"
+        assert "Authorization" not in headers
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"finishReason": "STOP", "content": {"parts": [{"text": "Hi there"}]}}
+                ]
+            },
+        )
+
+    client = _make_client()
+    try:
+        token = _register_and_login(client, "tpg1@test.com")
+        with patch("httpx.AsyncClient.post", fake_post):
+            r = client.post(
+                "/api/v1/ai/test-provider",
+                json={
+                    "provider": {
+                        "name": "Gemini",
+                        "apiKey": "AIza-fake",
+                        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+                        "apiFamily": "gemini",
+                        "textModel": "gemini-3.5-flash",
+                    },
+                    "capability": "text",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["success"] is True
+        assert "Hi there" in body["preview"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_speech_capability_gemini_empty_preview_still_succeeds():
+    async def fake_post(self, url, headers=None, json=None, **_):
+        # 静音 WAV → 空文本也算成功
+        return httpx.Response(
+            200,
+            json={"candidates": [{"finishReason": "STOP", "content": {"parts": []}}]},
+        )
+
+    client = _make_client()
+    try:
+        token = _register_and_login(client, "tpg2@test.com")
+        with patch("httpx.AsyncClient.post", fake_post):
+            r = client.post(
+                "/api/v1/ai/test-provider",
+                json={
+                    "provider": {
+                        "apiKey": "AIza-fake",
+                        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+                        "apiFamily": "gemini",
+                        "audioModel": "gemini-3.5-flash",
+                    },
+                    "capability": "speech",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["success"] is True
+        assert body["preview"] == ""
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_gemini_invalid_key_400_classified_as_auth_error():
+    """Gemini key 无效常见走 400(INVALID_ARGUMENT)而非 401 —— 按文案兜底归类。"""
+    async def fake_post(self, url, **_):
+        return httpx.Response(
+            400,
+            text='{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}',
+        )
+
+    client = _make_client()
+    try:
+        token = _register_and_login(client, "tpg3@test.com")
+        with patch("httpx.AsyncClient.post", fake_post):
+            r = client.post(
+                "/api/v1/ai/test-provider",
+                json={
+                    "provider": {
+                        "apiKey": "bad-key",
+                        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+                        "apiFamily": "gemini",
+                        "textModel": "gemini-3.5-flash",
+                    },
+                    "capability": "text",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        body = r.json()
+        assert body["success"] is False
+        assert body["error_code"] == "AI_TEST_AUTH"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_vision_capability_with_empty_model_returns_missing_fields():
     client = _make_client()
     try:
