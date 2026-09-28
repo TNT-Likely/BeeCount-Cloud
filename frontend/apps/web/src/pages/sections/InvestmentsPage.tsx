@@ -80,13 +80,17 @@ import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass } fr
 
 type TradeRef = { ledgerId: string; trade: StockTrade }
 
-type TradeDialogState = {
+// 轉帳表單(TransactionsPage.tsx)偵測到轉入/轉出帳戶是投資理財帳戶時,會直接
+// 重用這個 dialog 開買進/賣出,`initialSettlementAccountId` 帶使用者已經選好
+// 的另一側帳戶當交割戶,market/symbol 留空時交回 dialog 自己的預設邏輯。
+export type TradeDialogState = {
   account: WorkspaceAccount
   editing?: TradeRef
-  initial?: { market: string; symbol: string; name?: string | null; type?: CreatableType }
+  initial?: { market?: string; symbol?: string; name?: string | null; type?: CreatableType }
+  initialSettlementAccountId?: string
 }
 
-type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
+export type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
 const CREATABLE_TYPES: CreatableType[] = ['buy', 'sell', 'opening', 'stock_dividend', 'cash_dividend', 'reinvest']
 
 const TYPE_HINTS: Partial<Record<CreatableType, string>> = {
@@ -637,7 +641,7 @@ function HoldingRowGroup({
   )
 }
 
-function StockTradeDialog({
+export function StockTradeDialog({
   state,
   accounts,
   holdings,
@@ -656,7 +660,7 @@ function StockTradeDialog({
   const toast = useToast()
   const { token } = useAuth()
   const { retryOnConflict } = useLedgerWrite()
-  const { account, editing, initial } = state
+  const { account, editing, initial, initialSettlementAccountId } = state
   const settings = account.investment_settings ?? null
   const editingTrade = editing?.trade
 
@@ -678,7 +682,7 @@ function StockTradeDialog({
   const [feeEdited, setFeeEdited] = useState(Boolean(editingTrade))
   const [taxEdited, setTaxEdited] = useState(Boolean(editingTrade))
   const [settlementId, setSettlementId] = useState<string>(
-    editingTrade ? '' : settings?.settlementAccountId || '',
+    editingTrade ? '' : initialSettlementAccountId || settings?.settlementAccountId || '',
   )
   const [settlementAmount, setSettlementAmount] = useState('')
   const [tradeDate, setTradeDate] = useState(isoToDateValue(editingTrade?.trade_date))

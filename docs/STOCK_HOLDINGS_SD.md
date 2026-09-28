@@ -199,6 +199,34 @@ App 端對應文件:`docs/changes/2026-09-28-stock-dividends.md`。
 - 三端共用測試數字:`tests/test_trade_fees.py`、Web `investmentFees.test.ts`、App
   `investment_settings_test.dart`「台股費用對帳」。
 
-## 9. 待辦(Phase 3)
+## 9. 轉帳選到投資理財帳戶時導向買進/賣出(2026-09-28)
+
+App 端完整說明:App repo `docs/changes/2026-09-28-transfer-stock-account-redirect.md`。
+
+轉帳選到投資理財帳戶以前不會走 `stock_trade`,只是一筆股數對不上的裸轉帳。
+改成轉入投資理財帳戶 = 買進、轉出投資理財帳戶 = 賣出,另一側帳戶帶當交割戶,
+跟直接在「投資」頁按「新增交易」殊途同歸。
+
+- **Web 選不到投資理財帳戶的 bug**:`TransactionsPage.tsx::txWriteAccounts`
+  之前無條件排除所有估值帳戶類型(含 `investment`),連轉帳都選不到,一併修掉
+  ——`tx_type === 'transfer'` 時放行 `investment`,其它估值類型維持排除。
+- **`InvestmentsPage.tsx`**:`StockTradeDialog`/`TradeDialogState`/
+  `CreatableType` 改 `export` 給 `TransactionsPage.tsx` 重用;
+  `TradeDialogState` 多一個 `initialSettlementAccountId`(轉帳過來時把使用者
+  已選的另一側帳戶帶當交割戶,優先於帳戶費用設定裡的預設值),
+  `initial.market`/`symbol` 改成可選。
+- **`TransactionsPage.tsx`**:監看轉帳表單的 `from_account_name`/
+  `to_account_name`(表單存名稱,不是 id),判斷出買/賣後拉一次這檔持股
+  (`fetchWorkspaceHoldings({accountId, refresh: false})`,賣出時 client 端
+  賣超檢查用,`stock_trades.py` 還會再驗一次)再開 `StockTradeDialog`;
+  存檔成功關掉整個交易 dialog 並刷新列表,取消只清掉剛選的那一側帳戶。
+  編輯既有交易時,拿對話框打開那一刻的兩個帳戶名稱當基準,值沒變就不導向
+  (避免這個功能上線前建立、沒有 `stock_trade` 的裸轉帳一打開編輯就被強制
+  彈買賣 dialog),使用者主動把某一側改成別的投資理財帳戶才會觸發。
+- App 端行為一致:`transfer_form.dart::_pickAccount` 選到投資理財帳戶就導向
+  `StockTradeEditorPage`(新增 `initialSettlement` 參數帶交割戶),只在使用者
+  主動選帳戶時觸發,編輯既有轉帳單純載入顯示不會觸發。
+
+## 10. 待辦(Phase 3)
 
 - 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。

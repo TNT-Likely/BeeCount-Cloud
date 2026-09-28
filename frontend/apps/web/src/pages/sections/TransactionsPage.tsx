@@ -83,6 +83,7 @@ import {
   fetchReadLedgerDetail,
   fetchReadLedgers,
   fetchReadProjects,
+  type Holding,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTransaction,
@@ -90,6 +91,7 @@ import {
   fetchProfileMe,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
+  fetchWorkspaceHoldings,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
   patchProfileMe,
@@ -128,6 +130,7 @@ import { RecurringEditChoiceDialog } from '../../components/dialogs/RecurringEdi
 import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
 import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
+import { StockTradeDialog, type TradeDialogState } from './InvestmentsPage'
 import { consumePendingShareText } from '../../lib/pwa-intake'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
@@ -482,6 +485,15 @@ export function TransactionsPage() {
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<WorkspaceAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
+  // 轉帳導向股票交易(docs/STOCK_HOLDINGS_SD.md §9):
+  // 轉入/轉出帳戶選到投資理財帳戶時,彈出跟「投資」頁同一個買進/賣出
+  // dialog,不留在一般轉帳表單裡送出裸轉帳。`txStockHoldings` 只在打開賣出
+  // 時才拉(client 端賣超檢查用,server 端 `stock_trades.py` 還會再驗一次)。
+  const [txStockTrade, setTxStockTrade] = useState<TradeDialogState | null>(null)
+  const [txStockHoldings, setTxStockHoldings] = useState<Holding[]>([])
+  // 對話框剛打開那一刻的轉帳兩側帳戶名稱基準,判斷「使用者這次是不是真的
+  // 改過帳戶」用,見下面的轉帳導向股票交易 effect。
+  const txTransferAccountsAtOpen = useRef<{ from: string; to: string } | null>(null)
   // 借還款追蹤(§2.5 體驗補強):跟 account/category/tag 不同,debt 是
   // ledger-scoped 实体,按「当前写入账本」单独拉,不进 loadTxDictionaries
   // 那套 user-global 字典逻辑。
@@ -740,18 +752,112 @@ export function TransactionsPage() {
   const txWriteAccounts = useMemo(() => {
     const source =
       txIsSharedEditor && sharedBundle ? sharedAsRead.accounts : txDictionaryAccounts
-    return source.filter((row) => !VALUATION_ACCOUNT_TYPES.has(row.account_type || ''))
+    // 轉帳可以選投資理財帳戶:選中後由下面的 stock trade 轉導邏輯接手,變成
+    // 買進/賣出介面,不會真的送出一筆「股數對不上」的裸轉帳(見
+    // docs/STOCK_HOLDINGS_SD.md §9)。
+    return source.filter((row) => {
+      const type = row.account_type || ''
+      if (txForm.tx_type === 'transfer' && type === 'investment') return true
+      return !VALUATION_ACCOUNT_TYPES.has(type)
+    })
   }, [
     txDictionaryAccounts,
     VALUATION_ACCOUNT_TYPES,
     txIsSharedEditor,
     sharedBundle,
     sharedAsRead.accounts,
+    txForm.tx_type,
   ])
   const txWriteCategories =
     txIsSharedEditor && sharedBundle ? sharedAsRead.categories : txDictionaryCategories
   const txWriteTags =
     txIsSharedEditor && sharedBundle ? sharedAsRead.tags : txDictionaryTags
+
+  // 轉帳導向股票交易:轉入帳戶是投資理財帳戶 → 買進,轉出帳戶是投資理財
+  // 帳戶 → 賣出,另一側已選的帳戶帶過去當交割戶(對齊 mobile
+  // transfer_form.dart::_redirectToStockTrade)。表單帳戶欄位存的是名稱
+  // (`from_account_name`/`to_account_name`,id 由 `onSaveTransaction` 送出前
+  // 才查表解析),所以這裡也按名稱比對;只查 `txDictionaryAccounts`(使用者
+  // 自己的 user-global 字典)——共享帳本 Editor 視角(`sharedAsRead.accounts`)
+  // 是 Owner 資源鏡像,不會有這個使用者自己的投資理財帳戶,略過。
+  //
+  // 編輯既有交易時只在「使用者這次真的改了帳戶」才導向:mobile 端只在
+  // `_pickAccount`(使用者主動選)裡判斷,打開既有轉帳的編輯頁本身(單純
+  // 反查帳戶顯示)不會觸發——這裡用 `txTransferAccountsAtOpen` 記住對話框
+  // 剛打開那一刻的兩個帳戶名稱當基準,跟基準一樣就當作「還沒被使用者改過」
+  // 略過,避免打開一筆舊資料裡本來就存在(這個功能上線前的裸轉帳)的投資
+  // 理財帳戶就被強制彈買賣dialog。
+  useEffect(() => {
+    txTransferAccountsAtOpen.current = txDialogOpen
+      ? { from: txForm.from_account_name, to: txForm.to_account_name }
+      : null
+    // 只在對話框開/關那一刻拍照,不必每次表單內容變動都跟著跑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txDialogOpen])
+
+  useEffect(() => {
+    if (!txDialogOpen || txForm.tx_type !== 'transfer' || txStockTrade || txIsSharedEditor) return
+    const baseline = txTransferAccountsAtOpen.current
+    if (
+      baseline &&
+      baseline.from === txForm.from_account_name &&
+      baseline.to === txForm.to_account_name
+    ) {
+      return
+    }
+    const byName = (name: string) =>
+      txDictionaryAccounts.find((a) => a.name.trim().toLowerCase() === name.trim().toLowerCase())
+    const toAccount = byName(txForm.to_account_name)
+    const fromAccount = byName(txForm.from_account_name)
+    const isBuy = toAccount?.account_type === 'investment'
+    const isSell = !isBuy && fromAccount?.account_type === 'investment'
+    if (!isBuy && !isSell) return
+    const account = isBuy ? toAccount! : fromAccount!
+    const settlement = isBuy ? fromAccount : toAccount
+    let cancelled = false
+    void fetchWorkspaceHoldings(token, { accountId: account.id, refresh: false })
+      .then((summary) => {
+        if (cancelled) return
+        const holdings = summary.accounts.find((a) => a.account_id === account.id)?.holdings ?? []
+        setTxStockHoldings(holdings)
+        setTxStockTrade({
+          account,
+          initial: { type: isBuy ? 'buy' : 'sell' },
+          initialSettlementAccountId: settlement?.id,
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setTxStockHoldings([])
+        setTxStockTrade({
+          account,
+          initial: { type: isBuy ? 'buy' : 'sell' },
+          initialSettlementAccountId: settlement?.id,
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    txDialogOpen,
+    txForm.tx_type,
+    txForm.to_account_name,
+    txForm.from_account_name,
+    txDictionaryAccounts,
+    txIsSharedEditor,
+    txStockTrade,
+    token,
+  ])
+
+  // 取消買進/賣出 dialog:把剛選的投資理財帳戶退回未選狀態,轉帳表單其它
+  // 欄位(金額/備註/日期…)維持不動,不強迫使用者重填一次。
+  const closeTxStockTrade = (opts: { clearAccount: 'to' | 'from' }) => {
+    setTxStockTrade(null)
+    setTxStockHoldings([])
+    setTxForm((prev) =>
+      opts.clearAccount === 'to' ? { ...prev, to_account_name: '' } : { ...prev, from_account_name: '' },
+    )
+  }
 
   // 信用卡紅利回饋(§2.9.5,2026-08-06 改版):只有 expense + 選中帳戶是
   // credit_card 时才需要拉规则列表——不 filter enabled,已停用的规则如果
@@ -3033,6 +3139,25 @@ export function TransactionsPage() {
                 onChooseEditThis={() => handleRecurringEditChoice('single')}
                 onChooseEditFuture={() => handleRecurringEditChoice('future')}
               />
+              {txStockTrade && (
+                <StockTradeDialog
+                  state={txStockTrade}
+                  accounts={txDictionaryAccounts}
+                  holdings={txStockHoldings}
+                  activeLedgerId={txContextLedgerId}
+                  onClose={() =>
+                    closeTxStockTrade({
+                      clearAccount: txStockTrade.initial?.type === 'buy' ? 'to' : 'from',
+                    })
+                  }
+                  onSaved={async () => {
+                    const clearAccount = txStockTrade.initial?.type === 'buy' ? 'to' : 'from'
+                    closeTxStockTrade({ clearAccount })
+                    setTxDialogOpen(false)
+                    await onRefresh()
+                  }}
+                />
+              )}
             </div>
           ) : null}
 
