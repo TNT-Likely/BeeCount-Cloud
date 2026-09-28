@@ -726,6 +726,15 @@ def upsert_recurring_rule(
             json.dumps(payload.get("rewardRuleIds"))
             if isinstance(payload.get("rewardRuleIds"), list) else None
         ),
+        # 股票定期定額(2026-09-28):kind 缺省時落 'general'(既有規則沒有這個
+        # 欄位),market/symbol/security_name/stock_fee_rate/stock_fee_min 只有
+        # kind='stock_dca' 才有值。
+        "kind": _as_str(payload.get("kind")) or "general",
+        "market": (_as_str(payload.get("market")) or "").upper() or None,
+        "symbol": (_as_str(payload.get("symbol")) or "").upper() or None,
+        "security_name": _as_str(payload.get("securityName")),
+        "stock_fee_rate": _as_float_or_none(payload.get("stockFeeRate")),
+        "stock_fee_min": _as_float_or_none(payload.get("stockFeeMin")),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadRecurringRuleProjection, ("ledger_id", "sync_id"), values)

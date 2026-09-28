@@ -1116,6 +1116,23 @@ class ReadRecurringRuleProjection(Base):
     # 简单 frequency+interval 无法表达的规则(例如"每週六日"/"每月10号"),
     # 存 JSON 字串,None = 用 frequency+interval。详见 services.recurring_schedule。
     advanced_rule_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):'general'(既有
+    # 語意)或 'stock_dca'。`kind='stock_dca'` 的規則必定 `tx_type='transfer'`
+    # ——from_account_sync_id=交割帳戶、to_account_sync_id=投資理財帳戶、
+    # amount=每期投入金額(以證券幣別計,不支援交割帳戶跟證券不同幣別)。
+    # `market`/`symbol`/`security_name` 同 `ReadStockTradeProjection` 對應
+    # 欄位;`stock_fee_rate`/`stock_fee_min` 是規則層級的手續費覆寫,皆為
+    # None 時到期生成沿用投資理財帳戶的 `investment_settings_json` 預設值。
+    # 到期生成時股數未知(要看當下報價),所以這類規則**不走**視窗預生成
+    # (`tx_type=='transfer'` 已經被排除在 `refill_recurring_windows` 之外),
+    # 改由 `services.recurring_materializer.materialize_due_stock_rules` 到
+    # 期當下抓報價、算股數/手續費、建立對應的 `stock_trade` 明細。
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    market: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    security_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stock_fee_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stock_fee_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

@@ -1010,6 +1010,10 @@ class ReadBudgetUsageOut(BaseModel):
 
 
 RecurringFrequency = Literal["daily", "weekly", "monthly", "yearly"]
+# 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):'general' = 既有
+# 語意;'stock_dca' 必定搭配 tx_type='transfer',見 ReadRecurringRuleProjection
+# docstring。
+RecurringRuleKind = Literal["general", "stock_dca"]
 
 
 class ReadRecurringRuleOut(BaseModel):
@@ -1023,6 +1027,14 @@ class ReadRecurringRuleOut(BaseModel):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    # 股票定期定額:kind 預設 'general',market/symbol/security_name/
+    # stock_fee_rate/stock_fee_min 只有 kind='stock_dca' 才有值。
+    kind: RecurringRuleKind = "general"
+    market: str | None = None
+    symbol: str | None = None
+    security_name: str | None = None
+    stock_fee_rate: float | None = None
+    stock_fee_min: float | None = None
     # Phase 24(問題 B 第二層):商家/專案/標籤。
     merchant: str | None = None
     project_id: str | None = None
@@ -1858,6 +1870,15 @@ class WriteRecurringRuleCreateRequest(WriteBaseRequest):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    # 股票定期定額(2026-09-28):kind='stock_dca' 時 tx_type 必須是
+    # 'transfer',market/symbol 必填(見 write/recurring_rules.py 的驗證)。
+    # stock_fee_rate/stock_fee_min 皆為 None = 沿用投資理財帳戶的預設費率。
+    kind: RecurringRuleKind = "general"
+    market: str | None = None
+    symbol: str | None = None
+    security_name: str | None = None
+    stock_fee_rate: float | None = Field(default=None, ge=0)
+    stock_fee_min: float | None = Field(default=None, ge=0)
     # Phase 24(問題 B 第二層):商家/專案/標籤,「重複性交易的固定屬性」,
     # 隨每期生成的 occurrence 交易一起帶入,也可被「連同未來週期」批次更新。
     merchant: str | None = None
@@ -1894,6 +1915,11 @@ class WriteRecurringRuleUpdateRequest(WriteBaseRequest):
     account_id: str | None = None
     from_account_id: str | None = None
     to_account_id: str | None = None
+    # 股票定期定額:kind/market/symbol/security_name 建立後鎖定不可改(同
+    # stock_trade 交易類型/帳戶/標的建立後不可改的既有慣例),這裡只開放
+    # 手續費覆寫可改;傳 null 清除(改回沿用帳戶預設)。
+    stock_fee_rate: float | None = Field(default=None, ge=0)
+    stock_fee_min: float | None = Field(default=None, ge=0)
     merchant: str | None = None
     project_id: str | None = None
     tag_ids: list[str] | None = None

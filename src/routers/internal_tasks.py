@@ -41,6 +41,17 @@ def materialize_recurring(
         db.commit()
     result["transfer_rules_materialized"] = transfer_result["materialized"]
     result["transfer_rules_skipped_insufficient"] = transfer_result["skipped_insufficient"]
+    # 股票定期定額(2026-09-28),同一個道理復用這個手動觸發端點。
+    stock_result = recurring_materializer.materialize_due_stock_rules(db)
+    if (
+        stock_result["materialized"]
+        or stock_result["skipped_insufficient"]
+        or stock_result["skipped_no_quote"]
+    ):
+        db.commit()
+    result["stock_dca_materialized"] = stock_result["materialized"]
+    result["stock_dca_skipped_insufficient"] = stock_result["skipped_insufficient"]
+    result["stock_dca_skipped_no_quote"] = stock_result["skipped_no_quote"]
     # 借還款追蹤(§2.5 Phase 3)到期提醒,复用同一个手动触发端点,不需要独立
     # admin-only endpoint(见 debt_reminders.py 模块说明)。
     debt_reminder_count = debt_reminders.send_due_debt_reminders(db)

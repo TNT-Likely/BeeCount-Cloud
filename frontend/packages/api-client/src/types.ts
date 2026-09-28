@@ -1483,6 +1483,10 @@ export type NotificationListResponse = {
 
 export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
 
+/** 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):'general' = 既有
+ * 語意;'stock_dca' 必定搭配 tx_type='transfer'。 */
+export type RecurringRuleKind = 'general' | 'stock_dca'
+
 /**
  * 简单 frequency+interval 表达不了的进阶规则(§2.12.2)。`weekly_days.days`
  * 用 **Python `datetime.weekday()` 惯例(Monday=0…Sunday=6)**,跟 JS
@@ -1524,6 +1528,14 @@ export type ReadRecurringRule = {
   discount_amount?: number | null
   discount_label?: string | null
   reward_rule_ids?: string[]
+  /** 股票定期定額:kind 預設 'general',market/symbol/security_name/
+   *  stock_fee_rate/stock_fee_min 只有 kind='stock_dca' 才有值。 */
+  kind?: RecurringRuleKind
+  market?: string | null
+  symbol?: string | null
+  security_name?: string | null
+  stock_fee_rate?: number | null
+  stock_fee_min?: number | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -1549,6 +1561,15 @@ export type RecurringRuleCreatePayload = {
   discount_amount?: number | null
   discount_label?: string | null
   reward_rule_ids?: string[] | null
+  /** 股票定期定額:kind='stock_dca' 時 tx_type 必須是 'transfer'，market/
+   *  symbol 必填，to_account_id 必須是投資理財帳戶。stock_fee_rate/stock_fee_min
+   *  皆為 null = 沿用投資理財帳戶的預設費率。 */
+  kind?: RecurringRuleKind
+  market?: string | null
+  symbol?: string | null
+  security_name?: string | null
+  stock_fee_rate?: number | null
+  stock_fee_min?: number | null
 }
 
 export type RecurringRuleUpdatePayload = {
@@ -1571,6 +1592,10 @@ export type RecurringRuleUpdatePayload = {
   discount_amount?: number | null
   discount_label?: string | null
   reward_rule_ids?: string[] | null
+  /** 股票定期定額手續費覆寫(kind/market/symbol/security_name 建立後鎖定，
+   *  不在這裡暴露)。null = 清除，改回沿用帳戶預設。 */
+  stock_fee_rate?: number | null
+  stock_fee_min?: number | null
 }
 
 /** §2.12.2:挂在 `TxPayload.recurring` 上,建交易当下顺便设週期起点。 */

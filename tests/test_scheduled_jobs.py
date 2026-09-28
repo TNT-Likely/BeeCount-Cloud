@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 14
+            assert len(rows) == 15
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 14
+            assert len(rows2) == 15
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 14
+        assert len(rows) == 15
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -409,6 +409,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "debt_unsettled_counterparties",
             "card_due_reminders",
             "transfer_rule_materialization",
+            "stock_dca_materialization",
             "card_autopay",
             "card_reward_payout",
             "swipesmart_usage_backfill",
@@ -430,6 +431,10 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.recurring_materializer.materialize_due_transfer_rules",
                     return_value={"materialized": 0, "skipped_insufficient": 0},
                 ) as mock_transfer,
+                patch(
+                    "src.services.recurring_materializer.materialize_due_stock_rules",
+                    return_value={"materialized": 0, "skipped_insufficient": 0, "skipped_no_quote": 0},
+                ) as mock_stock_dca,
                 patch(
                     "src.services.debt_reminders.send_due_debt_reminders", return_value=0,
                 ) as mock_debt,
@@ -467,6 +472,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             ):
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
+                scheduled_jobs.run_job(db, "stock_dca_materialization")
                 scheduled_jobs.run_job(db, "debt_reminders")
                 scheduled_jobs.run_job(db, "debt_unsettled_counterparties")
                 scheduled_jobs.run_job(db, "card_due_reminders")
@@ -479,6 +485,7 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
 
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
+            mock_stock_dca.assert_called_once()
             mock_debt.assert_called_once()
             mock_debt_unsettled.assert_called_once()
             mock_card.assert_called_once()

@@ -1435,6 +1435,24 @@ def create_recurring_rule(snapshot: dict, payload: dict) -> tuple[dict, str]:
                 reward_rule_ids.append(value)
         if reward_rule_ids:
             rule["rewardRuleIds"] = reward_rule_ids
+    # 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):kind='stock_dca'
+    # 必須搭配 tx_type='transfer'(router 層已驗證),這裡只写入欄位,不重複
+    # 尚驗證。kind='general'(預設值)不寫入欄位,同既有規則一致不帶 kind key。
+    kind = str(payload.get("kind") or "general")
+    if kind not in {"general", "stock_dca"}:
+        raise ValueError("write validation failed: invalid kind")
+    if kind != "general":
+        rule["kind"] = kind
+    if payload.get("market") is not None:
+        rule["market"] = str(payload.get("market")).upper()
+    if payload.get("symbol") is not None:
+        rule["symbol"] = str(payload.get("symbol")).upper()
+    if payload.get("security_name") is not None:
+        rule["securityName"] = str(payload.get("security_name"))
+    if payload.get("stock_fee_rate") is not None:
+        rule["stockFeeRate"] = _to_float(payload.get("stock_fee_rate"))
+    if payload.get("stock_fee_min") is not None:
+        rule["stockFeeMin"] = _to_float(payload.get("stock_fee_min"))
     _mark_entity_actor(rule, payload, create=True)
     rules.append(rule)
     return target, sync_id
@@ -1522,6 +1540,20 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
                 rule.pop("rewardRuleIds", None)
         elif raw is None:
             rule.pop("rewardRuleIds", None)
+    # 股票定期定額:手續費覆寫可改(kind/market/symbol/securityName 建立後
+    # 鎖定,不在 WriteRecurringRuleUpdateRequest 暴露,不會出現在這裡的 payload)。
+    if "stock_fee_rate" in payload:
+        value = payload.get("stock_fee_rate")
+        if value is None:
+            rule.pop("stockFeeRate", None)
+        else:
+            rule["stockFeeRate"] = _to_float(value)
+    if "stock_fee_min" in payload:
+        value = payload.get("stock_fee_min")
+        if value is None:
+            rule.pop("stockFeeMin", None)
+        else:
+            rule["stockFeeMin"] = _to_float(value)
     if "tag_ids" in payload:
         raw = payload.get("tag_ids")
         if isinstance(raw, list):

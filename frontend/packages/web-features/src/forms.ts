@@ -7,6 +7,7 @@ import type {
   InstallmentRepaymentMethod,
   RecurringAdvancedRule,
   RecurringInlineCreatePayload,
+  RecurringRuleKind,
   TxSplitPayload,
 } from '@beecount/api-client'
 
@@ -292,6 +293,18 @@ export type RecurringRuleForm = {
   fee_label: string
   discount_amount: string
   discount_label: string
+  /** 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):'stock_dca' 時
+   *  tx_type 強制是 'transfer',from_account/to_account 分別是交割戶/投資
+   *  理財帳戶,並新增 market/symbol/security_name 三個欄位(建立後鎖定)。
+   *  stock_fee_override 開啟時才送 stock_fee_rate(百分比顯示)/stock_fee_min,
+   *  關閉時送 null 清除（改回沿用帳戶預設）。 */
+  kind: RecurringRuleKind
+  market: string
+  symbol: string
+  security_name: string
+  stock_fee_override: boolean
+  stock_fee_rate: string
+  stock_fee_min: string
 }
 
 export type InstallmentPlanForm = {
@@ -527,6 +540,13 @@ export const recurringRuleDefaults = (): RecurringRuleForm => ({
   fee_label: '',
   discount_amount: '',
   discount_label: '',
+  kind: 'general',
+  market: '',
+  symbol: '',
+  security_name: '',
+  stock_fee_override: false,
+  stock_fee_rate: '',
+  stock_fee_min: '',
 })
 
 export const installmentPlanDefaults = (): InstallmentPlanForm => ({

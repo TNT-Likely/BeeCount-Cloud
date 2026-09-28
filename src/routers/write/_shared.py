@@ -2342,6 +2342,30 @@ def _assert_account_not_group(
         )
 
 
+def _assert_account_is_investment(
+    db: Session, *, user_id: str, account_id: str | None, field_name: str = "to_account_id",
+) -> None:
+    """股票定期定額(2026-09-28):`kind='stock_dca'` 規則的投資理財帳戶
+    (`to_account_id`)必須是 `account_type == 'investment'`——同
+    `snapshot_mutator.create_stock_trade` 對單筆買進的既有限制,規則到期
+    生成時會呼叫同一套邏輯,提前在建規則/改規則時擋掉會比生成當下才失敗
+    更早發現問題。找不到帳戶(未知 id)時不在這裡擋,交給呼叫端自己決定
+    要不要另外要求必填。"""
+    if not account_id:
+        return
+    account_type = db.scalar(
+        select(UserAccountProjection.account_type).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == account_id,
+        )
+    )
+    if account_type is not None and account_type != "investment":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} must be an investment account",
+        )
+
+
 def _assert_category_required(
     tx_type: str | None, category_id: str | None, *, field_name: str = "category_id",
 ) -> None:
@@ -2588,6 +2612,7 @@ __all__ = [
     '_assert_project_exists',
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
+    '_assert_account_is_investment',
     '_assert_category_required',
     '_assert_transfer_to_amount_valid',
     '_assert_valid_adjustment_tx',

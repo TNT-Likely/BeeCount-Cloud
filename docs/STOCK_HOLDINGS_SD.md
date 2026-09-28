@@ -227,6 +227,60 @@ App 端完整說明:App repo `docs/changes/2026-09-28-transfer-stock-account-red
   `StockTradeEditorPage`(新增 `initialSettlement` 參數帶交割戶),只在使用者
   主動選帳戶時觸發,編輯既有轉帳單純載入顯示不會觸發。
 
-## 10. 待辦(Phase 3)
+## 10. 股票定期定額投資(2026-09-28)
+
+App 端完整說明:App repo `docs/changes/2026-09-28-stock-dca-recurring.md`。
+
+使用者需求:新增「定期定額投資」,因為定期定額手續費規則常跟單筆買進不同
+(免手續費/不同最低手續費),要能各自設定;同時沿用既有的「週期性收支」
+管理介面,用分類(一般交易/股票定期定額)區分管理。
+
+**資料模型**:`read_recurring_rule_projection` 新增 `kind`
+(`'general'`/`'stock_dca'`,預設 `'general'`)、`market`/`symbol`/
+`security_name`(同 `stock_trade` 對應欄位,只有 `kind='stock_dca'` 才有
+值)、`stock_fee_rate`/`stock_fee_min`(規則層級手續費覆寫,皆為 `null` 時
+沿用投資理財帳戶的 `investment_settings_json` 預設值)。`kind='stock_dca'`
+規則必定 `tx_type='transfer'`——`from_account_id`=交割帳戶、`to_account_id`=
+投資理財帳戶(必須是 `account_type='investment'`,建立時 `_assert_account_is_
+investment` 擋)、`amount`=每期投入金額(以證券幣別計,**v1 不支援交割帳戶
+跟證券不同幣別**)。
+
+**建規則**(`routers/write/recurring_rules.py::create_recurring_rule_ep`):
+`kind='stock_dca'` 時額外驗證 tx_type/market/symbol/from-to 帳戶,`to_
+account_id` 必須是投資理財帳戶;因為必為 `transfer`,天然沿用既有「transfer
+不預生成」分支,不會像一般收支規則那樣建立當下就批次生成 occurrence(股數
+要看到期當下的報價才算得出來)。
+
+**到期物化**(新函式 `services.recurring_materializer.materialize_due_stock_
+rules`,跟 `materialize_due_transfer_rules` 平行、掛在同一個 15 分鐘排程
+`stock_dca_materialization`):到期當下讀本地 `security_quotes` 快取抓報價
+(只讀快取,不在批次任務裡現場打上游 API),股數 = 每期投入金額 / 報價
+(允許碎股);手續費 = 規則覆寫或投資理財帳戶預設(`trade_fees.
+resolve_trade_settings`);檢查交割帳戶當下餘額 ≥ 投入金額+手續費。任一條件
+不滿足就跳過(`quote_unavailable`/`insufficient_funds`,各自去重通知,下次
+15 分鐘重試同一期)。滿足時直接寫 `read_stock_trade_projection` +
+綁定的轉帳交易(不透過 `snapshot_mutator.create_stock_trade`——那套「載入
+整份 ledger snapshot 再 diff」的機制對批次任務太重,同 `materialize_due_
+transfer_rules` 對一般轉帳規則的既有做法)。**`materialize_due_transfer_
+rules` 的查詢額外排除 `kind='stock_dca'`**——這類規則雖然也是
+`tx_type='transfer'`,但要生成 `stock_trade` 明細,不能被當成普通自動扣繳
+處理掉。
+
+**Web 前端**(`RecurringRulesPanel.tsx`):新建/編輯 Dialog 最上方加「分類」
+切換(一般交易/股票定期定額,建立後鎖定不可改),選股票定期定額時：
+`tx_type` 鎖定 `transfer`,市場/代號/名稱三個欄位(建立後鎖定),「投資理財
+帳戶」(`to_account_id`,帳戶選擇器只列 `account_type==='investment'`)、
+「交割帳戶」(`from_account_id`,任何非群組帳戶)、自訂手續費開關(關閉時
+`stock_fee_rate`/`stock_fee_min` 傳 `null`,沿用帳戶預設)。列表新增「全部/
+一般交易/股票定期定額」篩選 tab;股票規則卡片圖示改成 `trending_up` + 
+「股票定期定額」徽章,標題顯示代號/名稱。展開「已生成交易」清單時,股票
+規則的每期**不提供**編輯/刪除/連同以後(那筆 occurrence 其實是
+`stock_trade` 連帶的轉帳交易,直接改會讓 `tx_sync_id` 對不上),顯示「請至
+投資頁管理」提示。
+
+**已知限制**:不支援跨幣別 DCA;不會把使用者已輸入的轉帳金額/備註帶到 DCA
+規則(這是獨立的新建流程)。
+
+## 11. 待辦(Phase 3)
 
 - 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。

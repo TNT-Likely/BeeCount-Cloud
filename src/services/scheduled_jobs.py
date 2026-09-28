@@ -47,6 +47,9 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "debt_unsettled_counterparties": (15 * 60, False),
     "card_due_reminders": (15 * 60, False),
     "transfer_rule_materialization": (15 * 60, False),
+    # 股票定期定額(2026-09-28):同 transfer_rule_materialization 掛同一種
+    # 頻率(到期查當下報價/餘額,不能等 24 小時)。
+    "stock_dca_materialization": (15 * 60, False),
     "card_autopay": (15 * 60, False),
     "card_reward_payout": (5 * 60, False),
     "swipesmart_usage_backfill": (15 * 60, False),
@@ -129,6 +132,17 @@ def _run_transfer_rule_materialization(db: Session) -> dict:
     return {
         "materialized": result["materialized"],
         "skipped_insufficient": result["skipped_insufficient"],
+    }
+
+
+def _run_stock_dca_materialization(db: Session) -> dict:
+    from . import recurring_materializer
+
+    result = recurring_materializer.materialize_due_stock_rules(db)
+    return {
+        "materialized": result["materialized"],
+        "skipped_insufficient": result["skipped_insufficient"],
+        "skipped_no_quote": result["skipped_no_quote"],
     }
 
 
@@ -222,6 +236,7 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "debt_unsettled_counterparties": _run_debt_unsettled_counterparties,
     "card_due_reminders": _run_card_due_reminders,
     "transfer_rule_materialization": _run_transfer_rule_materialization,
+    "stock_dca_materialization": _run_stock_dca_materialization,
     "card_autopay": _run_card_autopay,
     "card_reward_payout": _run_card_reward_payout,
     "swipesmart_usage_backfill": _run_swipesmart_usage_backfill,

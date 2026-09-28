@@ -193,8 +193,13 @@ export function RecurringRulesPage() {
     }
     // 需求 #14(Phase 12):非轉帳規則分類必填,避免產生的每期交易漏分類
     // (轉帳沒有分類語意,維持不強制)。
-    if (form.tx_type !== 'transfer' && !form.category_id.trim()) {
+    if (form.tx_type !== 'transfer' && form.kind !== 'stock_dca' && !form.category_id.trim()) {
       toast.error(t('transactions.error.categoryRequired'), t('notice.error'))
+      return false
+    }
+    // 股票定期定額(2026-09-28):市場/代號必填。
+    if (form.kind === 'stock_dca' && (!form.market || !form.symbol.trim())) {
+      toast.error(t('recurringRules.error.stockSecurityRequired'), t('notice.error'))
       return false
     }
     const nextRunAtIso = new Date(form.next_run_at).toISOString()
@@ -214,6 +219,15 @@ export function RecurringRulesPage() {
         }
       : {}
     const rewardRuleIds = form.tx_type === 'expense' ? form.reward_rule_ids : []
+    // 股票定期定額手續費覆寫(2026-09-28):開關關閉時送 null 清除(改回沿用
+    // 帳戶預設),手續費率以百分比顯示輸入,送計要除以 100 換回小數。
+    const stockFeeFields =
+      form.kind === 'stock_dca'
+        ? {
+            stock_fee_rate: form.stock_fee_override ? (Number(form.stock_fee_rate) || 0) / 100 : null,
+            stock_fee_min: form.stock_fee_override ? Number(form.stock_fee_min) || 0 : null,
+          }
+        : {}
     try {
       if (form.editingId) {
         await retryOnConflict(activeLedgerId, (base) =>
@@ -231,6 +245,7 @@ export function RecurringRulesPage() {
             end_at: endAtIso,
             enabled: form.enabled,
             ...feeDiscountFields,
+            ...stockFeeFields,
             reward_rule_ids: rewardRuleIds,
           }),
         )
@@ -262,7 +277,12 @@ export function RecurringRulesPage() {
             enabled: form.enabled,
             advanced_rule_json: advancedRuleJson,
             ...feeDiscountFields,
+            ...stockFeeFields,
             reward_rule_ids: rewardRuleIds,
+            kind: form.kind,
+            market: form.kind === 'stock_dca' ? form.market : null,
+            symbol: form.kind === 'stock_dca' ? form.symbol.trim().toUpperCase() : null,
+            security_name: form.kind === 'stock_dca' ? form.security_name.trim() || null : null,
           }),
         )
         notifySuccess(t('recurringRules.notice.created'))

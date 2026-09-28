@@ -74,6 +74,34 @@ async def create_recurring_rule_ep(
         _assert_account_not_group(db, user_id=current_user.id, account_id=getattr(req, field, None), field_name=field)
     # 需求 #14(Phase 12):非轉帳規則必須帶分類,避免生成的每期交易漏分類。
     _assert_category_required(req.tx_type, req.category_id)
+    # 股票定期定額(2026-09-28,docs/STOCK_HOLDINGS_SD.md §9):kind='stock_dca'
+    # 必須是 transfer(交割帳戶→投資理財帳戶)、market/symbol 必填、
+    # to_account_id 必須是投資理財帳戶。跟單筆買進(create_stock_trade)一樣
+    # 的限制,提前在這裡擋掉,不用等到到期生成才失敗。
+    if req.kind == "stock_dca":
+        if req.tx_type != "transfer":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="kind=stock_dca requires tx_type=transfer",
+            )
+        if not req.market or not req.symbol:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="kind=stock_dca requires market and symbol",
+            )
+        if not req.from_account_id or not req.to_account_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="kind=stock_dca requires from_account_id and to_account_id",
+            )
+        if req.from_account_id == req.to_account_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="from_account_id and to_account_id must differ",
+            )
+        _assert_account_is_investment(
+            db, user_id=current_user.id, account_id=req.to_account_id, field_name="to_account_id",
+        )
     # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):跟 write/transactions.py
     # 同一套校驗 + 重算 amount,transfer 帶了任一新欄位直接 400。
     _normalize_recurring_rule_fee_discount(db=db, ledger_id=ledger.id, rule_id=None, payload=payload)

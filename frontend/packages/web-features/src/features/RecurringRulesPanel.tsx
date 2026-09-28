@@ -120,12 +120,32 @@ export function RecurringRulesPanel({
   const [pendingDelete, setPendingDelete] = useState<ReadRecurringRule | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
+  // 股票定期定額(2026-09-28):分類篩選 tab,只是 UI 層篩選,不影響資料。
+  const [kindFilter, setKindFilter] = useState<'all' | 'general' | 'stock_dca'>('all')
 
   const isTransfer = form.tx_type === 'transfer'
+  const isStockDca = form.kind === 'stock_dca'
   const categoryKind = form.tx_type === 'income' ? 'income' : 'expense'
+  // 股票定期定額:投資理財帳戶只能是 account_type === 'investment'(同單筆
+  // 買進的既有限制),交割帳戶沿用一般的帳戶清單(允許任何非群組帳戶)。
+  const investmentAccounts = useMemo(
+    () => accounts.filter((a) => a.account_type === 'investment'),
+    [accounts],
+  )
+  const filteredRules = useMemo(
+    () =>
+      kindFilter === 'all'
+        ? rules
+        : rules.filter((r) => (kindFilter === 'stock_dca' ? r.kind === 'stock_dca' : r.kind !== 'stock_dca')),
+    [rules, kindFilter],
+  )
 
   const handleOpenCreate = () => {
-    onFormChange(recurringRuleDefaults())
+    onFormChange({
+      ...recurringRuleDefaults(),
+      kind: kindFilter === 'stock_dca' ? 'stock_dca' : 'general',
+      tx_type: kindFilter === 'stock_dca' ? 'transfer' : 'expense',
+    })
     setDialogOpen(true)
   }
 
@@ -167,6 +187,13 @@ export function RecurringRulesPanel({
       fee_label: rule.fee_label || '',
       discount_amount: rule.discount_amount != null ? String(rule.discount_amount) : '',
       discount_label: rule.discount_label || '',
+      kind: rule.kind === 'stock_dca' ? 'stock_dca' : 'general',
+      market: rule.market || '',
+      symbol: rule.symbol || '',
+      security_name: rule.security_name || '',
+      stock_fee_override: rule.stock_fee_rate != null || rule.stock_fee_min != null,
+      stock_fee_rate: rule.stock_fee_rate != null ? String(rule.stock_fee_rate * 100) : '',
+      stock_fee_min: rule.stock_fee_min != null ? String(rule.stock_fee_min) : '',
     })
     setDialogOpen(true)
   }
@@ -209,7 +236,12 @@ export function RecurringRulesPanel({
   const canSubmit =
     Boolean(form.amount.trim()) &&
     Boolean(form.next_run_at.trim()) &&
-    (isTransfer ? Boolean(form.from_account_id) && Boolean(form.to_account_id) : true)
+    (isStockDca
+      ? Boolean(form.from_account_id) && Boolean(form.to_account_id) &&
+        Boolean(form.market) && Boolean(form.symbol.trim())
+      : isTransfer
+        ? Boolean(form.from_account_id) && Boolean(form.to_account_id)
+        : true)
 
   return (
     <div className="space-y-4">
@@ -220,7 +252,24 @@ export function RecurringRulesPanel({
         </Button>
       </div>
 
-      {rules.length === 0 ? (
+      <div className="flex flex-wrap gap-1.5">
+        {(['all', 'general', 'stock_dca'] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setKindFilter(key)}
+            className={`rounded-full border px-2.5 py-1 text-xs ${
+              kindFilter === key
+                ? 'border-primary bg-primary/15 text-primary'
+                : 'border-input text-muted-foreground hover:bg-accent/40'
+            }`}
+          >
+            {t(`recurringRules.kindFilter.${key}`)}
+          </button>
+        ))}
+      </div>
+
+      {filteredRules.length === 0 ? (
         <EmptyState
           icon={
             <svg
@@ -242,7 +291,7 @@ export function RecurringRulesPanel({
         />
       ) : (
         <div className="space-y-3">
-          {rules.map((rule) => {
+          {filteredRules.map((rule) => {
             const cat = rule.category_id
               ? categories.find((c) => c.id === rule.category_id)
               : null
@@ -279,41 +328,122 @@ export function RecurringRulesPanel({
           </DialogHeader>
           <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
             <div className="space-y-1">
-              <Label>{t('transactions.table.type')}</Label>
-              <Select
-                value={form.tx_type}
-                disabled={!!form.editingId}
-                onValueChange={(value) =>
-                  onFormChange({
-                    ...form,
-                    tx_type: value as RecurringRuleForm['tx_type'],
-                    category_id: '',
-                    category_name: '',
-                    // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):transfer
-                    // 沒有明確方向語意,不支援這兩個功能(server 端也會拒絕)。
-                    fee_enabled: value === 'transfer' ? false : form.fee_enabled,
-                    fee_amount: value === 'transfer' ? '' : form.fee_amount,
-                    fee_label: value === 'transfer' ? '' : form.fee_label,
-                    discount_amount: value === 'transfer' ? '' : form.discount_amount,
-                    discount_label: value === 'transfer' ? '' : form.discount_label,
-                    reward_rule_ids: value === 'expense' ? form.reward_rule_ids : [],
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="expense">{t('enum.txType.expense')}</SelectItem>
-                  <SelectItem value="income">{t('enum.txType.income')}</SelectItem>
-                  <SelectItem value="transfer">{t('enum.txType.transfer')}</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>{t('recurringRules.field.kind')}</Label>
+              <div className="flex gap-2">
+                {(['general', 'stock_dca'] as const).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={!!form.editingId}
+                    onClick={() =>
+                      onFormChange({
+                        ...form,
+                        kind: k,
+                        tx_type: k === 'stock_dca' ? 'transfer' : 'expense',
+                        category_id: '',
+                        category_name: '',
+                        account_id: '',
+                        account_name: '',
+                        from_account_id: '',
+                        from_account_name: '',
+                        to_account_id: '',
+                        to_account_name: '',
+                        reward_rule_ids: [],
+                        fee_enabled: false,
+                      })
+                    }
+                    className={`flex-1 rounded-md border px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${
+                      form.kind === k
+                        ? 'border-primary bg-primary/15 text-primary'
+                        : 'border-input text-muted-foreground hover:bg-accent/40'
+                    }`}
+                  >
+                    {t(`recurringRules.kind.${k}`)}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {!isStockDca ? (
+              <div className="space-y-1">
+                <Label>{t('transactions.table.type')}</Label>
+                <Select
+                  value={form.tx_type}
+                  disabled={!!form.editingId}
+                  onValueChange={(value) =>
+                    onFormChange({
+                      ...form,
+                      tx_type: value as RecurringRuleForm['tx_type'],
+                      category_id: '',
+                      category_name: '',
+                      // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):transfer
+                      // 沒有明確方向語意,不支援這兩個功能(server 端也會拒絕)。
+                      fee_enabled: value === 'transfer' ? false : form.fee_enabled,
+                      fee_amount: value === 'transfer' ? '' : form.fee_amount,
+                      fee_label: value === 'transfer' ? '' : form.fee_label,
+                      discount_amount: value === 'transfer' ? '' : form.discount_amount,
+                      discount_label: value === 'transfer' ? '' : form.discount_label,
+                      reward_rule_ids: value === 'expense' ? form.reward_rule_ids : [],
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="expense">{t('enum.txType.expense')}</SelectItem>
+                    <SelectItem value="income">{t('enum.txType.income')}</SelectItem>
+                    <SelectItem value="transfer">{t('enum.txType.transfer')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+
+            {isStockDca ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label>{t('investments.field.market')}</Label>
+                    <Select
+                      value={form.market || 'TW'}
+                      disabled={!!form.editingId}
+                      onValueChange={(value) => onFormChange({ ...form, market: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {['TW', 'TWO', 'US', 'HK'].map((m) => (
+                          <SelectItem key={m} value={m}>
+                            {m}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>{t('investments.field.symbol')}</Label>
+                    <Input
+                      disabled={!!form.editingId}
+                      value={form.symbol}
+                      onChange={(e) => onFormChange({ ...form, symbol: e.target.value.toUpperCase() })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label>{t('investments.field.name')}</Label>
+                  <Input
+                    disabled={!!form.editingId}
+                    value={form.security_name}
+                    onChange={(e) => onFormChange({ ...form, security_name: e.target.value })}
+                  />
+                </div>
+              </>
+            ) : null}
 
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <Label>{t('budgets.field.amount')}</Label>
+                <Label>{isStockDca ? t('recurringRules.field.stockAmount') : t('budgets.field.amount')}</Label>
                 {/* 手續費/折扣(2026-08 使用者回饋,同交易表單金額旁的
                     「+」):只在 expense/income 顯示,轉帳沒有明確方向語意
                     (server 端也會拒絕)。 */}
@@ -396,7 +526,83 @@ export function RecurringRulesPanel({
               ) : null}
             </div>
 
-            {isTransfer ? (
+            {isStockDca ? (
+              <>
+                <div className="space-y-1">
+                  <Label>{t('investments.field.settlementAccount')}</Label>
+                  <button
+                    type="button"
+                    onClick={() => setFromAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
+                  >
+                    <span className={`flex-1 truncate ${form.from_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.from_account_name || t('transactions.placeholder.accountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
+                </div>
+                <div className="space-y-1">
+                  <Label>{t('investments.field.account')}</Label>
+                  <button
+                    type="button"
+                    onClick={() => setToAccountPickerOpen(true)}
+                    className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-muted px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-accent/40"
+                  >
+                    <span className={`flex-1 truncate ${form.to_account_name ? '' : 'text-muted-foreground'}`}>
+                      {form.to_account_name || t('transactions.placeholder.accountName')}
+                    </span>
+                    <span className="text-xs text-muted-foreground opacity-60">▾</span>
+                  </button>
+                </div>
+                <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium">{t('recurringRules.field.customFee')}</p>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={form.stock_fee_override}
+                      onClick={() =>
+                        onFormChange({ ...form, stock_fee_override: !form.stock_fee_override })
+                      }
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                        form.stock_fee_override ? 'bg-primary' : 'bg-muted-foreground/30'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          form.stock_fee_override ? 'translate-x-[18px]' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t('recurringRules.field.customFeeHint')}
+                  </p>
+                  {form.stock_fee_override ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">{t('recurringRules.field.stockFeeRate')}</Label>
+                        <Input
+                          type="number"
+                          step="0.0001"
+                          value={form.stock_fee_rate}
+                          onChange={(e) => onFormChange({ ...form, stock_fee_rate: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">{t('recurringRules.field.stockFeeMin')}</Label>
+                        <Input
+                          type="number"
+                          step="1"
+                          value={form.stock_fee_min}
+                          onChange={(e) => onFormChange({ ...form, stock_fee_min: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            ) : isTransfer ? (
               <>
                 <div className="space-y-1">
                   <Label>{t('transactions.placeholder.fromAccountName')}</Label>
@@ -690,9 +896,9 @@ export function RecurringRulesPanel({
       <AccountPickerDialog
         open={toAccountPickerOpen}
         onClose={() => setToAccountPickerOpen(false)}
-        accounts={accounts}
+        accounts={isStockDca ? investmentAccounts : accounts}
         value={form.to_account_name}
-        title={t('transactions.placeholder.toAccountName')}
+        title={isStockDca ? t('investments.field.account') : t('transactions.placeholder.toAccountName')}
         onSelect={(row) =>
           onFormChange({ ...form, to_account_id: row.id, to_account_name: row.name.trim() })
         }
@@ -745,8 +951,10 @@ function RecurringRuleCard({
   onTerminateFuture: () => void
 }) {
   const t = useT()
-  const title =
-    rule.tx_type === 'transfer'
+  const isStockDca = rule.kind === 'stock_dca'
+  const title = isStockDca
+    ? [rule.symbol, rule.security_name].filter(Boolean).join(' ') || rule.symbol || ''
+    : rule.tx_type === 'transfer'
       ? t('enum.txType.transfer')
       : category?.name || rule.category_name || t('budgets.label.unknownCategory')
 
@@ -771,7 +979,9 @@ function RecurringRuleCard({
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
         >
           {rule.tx_type === 'transfer' ? (
-            <span className="material-symbols-outlined text-2xl">sync_alt</span>
+            <span className="material-symbols-outlined text-2xl">
+              {isStockDca ? 'trending_up' : 'sync_alt'}
+            </span>
           ) : (
             <CategoryIcon
               icon={category?.icon}
@@ -785,6 +995,11 @@ function RecurringRuleCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{title}</span>
+            {isStockDca ? (
+              <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                {t('recurringRules.kindFilter.stock_dca')}
+              </span>
+            ) : null}
             {!rule.enabled ? (
               <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {t('recurringRules.disabled')}
@@ -866,30 +1081,38 @@ function RecurringRuleCard({
                         ) : null}
                       </td>
                       <td className="whitespace-nowrap py-1.5 text-right">
-                        <button
-                          type="button"
-                          disabled={!canManage}
-                          className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                          onClick={() => setUpdateFromTx(tx)}
-                        >
-                          {t('recurringRules.occurrences.updateFrom')}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!canManage}
-                          className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                          onClick={() => setEditingTx(tx)}
-                        >
-                          {t('common.edit')}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!canManage}
-                          className="text-[11px] text-destructive underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                          onClick={() => onDeleteOccurrence(tx.id)}
-                        >
-                          {t('common.delete')}
-                        </button>
+                        {isStockDca ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            {t('recurringRules.occurrences.stockHint')}
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              disabled={!canManage}
+                              className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                              onClick={() => setUpdateFromTx(tx)}
+                            >
+                              {t('recurringRules.occurrences.updateFrom')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canManage}
+                              className="mr-2 text-[11px] text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                              onClick={() => setEditingTx(tx)}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canManage}
+                              className="text-[11px] text-destructive underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                              onClick={() => onDeleteOccurrence(tx.id)}
+                            >
+                              {t('common.delete')}
+                            </button>
+                          </>
+                        )}
                       </td>
                     </tr>
                   ))}
