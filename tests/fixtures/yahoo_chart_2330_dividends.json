@@ -1,0 +1,100 @@
+{
+ "chart": {
+  "result": [
+   {
+    "meta": {
+     "currency": "TWD",
+     "symbol": "2330.TW",
+     "exchangeName": "TAI",
+     "fullExchangeName": "Taiwan",
+     "instrumentType": "EQUITY",
+     "firstTradeDate": 946947600,
+     "regularMarketTime": 1790227808,
+     "hasPrePostMarketData": false,
+     "gmtoffset": 28800,
+     "timezone": "CST",
+     "exchangeTimezoneName": "Asia/Taipei",
+     "regularMarketPrice": 2475.0,
+     "regularMarketChangePercent": -1.0,
+     "fulldayPrice": 2475.0,
+     "fulldayChange": -25.0,
+     "fulldayChangePercent": -1.0,
+     "fiftyTwoWeekHigh": 2535.0,
+     "fiftyTwoWeekLow": 1300.0,
+     "regularMarketDayHigh": 2490.0,
+     "regularMarketDayLow": 2470.0,
+     "regularMarketVolume": 14324662,
+     "longName": "Taiwan Semiconductor Manufacturing Company Limited",
+     "shortName": "TAIWAN SEMICONDUCTOR MANUFACTUR",
+     "chartPreviousClose": 1340.0,
+     "priceHint": 2,
+     "currentTradingPeriod": {
+      "pre": {
+       "timezone": "CST",
+       "start": 1790211600,
+       "end": 1790211600,
+       "gmtoffset": 28800
+      },
+      "regular": {
+       "timezone": "CST",
+       "start": 1790211600,
+       "end": 1790227800,
+       "gmtoffset": 28800
+      },
+      "post": {
+       "timezone": "CST",
+       "start": 1790227800,
+       "end": 1790227800,
+       "gmtoffset": 28800
+      }
+     },
+     "dataGranularity": "1d",
+     "range": "1y",
+     "validRanges": [
+      "1d",
+      "5d",
+      "1mo",
+      "3mo",
+      "6mo",
+      "1y",
+      "2y",
+      "5y",
+      "10y",
+      "ytd",
+      "max"
+     ]
+    },
+    "timestamp": [
+     1758675600,
+     1758762000
+    ],
+    "events": {
+     "dividends": {
+      "1765414800": {
+       "amount": 5.000011,
+       "date": 1765414800
+      },
+      "1773709200": {
+       "amount": 6.000036,
+       "date": 1773709200
+      },
+      "1781139600": {
+       "amount": 6.000036,
+       "date": 1781139600
+      },
+      "1789520400": {
+       "amount": 7.000001,
+       "date": 1789520400
+      }
+     }
+    },
+    "indicators": {
+     "quote": [
+      {}
+     ]
+    }
+   }
+  ],
+  "error": null
+ }
+}

@@ -51,6 +51,7 @@ import {
 } from '@beecount/web-features'
 
 import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
+import { InvestmentValueCard } from '../../components/dashboard/InvestmentValueCard'
 import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { routePath } from '../../state/router'
 import { dispatchOpenDetailAccount, onOpenEditAccount } from '../../lib/txDialogEvents'
@@ -721,6 +722,8 @@ export function AccountsPage() {
           </CardContent>
         </Card>
       )}
+      {/* 股票持股(2026-09-28):投資市值另外顯示,不計入淨資產。 */}
+      <InvestmentValueCard />
       <AccountsPanel
         form={form}
         rows={rows}

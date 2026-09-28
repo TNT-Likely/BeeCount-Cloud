@@ -1,0 +1,130 @@
+{
+ "chart": {
+  "result": [
+   {
+    "meta": {
+     "currency": "USD",
+     "symbol": "AAPL",
+     "exchangeName": "NMS",
+     "fullExchangeName": "NasdaqGS",
+     "instrumentType": "EQUITY",
+     "firstTradeDate": 345479400,
+     "regularMarketTime": 1790366401,
+     "hasPrePostMarketData": true,
+     "gmtoffset": -14400,
+     "timezone": "EDT",
+     "exchangeTimezoneName": "America/New_York",
+     "regularMarketPrice": 341.07,
+     "regularMarketChangePercent": 1.533,
+     "fulldayPrice": 341.46,
+     "fulldayChange": 5.15,
+     "fulldayChangePercent": 1.533,
+     "fiftyTwoWeekHigh": 345.34,
+     "fiftyTwoWeekLow": 243.42,
+     "regularMarketDayHigh": 341.67,
+     "regularMarketDayLow": 334.53,
+     "regularMarketVolume": 30002507,
+     "longName": "Apple Inc.",
+     "shortName": "Apple Inc.",
+     "chartPreviousClose": 336.13,
+     "priceHint": 2,
+     "currentTradingPeriod": {
+      "pre": {
+       "timezone": "EDT",
+       "end": 1790343000,
+       "start": 1790323200,
+       "gmtoffset": -14400
+      },
+      "regular": {
+       "timezone": "EDT",
+       "end": 1790366400,
+       "start": 1790343000,
+       "gmtoffset": -14400
+      },
+      "post": {
+       "timezone": "EDT",
+       "end": 1790380800,
+       "start": 1790366400,
+       "gmtoffset": -14400
+      }
+     },
+     "dataGranularity": "1d",
+     "range": "5d",
+     "validRanges": [
+      "1d",
+      "5d",
+      "1mo",
+      "3mo",
+      "6mo",
+      "1y",
+      "2y",
+      "5y",
+      "10y",
+      "ytd",
+      "max"
+     ]
+    },
+    "timestamp": [
+     1789997400,
+     1790083800,
+     1790170200,
+     1790256600,
+     1790343000
+    ],
+    "indicators": {
+     "quote": [
+      {
+       "high": [
+        339.6400146484375,
+        345.3399963378906,
+        341.79998779296875,
+        338.9100036621094,
+        341.6700134277344
+       ],
+       "low": [
+        333.04998779296875,
+        338.75,
+        335.5,
+        334.29998779296875,
+        334.5299987792969
+       ],
+       "open": [
+        335.2799987792969,
+        340.1400146484375,
+        341.0799865722656,
+        336.7200012207031,
+        336.0400085449219
+       ],
+       "close": [
+        338.9800109863281,
+        339.75,
+        337.0199890136719,
+        335.9200134277344,
+        341.07000732421875
+       ],
+       "volume": [
+        34999200,
+        40711800,
+        31658800,
+        24733100,
+        29950100
+       ]
+      }
+     ],
+     "adjclose": [
+      {
+       "adjclose": [
+        338.9800109863281,
+        339.75,
+        337.0199890136719,
+        335.9200134277344,
+        341.07000732421875
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "error": null
+ }
+}

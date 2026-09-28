@@ -343,6 +343,9 @@ export type ReadAccount = {
   /** 帳戶清單拖曳排序(2026-09-05):null = 舊資料/舊版 App 沒有這個值,
    *  清單顯示時排到最後。 */
   sort_order: number | null
+  /** 股票持股(2026-09-28):投資理財帳戶費用設定(camelCase key,同 sync wire
+   *  `investmentSettings`)。null = 沒設定過,沿用市場預設值。 */
+  investment_settings?: InvestmentSettings | null
 }
 
 export type ReadCategory = {
@@ -909,6 +912,8 @@ export type AccountPayload = {
   swipesmart_card_id?: string | null
   /** 納入總餘額(Phase 18):create 缺省 true;update 不传 = 不改。 */
   include_in_total?: boolean | null
+  /** 股票持股(2026-09-28):整包取代;null = 清空;不传 = 不改。 */
+  investment_settings?: InvestmentSettings | null
   /** 帳戶清單拖曳排序(2026-09-05):不传 = 不改。批次拖曳排序走
    *  `reorderAccounts`,單筆 create/update 一般不用這個欄位。 */
   sort_order?: number | null
@@ -2095,4 +2100,23 @@ export type TxTemplateApplyPayload = {
   happened_at: string
   amount?: number | null
   note?: string | null
+}
+
+
+/** 投資理財帳戶費用設定(股票持股 2026-09-28)。key 對齊 App
+ *  lib/models/investment_settings.dart 與 server snapshot_mutator.normalize_investment_settings;
+ *  比率一律是小數(0.001425 = 0.1425%),全部選填,缺 = 沿用市場預設。 */
+export type InvestmentSettings = {
+  market?: string
+  feeRate?: number
+  feeDiscount?: number
+  feeMin?: number
+  sellTaxRate?: number
+  dividendFeeFixed?: number
+  dividendFeeRate?: number
+  dividendWithholdingRate?: number
+  nhiSupplementRate?: number
+  nhiThreshold?: number
+  reinvestDividends?: boolean
+  settlementAccountId?: string
 }

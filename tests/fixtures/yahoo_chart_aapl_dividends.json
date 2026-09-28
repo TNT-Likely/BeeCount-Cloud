@@ -1,0 +1,100 @@
+{
+ "chart": {
+  "result": [
+   {
+    "meta": {
+     "currency": "USD",
+     "symbol": "AAPL",
+     "exchangeName": "NMS",
+     "fullExchangeName": "NasdaqGS",
+     "instrumentType": "EQUITY",
+     "firstTradeDate": 345479400,
+     "regularMarketTime": 1790366401,
+     "hasPrePostMarketData": true,
+     "gmtoffset": -14400,
+     "timezone": "EDT",
+     "exchangeTimezoneName": "America/New_York",
+     "regularMarketPrice": 341.07,
+     "regularMarketChangePercent": 1.533,
+     "fulldayPrice": 341.46,
+     "fulldayChange": 5.15,
+     "fulldayChangePercent": 1.533,
+     "fiftyTwoWeekHigh": 345.34,
+     "fiftyTwoWeekLow": 243.42,
+     "regularMarketDayHigh": 341.67,
+     "regularMarketDayLow": 334.53,
+     "regularMarketVolume": 30002507,
+     "longName": "Apple Inc.",
+     "shortName": "Apple Inc.",
+     "chartPreviousClose": 256.87,
+     "priceHint": 2,
+     "currentTradingPeriod": {
+      "pre": {
+       "timezone": "EDT",
+       "start": 1790323200,
+       "end": 1790343000,
+       "gmtoffset": -14400
+      },
+      "regular": {
+       "timezone": "EDT",
+       "start": 1790343000,
+       "end": 1790366400,
+       "gmtoffset": -14400
+      },
+      "post": {
+       "timezone": "EDT",
+       "start": 1790366400,
+       "end": 1790380800,
+       "gmtoffset": -14400
+      }
+     },
+     "dataGranularity": "1d",
+     "range": "1y",
+     "validRanges": [
+      "1d",
+      "5d",
+      "1mo",
+      "3mo",
+      "6mo",
+      "1y",
+      "2y",
+      "5y",
+      "10y",
+      "ytd",
+      "max"
+     ]
+    },
+    "timestamp": [
+     1758893400,
+     1759152600
+    ],
+    "events": {
+     "dividends": {
+      "1762785000": {
+       "amount": 0.26,
+       "date": 1762785000
+      },
+      "1770647400": {
+       "amount": 0.26,
+       "date": 1770647400
+      },
+      "1778506200": {
+       "amount": 0.27,
+       "date": 1778506200
+      },
+      "1786368600": {
+       "amount": 0.27,
+       "date": 1786368600
+      }
+     }
+    },
+    "indicators": {
+     "quote": [
+      {}
+     ]
+    }
+   }
+  ],
+  "error": null
+ }
+}

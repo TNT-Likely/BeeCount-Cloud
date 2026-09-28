@@ -109,6 +109,7 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src (僅單元測試)
 | **專案 (Projects, Phase 13)** | `routers/write/projects.py`, `read/ledgers.py::list_projects`（前端獨立路由 `/app/projects`，頂部導航緊鄰「標籤」右側，`nav.ts` NAV_GROUPS 的 bookkeeping 組；原本設計放在標籤分頁底下的子分頁，後續改成獨立入口） | [`docs/PH13_PROJECT_SD.md`](./docs/PH13_PROJECT_SD.md), [`docs/PH13_PROJECT_WEB_MANUAL_TEST_PLAN.md`](./docs/PH13_PROJECT_WEB_MANUAL_TEST_PLAN.md) |
 | **比較報表矩陣 (Web)** | `read/workspace.py::comparison_matrix` / `comparison_matrix_cell`(與 `/workspace/comparison` 共用 `_stat_legs` 口徑),前端 `pages/sections/ComparisonReportPage.tsx`(路由 `/app/comparison-report`) | [`docs/COMPARISON_MATRIX_SD.md`](./docs/COMPARISON_MATRIX_SD.md) |
 | **授權金鑰 / 最低可同步版本** | `services/license.py`（強制點在 `deps.get_current_user` / PAT / `ws.py`），`routers/license.py`, `routers/admin_licenses.py`；新增端點務必經過 `get_current_user`，`tests/test_license_route_audit.py` 會擋 | [`docs/LICENSE_KEYS.md`](./docs/LICENSE_KEYS.md) |
+| **股票持股 (2026-09-28)** | `services/securities/`(報價/搜尋/持股計算;`dividends.py` 除權息同步 + 待確認股利)、`routers/read/securities.py`、`routers/write/stock_trades.py`(含待確認股利 confirm/dismiss)、`snapshot_mutator.create_stock_trade`;sync entity `stock_trade`(ledger-scoped);`pending_dividends` 是 server 專屬狀態不進 sync;前端 `/app/investments` | [`docs/STOCK_HOLDINGS_SD.md`](./docs/STOCK_HOLDINGS_SD.md) |
 | **部署與備份** | rclone 多遠端加密備份, docker-compose, Alembic | [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md), [`docs/MIGRATION.md`](./docs/MIGRATION.md) |
 
 ---

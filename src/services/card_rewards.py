@@ -138,6 +138,20 @@ def ensure_reward_category(db: Session, *, user_id: str) -> str:
     )
 
 
+DIVIDEND_CATEGORY_NAME = "股利"
+_DIVIDEND_CATEGORY_DEVICE_ID = "server-dividend"
+
+
+def ensure_dividend_category(db: Session, *, user_id: str) -> str:
+    """股票股利入帳(docs/STOCK_HOLDINGS_SD.md §7)的 income 分類,名稱固定
+    `"股利"`(App 手動記股利時也找同名 income 分類,見
+    `LocalRepository._ensureDividendCategory`)。"""
+    return _ensure_user_global_category(
+        db, user_id=user_id, name=DIVIDEND_CATEGORY_NAME, kind="income",
+        device_id=_DIVIDEND_CATEGORY_DEVICE_ID,
+    )
+
+
 def ensure_refund_category(db: Session, *, user_id: str, kind: str) -> str:
     """退款交易(§2.6/§2.12.3)+ 信用卡回饋沖銷(§2.9.5,見
     `card_reward_payout.reverse_card_reward_payouts_for_refund`)統一歸到

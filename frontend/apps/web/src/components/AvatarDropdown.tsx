@@ -9,6 +9,7 @@ import {
   CreditCard,
   FileStack,
   HandCoins,
+  CandlestickChart,
   Info,
   Key,
   KeyRound,
@@ -162,6 +163,13 @@ export function AvatarDropdown({
             onClick={() => onNavigate('debts')}
           >
             {t('nav.debts')}
+          </MenuButton>
+          <MenuButton
+            icon={CandlestickChart}
+            active={currentSection === 'investments'}
+            onClick={() => onNavigate('investments')}
+          >
+            {t('nav.investments')}
           </MenuButton>
           <MenuButton
             icon={FileStack}

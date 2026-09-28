@@ -1,0 +1,62 @@
+{
+  "_comment": "股票持股計算共用測試向量(docs/STOCK_HOLDINGS_SD.md)。Cloud: src/services/securities/holdings.py;App: lib/services/investment/holdings_calculator.dart。兩個 repo 各放一份、內容必須相同。expected 是 include_closed=true 的結果,依 (accountId, market, symbol) 排序。",
+  "cases": [
+    {
+      "name": "buy_buy_sell_moving_average",
+      "trades": [
+        {"syncId": "t1", "accountId": "acc_a", "market": "TW", "symbol": "2330", "tradeType": "buy", "shares": 1000, "price": 600, "fee": 855, "tax": 0, "amount": 600855, "tradeDate": "2026-01-05T01:00:00+00:00"},
+        {"syncId": "t2", "accountId": "acc_a", "market": "TW", "symbol": "2330", "tradeType": "buy", "shares": 1000, "price": 700, "fee": 997, "tax": 0, "amount": 700997, "tradeDate": "2026-02-10T01:00:00+00:00"},
+        {"syncId": "t3", "accountId": "acc_a", "market": "TW", "symbol": "2330", "tradeType": "sell", "shares": 500, "price": 800, "fee": 570, "tax": 1200, "amount": 398230, "tradeDate": "2026-03-15T01:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "2330", "shares": 1500, "totalCost": 976389, "avgCost": 650.926, "realizedPnl": 72767, "dividends": 0}
+      ]
+    },
+    {
+      "name": "stock_dividend_cash_dividend_reinvest_full_sell",
+      "trades": [
+        {"syncId": "t5", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "sell", "shares": 112.5, "price": 60, "fee": 10, "tax": 20, "amount": 6720, "tradeDate": "2026-08-01T00:00:00+00:00"},
+        {"syncId": "t3", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "cash_dividend", "shares": 110, "price": null, "fee": 0, "tax": 0, "amount": 300, "tradeDate": "2026-07-01T00:00:00+00:00"},
+        {"syncId": "t4", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "reinvest", "shares": 2.5, "price": 40, "fee": 0, "tax": 0, "amount": 100, "tradeDate": "2026-07-01T00:00:00+00:00"},
+        {"syncId": "t1", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "opening", "shares": 100, "price": 50, "fee": 0, "tax": 0, "amount": 5000, "tradeDate": "2026-01-01T00:00:00+00:00"},
+        {"syncId": "t2", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "stock_dividend", "shares": 10, "price": 0, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-06-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "0056", "shares": 0, "totalCost": 0, "avgCost": 0, "realizedPnl": 1620, "dividends": 400}
+      ]
+    },
+    {
+      "name": "multi_account_same_day_buy_before_sell_fractional",
+      "trades": [
+        {"syncId": "a2", "accountId": "acc_a", "market": "US", "symbol": "AAPL", "tradeType": "sell", "shares": 5, "price": 200, "fee": 1, "tax": 0, "amount": 999, "tradeDate": "2026-03-01T15:00:00+00:00"},
+        {"syncId": "a1", "accountId": "acc_a", "market": "US", "symbol": "AAPL", "tradeType": "buy", "shares": 10, "price": 150, "fee": 1, "tax": 0, "amount": 1501, "tradeDate": "2026-03-01T14:00:00+00:00"},
+        {"syncId": "b1", "accountId": "acc_b", "market": "US", "symbol": "AAPL", "tradeType": "buy", "shares": 3, "price": 100, "fee": 0, "tax": 0, "amount": 300, "tradeDate": "2026-01-01T14:00:00+00:00"},
+        {"syncId": "c1", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "buy", "shares": 2.5, "price": 10, "fee": 0, "tax": 0, "amount": 25, "tradeDate": "2026-02-01T01:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "0050", "shares": 2.5, "totalCost": 25, "avgCost": 10, "realizedPnl": 0, "dividends": 0},
+        {"accountId": "acc_a", "market": "US", "symbol": "AAPL", "shares": 5, "totalCost": 750.5, "avgCost": 150.1, "realizedPnl": 248.5, "dividends": 0},
+        {"accountId": "acc_b", "market": "US", "symbol": "AAPL", "shares": 3, "totalCost": 300, "avgCost": 100, "realizedPnl": 0, "dividends": 0}
+      ]
+    },
+    {
+      "name": "zero_amount_falls_back_to_shares_times_price_plus_fee",
+      "trades": [
+        {"syncId": "z1", "accountId": "acc_a", "market": "US", "symbol": "VT", "tradeType": "buy", "shares": 10, "price": 5, "fee": 1, "tax": 0, "amount": 0, "tradeDate": "2026-01-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "US", "symbol": "VT", "shares": 10, "totalCost": 51, "avgCost": 5.1, "realizedPnl": 0, "dividends": 0}
+      ]
+    },
+    {
+      "name": "oversell_only_deducts_held_shares",
+      "trades": [
+        {"syncId": "o1", "accountId": "acc_a", "market": "US", "symbol": "QQQ", "tradeType": "buy", "shares": 10, "price": 10, "fee": 0, "tax": 0, "amount": 100, "tradeDate": "2026-01-01T00:00:00+00:00"},
+        {"syncId": "o2", "accountId": "acc_a", "market": "US", "symbol": "QQQ", "tradeType": "sell", "shares": 15, "price": 12, "fee": 0, "tax": 0, "amount": 180, "tradeDate": "2026-01-02T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "US", "symbol": "QQQ", "shares": 0, "totalCost": 0, "avgCost": 0, "realizedPnl": 80, "dividends": 0}
+      ]
+    }
+  ]
+}

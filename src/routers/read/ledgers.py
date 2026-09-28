@@ -505,6 +505,7 @@ def list_accounts(
             swipesmart_card_id=row.swipesmart_card_id,
             include_in_total=row.include_in_total,
             sort_order=row.sort_order,
+            investment_settings=_investment_settings_or_none(row.investment_settings_json),
         )
         for row in rows
     ]

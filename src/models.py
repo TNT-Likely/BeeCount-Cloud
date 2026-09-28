@@ -822,6 +822,12 @@ class UserAccountProjection(Base):
     # nullable——舊資料/舊版 App 沒有這個值時留 None,read 端排序時 fallback
     # 到名稱(見 routers/read/ledgers.py)。
     sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 股票持股(2026-09-28,docs/STOCK_HOLDINGS_SD.md):投資理財帳戶的使用者
+    # 自訂費用設定(手續費率/折扣/最低手續費/證交稅/股利手續費/預扣稅/二代
+    # 健保/預設再投入/交割帳戶),wire 上是 `investmentSettings` 物件,這裡
+    # json.dumps 成 TEXT 存(跟 recurring_rule.advanced_rule_json 同款)。
+    # None = 沒設定過,讀端套各市場預設值。
+    investment_settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class UserExchangeRateProjection(Base):
@@ -869,6 +875,144 @@ class ExchangeRateCache(Base):
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Security(Base):
+    """證券清單(股票持股 2026-09-28,docs/STOCK_HOLDINGS_SD.md)。全域、不分
+    user、不進 sync —— 跟 `ExchangeRateCache` 同款「server 自己抓來的市場
+    資料」。業務鍵 (market, symbol);`market` 代碼見
+    `services/securities/markets.py`(TW=上市、TWO=上櫃、US、HK…)。
+
+    台股清單由 `security_master_refresh` 排程從證交所/櫃買 OpenAPI 整批
+    同步;其它市場在使用者搜尋(Yahoo)時才 upsert 進來。"""
+
+    __tablename__ = "securities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    currency: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 'stock' | 'etf' | 'bond_etf' | 'other',只給搜尋結果顯示用。
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="stock")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=true(), default=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index("ux_securities_market_symbol", Security.market, Security.symbol, unique=True)
+
+
+class SecurityQuote(Base):
+    """最新報價快取,每檔證券一行。`session`:'close' = 收盤價(收盤排程
+    寫入),'intraday' = 盤中延遲報價(使用者打開 App/Web 時補抓)。"""
+
+    __tablename__ = "security_quotes"
+
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), primary_key=True
+    )
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    prev_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 報價本身的時間(交易所時間轉 UTC),不是抓取時間。
+    quote_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    session: Mapped[str] = mapped_column(String(16), nullable=False, default="close")
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SecurityDividendEvent(Base):
+    """除權息事件(股票持股 Phase 2,docs/STOCK_HOLDINGS_SD.md §7)。全域市場
+    資料,同 `securities`。業務鍵 (security_id, ex_date)。
+
+    - `cash_per_share`:每股現金股利(證券幣別)。
+    - `stock_per_share`:每股配股數(台股「無償配股率」,例 0.05 = 每 1000 股
+      配 50 股)。
+    - `source`:'twse' / 'tpex'(官方預告表)優先於 'yahoo'——官方來源寫過的
+      事件不會被 Yahoo 蓋掉(見 `services/securities/dividends.upsert_events`)。
+    官方預告表常常先公告除息日、金額之後才補上,所以金額欄位會被更新。"""
+
+    __tablename__ = "security_dividend_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), nullable=False
+    )
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False)
+    pay_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    cash_per_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    stock_per_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index(
+    "ux_security_dividend_events_sec_date",
+    SecurityDividendEvent.security_id,
+    SecurityDividendEvent.ex_date,
+    unique=True,
+)
+
+
+class PendingDividend(Base):
+    """待確認股利(股票持股 Phase 2)。`security_dividend_detector` 排程在除息
+    日當天(含)之後,依「除息日前一天收盤時」的持股股數替每個持有該標的的
+    投資理財帳戶建一筆,並發通知;使用者在 App/Web 確認實收金額(或選擇
+    再投入)後,由 server 建立 income 交易 + stock_trade(見
+    `routers/write/stock_trades.py::confirm_pending_dividend_api`)。
+
+    不是 sync entity:狀態只存在 server,App/Web 都透過 API 讀寫。估算欄位
+    (`est_*`)在狀態還是 pending 時每次排程都會依最新持股重算(使用者補記
+    除息日前的買進時會跟著變)。
+
+    `status`:'pending' / 'confirmed' / 'dismissed'。已確認的股利如果使用者
+    之後把建出來的明細刪掉,排程會把它改回 pending(不重發通知)。
+    `ledger_id`:入帳要落在哪本帳(內部 PK)——取該帳戶這檔標的最近一筆
+    明細所在的帳本。"""
+
+    __tablename__ = "pending_dividends"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), nullable=False)
+    account_sync_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("security_dividend_events.id", ondelete="CASCADE"), nullable=False
+    )
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    security_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    shares: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    est_gross: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    est_fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    est_tax: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    est_net: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    est_stock_shares: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # 確認時建立的 stock_trade syncId(JSON 陣列字串),用來判斷是否被刪掉。
+    created_trade_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index(
+    "ux_pending_dividends_user_account_event",
+    PendingDividend.user_id,
+    PendingDividend.account_sync_id,
+    PendingDividend.event_id,
+    unique=True,
+)
+Index("ix_pending_dividends_user_status", PendingDividend.user_id, PendingDividend.status)
 
 
 class UserTagProjection(Base):
@@ -1171,6 +1315,66 @@ Index(
     "ix_read_debt_ledger_due",
     ReadDebtProjection.ledger_id,
     ReadDebtProjection.due_at,
+)
+
+
+class ReadStockTradeProjection(Base):
+    """股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。ledger-scoped,
+    PK=(ledger_id, sync_id),跟 debt 同款。
+
+    **持股不落庫**:股數/平均成本/已實現損益一律由這張表即時彙總
+    (`services/securities/holdings.py`,移動平均成本法),跟 debt 的
+    remaining_amount 從還款交易 derive 同一個理由 —— 不在 mobile push /
+    web write 兩條路徑上各掛一段「改明細時聯動重算持股」的邏輯。
+
+    `tx_sync_id` 指向對應的轉帳/收入交易(買進/賣出/現金股利/再投入才有;
+    期初持股、配股沒有現金流動,為 None)。兩者由同一次寫入一起建立、一起
+    刪除(App `LocalRepository`;web `snapshot_mutator.create_stock_trade`)。
+
+    `amount` = 以證券幣別計的現金影響(正數):buy/opening = 股數×價格+手續費
+    (成本),sell = 股數×價格−手續費−交易稅(淨收入),cash_dividend/
+    reinvest = 實收金額,stock_dividend = 0。"""
+
+    __tablename__ = "read_stock_trade_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    market: Mapped[str] = mapped_column(String(16), default="")
+    symbol: Mapped[str] = mapped_column(String(32), default="")
+    security_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # buy / sell / opening / cash_dividend / stock_dividend / reinvest
+    trade_type: Mapped[str] = mapped_column(String(32), default="buy")
+    shares: Mapped[float] = mapped_column(Float, default=0.0)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee: Mapped[float] = mapped_column(Float, default=0.0)
+    tax: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    trade_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 股利明細對應的除權息事件(Phase 2,`security_dividend_events.id` 的字串);
+    # Phase 1 一律 None。
+    dividend_event_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_stock_trade_account",
+    ReadStockTradeProjection.user_id,
+    ReadStockTradeProjection.account_sync_id,
+)
+Index(
+    "ix_read_stock_trade_symbol",
+    ReadStockTradeProjection.market,
+    ReadStockTradeProjection.symbol,
 )
 
 

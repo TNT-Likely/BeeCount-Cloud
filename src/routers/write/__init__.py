@@ -26,6 +26,7 @@ from . import (
     project_category_budgets,
     projects,
     recurring_rules,
+    stock_trades,
     tags,
     transactions,
     transactions_batch,
@@ -51,3 +52,4 @@ router.include_router(projects.router)
 router.include_router(project_category_budgets.router)
 router.include_router(tx_templates.router)
 router.include_router(card_reward_rules.router)
+router.include_router(stock_trades.router)

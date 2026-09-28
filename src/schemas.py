@@ -667,6 +667,9 @@ class ReadAccountOut(BaseModel):
     # 帳戶清單拖曳排序(2026-09-05):None = 舊資料/舊版 App 沒有這個值,read
     # 端排序時 fallback 到名稱(見 routers/read/ledgers.py)。
     sort_order: int | None = None
+    # 股票持股(2026-09-28):投資理財帳戶費用設定(camelCase key,跟 sync
+    # wire `investmentSettings` 同形)。None = 沒設定過。
+    investment_settings: dict | None = None
 
 
 class ReadCardRecommendationOut(BaseModel):
@@ -1781,6 +1784,8 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     include_in_total: bool = True
     # 帳戶清單拖曳排序(2026-09-05):新建一般不设,由後續拖曳排序 PATCH。
     sort_order: int | None = None
+    # 股票持股(2026-09-28):投資理財帳戶費用設定,None = 不設定。
+    investment_settings: dict | None = None
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -1811,6 +1816,8 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     # 帳戶清單拖曳排序(2026-09-05):None = 不改(PATCH exclude_unset)。單筆
     # PATCH 一般不用這個欄位改排序,批次拖曳走 WriteAccountReorderRequest。
     sort_order: int | None = None
+    # 股票持股(2026-09-28):整包取代;顯式傳 null = 清空(exclude_unset)。
+    investment_settings: dict | None = None
 
 
 class WriteAccountReorderRequest(WriteBaseRequest):
@@ -2607,3 +2614,74 @@ class AdminBroadcastListOut(BaseModel):
 
 class AdminBroadcastRecipientCountOut(BaseModel):
     count: int
+
+
+# ============================================================================
+# 股票持股(2026-09-28,docs/STOCK_HOLDINGS_SD.md)
+# ============================================================================
+
+
+class WriteStockTradeCreateRequest(WriteBaseRequest):
+    """buy/sell 會連帶建立一筆轉帳交易(交割帳戶 ⇄ 投資理財帳戶),換算規則見
+    `snapshot_mutator.stock_trade_tx_fields`。cash_dividend(股利入
+    settlement_account)/reinvest(股利再投入,入投資理財帳戶本身)建一筆
+    income 交易(Phase 2,手動補記股利用;待確認股利走
+    `PendingDividendConfirmRequest`)。cash_dividend 的 shares = 持有股數、
+    price = 每股股利、fee = 股利手續費、tax = 預扣稅+二代健保。"""
+
+    account_id: str = Field(min_length=1, max_length=255)
+    trade_type: Literal["buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"]
+    market: str = Field(min_length=2, max_length=16)
+    symbol: str = Field(min_length=1, max_length=32)
+    security_name: str | None = Field(default=None, max_length=255)
+    shares: float = Field(gt=0)
+    price: float | None = Field(default=None, ge=0)
+    fee: float = Field(default=0.0, ge=0)
+    tax: float = Field(default=0.0, ge=0)
+    currency: str | None = Field(default=None, max_length=16)
+    trade_date: datetime
+    settlement_account_id: str | None = Field(default=None, max_length=255)
+    # 交割帳戶幣別跟證券幣別不同時必填:交割帳戶實際扣款(買進)/入帳(賣出)
+    # 的金額,已含手續費/稅。
+    settlement_amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+
+
+class WriteStockTradeUpdateRequest(WriteBaseRequest):
+    """PATCH(exclude_unset):trade_type/帳戶/標的建立後不可改。"""
+
+    shares: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, ge=0)
+    fee: float | None = Field(default=None, ge=0)
+    tax: float | None = Field(default=None, ge=0)
+    trade_date: datetime | None = None
+    security_name: str | None = Field(default=None, max_length=255)
+    settlement_account_id: str | None = Field(default=None, max_length=255)
+    settlement_amount: float | None = Field(default=None, gt=0)
+    note: str | None = None
+
+
+class PendingDividendConfirmRequest(WriteBaseRequest):
+    """確認待確認股利(Phase 2)。沒給的欄位用 server 估算值
+    (`pending_dividends.est_*`、費用設定)。
+
+    - mode='cash':建 cash_dividend(入 settlement_account_id,沒給就用帳戶
+      費用設定的交割帳戶);fee/tax 可覆寫,實收 = 股數×每股股利−fee−tax。
+    - mode='reinvest':建 reinvest(入投資理財帳戶本身),reinvest_shares /
+      reinvest_price 必填。
+    - stock_shares > 0 時另外建一筆 stock_dividend(配股);預設 = 估算配股數,
+      給 0 表示不記。
+    """
+
+    mode: Literal["cash", "reinvest"] = "cash"
+    cash_per_share: float | None = Field(default=None, ge=0)
+    fee: float | None = Field(default=None, ge=0)
+    tax: float | None = Field(default=None, ge=0)
+    settlement_account_id: str | None = Field(default=None, max_length=255)
+    settlement_amount: float | None = Field(default=None, gt=0)
+    reinvest_shares: float | None = Field(default=None, gt=0)
+    reinvest_price: float | None = Field(default=None, gt=0)
+    reinvest_fee: float | None = Field(default=None, ge=0)
+    stock_shares: float | None = Field(default=None, ge=0)
+    trade_date: datetime | None = None
+    note: str | None = None

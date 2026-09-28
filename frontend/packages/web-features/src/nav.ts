@@ -11,6 +11,7 @@ export type AppSection =
   | 'recurring-rules'
   | 'installment-plans'
   | 'debts'
+  | 'investments'
   | 'tx-templates'
   | 'ledgers'
   | 'settings-profile'

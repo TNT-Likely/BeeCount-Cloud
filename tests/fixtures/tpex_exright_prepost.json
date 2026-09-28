@@ -1,0 +1,58 @@
+[
+ {
+  "ExRrightsExDividendDate": "1150915",
+  "SecuritiesCompanyCode": "00942B",
+  "CompanyName": "台新美A公司債20+",
+  "ExRrightsExDividend": "除息",
+  "StockDividendRatio": "0.00000000",
+  "SubscriptionRatioToNewSharesIssued": "0.00000000",
+  "SubscriptionPricePerShare": "0.00",
+  "CashDividend": "0.06200000",
+  "AllocatedForPublicUnderwriting": "0",
+  "SubscribedByEmployees": "0",
+  "SubscribedByExistingShareholders": "0",
+  "SubscribedProRataInThousandShares": "0.00000000"
+ },
+ {
+  "ExRrightsExDividendDate": "1150915",
+  "SecuritiesCompanyCode": "00970B",
+  "CompanyName": "台新BBB投等債20+",
+  "ExRrightsExDividend": "除息",
+  "StockDividendRatio": "0.00000000",
+  "SubscriptionRatioToNewSharesIssued": "0.00000000",
+  "SubscriptionPricePerShare": "0.00",
+  "CashDividend": "0.05000000",
+  "AllocatedForPublicUnderwriting": "0",
+  "SubscribedByEmployees": "0",
+  "SubscribedByExistingShareholders": "0",
+  "SubscribedProRataInThousandShares": "0.00000000"
+ },
+ {
+  "ExRrightsExDividendDate": "1150915",
+  "SecuritiesCompanyCode": "00980B",
+  "CompanyName": "台新特選IG債10+",
+  "ExRrightsExDividend": "除息",
+  "StockDividendRatio": "0.00000000",
+  "SubscriptionRatioToNewSharesIssued": "0.00000000",
+  "SubscriptionPricePerShare": "0.00",
+  "CashDividend": "0.04700000",
+  "AllocatedForPublicUnderwriting": "0",
+  "SubscribedByEmployees": "0",
+  "SubscribedByExistingShareholders": "0",
+  "SubscribedProRataInThousandShares": "0.00000000"
+ },
+ {
+  "ExRrightsExDividendDate": "1150915",
+  "SecuritiesCompanyCode": "3675",
+  "CompanyName": "德微",
+  "ExRrightsExDividend": "除息",
+  "StockDividendRatio": "0.00000000",
+  "SubscriptionRatioToNewSharesIssued": "0.00000000",
+  "SubscriptionPricePerShare": "0.00",
+  "CashDividend": "4.00000000",
+  "AllocatedForPublicUnderwriting": "0",
+  "SubscribedByEmployees": "0",
+  "SubscribedByExistingShareholders": "0",
+  "SubscribedProRataInThousandShares": "0.00000000"
+ }
+]

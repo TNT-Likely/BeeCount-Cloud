@@ -51,6 +51,13 @@ _DEFAULT_JOB_CONFIGS: dict[str, tuple[int, bool]] = {
     "card_reward_payout": (5 * 60, False),
     "swipesmart_usage_backfill": (15 * 60, False),
     "check_latest_app_version": (30 * 60, False),
+    # 股票持股(2026-09-28):每 5 分鐘檢查一次,各市場收盤後才真的打上游,
+    # 見 services/securities/quotes.py::refresh_close_quotes。
+    "security_quote_close": (5 * 60, False),
+    # 股利(Phase 2):除權息事件每 6 小時同步一次(官方預告表每天更新);
+    # 待確認股利每小時偵測一次(除息日當天早上就能收到通知)。
+    "security_dividend_sync": (6 * 3600, False),
+    "security_dividend_detector": (3600, False),
 }
 
 
@@ -181,6 +188,29 @@ def _run_check_latest_app_version(db: Session) -> dict:
     return app_version_check.check_latest_app_version(db)
 
 
+def _run_security_quote_close(db: Session) -> dict:
+    """股票持股(docs/STOCK_HOLDINGS_SD.md):各市場收盤後抓一次持有標的的收盤
+    價。還沒到收盤門檻/週末/全部已抓過時直接回 {markets: 0}。"""
+    from .securities import quotes
+
+    return quotes.refresh_close_quotes(db)
+
+
+def _run_security_dividend_sync(db: Session) -> dict:
+    """股票持股 Phase 2:同步交易過的標的的除權息事件(證交所/櫃買預告表 +
+    Yahoo 歷史)。"""
+    from .securities import dividends
+
+    return dividends.sync_dividend_events(db)
+
+
+def _run_security_dividend_detector(db: Session) -> dict:
+    """股票持股 Phase 2:除息日後替持有的帳戶建待確認股利 + 發通知。"""
+    from .securities import dividends
+
+    return dividends.detect_pending_dividends(db)
+
+
 # job_key -> (db) -> dict 摘要。`ensure_default_configs` 在每次啟動時自動補齊
 # 這裡新登記、但舊部署 DB 裡還沒有的 job_key 列(見該函式 docstring),所以
 # 新增 job 不需要另外寫 migration seed。
@@ -196,6 +226,9 @@ JOB_REGISTRY: dict[str, Callable[[Session], dict]] = {
     "card_reward_payout": _run_card_reward_payout,
     "swipesmart_usage_backfill": _run_swipesmart_usage_backfill,
     "check_latest_app_version": _run_check_latest_app_version,
+    "security_quote_close": _run_security_quote_close,
+    "security_dividend_sync": _run_security_dividend_sync,
+    "security_dividend_detector": _run_security_dividend_detector,
 }
 
 

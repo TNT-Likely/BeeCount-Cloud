@@ -25,6 +25,7 @@ from .models import (
     ReadProjectCategoryBudgetProjection,
     ReadProjectProjection,
     ReadRecurringRuleProjection,
+    ReadStockTradeProjection,
     ReadTxProjection,
     ReadTxTemplateProjection,
     SyncChange,
@@ -272,6 +273,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.swipesmart_card_id,
         UserAccountProjection.include_in_total,
         UserAccountProjection.sort_order,
+        UserAccountProjection.investment_settings_json,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -294,6 +296,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         swipesmart_card_id,
         include_in_total,
         sort_order,
+        investment_settings_json,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -346,6 +349,16 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 整个缺失,被 upsert_account 当成"没传"写成 null,静默清空排序。
         if sort_order is not None:
             acc["sortOrder"] = sort_order
+        # 股票持股(2026-09-28):投資理財帳戶費用設定。同 sortOrder「有值才带
+        # key」——漏選的話 web 改帳戶名時 diff-emit 重建的基線缺這個 key,
+        # upsert_account 會把使用者的費用設定靜默清成 None。
+        if investment_settings_json:
+            try:
+                parsed_settings = json.loads(investment_settings_json)
+            except json.JSONDecodeError:
+                parsed_settings = None
+            if isinstance(parsed_settings, dict):
+                acc["investmentSettings"] = parsed_settings
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。
@@ -672,6 +685,64 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             d["originTxId"] = origin_tx_sid
         debts.append(d)
 
+    # 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。必須涵蓋
+    # ReadStockTradeProjection 全部欄位——upsert_stock_trade 是整列覆蓋,
+    # 漏選的欄位在 web 編輯時會被 diff-emit 沖成 NULL。
+    stock_trades: list[dict[str, Any]] = []
+    stock_stmt = select(
+        ReadStockTradeProjection.sync_id,
+        ReadStockTradeProjection.account_sync_id,
+        ReadStockTradeProjection.market,
+        ReadStockTradeProjection.symbol,
+        ReadStockTradeProjection.security_name,
+        ReadStockTradeProjection.trade_type,
+        ReadStockTradeProjection.shares,
+        ReadStockTradeProjection.price,
+        ReadStockTradeProjection.fee,
+        ReadStockTradeProjection.tax,
+        ReadStockTradeProjection.amount,
+        ReadStockTradeProjection.currency,
+        ReadStockTradeProjection.trade_date,
+        ReadStockTradeProjection.tx_sync_id,
+        ReadStockTradeProjection.dividend_event_ref,
+        ReadStockTradeProjection.note,
+        ReadStockTradeProjection.created_by_user_id,
+    ).where(ReadStockTradeProjection.ledger_id == ledger_id)
+    for (
+        sid, account_sid, market, symbol, security_name, trade_type, shares,
+        price, fee, tax, amount, currency, trade_date, tx_sid,
+        dividend_event_ref, note, created_by,
+    ) in db.execute(stock_stmt).all():
+        t: dict[str, Any] = {
+            "syncId": sid,
+            "market": market,
+            "symbol": symbol,
+            "tradeType": trade_type,
+            "shares": shares,
+            "fee": fee,
+            "tax": tax,
+            "amount": amount,
+        }
+        if account_sid:
+            t["accountId"] = account_sid
+        if security_name is not None:
+            t["securityName"] = security_name
+        if price is not None:
+            t["price"] = price
+        if currency:
+            t["currency"] = currency
+        if trade_date is not None:
+            t["tradeDate"] = _to_iso_utc(trade_date)
+        if tx_sid:
+            t["txId"] = tx_sid
+        if dividend_event_ref:
+            t["dividendEventRef"] = dividend_event_ref
+        if note is not None:
+            t["note"] = note
+        if created_by:
+            t["createdByUserId"] = created_by
+        stock_trades.append(t)
+
     # 專案(Phase 13,docs/PH13_PROJECT_SD.md)
     projects: list[dict[str, Any]] = []
     project_stmt = select(
@@ -899,6 +970,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "projectCategoryBudgets": project_category_budgets,
         "txTemplates": tx_templates,
         "cardRewardRules": card_reward_rules,
+        "stockTrades": stock_trades,
     }
 
 

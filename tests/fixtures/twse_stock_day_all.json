@@ -1,0 +1,54 @@
+[
+ {
+  "Date": "1150924",
+  "Code": "0050",
+  "Name": "元大台灣50",
+  "TradeVolume": "70487939",
+  "TradeValue": "7897568283",
+  "OpeningPrice": "112.00",
+  "HighestPrice": "112.45",
+  "LowestPrice": "111.75",
+  "ClosingPrice": "112.40",
+  "Change": "-0.0500",
+  "Transaction": "77277"
+ },
+ {
+  "Date": "1150924",
+  "Code": "00878",
+  "Name": "國泰永續高股息",
+  "TradeVolume": "35768976",
+  "TradeValue": "1246836379",
+  "OpeningPrice": "34.97",
+  "HighestPrice": "34.98",
+  "LowestPrice": "34.76",
+  "ClosingPrice": "34.88",
+  "Change": "-0.2100",
+  "Transaction": "31524"
+ },
+ {
+  "Date": "1150924",
+  "Code": "2330",
+  "Name": "台積電",
+  "TradeVolume": "14557662",
+  "TradeValue": "36107476243",
+  "OpeningPrice": "2480.00",
+  "HighestPrice": "2490.00",
+  "LowestPrice": "2470.00",
+  "ClosingPrice": "2475.00",
+  "Change": "-25.0000",
+  "Transaction": "75382"
+ },
+ {
+  "Date": "1150924",
+  "Code": "01001T",
+  "Name": "土銀富邦R1",
+  "TradeVolume": "28369",
+  "TradeValue": "315494",
+  "OpeningPrice": "11.12",
+  "HighestPrice": "11.12",
+  "LowestPrice": "11.11",
+  "ClosingPrice": "11.11",
+  "Change": "-0.0100",
+  "Transaction": "6"
+ }
+]

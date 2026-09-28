@@ -841,6 +841,7 @@ async def list_workspace_accounts(
                 swipesmart_card_id=acct.swipesmart_card_id,
                 include_in_total=acct.include_in_total,
                 sort_order=acct.sort_order,
+                investment_settings=_investment_settings_or_none(acct.investment_settings_json),
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,

@@ -50,6 +50,7 @@ from .models import (
     ReadBudgetProjection,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadStockTradeProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadProjectCategoryBudgetProjection,
@@ -72,7 +73,7 @@ INDIVIDUAL_ENTITY_TYPES = {
     "transaction", "account", "category", "tag", "budget", "ledger",
     "exchange_rate_override", "recurring_rule", "installment_plan",
     "installment_period", "debt", "tx_template", "card_reward_rule",
-    "project", "project_category_budget",
+    "project", "project_category_budget", "stock_trade",
 }
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
@@ -167,6 +168,9 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 帳戶清單拖曳排序(2026-09-05):缺鍵時 _merge_from_spec 從 existing
         # 行補齊,不被 partial-update 沖成 None。
         ("sortOrder", "sort_order"),
+        # 股票持股(2026-09-28):投資理財帳戶費用設定物件,落 TEXT 列,merge
+        # 時 _json_loads_safe 轉回 dict,跟 recurring_rule.advancedRuleJson 同款。
+        ("investmentSettings", "investment_settings_json", _json_loads_safe),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),
@@ -310,6 +314,27 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("originTxId", "origin_tx_sync_id"),
         ("excludedFromTotal", "excluded_from_total"),
     ]),
+    # 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。對齊 App
+    # lib/cloud/sync/entity_serializer.dart::serializeStockTrade。
+    "stock_trade": _MergeSpec(ReadStockTradeProjection, [
+        ("syncId", "sync_id"),
+        ("accountId", "account_sync_id"),
+        ("market", "market"),
+        ("symbol", "symbol"),
+        ("securityName", "security_name"),
+        ("tradeType", "trade_type"),
+        ("shares", "shares"),
+        ("price", "price"),
+        ("fee", "fee"),
+        ("tax", "tax"),
+        ("amount", "amount"),
+        ("currency", "currency"),
+        ("tradeDate", "trade_date", _isoformat_or_none),
+        ("txId", "tx_sync_id"),
+        ("dividendEventRef", "dividend_event_ref"),
+        ("note", "note"),
+        ("createdByUserId", "created_by_user_id"),
+    ]),
     "project": _MergeSpec(ReadProjectProjection, [
         ("syncId", "sync_id"),
         ("name", "name"),
@@ -442,6 +467,7 @@ _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "project": projection.upsert_project,
     "project_category_budget": projection.upsert_project_category_budget,
     "tx_template": projection.upsert_tx_template,
+    "stock_trade": projection.upsert_stock_trade,
 }
 
 
@@ -582,6 +608,13 @@ def _delete_tx_template(db: Session, ledger_id: str, sync_id: str, user_id: str)
     )
 
 
+def _delete_stock_trade(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_stock_trade(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="stock_trade", entity_sync_id=sync_id,
+    )
+
+
 def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
     projection.delete_account(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -620,6 +653,7 @@ _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "project": _delete_project,
     "project_category_budget": _delete_project_category_budget,
     "tx_template": _delete_tx_template,
+    "stock_trade": _delete_stock_trade,
 }
 
 

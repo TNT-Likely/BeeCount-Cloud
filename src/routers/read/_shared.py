@@ -125,6 +125,18 @@ _READ_SCOPE_DEP = (
 )
 
 
+def _investment_settings_or_none(raw: str | None) -> dict | None:
+    """股票持股(2026-09-28):`user_account_projection.investment_settings_json`
+    (TEXT)→ 讀端點回傳的 dict。解析失敗/非 dict 一律 None。"""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _is_admin(current_user: User) -> bool:
     """单用户隔离模型下,read 路由永远按 current_user 过滤 —— admin 角色只
     作用于 /admin/* 管理面板(用户列表、备份、日志等),不给读账本/交易/分类/
@@ -755,6 +767,7 @@ def _sanitize_filename(name: str | None, max_len: int = 64) -> str:
 
 
 __all__ = [
+    '_investment_settings_or_none',
     '_tx_splits_list',
     'json',
     'datetime',

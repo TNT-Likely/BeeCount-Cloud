@@ -1189,6 +1189,13 @@ export function AccountsPanel({
                       next.bank_name = ''
                       next.card_last_four = ''
                     }
+                    // 股票持股(2026-09-28):新建的投資理財帳戶預設「不納入
+                    // 總餘額」——股票市值另外顯示在「投資市值(預估)」卡,不
+                    // 混進淨資產(對齊 App account_edit_page._selectType)。只影響
+                    // 新建,編輯既有帳戶不動使用者原本的設定。
+                    if (!form.editingId) {
+                      next.include_in_total = value !== 'investment'
+                    }
                     onFormChange(next)
                   }}
                 >

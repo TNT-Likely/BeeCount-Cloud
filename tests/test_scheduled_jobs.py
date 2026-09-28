@@ -123,11 +123,11 @@ def test_ensure_default_configs_seeds_seven_jobs_idempotently():
             scheduled_jobs.ensure_default_configs(db)
             rows = db.scalars(select(ScheduledJobConfig)).all()
             assert {r.job_key for r in rows} == set(scheduled_jobs.JOB_REGISTRY.keys())
-            assert len(rows) == 11
+            assert len(rows) == 14
             # 再跑一次應該是 no-op,不會重複插入。
             scheduled_jobs.ensure_default_configs(db)
             rows2 = db.scalars(select(ScheduledJobConfig)).all()
-            assert len(rows2) == 11
+            assert len(rows2) == 14
         finally:
             db.close()
     finally:
@@ -159,7 +159,7 @@ def test_list_scheduled_jobs_returns_seven_rows_for_admin():
         )
         assert r.status_code == 200, r.text
         rows = r.json()
-        assert len(rows) == 11
+        assert len(rows) == 14
         by_key = {row["job_key"]: row for row in rows}
         assert by_key["card_reward_payout"]["interval_seconds"] == 5 * 60
         assert by_key["mcp_log_retention"]["interval_seconds"] == 24 * 3600
@@ -413,6 +413,9 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             "card_reward_payout",
             "swipesmart_usage_backfill",
             "check_latest_app_version",
+            "security_quote_close",
+            "security_dividend_sync",
+            "security_dividend_detector",
         }
 
         assert _TEST_SESSION is not None
@@ -449,6 +452,18 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                     "src.services.swipesmart_backfill.run_swipesmart_usage_backfill",
                     return_value={"users": 0, "accounts_attempted": 0, "accounts_succeeded": 0},
                 ) as mock_swipesmart,
+                patch(
+                    "src.services.securities.quotes.refresh_close_quotes",
+                    return_value={"markets": 0, "quotes": 0},
+                ) as mock_security_close,
+                patch(
+                    "src.services.securities.dividends.sync_dividend_events",
+                    return_value={"symbols": 0, "events": 0},
+                ) as mock_dividend_sync,
+                patch(
+                    "src.services.securities.dividends.detect_pending_dividends",
+                    return_value={"created": 0, "updated": 0, "removed": 0, "reopened": 0},
+                ) as mock_dividend_detect,
             ):
                 scheduled_jobs.run_job(db, "recurring_materializer")
                 scheduled_jobs.run_job(db, "transfer_rule_materialization")
@@ -458,6 +473,9 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
                 scheduled_jobs.run_job(db, "card_autopay")
                 scheduled_jobs.run_job(db, "card_reward_payout")
                 scheduled_jobs.run_job(db, "swipesmart_usage_backfill")
+                scheduled_jobs.run_job(db, "security_quote_close")
+                scheduled_jobs.run_job(db, "security_dividend_sync")
+                scheduled_jobs.run_job(db, "security_dividend_detector")
 
             mock_recurring.assert_called_once()
             mock_transfer.assert_called_once()
@@ -467,6 +485,9 @@ def test_all_seven_jobs_map_to_registered_handlers_and_get_called():
             mock_autopay.assert_called_once()
             mock_reward.assert_called_once()
             mock_swipesmart.assert_called_once()
+            mock_security_close.assert_called_once()
+            mock_dividend_sync.assert_called_once()
+            mock_dividend_detect.assert_called_once()
         finally:
             db.close()
     finally:

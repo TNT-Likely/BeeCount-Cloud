@@ -209,6 +209,46 @@ def _apply_account_optional_fields(account: dict, payload: dict) -> None:
             account[snapshot_key] = bool(raw) if raw is not None else False
         else:
             account[snapshot_key] = _to_optional_str(raw)
+    # 股票持股(2026-09-28):投資理財帳戶費用設定是整包物件,不走上面的純量
+    # 映射表。帶 key 且是 dict → 整包取代;帶 key 但 None/非 dict → 清空。
+    if "investment_settings" in payload:
+        raw_settings = payload.get("investment_settings")
+        if isinstance(raw_settings, dict):
+            account["investmentSettings"] = normalize_investment_settings(raw_settings)
+        else:
+            account.pop("investmentSettings", None)
+
+
+# 投資理財帳戶費用設定(wire `investmentSettings`)允許的 key 與型別。對齊
+# App lib/models/investment_settings.dart;未知 key 丟棄,避免前端塞任意資料
+# 進 sync payload。
+_INVESTMENT_SETTING_FLOAT_KEYS = (
+    "feeRate", "feeDiscount", "feeMin", "sellTaxRate",
+    "dividendFeeFixed", "dividendFeeRate", "dividendWithholdingRate",
+    "nhiSupplementRate", "nhiThreshold",
+)
+_INVESTMENT_SETTING_STR_KEYS = ("market", "settlementAccountId")
+_INVESTMENT_SETTING_BOOL_KEYS = ("reinvestDividends",)
+
+
+def normalize_investment_settings(raw: dict) -> dict:
+    out: dict[str, object] = {}
+    for key in _INVESTMENT_SETTING_FLOAT_KEYS:
+        if key in raw:
+            value = _to_optional_float(raw.get(key))
+            if value is not None:
+                if value < 0:
+                    raise ValueError(f"write validation failed: {key} must be >= 0")
+                out[key] = value
+    for key in _INVESTMENT_SETTING_STR_KEYS:
+        if key in raw:
+            value = _to_optional_str(raw.get(key))
+            if value is not None:
+                out[key] = value.upper() if key == "market" else value
+    for key in _INVESTMENT_SETTING_BOOL_KEYS:
+        if key in raw and raw.get(key) is not None:
+            out[key] = bool(raw.get(key))
+    return out
 
 
 def _ensure_list(snapshot: dict, key: str) -> list[dict]:
@@ -733,6 +773,11 @@ def delete_transaction(snapshot: dict, tx_id: str, payload: dict | None = None) 
     # _cascade_delete_orphaned_origin_debt(单笔 DELETE fast path 用的同款
     # 邏輯)保持一致,這裡是批量刪除(transactions_batch_delete.py)這條路
     # 徑用的 mutator 版本。
+    # 股票持股(2026-09-28):綁著這筆交易的股票明細一併刪除,同
+    # _shared.py::_cascade_delete_linked_stock_trades(单笔 DELETE fast path)。
+    stock_trades = _ensure_list(target, "stockTrades")
+    stock_trades[:] = [t for t in stock_trades if t.get("txId") != tx_id]
+
     debts = _ensure_list(target, "debts")
     for d_idx, debt in enumerate(debts):
         if not isinstance(debt, dict) or debt.get("originTxId") != tx_id:
@@ -2473,4 +2518,486 @@ def delete_card_reward_rule(snapshot: dict, rule_id: str, payload: dict | None =
     idx, rule = _find_by_sync_id(rules, rule_id, expected_prefix="crr")
     _assert_actor_can_modify(rule, payload or {})
     rules.pop(idx)
+    return target
+
+
+# ============================================================================
+# 股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。
+#
+# 「買股票就是一筆轉帳」:buy/sell 同時建立一筆 transfer 交易(交割帳戶 ⇄
+# 投資理財帳戶)+ 一筆 stock_trade(txId 指回那筆交易);opening(期初持股)/
+# stock_dividend(配股)沒有現金流動,只建 stock_trade。交易欄位的換算規則
+# 集中在 `stock_trade_tx_fields`,App 端 lib/services/investment/
+# stock_trade_tx_mapper.dart 是同一套規則的 Dart 版本,改一邊要改另一邊。
+# ============================================================================
+
+STOCK_TRADE_TYPES = {"buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"}
+# 需要交割帳戶 + 產生轉帳交易的類型。
+STOCK_TRADE_CASH_TYPES = {"buy", "sell"}
+# 產生 income 交易的類型(Phase 2 股利):cash_dividend 入交割帳戶,reinvest
+# 入投資理財帳戶本身(股利直接換成股數,帳戶餘額 = 成本跟著增加)。
+STOCK_TRADE_INCOME_TYPES = {"cash_dividend", "reinvest"}
+# web 可建的類型(待確認股利確認時也走同一套 create_stock_trade)。
+STOCK_TRADE_WEB_CREATABLE_TYPES = {"buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"}
+# 股利 income 交易的分類(router 用 card_rewards.ensure_dividend_category 建好後
+# 透過這兩個 payload key 傳進來)。
+DIVIDEND_CATEGORY_ID_KEY = "__dividend_category_id"
+DIVIDEND_CATEGORY_NAME_KEY = "__dividend_category_name"
+# 入帳帳戶幣別 ≠ 帳本本位幣時,1 單位帳戶幣別折多少本位幣(router 算好傳入),
+# 用來補 income 交易的 currencyCode/nativeAmount(App pull 缺鍵會 1:1 退化)。
+TX_FX_RATE_KEY = "__tx_fx_rate_to_base"
+TX_FX_CURRENCY_KEY = "__tx_fx_currency"
+
+# stock_trade_tx_fields 會寫入/清除的交易欄位,update 時先全部清掉再重寫。
+_STOCK_TX_MANAGED_KEYS = ("amount", "toAmount", "feeAmount", "feeLabel", "discountAmount", "discountLabel")
+
+
+def _round_money(value: float) -> float:
+    return round(value + 0.0, 8)
+
+
+def stock_trade_amount(trade_type: str, shares: float, price: float, fee: float, tax: float) -> float:
+    """以證券幣別計的現金影響(正數),見 ReadStockTradeProjection docstring。"""
+    gross = shares * price
+    if trade_type in ("buy", "opening", "reinvest"):
+        return _round_money(gross + fee)
+    if trade_type in ("sell", "cash_dividend"):
+        return _round_money(gross - fee - tax)
+    return 0.0
+
+
+def stock_trade_tx_fields(
+    *,
+    trade_type: str,
+    shares: float,
+    price: float,
+    fee: float,
+    tax: float,
+    security_currency: str | None,
+    settlement_currency: str | None,
+    settlement_amount: float | None,
+) -> dict[str, float]:
+    """回傳轉帳交易的金額欄位(snapshot camelCase key)。
+
+    同幣別:
+      buy  → amount = 股數×價格,feeAmount = 手續費(轉出端多扣)
+      sell → amount = 股數×價格,discountAmount = 手續費+交易稅(轉入端少收)
+    跨幣別(例:台幣交割戶買美股):必須給 settlement_amount(交割帳戶實際
+    扣款/入帳的金額,已含手續費),手續費/稅併進證券端金額,不另外拆:
+      buy  → amount = settlement_amount(交割幣),toAmount = 股數×價格+手續費
+      sell → amount = 股數×價格−手續費−稅(證券幣),toAmount = settlement_amount
+    """
+    gross = _round_money(shares * price)
+    same_currency = (
+        not security_currency
+        or not settlement_currency
+        or security_currency.upper() == settlement_currency.upper()
+    )
+    out: dict[str, float] = {}
+    if trade_type == "buy":
+        if same_currency:
+            out["amount"] = gross
+            if fee > 0:
+                out["feeAmount"] = _round_money(fee)
+        else:
+            if settlement_amount is None or settlement_amount <= 0:
+                raise ValueError(
+                    "write validation failed: settlement_amount is required when "
+                    "settlement account currency differs from security currency"
+                )
+            out["amount"] = _round_money(settlement_amount)
+            out["toAmount"] = _round_money(gross + fee)
+    elif trade_type == "sell":
+        if same_currency:
+            out["amount"] = gross
+            if fee + tax > 0:
+                out["discountAmount"] = _round_money(fee + tax)
+        else:
+            if settlement_amount is None or settlement_amount <= 0:
+                raise ValueError(
+                    "write validation failed: settlement_amount is required when "
+                    "settlement account currency differs from security currency"
+                )
+            out["amount"] = _round_money(gross - fee - tax)
+            out["toAmount"] = _round_money(settlement_amount)
+    return out
+
+
+def _stock_trade_default_note(trade_type: str, symbol: str, name: str | None, shares: float) -> str:
+    label = {"buy": "買進", "sell": "賣出", "cash_dividend": "股利", "reinvest": "股利再投入"}.get(
+        trade_type, trade_type
+    )
+    shares_text = f"{shares:g}"
+    parts = [label, symbol]
+    if name:
+        parts.append(name)
+    parts.append(f"{shares_text}股")
+    return " ".join(parts)
+
+
+def _account_by_id(accounts: list[dict], account_id: str | None) -> dict | None:
+    if not account_id:
+        return None
+    for acc in accounts:
+        if str(acc.get("syncId")) == account_id:
+            return acc
+    return None
+
+
+def _validate_stock_numbers(shares: float | None, price: float | None, fee: float, tax: float, *, trade_type: str) -> None:
+    if shares is None or shares <= 0:
+        raise ValueError("write validation failed: shares must be > 0")
+    if trade_type != "stock_dividend" and (price is None or price < 0):
+        raise ValueError("write validation failed: price must be >= 0")
+    if fee < 0 or tax < 0:
+        raise ValueError("write validation failed: fee/tax must be >= 0")
+
+
+def _apply_stock_tx(
+    target: dict,
+    *,
+    trade: dict,
+    tx: dict | None,
+    investment_account: dict,
+    settlement_account: dict | None,
+    settlement_amount: float | None,
+    payload: dict,
+) -> tuple[dict, str | None]:
+    """依 trade 目前的欄位建立/更新綁定的轉帳交易,回傳 (snapshot, 交易 syncId)。
+
+    注意 `create_transaction` 內部會 deepcopy snapshot,新建交易時必須改用它
+    回傳的 snapshot,之後對 stockTrades 的修改也要落在那份上。"""
+    trade_type = str(trade.get("tradeType"))
+    if trade_type in STOCK_TRADE_INCOME_TYPES:
+        return _apply_dividend_tx(
+            target, trade=trade, tx=tx, investment_account=investment_account,
+            settlement_account=settlement_account, settlement_amount=settlement_amount, payload=payload,
+        )
+    if trade_type not in STOCK_TRADE_CASH_TYPES:
+        return target, None
+    if settlement_account is None:
+        raise ValueError("write validation failed: settlement_account_id is required for buy/sell")
+    fields = stock_trade_tx_fields(
+        trade_type=trade_type,
+        shares=float(trade.get("shares") or 0),
+        price=float(trade.get("price") or 0),
+        fee=float(trade.get("fee") or 0),
+        tax=float(trade.get("tax") or 0),
+        security_currency=trade.get("currency"),
+        settlement_currency=settlement_account.get("currency"),
+        settlement_amount=settlement_amount,
+    )
+    if trade_type == "buy":
+        from_acc, to_acc = settlement_account, investment_account
+    else:
+        from_acc, to_acc = investment_account, settlement_account
+    note = trade.get("note") or _stock_trade_default_note(
+        trade_type, str(trade.get("symbol") or ""), trade.get("securityName"), float(trade.get("shares") or 0),
+    )
+    if tx is None:
+        tx_payload = {
+            "tx_type": "transfer",
+            "amount": fields["amount"],
+            "happened_at": trade.get("tradeDate"),
+            "note": note,
+            "from_account_id": from_acc.get("syncId"),
+            "from_account_name": from_acc.get("name"),
+            "to_account_id": to_acc.get("syncId"),
+            "to_account_name": to_acc.get("name"),
+            "to_amount": fields.get("toAmount"),
+            "fee_amount": fields.get("feeAmount"),
+            "discount_amount": fields.get("discountAmount"),
+        }
+        for key in ("__actor_user_id", "__actor_is_admin", "__actor_in_shared_ledger"):
+            if key in payload:
+                tx_payload[key] = payload[key]
+        return create_transaction(target, tx_payload)
+    for key in _STOCK_TX_MANAGED_KEYS:
+        tx.pop(key, None)
+    tx.update(fields)
+    tx["happenedAt"] = trade.get("tradeDate")
+    tx["note"] = note
+    tx["fromAccountId"] = from_acc.get("syncId")
+    tx["fromAccountName"] = from_acc.get("name")
+    tx["toAccountId"] = to_acc.get("syncId")
+    tx["toAccountName"] = to_acc.get("name")
+    _mark_entity_actor(tx, payload, create=False)
+    return target, str(tx.get("syncId"))
+
+
+def _apply_dividend_tx(
+    target: dict,
+    *,
+    trade: dict,
+    tx: dict | None,
+    investment_account: dict,
+    settlement_account: dict | None,
+    settlement_amount: float | None,
+    payload: dict,
+) -> tuple[dict, str | None]:
+    """cash_dividend / reinvest 綁定的 income 交易。
+
+    - cash_dividend:入 `settlement_account`(股利入帳帳戶),金額 = 實收
+      (trade.amount = 股數×每股股利−手續費−稅)。
+    - reinvest:入投資理財帳戶本身,金額 = 再投入成本(股數×價格+手續費)。
+    入帳帳戶幣別跟證券幣別不同時(例:美股股利換成台幣入帳)必須給
+    settlement_amount(入帳帳戶實際收到的金額)。App 端
+    `stock_trade_tx_mapper.dart` 同規則。"""
+    trade_type = str(trade.get("tradeType"))
+    account = investment_account if trade_type == "reinvest" else settlement_account
+    if account is None:
+        raise ValueError("write validation failed: settlement_account_id is required for cash_dividend")
+    if account.get("type") == "account_group":
+        raise ValueError("write validation failed: settlement account cannot be an account_group")
+    security_currency = _to_optional_str(trade.get("currency"))
+    account_currency = _to_optional_str(account.get("currency"))
+    same_currency = (
+        not security_currency or not account_currency
+        or security_currency.upper() == account_currency.upper()
+    )
+    if same_currency:
+        # 交易金額是錢,四捨五入到分(再投入成本 = 股數×價格 可能有很多位小數)。
+        amount = round(float(trade.get("amount") or 0) + 0.0, 2)
+    else:
+        if settlement_amount is None or settlement_amount <= 0:
+            raise ValueError(
+                "write validation failed: settlement_amount is required when "
+                "the receiving account currency differs from security currency"
+            )
+        amount = _round_money(settlement_amount)
+    if amount <= 0:
+        raise ValueError("write validation failed: dividend amount must be > 0")
+    note = trade.get("note") or _stock_trade_default_note(
+        trade_type, str(trade.get("symbol") or ""), trade.get("securityName"), float(trade.get("shares") or 0),
+    )
+    fx_rate = _to_optional_float(payload.get(TX_FX_RATE_KEY))
+    fx_currency = _to_optional_str(payload.get(TX_FX_CURRENCY_KEY))
+    if tx is None:
+        tx_payload: dict[str, object] = {
+            "tx_type": "income",
+            "amount": amount,
+            "happened_at": trade.get("tradeDate"),
+            "note": note,
+            "account_id": account.get("syncId"),
+            "account_name": account.get("name"),
+            "category_kind": "income",
+        }
+        if payload.get(DIVIDEND_CATEGORY_ID_KEY):
+            tx_payload["category_id"] = payload[DIVIDEND_CATEGORY_ID_KEY]
+            tx_payload["category_name"] = payload.get(DIVIDEND_CATEGORY_NAME_KEY)
+        if fx_rate and fx_currency:
+            tx_payload["currency_code"] = fx_currency
+            tx_payload["native_amount"] = _round_money(amount * fx_rate)
+        for key in ("__actor_user_id", "__actor_is_admin", "__actor_in_shared_ledger"):
+            if key in payload:
+                tx_payload[key] = payload[key]
+        return create_transaction(target, tx_payload)
+    old_amount = _to_float(tx.get("amount"))
+    if tx.get("nativeAmount") is not None:
+        tx["nativeAmount"] = rescale_native_amount(old_amount, _to_float(tx.get("nativeAmount")), amount)
+    tx["amount"] = amount
+    tx["happenedAt"] = trade.get("tradeDate")
+    tx["note"] = note
+    tx["accountId"] = account.get("syncId")
+    tx["accountName"] = account.get("name")
+    _mark_entity_actor(tx, payload, create=False)
+    return target, str(tx.get("syncId"))
+
+
+def create_stock_trade(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    """payload(snake_case,web 請求體):account_id / trade_type / market /
+    symbol / security_name / shares / price / fee / tax / currency /
+    trade_date / settlement_account_id / settlement_amount / note。"""
+    target = ensure_snapshot_v2(snapshot)
+    accounts = _ensure_list(target, "accounts")
+
+    trade_type = str(payload.get("trade_type") or "")
+    if trade_type not in STOCK_TRADE_WEB_CREATABLE_TYPES:
+        raise ValueError("write validation failed: invalid trade_type")
+    investment_account = _account_by_id(accounts, _to_optional_str(payload.get("account_id")))
+    if investment_account is None:
+        raise ValueError("write validation failed: account not found")
+    if investment_account.get("type") != "investment":
+        raise ValueError("write validation failed: account must be an investment account")
+    market = (_to_optional_str(payload.get("market")) or "").upper()
+    symbol = (_to_optional_str(payload.get("symbol")) or "").upper()
+    if not market or not symbol:
+        raise ValueError("write validation failed: market and symbol are required")
+    shares = _to_optional_float(payload.get("shares"))
+    price = _to_optional_float(payload.get("price"))
+    fee = _to_optional_float(payload.get("fee")) or 0.0
+    tax = _to_optional_float(payload.get("tax")) or 0.0
+    if trade_type in ("opening", "stock_dividend"):
+        tax = 0.0
+    if trade_type == "stock_dividend":
+        price = price or 0.0
+        fee = 0.0
+    _validate_stock_numbers(shares, price, fee, tax, trade_type=trade_type)
+    assert shares is not None and price is not None
+
+    settlement_account = None
+    if trade_type == "cash_dividend":
+        settlement_account = _account_by_id(accounts, _to_optional_str(payload.get("settlement_account_id")))
+        if settlement_account is None:
+            raise ValueError("write validation failed: settlement account not found")
+    if trade_type in STOCK_TRADE_CASH_TYPES:
+        settlement_account = _account_by_id(accounts, _to_optional_str(payload.get("settlement_account_id")))
+        if settlement_account is None:
+            raise ValueError("write validation failed: settlement account not found")
+        if settlement_account.get("type") == "account_group":
+            raise ValueError("write validation failed: settlement account cannot be an account_group")
+        if settlement_account.get("syncId") == investment_account.get("syncId"):
+            raise ValueError("write validation failed: settlement account must differ from the investment account")
+
+    currency = (
+        _to_optional_str(payload.get("currency"))
+        or _to_optional_str(investment_account.get("currency"))
+        or ""
+    ).upper() or None
+    sync_id = _new_sync_id("stk")
+    trade: dict[str, object] = {
+        "syncId": sync_id,
+        "accountId": investment_account.get("syncId"),
+        "market": market,
+        "symbol": symbol,
+        "tradeType": trade_type,
+        "shares": shares,
+        "price": price,
+        "fee": fee,
+        "tax": tax,
+        "amount": stock_trade_amount(trade_type, shares, price, fee, tax),
+        "tradeDate": _to_iso8601(payload.get("trade_date")),
+    }
+    if currency:
+        trade["currency"] = currency
+    name = _to_optional_str(payload.get("security_name"))
+    if name:
+        trade["securityName"] = name
+    note = _to_optional_str(payload.get("note"))
+    if note:
+        trade["note"] = note
+    target, tx_id = _apply_stock_tx(
+        target,
+        trade=trade,
+        tx=None,
+        investment_account=investment_account,
+        settlement_account=settlement_account,
+        settlement_amount=_to_optional_float(payload.get("settlement_amount")),
+        payload=payload,
+    )
+    if tx_id:
+        trade["txId"] = tx_id
+    ref = _to_optional_str(payload.get("dividend_event_ref"))
+    if ref:
+        trade["dividendEventRef"] = ref
+    _mark_entity_actor(trade, payload, create=True)
+    _ensure_list(target, "stockTrades").append(trade)
+    return target, sync_id
+
+
+def update_stock_trade(snapshot: dict, trade_id: str, payload: dict) -> dict:
+    """PATCH:可改 shares / price / fee / tax / trade_date / note /
+    security_name / settlement_account_id / settlement_amount。trade_type /
+    帳戶 / 標的建立後不可改(改了等同刪掉重建)。綁定的交易跟著重算。"""
+    target = ensure_snapshot_v2(snapshot)
+    accounts = _ensure_list(target, "accounts")
+    trades = _ensure_list(target, "stockTrades")
+    items = _ensure_list(target, "items")
+    _, trade = _find_by_sync_id(trades, trade_id, expected_prefix="stk")
+    _assert_actor_can_modify(trade, payload)
+    trade_type = str(trade.get("tradeType"))
+    if trade_type not in STOCK_TRADE_WEB_CREATABLE_TYPES:
+        raise ValueError("write validation failed: invalid trade_type")
+
+    for key, snap_key in (("shares", "shares"), ("price", "price"), ("fee", "fee"), ("tax", "tax")):
+        if key in payload:
+            trade[snap_key] = _to_optional_float(payload.get(key)) or 0.0
+    if "trade_date" in payload:
+        trade["tradeDate"] = _to_iso8601(payload.get("trade_date"))
+    if "note" in payload:
+        note = _to_optional_str(payload.get("note"))
+        if note:
+            trade["note"] = note
+        else:
+            trade.pop("note", None)
+    if "security_name" in payload:
+        name = _to_optional_str(payload.get("security_name"))
+        if name:
+            trade["securityName"] = name
+        else:
+            trade.pop("securityName", None)
+    shares = float(trade.get("shares") or 0)
+    price = float(trade.get("price") or 0)
+    fee = float(trade.get("fee") or 0)
+    tax = float(trade.get("tax") or 0)
+    _validate_stock_numbers(shares, price, fee, tax, trade_type=trade_type)
+    trade["amount"] = stock_trade_amount(trade_type, shares, price, fee, tax)
+
+    if trade_type in STOCK_TRADE_CASH_TYPES or trade_type in STOCK_TRADE_INCOME_TYPES:
+        investment_account = _account_by_id(accounts, _to_optional_str(trade.get("accountId")))
+        if investment_account is None:
+            raise ValueError("write validation failed: account not found")
+        tx = None
+        tx_id = _to_optional_str(trade.get("txId"))
+        if tx_id:
+            for item in items:
+                if str(item.get("syncId")) == tx_id:
+                    tx = item
+                    break
+        if "settlement_account_id" in payload:
+            settlement_id = _to_optional_str(payload.get("settlement_account_id"))
+        elif tx is not None:
+            settlement_id = _to_optional_str(
+                tx.get("accountId") if trade_type in STOCK_TRADE_INCOME_TYPES
+                else tx.get("fromAccountId") if trade_type == "buy" else tx.get("toAccountId")
+            )
+        else:
+            settlement_id = None
+        settlement_account = _account_by_id(accounts, settlement_id)
+        if trade_type == "reinvest":
+            settlement_account = investment_account
+        if settlement_account is None:
+            raise ValueError("write validation failed: settlement account not found")
+        if "settlement_amount" in payload:
+            settlement_amount = _to_optional_float(payload.get("settlement_amount"))
+        elif tx is not None:
+            settlement_amount = _to_optional_float(
+                tx.get("amount") if trade_type in ("buy", "cash_dividend", "reinvest") else tx.get("toAmount")
+            )
+        else:
+            settlement_amount = None
+        if tx is None:
+            # 綁定的交易不見了(例如舊資料),重建一筆並改掛到新 snapshot 上的
+            # 同一筆 trade。
+            trades.remove(trade)
+        target, new_tx_id = _apply_stock_tx(
+            target,
+            trade=trade,
+            tx=tx,
+            investment_account=investment_account,
+            settlement_account=settlement_account,
+            settlement_amount=settlement_amount,
+            payload=payload,
+        )
+        if new_tx_id:
+            trade["txId"] = new_tx_id
+        if tx is None:
+            _ensure_list(target, "stockTrades").append(trade)
+    _mark_entity_actor(trade, payload, create=False)
+    return target
+
+
+def delete_stock_trade(snapshot: dict, trade_id: str, payload: dict | None = None) -> dict:
+    """刪除明細並連帶刪除綁定的交易(反向的「刪交易連帶刪明細」見
+    delete_transaction)。"""
+    target = ensure_snapshot_v2(snapshot)
+    trades = _ensure_list(target, "stockTrades")
+    idx, trade = _find_by_sync_id(trades, trade_id, expected_prefix="stk")
+    _assert_actor_can_modify(trade, payload or {})
+    trades.pop(idx)
+    tx_id = _to_optional_str(trade.get("txId"))
+    if tx_id:
+        items = _ensure_list(target, "items")
+        items[:] = [item for item in items if str(item.get("syncId")) != tx_id]
+        target["count"] = len(items)
     return target

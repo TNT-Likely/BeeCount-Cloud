@@ -41,6 +41,15 @@ expect(parseRoute('/app/workspace/transactions')).toEqual({
     })
   })
 
+  it('round-trips the investments section (stock holdings)', () => {
+    expect(parseRoute('/app/investments')).toEqual({
+      kind: 'app',
+      ledgerId: '',
+      section: 'investments'
+    })
+    expect(routePath({ kind: 'app', ledgerId: '', section: 'investments' })).toBe('/app/investments')
+  })
+
   it('round-trips the comparison report section', () => {
     expect(parseRoute('/app/comparison-report')).toEqual({
       kind: 'app',

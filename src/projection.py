@@ -27,6 +27,7 @@ from .models import (
     ReadBudgetProjection,
     ReadCardRewardRuleProjection,
     ReadDebtProjection,
+    ReadStockTradeProjection,
     ReadInstallmentPeriodProjection,
     ReadInstallmentPlanProjection,
     ReadProjectCategoryBudgetProjection,
@@ -532,6 +533,14 @@ def upsert_account(
         "include_in_total": _as_bool(payload.get("includeInTotal"), default=True),
         # 帳戶清單拖曳排序(2026-09-05)。
         "sort_order": _opt_int(payload.get("sortOrder")),
+        # 股票持股(2026-09-28):wire 上是物件,落 TEXT。merge_with_existing_user
+        # 已用 _json_loads_safe 把缺鍵的舊值補成 dict,這裡直接 dumps;非 dict
+        # (舊 App 不帶/顯式 null)落 None。
+        "investment_settings_json": (
+            json.dumps(payload.get("investmentSettings"), ensure_ascii=False)
+            if isinstance(payload.get("investmentSettings"), dict)
+            else None
+        ),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)
@@ -802,6 +811,49 @@ def upsert_debt(
 
 def delete_debt(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadDebtProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_stock_trade(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """股票交易明細(2026-09-28,docs/STOCK_HOLDINGS_SD.md)。持股不落庫,見
+    ReadStockTradeProjection docstring。`_upsert` 是整列覆蓋,呼叫方
+    (sync_applier merge / snapshot diff-emit)必須帶完整欄位。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "market": (_as_str(payload.get("market")) or "").upper(),
+        "symbol": (_as_str(payload.get("symbol")) or "").upper(),
+        "security_name": _as_str(payload.get("securityName")),
+        "trade_type": _as_str(payload.get("tradeType")) or "buy",
+        "shares": _as_float(payload.get("shares")),
+        "price": _as_float_or_none(payload.get("price")),
+        "fee": _as_float(payload.get("fee")),
+        "tax": _as_float(payload.get("tax")),
+        "amount": _as_float(payload.get("amount")),
+        "currency": (_as_str(payload.get("currency")) or "").upper() or None,
+        "trade_date": _parse_happened_at(payload.get("tradeDate")),
+        "tx_sync_id": _as_str(payload.get("txId")),
+        "dividend_event_ref": _as_str(payload.get("dividendEventRef")),
+        "note": _as_str(payload.get("note")),
+        "created_by_user_id": _as_str(payload.get("createdByUserId")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadStockTradeProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_stock_trade(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadStockTradeProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
 def upsert_project(
