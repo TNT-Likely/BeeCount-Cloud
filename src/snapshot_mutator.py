@@ -7,6 +7,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from .services.securities.trade_fees import stock_gross
+
 logger = logging.getLogger(__name__)
 
 
@@ -223,12 +225,12 @@ def _apply_account_optional_fields(account: dict, payload: dict) -> None:
 # App lib/models/investment_settings.dart;未知 key 丟棄,避免前端塞任意資料
 # 進 sync payload。
 _INVESTMENT_SETTING_FLOAT_KEYS = (
-    "feeRate", "feeDiscount", "feeMin", "sellTaxRate",
+    "feeRate", "feeDiscount", "feeMin", "sellTaxRate", "etfSellTaxRate", "bondEtfSellTaxRate",
     "dividendFeeFixed", "dividendFeeRate", "dividendWithholdingRate",
     "nhiSupplementRate", "nhiThreshold",
 )
 _INVESTMENT_SETTING_STR_KEYS = ("market", "settlementAccountId")
-_INVESTMENT_SETTING_BOOL_KEYS = ("reinvestDividends",)
+_INVESTMENT_SETTING_BOOL_KEYS = ("reinvestDividends", "pnlAfterSellCosts")
 
 
 def normalize_investment_settings(raw: dict) -> dict:
@@ -2556,9 +2558,14 @@ def _round_money(value: float) -> float:
     return round(value + 0.0, 8)
 
 
-def stock_trade_amount(trade_type: str, shares: float, price: float, fee: float, tax: float) -> float:
-    """以證券幣別計的現金影響(正數),見 ReadStockTradeProjection docstring。"""
-    gross = shares * price
+def stock_trade_amount(
+    trade_type: str, shares: float, price: float, fee: float, tax: float, currency: str | None = None,
+) -> float:
+    """以證券幣別計的現金影響(正數),見 ReadStockTradeProjection docstring。
+
+    成交價金依幣別取整(`trade_fees.stock_gross`:台幣無條件捨去),0050 買 50 股
+    @97.45、手續費 6 → 4,872 + 6 = 4,878,同券商對帳單。"""
+    gross = stock_gross(shares, price, currency)
     if trade_type in ("buy", "opening", "reinvest"):
         return _round_money(gross + fee)
     if trade_type in ("sell", "cash_dividend"):
@@ -2587,7 +2594,7 @@ def stock_trade_tx_fields(
       buy  → amount = settlement_amount(交割幣),toAmount = 股數×價格+手續費
       sell → amount = 股數×價格−手續費−稅(證券幣),toAmount = settlement_amount
     """
-    gross = _round_money(shares * price)
+    gross = stock_gross(shares, price, security_currency)
     same_currency = (
         not security_currency
         or not settlement_currency
@@ -2865,7 +2872,7 @@ def create_stock_trade(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "price": price,
         "fee": fee,
         "tax": tax,
-        "amount": stock_trade_amount(trade_type, shares, price, fee, tax),
+        "amount": stock_trade_amount(trade_type, shares, price, fee, tax, currency),
         "tradeDate": _to_iso8601(payload.get("trade_date")),
     }
     if currency:
@@ -2931,7 +2938,7 @@ def update_stock_trade(snapshot: dict, trade_id: str, payload: dict) -> dict:
     fee = float(trade.get("fee") or 0)
     tax = float(trade.get("tax") or 0)
     _validate_stock_numbers(shares, price, fee, tax, trade_type=trade_type)
-    trade["amount"] = stock_trade_amount(trade_type, shares, price, fee, tax)
+    trade["amount"] = stock_trade_amount(trade_type, shares, price, fee, tax, _to_optional_str(trade.get("currency")))
 
     if trade_type in STOCK_TRADE_CASH_TYPES or trade_type in STOCK_TRADE_INCOME_TYPES:
         investment_account = _account_by_id(accounts, _to_optional_str(trade.get("accountId")))

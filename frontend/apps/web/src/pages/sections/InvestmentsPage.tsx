@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createStockTrade,
   deleteStockTrade,
+  fetchSecurityQuotes,
   fetchStockTrades,
   fetchWorkspaceAccounts,
   fetchWorkspaceHoldings,
@@ -13,6 +14,7 @@ import {
   type Holding,
   type HoldingsSummary,
   type InvestmentSettings,
+  type SecurityQuote,
   type SecuritySearchItem,
   type StockTrade,
   type WorkspaceAccount,
@@ -48,6 +50,9 @@ import {
   marketCurrency,
   percentTextToRate,
   rateToPercentText,
+  securityKind,
+  sellTaxRateFor,
+  stockGross,
   stockTradeAmount,
   suggestFee,
   suggestSellTax,
@@ -256,6 +261,12 @@ export function InvestmentsPage() {
                       ? ` (${formatPercent((summary.total_unrealized_pnl / summary.total_cost) * 100)})`
                       : ''}
                   </div>
+                  {summary.pnl_after_sell_costs && summary.total_net_value !== undefined && (
+                    <div className="mt-1 text-xs text-muted-foreground tabular-nums">
+                      {t('investments.pnlAfterSellCostsNote')} · {t('investments.netValue')}{' '}
+                      {base ? formatStockMoney(summary.total_net_value, base) : '—'}
+                    </div>
+                  )}
                   <div className="mt-1 text-xs text-muted-foreground tabular-nums">
                     {t('investments.cost')} {base ? formatStockMoney(summary.total_cost, base) : '—'} ·{' '}
                     {t('investments.card.hint')}
@@ -445,6 +456,9 @@ function HoldingsTable({
             <th className="py-2 text-right font-medium">{t('investments.col.avgCost')}</th>
             <th className="py-2 text-right font-medium">{t('investments.col.price')}</th>
             <th className="py-2 text-right font-medium">{t('investments.col.marketValue')}</th>
+            <th className="py-2 text-right font-medium" title={t('investments.col.netValueHint')}>
+              {t('investments.col.netValue')}
+            </th>
             <th className="py-2 text-right font-medium">{t('investments.col.pnl')}</th>
           </tr>
         </thead>
@@ -530,6 +544,9 @@ function HoldingRowGroup({
         <td className="py-2 text-right tabular-nums">
           {h.market_value !== null ? formatStockMoney(h.market_value, ccy) : '—'}
         </td>
+        <td className="py-2 text-right tabular-nums">
+          {isOpen && h.net_value !== null && h.net_value !== undefined ? formatStockMoney(h.net_value, ccy) : '—'}
+        </td>
         <td className={`py-2 text-right tabular-nums ${pnlClass(isOpen ? h.unrealized_pnl : h.realized_pnl)}`}>
           {isOpen
             ? h.unrealized_pnl !== null
@@ -538,11 +555,14 @@ function HoldingRowGroup({
                 }`
               : '—'
             : `${t('investments.realized')} ${formatStockMoney(h.realized_pnl, ccy, { signed: true })}`}
+          {isOpen && h.unrealized_pnl !== null && h.pnl_after_sell_costs && (
+            <div className="text-xs text-muted-foreground">{t('investments.pnlAfterSellCostsNote')}</div>
+          )}
         </td>
       </tr>
       {expanded && (
         <tr className="border-b bg-muted/20">
-          <td colSpan={6} className="px-2 py-3">
+          <td colSpan={7} className="px-2 py-3">
             <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
               <span>
                 {t('investments.realized')}{' '}
@@ -551,6 +571,12 @@ function HoldingRowGroup({
               {h.dividends > 0 && (
                 <span>
                   {t('investments.dividends')} {formatStockMoney(h.dividends, ccy)}
+                </span>
+              )}
+              {isOpen && h.est_sell_fee !== null && h.est_sell_fee !== undefined && (
+                <span>
+                  {t('investments.estSellFee')} {formatStockMoney(h.est_sell_fee, ccy)} · {t('investments.estSellTax')}{' '}
+                  {formatStockMoney(h.est_sell_tax ?? 0, ccy)}
                 </span>
               )}
               {onQuickTrade && (
@@ -662,6 +688,10 @@ function StockTradeDialog({
   const [results, setResults] = useState<SecuritySearchItem[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
   const searchSeq = useRef(0)
+  // 選/輸入代號後自動帶入的現價;使用者自己改價格後就不再覆蓋。
+  const [prefilledQuote, setPrefilledQuote] = useState<SecurityQuote | null>(null)
+  const [priceEdited, setPriceEdited] = useState(Boolean(editingTrade))
+  const quoteSeq = useRef(0)
 
   // 需要選「交割/入帳帳戶」的類型;reinvest 入投資理財帳戶本身。
   const isCash = tradeType === 'buy' || tradeType === 'sell' || tradeType === 'cash_dividend'
@@ -671,7 +701,9 @@ function StockTradeDialog({
   const crossCurrency = Boolean(receiving && (receiving.currency || '').toUpperCase() !== currency)
   const sharesNum = Number(shares) || 0
   const priceNum = Number(price) || 0
-  const gross = sharesNum * priceNum
+  const gross = stockGross(sharesNum, priceNum, currency)
+  // 期初持股填的是成本、股利填的是每股股利,只有買/賣/再投入帶現價。
+  const usesMarketPrice = tradeType === 'buy' || tradeType === 'sell' || tradeType === 'reinvest'
 
   // 編輯既有買進/賣出:從綁定的轉帳交易推回交割帳戶/交割金額。
   useEffect(() => {
@@ -715,11 +747,32 @@ function StockTradeDialog({
     }
     if (!feeEdited) setFee(gross > 0 ? numText(suggestFee(gross, settings, market, currency)) : '')
     if (!taxEdited) {
-      const suggested = tradeType === 'sell' ? suggestSellTax(gross, settings, market, currency) : 0
+      const suggested = tradeType === 'sell' ? suggestSellTax(gross, settings, market, currency, symbol) : 0
       setTax(gross > 0 && suggested > 0 ? numText(suggested) : '')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gross, tradeType, market, currency])
+  }, [gross, tradeType, market, currency, symbol])
+
+  // 帶入目前報價(新增時、價格還沒自己改過)。代號停止輸入 0.6 秒後才抓。
+  useEffect(() => {
+    if (editing || priceEdited || !usesMarketPrice) return
+    const sym = symbol.trim().toUpperCase()
+    if (!sym) return
+    const seq = ++quoteSeq.current
+    const timer = window.setTimeout(async () => {
+      try {
+        const [q] = await fetchSecurityQuotes(token, [`${market}:${sym}`])
+        if (seq !== quoteSeq.current || !q || q.price === null) return
+        setPrice(numText(q.price))
+        setPrefilledQuote(q)
+        if (!name.trim() && q.name) setName(q.name)
+      } catch {
+        // 抓不到報價就讓使用者自己填
+      }
+    }, 600)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [market, symbol, tradeType, priceEdited])
 
   // 現金股利預填持有股數。
   useEffect(() => {
@@ -729,8 +782,27 @@ function StockTradeDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDividend, market, symbol])
 
+  useEffect(() => {
+    if (!usesMarketPrice && prefilledQuote && !priceEdited) {
+      setPrice('')
+      setPrefilledQuote(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usesMarketPrice])
+
+  // 代號/市場真的換了才清掉上一檔帶入的價格(從搜尋結果點同一檔時保留)。
+  const clearPrefilledPrice = (nextMarket: string, nextSymbol: string) => {
+    if (!prefilledQuote || priceEdited) return
+    if (prefilledQuote.market === nextMarket.toUpperCase() && prefilledQuote.symbol === nextSymbol.trim().toUpperCase()) {
+      return
+    }
+    setPrice('')
+    setPrefilledQuote(null)
+  }
+
   const onSymbolChange = (value: string) => {
     setSymbol(value)
+    clearPrefilledPrice(market, value)
     const q = value.trim()
     const seq = ++searchSeq.current
     if (!q || editing) {
@@ -752,6 +824,7 @@ function StockTradeDialog({
   }
 
   const pickResult = (r: SecuritySearchItem) => {
+    clearPrefilledPrice(r.market, r.symbol)
     setMarket(r.market)
     setCurrency(r.currency.toUpperCase())
     setSymbol(r.symbol)
@@ -766,7 +839,17 @@ function StockTradeDialog({
     return editingTrade?.trade_type === 'sell' ? base + editingTrade.shares : base
   }, [holdings, market, symbol, editingTrade])
 
-  const secAmount = stockTradeAmount(tradeType, sharesNum, priceNum, Number(fee) || 0, Number(tax) || 0)
+  const secAmount = stockTradeAmount(tradeType, sharesNum, priceNum, Number(fee) || 0, Number(tax) || 0, currency)
+
+  // 「證交稅率 0.1%(ETF)」:台股依代號判斷普通股/ETF/債券 ETF。
+  const sellTaxHint = (() => {
+    const rate = `${Number((sellTaxRateFor(settings, market, symbol) * 100).toFixed(4))}%`
+    if (market !== 'TW' && market !== 'TWO') return t('investments.sellTaxRateHint', { rate })
+    return t('investments.sellTaxRateHintWithKind', {
+      rate,
+      kind: t(`investments.securityKind.${securityKind(market, symbol)}`),
+    })
+  })()
 
   const onSave = async () => {
     const sym = symbol.trim().toUpperCase()
@@ -934,10 +1017,25 @@ function StockTradeDialog({
                 <Label>
                   {t(isDividend ? 'investments.field.dividendPerShare' : 'investments.field.price', { currency })}
                 </Label>
-                <Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
+                <Input
+                  inputMode="decimal"
+                  value={price}
+                  onChange={(e) => {
+                    setPriceEdited(true)
+                    setPrefilledQuote(null)
+                    setPrice(e.target.value)
+                  }}
+                />
               </div>
             )}
           </div>
+          {prefilledQuote && usesMarketPrice && (
+            <div className="-mt-2 text-xs text-muted-foreground">
+              {t('investments.pricePrefilled', {
+                when: `${prefilledQuote.session === 'close' ? t('investments.quoteClose') : t('investments.quoteIntraday')} ${formatQuoteTime(prefilledQuote.quote_time || prefilledQuote.fetched_at)}`,
+              })}
+            </div>
+          )}
           {tradeType !== 'stock_dividend' && (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -962,6 +1060,7 @@ function StockTradeDialog({
                       setTax(e.target.value)
                     }}
                   />
+                  {tradeType === 'sell' && <div className="text-xs text-muted-foreground">{sellTaxHint}</div>}
                 </div>
               )}
             </div>
@@ -1044,11 +1143,15 @@ const SETTINGS_FIELDS: {
   key: keyof InvestmentSettings
   labelKey: string
   percent: boolean
+  /** 只有台股有:證交稅依標的類型不同(依代號判斷,見 securityKind)。 */
+  twOnly?: boolean
 }[] = [
   { key: 'feeRate', labelKey: 'investments.settings.feeRate', percent: true },
   { key: 'feeDiscount', labelKey: 'investments.settings.feeDiscount', percent: true },
   { key: 'feeMin', labelKey: 'investments.settings.feeMin', percent: false },
   { key: 'sellTaxRate', labelKey: 'investments.settings.sellTaxRate', percent: true },
+  { key: 'etfSellTaxRate', labelKey: 'investments.settings.etfSellTaxRate', percent: true, twOnly: true },
+  { key: 'bondEtfSellTaxRate', labelKey: 'investments.settings.bondEtfSellTaxRate', percent: true, twOnly: true },
   { key: 'dividendFeeFixed', labelKey: 'investments.settings.dividendFeeFixed', percent: false },
   { key: 'dividendFeeRate', labelKey: 'investments.settings.dividendFeeRate', percent: true },
   { key: 'dividendWithholdingRate', labelKey: 'investments.settings.dividendWithholdingRate', percent: true },
@@ -1084,16 +1187,19 @@ function InvestmentSettingsDialog({
     return out
   })
   const [reinvest, setReinvest] = useState(Boolean(initial.reinvestDividends))
+  const [pnlAfterSellCosts, setPnlAfterSellCosts] = useState(initial.pnlAfterSellCosts !== false)
   const [settlementId, setSettlementId] = useState(initial.settlementAccountId || '')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const defaults = investmentDefaults(market)
   const settlement = accounts.find((a) => a.id === settlementId)
+  const isTw = market === 'TW' || market === 'TWO'
+  const visibleFields = SETTINGS_FIELDS.filter((f) => !f.twOnly || isTw)
 
   const onSave = async () => {
     if (!activeLedgerId) return toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
     const next: InvestmentSettings = { market }
-    for (const f of SETTINGS_FIELDS) {
+    for (const f of visibleFields) {
       const raw = values[f.key] ?? ''
       const parsed = f.percent ? percentTextToRate(raw) : raw.trim() ? Number(raw) : undefined
       if (parsed !== undefined && Number.isFinite(parsed)) {
@@ -1101,6 +1207,8 @@ function InvestmentSettingsDialog({
       }
     }
     if (reinvest) next.reinvestDividends = true
+    // 預設就是開,關掉才存。
+    if (!pnlAfterSellCosts) next.pnlAfterSellCosts = false
     if (settlementId) next.settlementAccountId = settlementId
     setSaving(true)
     try {
@@ -1153,12 +1261,13 @@ function InvestmentSettingsDialog({
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {SETTINGS_FIELDS.map((f) => {
+            {visibleFields.map((f) => {
               const d = defaults[f.key as keyof typeof defaults] as number
               const defaultText = f.percent ? `${rateToPercentText(d)}%` : String(d)
+              const labelKey = isTw && f.key === 'sellTaxRate' ? 'investments.settings.sellTaxRateStock' : f.labelKey
               return (
                 <div key={f.key} className="space-y-1">
-                  <Label>{t(f.labelKey)}</Label>
+                  <Label>{t(labelKey)}</Label>
                   <Input
                     inputMode="decimal"
                     value={values[f.key] ?? ''}
@@ -1172,6 +1281,21 @@ function InvestmentSettingsDialog({
               )
             })}
           </div>
+          {isTw && <p className="text-xs text-muted-foreground">{t('investments.settings.sellTaxKindHint')}</p>}
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={pnlAfterSellCosts}
+              onChange={(e) => setPnlAfterSellCosts(e.target.checked)}
+            />
+            <span>
+              {t('investments.settings.pnlAfterSellCosts')}
+              <span className="block text-xs text-muted-foreground">
+                {t('investments.settings.pnlAfterSellCostsDesc')}
+              </span>
+            </span>
+          </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={reinvest} onChange={(e) => setReinvest(e.target.checked)} />
             {t('investments.settings.reinvestDividends')}

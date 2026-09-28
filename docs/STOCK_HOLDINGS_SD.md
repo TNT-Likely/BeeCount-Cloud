@@ -172,6 +172,33 @@ App 端對應文件:`docs/changes/2026-09-28-stock-dividends.md`。
 - 沒有發放日(兩個資料源都沒有),入帳日期預設除息日。
 - 再投入只能全額,不支援部分現金部分再投入;再投入模式不記預扣稅。
 
-## 8. 待辦(Phase 3)
+## 8. 費用對帳(2026-09-28)
+
+使用者拿永豐對帳單比對後修的四件事(App 端完整說明:App repo
+`docs/changes/2026-09-28-stock-fee-reconciliation.md`):
+
+- **`services/securities/trade_fees.py`**(只用標準函式庫,`snapshot_mutator` 會
+  import):`security_kind`(台股 `00` 開頭 = ETF、結尾 `B` = 債券 ETF)、
+  `round_money` / `stock_gross`(TWD/JPY/KRW 無條件捨去,其它四捨五入到分;捨去前
+  先 round 到 6 位清浮點殘渣,不用 Python 銀行家捨入)、`sell_tax_rate_for`、
+  `suggest_fee`、`suggest_sell_tax`、`estimate_sell`。
+- **`snapshot_mutator.stock_trade_amount` / `stock_trade_tx_fields`**:價金改用
+  `stock_gross`。0050 買 50 股 @97.45 手續費 6 → 轉帳 4,872 + feeAmount 6,明細
+  amount 4,878。美股零碎股價金也四捨五入到分了(1.875885 → 1.88)。舊資料不重算。
+- **`normalize_investment_settings`**:接受 `etfSellTaxRate`、`bondEtfSellTaxRate`
+  (float)、`pnlAfterSellCosts`(bool,預設開、關掉才存 false)。
+- **`/workspace/holdings`**:每檔多了 `est_sell_fee` / `est_sell_tax` / `net_value` /
+  `pnl_after_sell_costs`;`market_value` 也用 `stock_gross` 取整;`unrealized_pnl` 依
+  帳戶設定用淨值或毛市值算。帳戶多了 `net_value_by_currency` /
+  `valuation_by_currency`;總計多了 `total_net_value` / `pnl_after_sell_costs`,
+  `total_unrealized_pnl` 改成「valuation − 成本」。
+- **Web**:`lib/investment.ts` 同一套函式(`securityKind`、`stockGross`、
+  `sellTaxRateFor`、`estimateSell`),新增交易時自動帶入現價
+  (`fetchSecurityQuotes`),賣出時顯示「證交稅率 0.1%(ETF)」;費用設定多了兩個
+  稅率欄位和損益開關;持股表多一欄「預估淨值」。
+- 三端共用測試數字:`tests/test_trade_fees.py`、Web `investmentFees.test.ts`、App
+  `investment_settings_test.dart`「台股費用對帳」。
+
+## 9. 待辦(Phase 3)
 
 - 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。

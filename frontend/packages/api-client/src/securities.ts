@@ -56,6 +56,12 @@ export type Holding = {
   last_trade_date: string | null
   quote: SecurityQuote | null
   market_value: number | null
+  /** 現在全部賣掉的預估手續費/交易稅與淨額(server trade_fees.estimate_sell)。 */
+  est_sell_fee?: number | null
+  est_sell_tax?: number | null
+  net_value?: number | null
+  /** true = unrealized_pnl 用 net_value 算(帳戶設定 pnlAfterSellCosts,預設開)。 */
+  pnl_after_sell_costs?: boolean
   unrealized_pnl: number | null
   unrealized_pnl_percent: number | null
 }
@@ -67,6 +73,8 @@ export type AccountHoldings = {
   include_in_total: boolean
   holdings: Holding[]
   market_value_by_currency: Record<string, number>
+  net_value_by_currency?: Record<string, number>
+  valuation_by_currency?: Record<string, number>
   cost_by_currency: Record<string, number>
   realized_pnl_by_currency: Record<string, number>
 }
@@ -76,8 +84,11 @@ export type HoldingsSummary = {
   accounts: AccountHoldings[]
   /** 折算成主幣別;缺匯率的幣別剔除並列在 missing_rates(不按 1.0 裸加)。 */
   total_market_value: number
+  total_net_value?: number
   total_cost: number
+  /** 有帳戶開了 pnlAfterSellCosts 時,是「預估變現淨值 − 成本」。 */
   total_unrealized_pnl: number
+  pnl_after_sell_costs?: boolean
   missing_rates: string[]
   stale: boolean
 }

@@ -34,9 +34,24 @@ export function defaultMarketForCurrency(currency: string | null | undefined): S
   return STOCK_MARKETS.find((m) => m.currency === upper)?.code ?? 'TW'
 }
 
+/**
+ * 標的類型,決定台股賣出證交稅率(普通股 0.3%、ETF 0.1%、債券 ETF 免徵)。只看
+ * 代號,同 App `markets.dart::securityKindOf`、server `trade_fees.security_kind`:
+ * 台股代號 `00` 開頭是 ETF,其中結尾 `B` 的是債券 ETF。其它市場一律 stock。
+ */
+export type SecurityKind = 'stock' | 'etf' | 'bond_etf'
+
+export function securityKind(market: string | null | undefined, symbol: string | null | undefined): SecurityKind {
+  const m = (market || '').toUpperCase()
+  if (m !== 'TW' && m !== 'TWO') return 'stock'
+  const s = (symbol || '').trim().toUpperCase()
+  if (!/^00\d{2,4}[A-Z]?$/.test(s)) return 'stock'
+  return s.endsWith('B') ? 'bond_etf' : 'etf'
+}
+
 export type ResolvedInvestmentSettings = Required<
-  Omit<InvestmentSettings, 'market' | 'settlementAccountId'>
-> & Pick<InvestmentSettings, 'market' | 'settlementAccountId'>
+  Omit<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate'>
+> & Pick<InvestmentSettings, 'market' | 'settlementAccountId' | 'etfSellTaxRate' | 'bondEtfSellTaxRate'>
 
 export function investmentDefaults(market: string | null | undefined): ResolvedInvestmentSettings {
   switch ((market || '').toUpperCase()) {
@@ -44,20 +59,21 @@ export function investmentDefaults(market: string | null | undefined): ResolvedI
     case 'TWO':
       return {
         feeRate: 0.001425, feeDiscount: 1, feeMin: 20, sellTaxRate: 0.003,
+        etfSellTaxRate: 0.001, bondEtfSellTaxRate: 0,
         dividendFeeFixed: 10, dividendFeeRate: 0, dividendWithholdingRate: 0,
-        nhiSupplementRate: 0.0211, nhiThreshold: 20000, reinvestDividends: false,
+        nhiSupplementRate: 0.0211, nhiThreshold: 20000, reinvestDividends: false, pnlAfterSellCosts: true,
       }
     case 'US':
       return {
         feeRate: 0.0025, feeDiscount: 1, feeMin: 0, sellTaxRate: 0,
         dividendFeeFixed: 0, dividendFeeRate: 0, dividendWithholdingRate: 0.3,
-        nhiSupplementRate: 0, nhiThreshold: 0, reinvestDividends: false,
+        nhiSupplementRate: 0, nhiThreshold: 0, reinvestDividends: false, pnlAfterSellCosts: true,
       }
     default:
       return {
         feeRate: 0, feeDiscount: 1, feeMin: 0, sellTaxRate: 0,
         dividendFeeFixed: 0, dividendFeeRate: 0, dividendWithholdingRate: 0,
-        nhiSupplementRate: 0, nhiThreshold: 0, reinvestDividends: false,
+        nhiSupplementRate: 0, nhiThreshold: 0, reinvestDividends: false, pnlAfterSellCosts: true,
       }
   }
 }
@@ -74,6 +90,9 @@ export function resolveInvestmentSettings(
     feeDiscount: s.feeDiscount ?? d.feeDiscount,
     feeMin: s.feeMin ?? d.feeMin,
     sellTaxRate: s.sellTaxRate ?? d.sellTaxRate,
+    etfSellTaxRate: s.etfSellTaxRate ?? d.etfSellTaxRate,
+    bondEtfSellTaxRate: s.bondEtfSellTaxRate ?? d.bondEtfSellTaxRate,
+    pnlAfterSellCosts: s.pnlAfterSellCosts ?? true,
     dividendFeeFixed: s.dividendFeeFixed ?? d.dividendFeeFixed,
     dividendFeeRate: s.dividendFeeRate ?? d.dividendFeeRate,
     dividendWithholdingRate: s.dividendWithholdingRate ?? d.dividendWithholdingRate,
@@ -84,18 +103,31 @@ export function resolveInvestmentSettings(
   }
 }
 
-/** TWD/JPY/KRW 沒有小數:手續費/稅無條件捨去到整數(台灣券商慣例),其它四捨五入到分。 */
+/** TWD/JPY/KRW 沒有小數:成交價金/手續費/稅無條件捨去到整數(證交所與台灣券商慣例),其它四捨五入到分。 */
 export function currencyDecimals(currency: string | null | undefined): number {
   const upper = (currency || '').toUpperCase()
   return upper === 'TWD' || upper === 'JPY' || upper === 'KRW' ? 0 : 2
 }
 
-function roundFee(value: number, currency: string | null | undefined): number {
+/**
+ * 依幣別取整。捨去前先四捨五入到小數 6 位清掉浮點殘渣(1000 × 600.1 =
+ * 600099.99999… 直接捨去會少 1 元),同 App `InvestmentSettings.roundMoney`、
+ * server `trade_fees.round_money`。
+ */
+export function roundMoney(value: number, currency: string | null | undefined): number {
+  const cleaned = Number(value.toFixed(6))
   const decimals = currencyDecimals(currency)
-  if (decimals === 0) return Math.floor(value)
+  if (decimals === 0) return Math.floor(cleaned)
   const factor = 10 ** decimals
-  return Math.round(value * factor) / factor
+  return Math.round(Number((cleaned * factor).toFixed(6))) / factor
 }
+
+/** 成交價金 = 股數 × 價格,依幣別取整(台幣 50 × 97.45 = 4,872.5 → 4,872)。 */
+export function stockGross(shares: number, price: number, currency: string | null | undefined): number {
+  return roundMoney(shares * price, currency)
+}
+
+const roundFee = roundMoney
 
 export function suggestFee(
   gross: number,
@@ -108,26 +140,65 @@ export function suggestFee(
   return Math.max(roundFee(gross * r.feeRate * r.feeDiscount, currency), r.feeMin)
 }
 
+/** 這檔標的的賣出交易稅率:台股依 [securityKind] 分普通股 / ETF / 債券 ETF。 */
+export function sellTaxRateFor(
+  settings: InvestmentSettings | null | undefined,
+  market: string,
+  symbol: string | null | undefined,
+): number {
+  const r = resolveInvestmentSettings(settings, market)
+  switch (securityKind(market, symbol)) {
+    case 'etf':
+      return r.etfSellTaxRate ?? r.sellTaxRate
+    case 'bond_etf':
+      return r.bondEtfSellTaxRate ?? 0
+    default:
+      return r.sellTaxRate
+  }
+}
+
 export function suggestSellTax(
   gross: number,
   settings: InvestmentSettings | null | undefined,
   market: string,
   currency: string,
+  symbol?: string | null,
 ): number {
   if (!(gross > 0)) return 0
-  const r = resolveInvestmentSettings(settings, market)
-  return roundFee(gross * r.sellTaxRate, currency)
+  return roundFee(gross * sellTaxRateFor(settings, market, symbol), currency)
 }
 
-/** 以證券幣別計的現金影響,同 server `snapshot_mutator.stock_trade_amount`。 */
+export type SellEstimate = { gross: number; fee: number; tax: number; net: number }
+
+/** 「現在全部賣掉」的預估手續費/交易稅/淨額(同 server `trade_fees.estimate_sell`)。 */
+export function estimateSell(params: {
+  shares: number
+  price: number
+  market: string
+  symbol: string
+  currency: string
+  settings: InvestmentSettings | null | undefined
+}): SellEstimate {
+  const gross = stockGross(params.shares, params.price, params.currency)
+  if (!(gross > 0)) return { gross: 0, fee: 0, tax: 0, net: 0 }
+  const fee = suggestFee(gross, params.settings, params.market, params.currency)
+  const tax = suggestSellTax(gross, params.settings, params.market, params.currency, params.symbol)
+  return { gross, fee, tax, net: Math.max(gross - fee - tax, 0) }
+}
+
+/**
+ * 以證券幣別計的現金影響,同 server `snapshot_mutator.stock_trade_amount`。
+ * 成交價金依幣別取整(台幣無條件捨去):0050 買 50 股 @97.45、手續費 6 → 4,878。
+ */
 export function stockTradeAmount(
   tradeType: string,
   shares: number,
   price: number,
   fee: number,
   tax: number,
+  currency?: string | null,
 ): number {
-  const gross = shares * price
+  const gross = stockGross(shares, price, currency)
   if (tradeType === 'buy' || tradeType === 'opening' || tradeType === 'reinvest') return gross + fee
   if (tradeType === 'sell' || tradeType === 'cash_dividend') return gross - fee - tax
   return 0

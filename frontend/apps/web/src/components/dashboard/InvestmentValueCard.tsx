@@ -66,6 +66,9 @@ export function InvestmentValueCard() {
             {t('investments.unrealized')} {base ? formatStockMoney(pnl, base, { signed: true }) : '—'}
             {pct !== null ? ` (${formatPercent(pct)})` : ''}
           </div>
+          {summary.pnl_after_sell_costs && (
+            <p className="text-[11px] text-muted-foreground">{t('investments.pnlAfterSellCostsNote')}</p>
+          )}
           {summary.missing_rates.length > 0 && (
             <p className="text-[11px] text-amber-600 dark:text-amber-500">
               {t('investments.missingRates', { currencies: summary.missing_rates.join(', ') })}

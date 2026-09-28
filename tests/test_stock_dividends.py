@@ -525,7 +525,7 @@ def test_fractional_reinvest_income_is_rounded_to_cents():
                  price=341.07, fee=0, currency="USD", settlement_account_id=None)
         assert r.status_code == 200, r.text
         [trade] = [t for t in _trade_rows(TS) if t.trade_type == "reinvest"]
-        assert trade.amount == pytest.approx(1.875885)  # 成本保留原精度
+        assert trade.amount == pytest.approx(1.88)  # 成交價金依幣別取整(美元到分,trade_fees.stock_gross)
         assert _tx_row(TS, trade.tx_sync_id).amount == 1.88  # 收入金額到分
     finally:
         app.dependency_overrides.clear()

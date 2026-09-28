@@ -620,7 +620,14 @@ def test_holdings_endpoint_market_value_and_base_conversion(monkeypatch):
         [h] = acc["holdings"]
         assert h["shares"] == 1000
         assert h["market_value"] == pytest.approx(700000)
-        assert h["unrealized_pnl"] == pytest.approx(700000 - 600855)
+        # 預設未實現損益扣預估賣出費用:手續費 floor(700000×0.1425%)=997、
+        # 普通股證交稅 0.3% = 2100(trade_fees.estimate_sell)。
+        assert h["est_sell_fee"] == 997 and h["est_sell_tax"] == 2100
+        assert h["net_value"] == pytest.approx(700000 - 997 - 2100)
+        assert h["pnl_after_sell_costs"] is True
+        assert h["unrealized_pnl"] == pytest.approx(700000 - 997 - 2100 - 600855)
+        assert body["total_net_value"] == pytest.approx(700000 - 997 - 2100)
+        assert body["total_unrealized_pnl"] == pytest.approx(700000 - 997 - 2100 - 600855)
         assert h["quote"]["change"] == pytest.approx(10)
         assert body["total_market_value"] == pytest.approx(700000)
         assert body["missing_rates"] == []

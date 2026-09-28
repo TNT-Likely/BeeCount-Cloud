@@ -38,6 +38,7 @@ from ...services.securities import holdings as holdings_service
 from ...services.securities import markets
 from ...services.securities import quotes as quote_service
 from ...services.securities import search as search_service
+from ...services.securities import trade_fees
 from ._shared import _READ_SCOPE_DEP, _is_admin, _require_ledger, router
 
 _SYMBOL_KEY = re.compile(r"^[A-Za-z]{2,4}:[A-Za-z0-9.\-]{1,24}$")
@@ -84,6 +85,12 @@ class HoldingOut(BaseModel):
     last_trade_date: str | None = None
     quote: SecurityQuoteOut | None = None
     market_value: float | None = None
+    # 現在全部賣掉的預估手續費/交易稅與淨額(trade_fees.estimate_sell)。
+    est_sell_fee: float | None = None
+    est_sell_tax: float | None = None
+    net_value: float | None = None
+    # true = unrealized_pnl 是用 net_value 算的(帳戶設定 pnlAfterSellCosts,預設開)。
+    pnl_after_sell_costs: bool = True
     unrealized_pnl: float | None = None
     unrealized_pnl_percent: float | None = None
 
@@ -96,6 +103,9 @@ class AccountHoldingsOut(BaseModel):
     holdings: list[HoldingOut]
     # 以下都以「證券幣別」計;一個帳戶裡混多種幣別時 by_currency 分開列。
     market_value_by_currency: dict[str, float]
+    net_value_by_currency: dict[str, float] = {}
+    # 算未實現損益用的價值(依設定取 net_value 或 market_value)。
+    valuation_by_currency: dict[str, float] = {}
     cost_by_currency: dict[str, float]
     realized_pnl_by_currency: dict[str, float]
 
@@ -105,8 +115,11 @@ class HoldingsSummaryOut(BaseModel):
     accounts: list[AccountHoldingsOut]
     # 折算成主幣別的總計;缺匯率的幣別整條剔除(列在 missing_rates),不按 1.0 裸加。
     total_market_value: float
+    total_net_value: float = 0.0
     total_cost: float
     total_unrealized_pnl: float
+    # 有任何帳戶的未實現損益扣了預估賣出費用(畫面要標示)。
+    pnl_after_sell_costs: bool = False
     missing_rates: list[str]
     stale: bool
 
@@ -253,6 +266,9 @@ async def workspace_holdings(
         sid: (a.name or "", (a.currency or "").upper() or None, a.include_in_total is not False)
         for sid, a in accounts.items()
     }
+    account_settings = {
+        sid: dividend_service.parse_settings(a.investment_settings_json) for sid, a in accounts.items()
+    }
 
     open_keys = list(dict.fromkeys((h.market, h.symbol) for h in all_holdings if h.shares > 0))
     views = await quote_service.get_quotes(db, open_keys, refresh=refresh) if open_keys else []
@@ -260,6 +276,7 @@ async def workspace_holdings(
     any_stale = any(v.stale for v in views)
 
     currencies_needed: set[str] = set()
+    any_after_costs = False
     by_account: dict[str, AccountHoldingsOut] = {}
     for sid, (name, ccy, include) in account_meta.items():
         by_account[sid] = AccountHoldingsOut(
@@ -271,11 +288,21 @@ async def workspace_holdings(
         view = quote_by_key.get((h.market, h.symbol))
         ccy = (h.currency or (view.currency if view else None) or account_meta[h.account_id][1] or "").upper()
         market_value = None
+        estimate = None
+        valuation = None
         unrealized = None
         unrealized_pct = None
+        settings = account_settings.get(h.account_id)
+        after_costs = trade_fees.pnl_after_sell_costs(settings)
         if h.shares > 0 and view is not None and view.price is not None:
-            market_value = round(h.shares * view.price, 6)
-            unrealized = round(market_value - h.total_cost, 6)
+            # 毛市值依幣別取整(台幣無條件捨去),同成交價金與 App HoldingView.marketValue。
+            market_value = trade_fees.stock_gross(h.shares, view.price, ccy or None)
+            estimate = trade_fees.estimate_sell(
+                shares=h.shares, price=view.price, market=h.market, symbol=h.symbol,
+                currency=ccy or None, settings=settings,
+            )
+            valuation = round(estimate.net, 6) if after_costs else market_value
+            unrealized = round(valuation - h.total_cost, 6)
             unrealized_pct = round(unrealized / h.total_cost * 100, 4) if h.total_cost > 0 else None
         d = h.to_dict()
         out = HoldingOut(
@@ -294,6 +321,10 @@ async def workspace_holdings(
             last_trade_date=h.last_trade_date,
             quote=SecurityQuoteOut(**view.to_dict()) if view is not None and h.shares > 0 else None,
             market_value=market_value,
+            est_sell_fee=estimate.fee if estimate else None,
+            est_sell_tax=estimate.tax if estimate else None,
+            net_value=round(estimate.net, 6) if estimate else None,
+            pnl_after_sell_costs=after_costs,
             unrealized_pnl=unrealized,
             unrealized_pnl_percent=unrealized_pct,
         )
@@ -307,6 +338,15 @@ async def workspace_holdings(
                     acc.market_value_by_currency[ccy] = round(
                         acc.market_value_by_currency.get(ccy, 0.0) + market_value, 6
                     )
+                    acc.net_value_by_currency[ccy] = round(
+                        acc.net_value_by_currency.get(ccy, 0.0) + (estimate.net if estimate else market_value), 6
+                    )
+                    acc.valuation_by_currency[ccy] = round(
+                        acc.valuation_by_currency.get(ccy, 0.0) + (valuation if valuation is not None else market_value),
+                        6,
+                    )
+                    if after_costs:
+                        any_after_costs = True
             if h.realized_pnl:
                 acc.realized_pnl_by_currency[ccy] = round(
                     acc.realized_pnl_by_currency.get(ccy, 0.0) + h.realized_pnl, 6
@@ -317,6 +357,8 @@ async def workspace_holdings(
     rates = await _rates_to_base(db, user_id=user_id, base=base) if base else {}
     missing: set[str] = set()
     total_mv = 0.0
+    total_net = 0.0
+    total_valuation = 0.0
     total_cost = 0.0
     for acc in by_account.values():
         for ccy, mv in acc.market_value_by_currency.items():
@@ -325,6 +367,8 @@ async def workspace_holdings(
                 missing.add(ccy)
                 continue
             total_mv += mv * rate
+            total_net += acc.net_value_by_currency.get(ccy, mv) * rate
+            total_valuation += acc.valuation_by_currency.get(ccy, mv) * rate
             total_cost += acc.cost_by_currency.get(ccy, 0.0) * rate
 
     ordered = sorted(by_account.values(), key=lambda a: a.account_name.lower())
@@ -332,8 +376,10 @@ async def workspace_holdings(
         base_currency=base or None,
         accounts=[a for a in ordered if a.holdings or not account_id or a.account_id == account_id],
         total_market_value=round(total_mv, 4),
+        total_net_value=round(total_net, 4),
         total_cost=round(total_cost, 4),
-        total_unrealized_pnl=round(total_mv - total_cost, 4),
+        total_unrealized_pnl=round(total_valuation - total_cost, 4),
+        pnl_after_sell_costs=any_after_costs,
         missing_rates=sorted(missing),
         stale=any_stale,
     )

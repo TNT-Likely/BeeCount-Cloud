@@ -2111,7 +2111,12 @@ export type InvestmentSettings = {
   feeRate?: number
   feeDiscount?: number
   feeMin?: number
+  /** 台股是「普通股」的稅率;ETF / 債券 ETF 看下面兩個(依代號判斷)。 */
   sellTaxRate?: number
+  etfSellTaxRate?: number
+  bondEtfSellTaxRate?: number
+  /** 未實現損益扣預估賣出手續費/交易稅;缺 = 開。 */
+  pnlAfterSellCosts?: boolean
   dividendFeeFixed?: number
   dividendFeeRate?: number
   dividendWithholdingRate?: number
