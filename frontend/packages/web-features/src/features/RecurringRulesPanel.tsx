@@ -46,6 +46,7 @@ import {
   marketCurrency,
   rateToPercentText,
   resolveInvestmentSettings,
+  stockDcaWholeShares,
 } from '../lib/investment'
 
 type RecurringRulesPanelProps = {
@@ -660,6 +661,13 @@ export function RecurringRulesPanel({
                     </div>
                   ) : null}
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {t(
+                    stockDcaWholeShares(form.market || defaultStockMarket)
+                      ? 'investments.dca.wholeShareHint'
+                      : 'investments.dca.fractionalHint',
+                  )}
+                </p>
               </>
             ) : isTransfer ? (
               <>

@@ -293,3 +293,56 @@ export function percentTextToRate(text: string): number | undefined {
   const n = Number(trimmed)
   return Number.isFinite(n) ? Number((n / 100).toFixed(8)) : undefined
 }
+
+/**
+ * 股票定期定額「只買整數股」的市場(2026-09-30)。台股要進證交所撮合,最小
+ * 單位 1 股:每期金額(含手續費)能買幾個整股就買幾股,零頭不扣款;美股等
+ * 市場券商允許碎股,維持「投入金額 ÷ 股價」、手續費另計。同 server
+ * `trade_fees.STOCK_DCA_WHOLE_SHARE_MARKETS`、App `kStockDcaWholeShareMarkets`。
+ */
+export const STOCK_DCA_WHOLE_SHARE_MARKETS: readonly string[] = ['TW', 'TWO']
+
+export function stockDcaWholeShares(market: string | null | undefined): boolean {
+  return STOCK_DCA_WHOLE_SHARE_MARKETS.includes((market || '').toUpperCase())
+}
+
+export type StockDcaOrder = {
+  shares: number
+  /** 成交價金(= 綁定轉帳金額) */
+  gross: number
+  fee: number
+  /** 交割帳戶實際扣款 = 成交價金 + 手續費 */
+  total: number
+}
+
+/**
+ * 定期定額一期的下單試算;買不到任何股數回 null。算法同 server
+ * `trade_fees.stock_dca_order`/App `stockDcaOrder`,改一邊要改另外兩邊。
+ */
+export function stockDcaOrder(
+  amount: number,
+  price: number,
+  settings: InvestmentSettings | null | undefined,
+  market: string,
+  currency: string,
+): StockDcaOrder | null {
+  if (!(price > 0)) return null
+  const budget = roundMoney(amount, currency)
+  if (!(budget > 0)) return null
+  const feeOf = (gross: number) => suggestFee(gross, settings, market, currency)
+  if (!stockDcaWholeShares(market)) {
+    const fee = feeOf(budget)
+    return { shares: budget / price, gross: budget, fee, total: budget + fee }
+  }
+  const fits = (n: number) => {
+    const gross = stockGross(n, price, currency)
+    return gross + feeOf(gross) <= budget + 1e-9
+  }
+  let n = Math.max(Math.floor(Number(((budget - feeOf(budget)) / price).toFixed(9))), 0)
+  while (fits(n + 1)) n += 1
+  while (n > 0 && !fits(n)) n -= 1
+  if (n <= 0) return null
+  const gross = stockGross(n, price, currency)
+  const fee = feeOf(gross)
+  return { shares: n, gross, fee, total: gross + fee }
+}

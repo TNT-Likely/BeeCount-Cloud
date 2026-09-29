@@ -133,3 +133,80 @@ def estimate_sell(
         fee=suggest_fee(gross, market, currency, settings),
         tax=suggest_sell_tax(gross, market, symbol, currency, settings),
     )
+
+
+# 股票定期定額「只買整數股」的市場(2026-09-30 使用者回報)。台股不論定期定額
+# 或盤中零股都要進證交所撮合,最小交易單位就是 1 股,券商沒辦法把 0.5 股放進
+# 集保戶頭——每期投入金額(含手續費)能買幾個整股就買幾股,剩下的錢不扣款。
+# 美股等市場的券商(含複委託)是券商自己吃下整股再切碎分配,允許碎股,維持
+# 「投入金額 ÷ 股價」。App `kStockDcaWholeShareMarkets`
+# (lib/services/investment/stock_dca.dart)、Web `STOCK_DCA_WHOLE_SHARE_MARKETS`
+# 必須同一份清單。
+STOCK_DCA_WHOLE_SHARE_MARKETS = frozenset({"TW", "TWO"})
+
+
+def stock_dca_whole_shares(market: str | None) -> bool:
+    return (market or "").upper() in STOCK_DCA_WHOLE_SHARE_MARKETS
+
+
+@dataclass
+class StockDcaOrder:
+    shares: float
+    gross: float  # 成交價金(= 綁定轉帳的金額)
+    fee: float
+
+    @property
+    def total(self) -> float:
+        """交割帳戶實際扣款 = 成交價金 + 手續費。"""
+        return self.gross + self.fee
+
+
+def stock_dca_order(
+    amount: float,
+    price: float,
+    *,
+    market: str | None,
+    currency: str | None,
+    fee_rate: float,
+    fee_discount: float,
+    fee_min: float,
+) -> StockDcaOrder | None:
+    """定期定額一期的下單結果;買不到任何股數回 None。
+
+    - 整數股市場([stock_dca_whole_shares]):`amount` 是「含手續費」的扣款
+      上限,股數 = 使 `成交價金 + 手續費 <= amount` 的最大整數(券商算法:
+      (投入金額 − 手續費) ÷ 成交價,無條件捨去);手續費依實際成交價金計。
+      連 1 股都買不起(amount < 股價 + 手續費)回 None。
+    - 其它市場(碎股):成交價金 = amount,手續費另計(跟 2026-09-28 版本相同),
+      股數 = amount ÷ 股價。
+
+    App `stockDcaOrder`、Web `stockDcaOrder` 是同一套算法,改一邊要改另外兩邊。"""
+    if price <= 0:
+        return None
+    budget = round_money(amount, currency)
+    if budget <= 0:
+        return None
+
+    def fee_of(gross: float) -> float:
+        if gross <= 0:
+            return 0.0
+        return max(round_money(gross * fee_rate * fee_discount, currency), fee_min)
+
+    if not stock_dca_whole_shares(market):
+        return StockDcaOrder(shares=budget / price, gross=budget, fee=fee_of(budget))
+
+    def fits(n: int) -> bool:
+        gross = stock_gross(n, price, currency)
+        return gross + fee_of(gross) <= budget + 1e-9
+
+    # 起點用券商公式(以整筆預算估手續費,估出來的一定買得起),再往上試:
+    # 實際成交價金較小,手續費可能也較小,多出來的錢說不定夠再買 1 股。
+    n = max(int(math.floor(round((budget - fee_of(budget)) / price, 9))), 0)
+    while fits(n + 1):
+        n += 1
+    while n > 0 and not fits(n):
+        n -= 1
+    if n <= 0:
+        return None
+    gross = stock_gross(n, price, currency)
+    return StockDcaOrder(shares=float(n), gross=gross, fee=fee_of(gross))

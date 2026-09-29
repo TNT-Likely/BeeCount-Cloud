@@ -99,8 +99,27 @@ def emit_tx(
     now: datetime,
     item: dict[str, Any],
 ) -> str:
-    """写一条 transaction SyncChange + 同事务 projection.upsert_tx。返回新 tx 的 sync_id。"""
+    """写一条 transaction SyncChange + 同事务 projection.upsert_tx。返回新 tx 的 sync_id。
+
+    帳戶名稱(accountName/fromAccountName/toAccountName)呼叫方沒帶就在這裡
+    依 syncId 補上(2026-09-30):讀取 API 跟 Web 列表直接用 projection 存的
+    名稱,以前排程生成的交易都沒帶,轉帳在帳戶明細顯示成「- → -」。"""
     tx_sync_id = str(item["syncId"])
+    for id_key, name_key in (
+        ("accountId", "accountName"),
+        ("fromAccountId", "fromAccountName"),
+        ("toAccountId", "toAccountName"),
+    ):
+        account_sync_id = item.get(id_key)
+        if account_sync_id and not item.get(name_key):
+            name = db.scalar(
+                select(UserAccountProjection.name).where(
+                    UserAccountProjection.user_id == user_id,
+                    UserAccountProjection.sync_id == account_sync_id,
+                )
+            )
+            if name:
+                item[name_key] = name
     change_row = SyncChange(
         user_id=user_id,
         ledger_id=ledger_id,
@@ -667,6 +686,13 @@ def _refresh_quotes(db: Session, keys: list[tuple[str, str]], *, now: datetime) 
 STOCK_DCA_MAX_CATCH_UP = timedelta(days=7)
 
 
+def _format_dca_shares(shares: float) -> str:
+    """預設轉帳備註的股數:最多 4 位小數、去尾零(26 → "26",26.95420 →
+    "26.9542"),同 App `_formatDcaShares`。"""
+    text = f"{shares:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def stock_dca_occurrence_ids(rule_sync_id: str, occurrence: datetime) -> tuple[str, str]:
     """股票定期定額每一期生成的 (轉帳交易 syncId, stock_trade syncId)。
 
@@ -769,7 +795,8 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
     docs/STOCK_HOLDINGS_SD.md §9)規則:到期當下才逐筆生成,跟
     `materialize_due_transfer_rules` 同一套「到期查當下資料」的理由,只是多
     一層——除了交割帳戶餘額要夠,還要本地報價快取(`security_quotes`)有這
-    檔標的的價格才能算出股數(股數 = 每期投入金額 / 當下報價,允許碎股)。
+    檔標的的價格才能算出股數(台股只買整數股、其它市場碎股,見
+    `trade_fees.stock_dca_order`)。
     兩者任一不滿足就跳過(不推進 `generated_until_at`,下次 15 分鐘 loop
     重試同一期並通知使用者,原因不同各自去重,不會互相覆蓋)。
 
@@ -808,6 +835,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
     skipped_balance = 0
     skipped_quote = 0
     skipped_stale = 0
+    skipped_too_small = 0
     for rule in rules:
         if (
             not rule.from_account_sync_id
@@ -913,14 +941,49 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                     skipped_quote += 1
                 break  # 這期沒過就先停在這裡,不追後面的期數
 
-            gross = trade_fees.round_money(rule.amount, security_currency)
-            fee = max(trade_fees.round_money(gross * fee_rate * fee_discount, security_currency), fee_min)
-            shares = gross / price
+            order = trade_fees.stock_dca_order(
+                rule.amount, price, market=rule.market, currency=security_currency,
+                fee_rate=fee_rate, fee_discount=fee_discount, fee_min=fee_min,
+            )
+            if order is None:
+                # 整數股市場(台股)每期金額連 1 股(含手續費)都買不起:券商這期
+                # 不會扣款,這裡也略過這一期(推進進度)並通知,不卡住後面的期數
+                # ——跟「餘額不足」不同,等 15 分鐘重試也不會變買得起。
+                occurrence_iso = next_occurrence.isoformat()
+                if not _already_notified_stock(
+                    db, user_id=rule.user_id, rule_id=rule.sync_id,
+                    occurrence_iso=occurrence_iso, reason="amount_too_small",
+                ):
+                    notification_service.create_notification(
+                        db,
+                        user_id=rule.user_id,
+                        category="reminder",
+                        title=f"定期定額未執行：{rule.symbol}",
+                        body=(
+                            f"每期金額 {rule.amount:g} 不足以買進 1 股"
+                            f"(目前股價 {price:g},另需手續費),本期已略過;"
+                            "台股定期定額只能買整數股,請調高每期金額。"
+                        ),
+                        payload={
+                            "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
+                            "recurringRuleId": rule.sync_id,
+                            "occurrenceAt": occurrence_iso,
+                            "kind": "amount_too_small",
+                        },
+                    )
+                skipped_too_small += 1
+                rule.generated_until_at = next_occurrence
+                rule_changed = True
+                if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                    rule.enabled = False
+                    break
+                continue
+            gross, fee, shares = order.gross, order.fee, order.shares
 
             balance = compute_account_balance(
                 db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id, now=now,
             )
-            required = gross + fee
+            required = order.total
             if balance < required - 1e-9:
                 occurrence_iso = next_occurrence.isoformat()
                 if not _already_notified_stock(
@@ -946,7 +1009,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                     skipped_balance += 1
                 break  # 這期沒過就先停在這裡,不追後面的期數
 
-            note = rule.note or f"定期定額 {rule.symbol} {shares:g}股"
+            note = rule.note or f"定期定額 {rule.symbol} {_format_dca_shares(shares)}股"
             tx_item: dict[str, Any] = {
                 "syncId": tx_sync_id,
                 "type": "transfer",
@@ -1021,7 +1084,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         if rule_changed:
             _emit_recurring_rule_update(db, rule=rule, now=now)
 
-    if materialized or skipped_balance or skipped_quote:
+    if materialized or skipped_balance or skipped_quote or skipped_too_small:
         logger.info(
             "recurring_materializer: stock dca rules materialized=%d skipped_insufficient=%d skipped_no_quote=%d",
             materialized, skipped_balance, skipped_quote,
@@ -1031,6 +1094,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         "skipped_insufficient": skipped_balance,
         "skipped_no_quote": skipped_quote,
         "skipped_stale": skipped_stale,
+        "skipped_too_small": skipped_too_small,
     }
 
 

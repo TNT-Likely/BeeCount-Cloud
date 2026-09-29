@@ -137,9 +137,9 @@ def _setup_accounts(client, hdr_app, ledger_id, *, settlement_balance=100000.0):
           {"syncId": "acc-inv", "name": "證券", "type": "investment", "currency": "TWD"})
 
 
-def _insert_quote(TS, *, market="TW", symbol="0050", price=97.45):
+def _insert_quote(TS, *, market="TW", symbol="0050", price=97.45, currency="TWD"):
     with TS() as db:
-        sec = Security(market=market, symbol=symbol, name="元大台灣50", currency="TWD", kind="etf")
+        sec = Security(market=market, symbol=symbol, name="元大台灣50", currency=currency, kind="etf")
         db.add(sec)
         db.flush()
         db.add(SecurityQuote(
@@ -296,14 +296,23 @@ def test_stock_dca_materializes_when_due_with_quote_and_balance():
             assert trade.trade_type == "buy"
             assert trade.market == "TW"
             assert trade.symbol == "0050"
-            assert abs(trade.shares - 3000 / 97.45) < 1e-6
+            # 台股只買整數股:(3000 − 手續費 20) ÷ 97.45 = 30.58 → 30 股,
+            # 成交價金 2,923(台幣捨去)+ 手續費 20 = 扣款 2,943,剩下的錢不扣。
+            assert trade.shares == 30.0
+            assert trade.fee == 20.0
             assert trade.tx_sync_id is not None
 
             tx = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == trade.tx_sync_id))
             assert tx is not None
             assert tx.tx_type == "transfer"
+            assert tx.amount == 2923.0
+            assert tx.fee_amount == 20.0
+            assert tx.note == "定期定額 0050 30股"
             assert tx.from_account_sync_id == "acc-bank"
             assert tx.to_account_sync_id == "acc-inv"
+            # 以前排程生成的轉帳沒帶帳戶名稱,帳戶明細顯示「- → -」。
+            assert tx.from_account_name == "交割戶"
+            assert tx.to_account_name == "證券"
             assert tx.recurring_rule_sync_id == rule_id
     finally:
         app.dependency_overrides.clear()
@@ -565,7 +574,8 @@ def test_run_now_job_materializes_rule_due_minutes_ago(_no_live_quote_fetch, mon
         assert _no_live_quote_fetch[-1] == [("TW", "0050")]
         with TS() as db:
             trade = db.scalar(select(ReadStockTradeProjection))
-            assert abs(trade.shares - 60.0) < 1e-9
+            # (3000 − 20) ÷ 50 = 59.6 → 59 股(60 股 + 手續費會超過 3000)。
+            assert trade.shares == 59.0
             assert trade.price == 50.0
             row = db.scalar(select(ReadRecurringRuleProjection).where(ReadRecurringRuleProjection.sync_id == rule_id))
             assert row.generated_until_at is not None
@@ -744,5 +754,117 @@ def test_upcoming_run_at_and_reanchor_next_run_after_first_period():
         r = client.patch(f"/api/v1/write/ledgers/L_R10/recurring-rules/{rule_id}", headers=hdr,
                          json={"base_change_id": base, "next_run_at": new_next.isoformat(), "amount": 2000})
         assert r.status_code == 200, r.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-30:台股整數股 / 美股碎股
+# ---------------------------------------------------------------------------
+
+
+def test_stock_dca_order_whole_shares_matches_broker_examples():
+    """使用者提供的券商算法:每月 3,000、手續費固定 1 元,
+    股價 150 → 19 股扣 2,851;100 → 29 股扣 2,901;200 → 14 股扣 2,801。"""
+    from src.services.securities import trade_fees
+
+    for price, shares, total in ((150.0, 19, 2851.0), (100.0, 29, 2901.0), (200.0, 14, 2801.0)):
+        order = trade_fees.stock_dca_order(
+            3000.0, price, market="TW", currency="TWD", fee_rate=0.0, fee_discount=1.0, fee_min=1.0,
+        )
+        assert order is not None
+        assert (order.shares, order.gross, order.fee, order.total) == (shares, shares * price, 1.0, total)
+
+
+def test_stock_dca_order_uses_leftover_after_actual_fee():
+    """以整筆預算估的手續費比實際高時,多出來的錢夠再買 1 股就要買。"""
+    from src.services.securities import trade_fees
+
+    # 預算 1,000、最低 20:(1000 − 20) ÷ 10 = 98 股;98 股價金 980 + 20 = 1000 剛好。
+    order = trade_fees.stock_dca_order(
+        1000.0, 10.0, market="TWO", currency="TWD", fee_rate=0.001425, fee_discount=1, fee_min=20,
+    )
+    assert order.shares == 98.0 and order.total == 1000.0
+    # 費率 10%、無最低:以 1000 估手續費 100 → 90 股,但 90 股實際手續費 90,
+    # 91 股 = 910 + 91 = 1001 超過,所以停在 90。
+    order = trade_fees.stock_dca_order(
+        1000.0, 10.0, market="TW", currency="TWD", fee_rate=0.1, fee_discount=1, fee_min=0,
+    )
+    assert order.shares == 90.0 and order.total == 990.0
+    # 連 1 股 + 手續費都買不起
+    assert trade_fees.stock_dca_order(
+        100.0, 95.0, market="TW", currency="TWD", fee_rate=0.001425, fee_discount=1, fee_min=20,
+    ) is None
+
+
+def test_stock_dca_order_fractional_outside_taiwan():
+    from src.services.securities import trade_fees
+
+    order = trade_fees.stock_dca_order(
+        100.0, 450.0, market="US", currency="USD", fee_rate=0.0025, fee_discount=1, fee_min=0,
+    )
+    assert abs(order.shares - 100.0 / 450.0) < 1e-12
+    assert order.gross == 100.0 and order.fee == 0.25
+
+
+def test_us_stock_dca_keeps_fractional_shares():
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "dca-us@example.com")
+        app_token, device = owner["access_token"], owner["device_id"]
+        _seed_ledger(client, app_token, device, "L_US")
+        hdr_app = {"Authorization": f"Bearer {app_token}"}
+        _push(client, hdr_app, "L_US", "account", "acc-bank",
+              {"syncId": "acc-bank", "name": "美元交割", "type": "cash", "currency": "USD",
+               "initialBalance": 10000.0})
+        _push(client, hdr_app, "L_US", "account", "acc-inv",
+              {"syncId": "acc-inv", "name": "複委託", "type": "investment", "currency": "USD"})
+        _insert_quote(TS, market="US", symbol="VOO", price=450.0, currency="USD")
+        web = _login_web(client, "dca-us@example.com")
+        token = web["access_token"]
+        hdr = {"Authorization": f"Bearer {token}"}
+        res = _create_stock_dca_rule(
+            client, hdr, "L_US", token,
+            overrides={"market": "US", "symbol": "VOO", "security_name": "Vanguard S&P 500", "amount": 100.0},
+        )
+        assert res.status_code == 200, res.text
+        with TS() as db:
+            assert materialize_due_stock_rules(db)["materialized"] == 1
+            db.commit()
+            trade = db.scalar(select(ReadStockTradeProjection))
+            assert abs(trade.shares - 100.0 / 450.0) < 1e-9
+            tx = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == trade.tx_sync_id))
+            assert tx.amount == 100.0 and tx.fee_amount == 0.25
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_tw_stock_dca_amount_too_small_skips_period_and_notifies():
+    client, TS = _make_client()
+    try:
+        _hdr_app, hdr, token = _setup(client, "dca-small@example.com", "L_SMALL")
+        _insert_quote(TS, price=200.0)
+        first = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0)
+        res = _create_stock_dca_rule(
+            client, hdr, "L_SMALL", token,
+            overrides={"amount": 150.0, "next_run_at": first.isoformat()},
+        )
+        assert res.status_code == 200, res.text
+        rule_id = res.json()["entity_id"]
+        with TS() as db:
+            out = materialize_due_stock_rules(db)
+            db.commit()
+            assert out["materialized"] == 0
+            assert out["skipped_too_small"] == 1
+            assert db.scalar(select(ReadStockTradeProjection)) is None
+            notes = db.scalars(select(Notification).where(Notification.user_id.isnot(None))).all()
+            assert any((n.payload_json or {}).get("kind") == "amount_too_small" for n in notes)
+        # 這期略過(推進進度),下一期才會再試,不會卡在同一期每 15 分鐘通知。
+        row = _rule_row(TS, rule_id)
+        assert row.generated_until_at is not None
+        with TS() as db:
+            again = materialize_due_stock_rules(db)
+            db.commit()
+            assert again["skipped_too_small"] == 0
     finally:
         app.dependency_overrides.clear()

@@ -61,6 +61,8 @@ import {
   sellTaxRateFor,
   stockGross,
   stockTradeAmount,
+  stockDcaOrder,
+  stockDcaWholeShares,
   suggestFee,
   suggestSellTax,
 } from '@beecount/web-features'
@@ -907,7 +909,11 @@ export function StockTradeDialog({
       }
     : settings
   const dcaAmountNum = Number(dcaAmount) || 0
+  const dcaWhole = stockDcaWholeShares(market)
   const dcaFee = dcaAmountNum > 0 ? suggestFee(dcaAmountNum, dcaFeeSettings, market, currency) : 0
+  // 以目前價格試算一期:台股整數股(金額含手續費、零頭不扣),其它市場碎股。
+  const dcaOrder =
+    dcaAmountNum > 0 && priceNum > 0 ? stockDcaOrder(dcaAmountNum, priceNum, dcaFeeSettings, market, currency) : null
   const resolvedFees = resolveInvestmentSettings(settings, market)
 
   const onSaveDca = async () => {
@@ -1141,21 +1147,48 @@ export function StockTradeDialog({
                   </div>
                 )}
               </div>
+              <p className="text-[11px] text-muted-foreground">
+                {t(dcaWhole ? 'investments.dca.wholeShareHint' : 'investments.dca.fractionalHint')}
+              </p>
               {dcaAmountNum > 0 && (
                 <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  <div className="font-semibold tabular-nums text-foreground">
-                    {t('investments.dca.preview', {
-                      total: formatStockMoney(dcaAmountNum + dcaFee, currency),
-                      fee: formatStockMoney(dcaFee, currency),
-                    })}
-                  </div>
-                  {priceNum > 0 && (
-                    <div className="mt-0.5">
-                      {t('investments.dca.previewShares', {
-                        price: formatPrice(priceNum),
-                        shares: formatShares(dcaAmountNum / priceNum),
-                      })}
-                    </div>
+                  {dcaWhole ? (
+                    priceNum > 0 ? (
+                      dcaOrder ? (
+                        <div className="font-semibold tabular-nums text-foreground">
+                          {t('investments.dca.previewWhole', {
+                            price: formatPrice(priceNum),
+                            shares: formatShares(dcaOrder.shares),
+                            total: formatStockMoney(dcaOrder.total, currency),
+                            fee: formatStockMoney(dcaOrder.fee, currency),
+                            left: formatStockMoney(Math.max(dcaAmountNum - dcaOrder.total, 0), currency),
+                          })}
+                        </div>
+                      ) : (
+                        <div className="font-semibold text-destructive">
+                          {t('investments.dca.previewTooSmall', { price: formatPrice(priceNum) })}
+                        </div>
+                      )
+                    ) : (
+                      <div>{t('investments.dca.previewNoPrice')}</div>
+                    )
+                  ) : (
+                    <>
+                      <div className="font-semibold tabular-nums text-foreground">
+                        {t('investments.dca.preview', {
+                          total: formatStockMoney(dcaAmountNum + dcaFee, currency),
+                          fee: formatStockMoney(dcaFee, currency),
+                        })}
+                      </div>
+                      {dcaOrder && (
+                        <div className="mt-0.5">
+                          {t('investments.dca.previewShares', {
+                            price: formatPrice(priceNum),
+                            shares: formatShares(dcaOrder.shares),
+                          })}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
