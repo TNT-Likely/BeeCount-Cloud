@@ -2366,6 +2366,34 @@ def _assert_account_is_investment(
         )
 
 
+def _assert_stock_dca_settlement_currency(
+    db: Session, *, user_id: str, market: str | None, from_account_id: str | None,
+) -> None:
+    """股票定期定額(2026-09-29 補):v1 不支援交割帳戶跟證券不同幣別——到期
+    生成的轉帳 `amount` 以證券幣別計、直接從交割帳戶扣,幣別不同的話扣款金額
+    會錯(例如台幣交割戶扣 100「美元」變成扣 100 台幣)。以前只寫在文件的
+    「已知限制」裡、建規則時沒擋,這裡補擋。市場未知或帳戶找不到時不擋(交給
+    其它必填檢查)。"""
+    if not market or not from_account_id:
+        return
+    from ...services.securities import markets as securities_markets
+
+    market_info = securities_markets.get_market(market)
+    if market_info is None or not market_info.currency:
+        return
+    account_currency = db.scalar(
+        select(UserAccountProjection.currency).where(
+            UserAccountProjection.user_id == user_id,
+            UserAccountProjection.sync_id == from_account_id,
+        )
+    )
+    if account_currency and account_currency.upper() != market_info.currency.upper():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="stock_dca settlement account currency must match security currency",
+        )
+
+
 def _assert_category_required(
     tx_type: str | None, category_id: str | None, *, field_name: str = "category_id",
 ) -> None:
@@ -2613,6 +2641,7 @@ __all__ = [
     '_assert_reward_rules_valid',
     '_assert_account_not_group',
     '_assert_account_is_investment',
+    '_assert_stock_dca_settlement_currency',
     '_assert_category_required',
     '_assert_transfer_to_amount_valid',
     '_assert_valid_adjustment_tx',

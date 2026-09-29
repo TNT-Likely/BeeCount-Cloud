@@ -102,6 +102,9 @@ async def create_recurring_rule_ep(
         _assert_account_is_investment(
             db, user_id=current_user.id, account_id=req.to_account_id, field_name="to_account_id",
         )
+        _assert_stock_dca_settlement_currency(
+            db, user_id=current_user.id, market=req.market, from_account_id=req.from_account_id,
+        )
     # 手續費/折扣/信用卡回饋(2026-08 使用者回饋):跟 write/transactions.py
     # 同一套校驗 + 重算 amount,transfer 帶了任一新欄位直接 400。
     _normalize_recurring_rule_fee_discount(db=db, ledger_id=ledger.id, rule_id=None, payload=payload)
@@ -236,6 +239,60 @@ async def update_recurring_rule_ep(
         return replay
     for field in ("account_id", "from_account_id", "to_account_id"):
         _assert_account_not_group(db, user_id=current_user.id, account_id=payload.get(field), field_name=field)
+    # 股票定期定額(2026-09-29 補):建立時的帳戶限制,改帳戶時也要成立。
+    existing_rule = db.scalar(
+        select(ReadRecurringRuleProjection).where(
+            ReadRecurringRuleProjection.ledger_id == ledger.id,
+            ReadRecurringRuleProjection.sync_id == rule_id,
+        )
+    )
+    if existing_rule is not None and existing_rule.kind == "stock_dca":
+        effective_from = payload.get("from_account_id", existing_rule.from_account_sync_id)
+        effective_to = payload.get("to_account_id", existing_rule.to_account_sync_id)
+        if not effective_from or not effective_to:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="kind=stock_dca requires from_account_id and to_account_id",
+            )
+        if effective_from == effective_to:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="from_account_id and to_account_id must differ",
+            )
+        if "to_account_id" in payload:
+            _assert_account_is_investment(
+                db, user_id=current_user.id, account_id=effective_to, field_name="to_account_id",
+            )
+        if "from_account_id" in payload:
+            _assert_stock_dca_settlement_currency(
+                db, user_id=current_user.id, market=existing_rule.market, from_account_id=effective_from,
+            )
+    # 2026-09-29:「到期才逐筆生成」的規則(transfer / stock_dca)排程是從
+    # generated_until_at 往後推,next_run_at 只在還沒生成過第一期時有作用——
+    # 以前第一期生成之後再改「下次執行時間」完全沒效果。現在改成:新的時間
+    # 晚於已生成的最後一期 → 清掉 generated_until_at,從新時間重新起算;
+    # 早於(含等於)最後一期 → 400,不然會重生成已經生成過的期數。沒改時間
+    # (前端每次都會送)不動。
+    reset_generated_until = False
+    if (
+        existing_rule is not None
+        and existing_rule.tx_type == "transfer"
+        and existing_rule.generated_until_at is not None
+        and req.next_run_at is not None
+    ):
+        new_next = req.next_run_at if req.next_run_at.tzinfo else req.next_run_at.replace(tzinfo=timezone.utc)
+        old_next = existing_rule.next_run_at
+        old_next = old_next if old_next is None or old_next.tzinfo else old_next.replace(tzinfo=timezone.utc)
+        generated_until = existing_rule.generated_until_at
+        if generated_until.tzinfo is None:
+            generated_until = generated_until.replace(tzinfo=timezone.utc)
+        if new_next > generated_until:
+            reset_generated_until = True
+        elif old_next is None or abs((new_next - old_next).total_seconds()) >= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="next_run_at must be after the last generated occurrence",
+            )
     # 需求 #14(Phase 12):使用者主動要改 category_id 時(不管是清空還是換
     # 別的值)才檢查——維持 partial update「沒帶的欄位不動」既有語意,不會
     # 因為這條規則本來就沒分類(舊資料)而擋下跟分類無關的其它欄位更新。
@@ -265,6 +322,8 @@ async def update_recurring_rule_ep(
             reward_rule_ids=payload.get("reward_rule_ids") or [],
         )
     mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    if reset_generated_until:
+        mutate_payload["__reset_generated_until_at"] = True
     return await _commit_write(
         request=request,
         db=db,

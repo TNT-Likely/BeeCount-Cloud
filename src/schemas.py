@@ -1035,6 +1035,10 @@ class ReadRecurringRuleOut(BaseModel):
     security_name: str | None = None
     stock_fee_rate: float | None = None
     stock_fee_min: float | None = None
+    # 2026-09-29:「到期才逐筆生成」的規則(transfer 自動扣繳 / stock_dca)
+    # 真正的下一期(next_run_at 建立後就不變,要從 generated_until_at 往後
+    # 推);一般收支規則、已停用或已無下一期時為 None,前端退回顯示 next_run_at。
+    upcoming_run_at: datetime | None = None
     # Phase 24(問題 B 第二層):商家/專案/標籤。
     merchant: str | None = None
     project_id: str | None = None

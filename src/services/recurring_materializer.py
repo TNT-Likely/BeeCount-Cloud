@@ -62,6 +62,7 @@ from ..concurrency import lock_ledger_for_materialize
 from ..models import (
     Notification,
     ReadRecurringRuleProjection,
+    ReadStockTradeProjection,
     ReadTxProjection,
     SecurityQuote,
     SyncChange,
@@ -355,7 +356,9 @@ def refill_recurring_windows(db: Session, *, now: datetime | None = None) -> int
     return generated
 
 
-def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) -> float:
+def compute_account_balance(
+    db: Session, *, user_id: str, account_sync_id: str, now: datetime | None = None,
+) -> float:
     """当下记账余额 = initial_balance + income - expense - transfer_out +
     transfer_in + adjustment,跟 `routers/read/workspace.py::
     list_workspace_accounts` 算单个帐户余额的公式完全一致(那边是批量算
@@ -363,7 +366,15 @@ def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) 
     "来源帐户当下够不够扣",也给 `write/accounts.py::balance_adjustment_ep`
     (§2.10 Phase 5)算「目标余额 - 当下余额」的差额。adjustment(§2.10)
     的 `amount` 本身就是带正负号的差量,直接加总(不像 income/expense 分开
-    两个 CASE 再相减)。"""
+    两个 CASE 再相减)。
+
+    2026-09-29 對齊修正:以前這裡(1)沒排除 `happened_at > now` 的未來交易
+    ——一般收支週期規則建立當下會預生成未來 12 個月的 occurrence,交割戶只要
+    掛了任何一條每月支出規則,這裡就會把一整年的未來支出都扣掉,股票定期定額/
+    自動扣繳被誤判成餘額不足;(2)轉帳沒算轉出側手續費(`fee_amount`)/轉入側
+    折損(`discount_amount`)。兩者都跟 Web 顯示的帳戶餘額不一致,現在照
+    `list_workspace_accounts` 同一套條件。"""
+    now = now or datetime.now(timezone.utc)
     account = db.scalar(
         select(UserAccountProjection).where(
             UserAccountProjection.user_id == user_id,
@@ -371,19 +382,27 @@ def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) 
         )
     )
     init_bal = float(account.initial_balance or 0.0) if account else 0.0
+    not_future = ReadTxProjection.happened_at <= now
     income = float(db.scalar(
         select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
             ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "income",
+            not_future,
         )
     ) or 0.0)
     expense = float(db.scalar(
         select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
             ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "expense",
+            not_future,
         )
     ) or 0.0)
     transfer_out = float(db.scalar(
-        select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
+        select(
+            func.coalesce(
+                func.sum(ReadTxProjection.amount + func.coalesce(ReadTxProjection.fee_amount, 0.0)), 0.0
+            )
+        ).where(
             ReadTxProjection.from_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
+            not_future,
         )
     ) or 0.0)
     # 跨幣別轉帳(2026-08):轉入端要用轉入帳戶自身幣別的金額,不是轉出端的
@@ -391,15 +410,21 @@ def compute_account_balance(db: Session, *, user_id: str, account_sync_id: str) 
     transfer_in = float(db.scalar(
         select(
             func.coalesce(
-                func.sum(func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)), 0.0
+                func.sum(
+                    func.coalesce(ReadTxProjection.to_amount, ReadTxProjection.amount)
+                    - func.coalesce(ReadTxProjection.discount_amount, 0.0)
+                ),
+                0.0,
             )
         ).where(
             ReadTxProjection.to_account_sync_id == account_sync_id, ReadTxProjection.tx_type == "transfer",
+            not_future,
         )
     ) or 0.0)
     adjustment = float(db.scalar(
         select(func.coalesce(func.sum(ReadTxProjection.amount), 0.0)).where(
             ReadTxProjection.account_sync_id == account_sync_id, ReadTxProjection.tx_type == "adjustment",
+            not_future,
         )
     ) or 0.0)
     return init_bal + income - expense - transfer_out + transfer_in + adjustment
@@ -492,7 +517,7 @@ def materialize_due_transfer_rules(db: Session, *, now: datetime | None = None) 
                 break
 
             balance = compute_account_balance(
-                db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id,
+                db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id, now=now,
             )
             if balance < rule.amount - 1e-9:
                 occurrence_iso = next_occurrence.isoformat()
@@ -586,11 +611,9 @@ def materialize_due_transfer_rules(db: Session, *, now: datetime | None = None) 
 
 
 def _lookup_quote_price(db: Session, *, market: str, symbol: str) -> float | None:
-    """本地報價快取(`security_quotes`)目前價,沒有就回 None——只讀快取,不
-    在批次任務裡現場打上游 API(真正的報價更新走 `security_quote_close`/
-    `quotes.get_quotes` 那兩條既有路徑),同 App 端
-    `LocalRepository.materializeDueStockRules` 只讀本地 `SecurityQuotes`
-    快取的設計。"""
+    """本地報價快取(`security_quotes`)目前價,沒有就回 None。呼叫前
+    `materialize_due_stock_rules` 已經先用 `_refresh_quotes` 對到期規則的
+    標的補抓過一次上游(見該函式說明),這裡只負責讀。"""
     ids = securities_store.security_ids(db, [(market.upper(), symbol.upper())])
     security_id = ids.get((market.upper(), symbol.upper()))
     if security_id is None:
@@ -599,6 +622,95 @@ def _lookup_quote_price(db: Session, *, market: str, symbol: str) -> float | Non
     if quote is None or quote.price is None or quote.price <= 0:
         return None
     return float(quote.price)
+
+
+def _refresh_quotes(db: Session, keys: list[tuple[str, str]], *, now: datetime) -> None:
+    """股票定期定額到期前補抓報價(2026-09-29)。
+
+    以前只讀快取:可是 `security_quote_close` 收盤排程只抓「目前有持股」的
+    標的,剛開始定期定額、還沒持有的代號(例如第一期的 0050)快取裡永遠沒有
+    報價,每一期都被 `quote_unavailable` 跳過。這裡直接走
+    `quotes.get_quotes(refresh=True)`——快取夠新就不打上游,缺價/過期才抓
+    (盤中 15 分鐘、盤後 12 小時,同 `/read/securities/quotes` 的規則),抓不到
+    就維持快取原值,由呼叫端照舊判斷 quote_unavailable。
+
+    `get_quotes` 打上游前會 `db.rollback()` 放掉連線,所以只能在還沒寫任何
+    東西之前呼叫(`materialize_due_stock_rules` 一開始、查完到期規則就呼叫,
+    之後重新查一次規則)。已經在 event loop 裡(不該發生:排程/手動觸發都跑在
+    worker thread)時直接跳過,不讓整個批次失敗。測試會 monkeypatch 這個
+    函式,避免打真的網路。"""
+    if not keys:
+        return
+    import asyncio
+
+    from .securities import quotes as quotes_service
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        logger.warning("recurring_materializer: running inside an event loop, skip quote refresh")
+        return
+    try:
+        asyncio.run(quotes_service.get_quotes(db, keys, refresh=True, now=now))
+    except Exception as exc:  # noqa: BLE001 — 報價抓不到不能讓整批定期定額失敗
+        logger.warning("recurring_materializer: stock dca quote refresh failed err=%s", exc)
+        db.rollback()
+
+
+# 股票定期定額補期上限(2026-09-29):到期生成只會讀「當下」報價,超過這個
+# 天數還沒生成的期數(例如起始日設在一年前、規則停用很久後重新啟用、App 很久
+# 沒開)如果照補,每一期都會用今天的價格買進,股數/成本全錯。超過上限的期數
+# 直接略過(推進進度、不買),並發一則通知說明。App 端
+# `kStockDcaMaxCatchUp` 必須同值。
+STOCK_DCA_MAX_CATCH_UP = timedelta(days=7)
+
+
+def stock_dca_occurrence_ids(rule_sync_id: str, occurrence: datetime) -> tuple[str, str]:
+    """股票定期定額每一期生成的 (轉帳交易 syncId, stock_trade syncId)。
+
+    App(`LocalRepository.materializeDueStockRules`)跟 Cloud 都會到期生成,
+    而 App 是「啟動時先生成、之後才 pull」——Cloud 15 分鐘排程先生成過、App
+    還沒 pull 到就啟動的話,兩邊會各生成一筆。改用「規則 syncId + 該期時間」
+    推出來的固定 uuid5,兩邊生成的是同一個 syncId,sync 時只會互相覆蓋
+    (LWW),不會變成兩筆。**App 端 `stockDcaOccurrenceIds` 必須用完全一樣的
+    字串格式**(namespace = uuid.NAMESPACE_URL,秒級 epoch 無條件捨去),改
+    一邊要改另一邊。"""
+    from uuid import NAMESPACE_URL, uuid5
+
+    key = f"{rule_sync_id}:{int(_ensure_aware(occurrence).timestamp())}"
+    tx_id = str(uuid5(NAMESPACE_URL, f"beecount:stock_dca:tx:{key}"))
+    trade_id = str(uuid5(NAMESPACE_URL, f"beecount:stock_dca:trade:{key}"))
+    return tx_id, trade_id
+
+
+def next_pending_occurrence(
+    rule: ReadRecurringRuleProjection, advanced_rule: dict[str, Any] | None,
+) -> datetime | None:
+    """規則下一期要生成的時間(不看是否已到期):還沒生成過 = next_run_at,
+    否則 = generated_until_at 之後的下一期。只對「到期才逐筆生成」的規則
+    (transfer 自動扣繳 / stock_dca)有意義——這類規則的 next_run_at 建立後
+    就不再變動,真正的「下次執行」要從 generated_until_at 往後推;
+    `read/ledgers.py::list_recurring_rules` 也用這個算 `upcoming_run_at`。"""
+    generated_until = _ensure_aware(rule.generated_until_at) if rule.generated_until_at else None
+    if generated_until is None:
+        return _ensure_aware(rule.next_run_at)
+    following = recurring_schedule.enumerate_occurrences(
+        start=generated_until, end=None, frequency=rule.frequency,
+        interval=rule.interval, advanced_rule=advanced_rule, max_count=2,
+    )
+    return following[1] if len(following) > 1 else None
+
+
+def _decode_advanced_rule(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def emit_stock_trade(
@@ -675,16 +787,27 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
     不 commit —— 調用方決定事務邊界。返回
     {"materialized": N, "skipped_insufficient": M, "skipped_no_quote": K}。"""
     now = now or datetime.now(timezone.utc)
-    rules = db.scalars(
-        select(ReadRecurringRuleProjection).where(
-            ReadRecurringRuleProjection.enabled.is_(True),
-            ReadRecurringRuleProjection.kind == "stock_dca",
-        )
-    ).all()
+    stmt = select(ReadRecurringRuleProjection).where(
+        ReadRecurringRuleProjection.enabled.is_(True),
+        ReadRecurringRuleProjection.kind == "stock_dca",
+    )
+    # 先挑出到期規則的標的補抓報價(見 _refresh_quotes:它會 rollback,所以
+    # 要在任何寫入之前做,做完重新查一次規則)。
+    due_keys: list[tuple[str, str]] = []
+    for rule in db.scalars(stmt).all():
+        if not rule.market or not rule.symbol:
+            continue
+        nxt = next_pending_occurrence(rule, _decode_advanced_rule(rule.advanced_rule_json))
+        if nxt is not None and nxt <= now:
+            due_keys.append((rule.market.upper(), rule.symbol.upper()))
+    if due_keys:
+        _refresh_quotes(db, list(dict.fromkeys(due_keys)), now=now)
+    rules = db.scalars(stmt).all()
 
     materialized = 0
     skipped_balance = 0
     skipped_quote = 0
+    skipped_stale = 0
     for rule in rules:
         if (
             not rule.from_account_sync_id
@@ -698,12 +821,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         if rule.end_at is not None:
             rule.end_at = _ensure_aware(rule.end_at)
 
-        advanced_rule: dict[str, Any] | None = None
-        if rule.advanced_rule_json:
-            try:
-                advanced_rule = json.loads(rule.advanced_rule_json)
-            except json.JSONDecodeError:
-                advanced_rule = None
+        advanced_rule = _decode_advanced_rule(rule.advanced_rule_json)
 
         investment_account = db.scalar(
             select(UserAccountProjection).where(
@@ -735,16 +853,9 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         fee_discount = resolved["feeDiscount"]
 
         rule_changed = False
+        stale_skipped: list[datetime] = []
         while True:
-            generated_until = _ensure_aware(rule.generated_until_at) if rule.generated_until_at else None
-            if generated_until is None:
-                next_occurrence: datetime | None = rule.next_run_at
-            else:
-                following = recurring_schedule.enumerate_occurrences(
-                    start=generated_until, end=None, frequency=rule.frequency,
-                    interval=rule.interval, advanced_rule=advanced_rule, max_count=2,
-                )
-                next_occurrence = following[1] if len(following) > 1 else None
+            next_occurrence = next_pending_occurrence(rule, advanced_rule)
             if next_occurrence is None or next_occurrence > now:
                 break
 
@@ -753,6 +864,31 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                 rule.enabled = False
                 rule_changed = True
                 break
+
+            if next_occurrence < now - STOCK_DCA_MAX_CATCH_UP:
+                rule.generated_until_at = next_occurrence
+                rule_changed = True
+                stale_skipped.append(next_occurrence)
+                if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                    rule.enabled = False
+                    break
+                continue
+
+            tx_sync_id, trade_sync_id = stock_dca_occurrence_ids(rule.sync_id, next_occurrence)
+            # App 已經生成過這一期(同一組固定 syncId)並推上來了:不重複生成,
+            # 只把進度推進到這一期。
+            if db.scalar(
+                select(ReadStockTradeProjection.sync_id).where(
+                    ReadStockTradeProjection.ledger_id == rule.ledger_id,
+                    ReadStockTradeProjection.sync_id == trade_sync_id,
+                )
+            ) is not None:
+                rule.generated_until_at = next_occurrence
+                rule_changed = True
+                if rule.end_at is not None and rule.generated_until_at >= rule.end_at:
+                    rule.enabled = False
+                    break
+                continue
 
             price = _lookup_quote_price(db, market=rule.market, symbol=rule.symbol)
             if price is None:
@@ -782,7 +918,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
             shares = gross / price
 
             balance = compute_account_balance(
-                db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id,
+                db, user_id=rule.user_id, account_sync_id=rule.from_account_sync_id, now=now,
             )
             required = gross + fee
             if balance < required - 1e-9:
@@ -810,8 +946,6 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                     skipped_balance += 1
                 break  # 這期沒過就先停在這裡,不追後面的期數
 
-            tx_sync_id = new_sync_id("tx")
-            trade_sync_id = new_sync_id("stk")
             note = rule.note or f"定期定額 {rule.symbol} {shares:g}股"
             tx_item: dict[str, Any] = {
                 "syncId": tx_sync_id,
@@ -859,6 +993,31 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
                 rule.enabled = False
                 break
 
+        if stale_skipped:
+            skipped_stale += len(stale_skipped)
+            last_iso = stale_skipped[-1].isoformat()
+            if not _already_notified_stock(
+                db, user_id=rule.user_id, rule_id=rule.sync_id,
+                occurrence_iso=last_iso, reason="stale_skipped",
+            ):
+                notification_service.create_notification(
+                    db,
+                    user_id=rule.user_id,
+                    category="reminder",
+                    title=f"定期定額已略過過期的期數：{rule.symbol}",
+                    body=(
+                        f"有 {len(stale_skipped)} 期超過 {STOCK_DCA_MAX_CATCH_UP.days} 天未執行"
+                        f"(最早 {stale_skipped[0].date().isoformat()}),無法取得當時的價格,"
+                        "已略過不補買;如有實際成交請到投資頁手動新增。"
+                    ),
+                    payload={
+                        "ledgerId": notification_service.resolve_ledger_external_id(db, rule.ledger_id),
+                        "recurringRuleId": rule.sync_id,
+                        "occurrenceAt": last_iso,
+                        "kind": "stale_skipped",
+                    },
+                )
+
         if rule_changed:
             _emit_recurring_rule_update(db, rule=rule, now=now)
 
@@ -871,6 +1030,7 @@ def materialize_due_stock_rules(db: Session, *, now: datetime | None = None) -> 
         "materialized": materialized,
         "skipped_insufficient": skipped_balance,
         "skipped_no_quote": skipped_quote,
+        "skipped_stale": skipped_stale,
     }
 
 

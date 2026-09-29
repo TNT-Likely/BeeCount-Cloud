@@ -475,13 +475,24 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadRecurringRuleProjection.discount_amount,
         ReadRecurringRuleProjection.discount_label,
         ReadRecurringRuleProjection.reward_rule_sync_ids_json,
+        # 股票定期定額(2026-09-28,2026-09-29 補):漏選這幾欄的話,Web 端任何
+        # 規則 PATCH(snapshot_mutator 在這份快照上改完再 diff、整筆 upsert)
+        # 都會把 kind 沖回 'general'。
+        ReadRecurringRuleProjection.kind,
+        ReadRecurringRuleProjection.market,
+        ReadRecurringRuleProjection.symbol,
+        ReadRecurringRuleProjection.security_name,
+        ReadRecurringRuleProjection.stock_fee_rate,
+        ReadRecurringRuleProjection.stock_fee_min,
     ).where(ReadRecurringRuleProjection.ledger_id == ledger_id)
     for (sid, tx_type, amount, note, cat_sid, acc_sid, from_sid, to_sid,
          merchant, project_sid, tag_ids_json,
          frequency, interval, next_run_at, end_at, enabled,
          generated_until_at, advanced_rule_json,
          base_amount, fee_amount, fee_label, discount_amount, discount_label,
-         reward_rule_ids_json) in db.execute(rec_stmt).all():
+         reward_rule_ids_json,
+         rule_kind, rule_market, rule_symbol, rule_security_name,
+         stock_fee_rate, stock_fee_min) in db.execute(rec_stmt).all():
         r: dict[str, Any] = {
             "syncId": sid,
             "txType": tx_type,
@@ -541,6 +552,20 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
                     r["rewardRuleIds"] = [str(v) for v in parsed_reward_ids]
             except json.JSONDecodeError:
                 pass
+        # 股票定期定額:同 snapshot_mutator.create_recurring_rule,kind='general'
+        # 不寫 key(維持既有規則的快照形狀不變)。
+        if rule_kind and rule_kind != "general":
+            r["kind"] = rule_kind
+        if rule_market:
+            r["market"] = rule_market
+        if rule_symbol:
+            r["symbol"] = rule_symbol
+        if rule_security_name is not None:
+            r["securityName"] = rule_security_name
+        if stock_fee_rate is not None:
+            r["stockFeeRate"] = stock_fee_rate
+        if stock_fee_min is not None:
+            r["stockFeeMin"] = stock_fee_min
         recurring_rules.append(r)
 
     # Installment periods(§2.12.1 Phase 1.5)—— 先读,installment plan 的

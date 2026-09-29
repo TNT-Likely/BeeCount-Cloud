@@ -1483,6 +1483,11 @@ def update_recurring_rule(snapshot: dict, rule_id: str, payload: dict) -> dict:
         rule["interval"] = _to_optional_int(payload.get("interval")) or 1
     if "next_run_at" in payload and payload.get("next_run_at") is not None:
         rule["nextRunAt"] = _to_iso8601(payload.get("next_run_at"))
+    # 2026-09-29:只有 routers/write/recurring_rules.py 的「到期才逐筆生成」
+    # 規則改下次執行時間時會帶這個 key(= None,從新的 next_run_at 重新起算),
+    # 不在 WriteRecurringRuleUpdateRequest 暴露。
+    if "__reset_generated_until_at" in payload:
+        rule.pop("generatedUntilAt", None)
     if "end_at" in payload:
         value = payload.get("end_at")
         if value is None:

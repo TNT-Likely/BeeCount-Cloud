@@ -4,7 +4,7 @@
 都是以账本为主键的 projection 查询,不做跨账本聚合。"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import false as sa_false
 
@@ -1624,12 +1624,28 @@ def list_recurring_rules(
                 security_name=row.security_name,
                 stock_fee_rate=row.stock_fee_rate,
                 stock_fee_min=row.stock_fee_min,
+                upcoming_run_at=_upcoming_run_at(row),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
             )
         )
     return out
+
+
+def _upcoming_run_at(row: ReadRecurringRuleProjection) -> datetime | None:
+    if row.tx_type != "transfer" or not row.enabled or row.next_run_at is None:
+        return None
+    from ...services.recurring_materializer import next_pending_occurrence
+
+    nxt = next_pending_occurrence(row, _parse_advanced_rule_json(row.advanced_rule_json))
+    if nxt is None:
+        return None
+    if row.end_at is not None:
+        end_at = row.end_at if row.end_at.tzinfo else row.end_at.replace(tzinfo=timezone.utc)
+        if nxt > end_at:
+            return None
+    return nxt
 
 
 def _parse_advanced_rule_json(raw: str | None) -> dict[str, Any] | None:

@@ -26,6 +26,7 @@ import type {
   ReadTransaction,
   RecurringOccurrenceUpdatePayload,
   RecurringUpdateFromPayload,
+  SecuritySearchItem,
   WorkspaceCategory,
 } from '@beecount/api-client'
 
@@ -36,9 +37,16 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DateTimePicker } from '../components/DateTimePicker'
 import { RecurringDeleteChoiceDialog } from '../components/RecurringDeleteChoiceDialog'
+import { SecuritySymbolField } from '../components/SecuritySymbolField'
 import type { RecurringRuleForm } from '../forms'
 import { computeTxTotalAmount, recurringRuleDefaults } from '../forms'
 import { formatAmountTrimmed } from '../format'
+import {
+  defaultMarketForCurrency,
+  marketCurrency,
+  rateToPercentText,
+  resolveInvestmentSettings,
+} from '../lib/investment'
 
 type RecurringRulesPanelProps = {
   rules: readonly ReadRecurringRule[]
@@ -74,6 +82,8 @@ type RecurringRulesPanelProps = {
   onTerminateFuture: (rule: ReadRecurringRule) => Promise<void> | void
   /** 账本 owner 才能写(server _OWNER_ONLY_ROLES),非 owner 时按钮禁用。 */
   canManage: boolean
+  /** 股票定期定額的代號搜尋(2026-09-29):呼叫方包 `searchSecurities`。 */
+  onSearchSecurities?: (query: string, market: string | null) => Promise<SecuritySearchItem[]>
 }
 
 /**
@@ -104,6 +114,7 @@ export function RecurringRulesPanel({
   onUpdateFrom,
   onTerminateFuture,
   canManage,
+  onSearchSecurities,
 }: RecurringRulesPanelProps) {
   const t = useT()
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -140,11 +151,36 @@ export function RecurringRulesPanel({
     [rules, kindFilter],
   )
 
+  // 股票定期定額預設市場(2026-09-29):以前 form.market 預設是空字串,下拉
+  // 選單只是「畫面上」顯示 TW(`value={form.market || 'TW'}`),使用者沒去
+  // 動市場的話 canSubmit 永遠是 false,「新增規則」按鈕按不下去。
+  const defaultStockMarket = defaultMarketForCurrency(currency)
+  // 投資理財帳戶(to)與交割帳戶(from)的幣別限制:v1 不支援跨幣別定期定額
+  // (server `_assert_stock_dca_settlement_currency` 也會擋),交割帳戶清單
+  // 只列跟證券同幣別的帳戶;account_group 保留,子帳戶才不會因為找不到巢狀
+  // 父列而消失(見 AccountPickerDialog 說明)。
+  const stockCurrency = (marketCurrency(form.market || defaultStockMarket) || '').toUpperCase()
+  const settlementAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (a) =>
+          a.id !== form.to_account_id &&
+          (a.account_type === 'account_group' || (a.currency || '').toUpperCase() === stockCurrency),
+      ),
+    [accounts, form.to_account_id, stockCurrency],
+  )
+  const defaultStockFee = resolveInvestmentSettings(
+    accounts.find((a) => a.id === form.to_account_id)?.investment_settings ?? null,
+    form.market || defaultStockMarket,
+  )
+
   const handleOpenCreate = () => {
+    const stock = kindFilter === 'stock_dca'
     onFormChange({
       ...recurringRuleDefaults(),
-      kind: kindFilter === 'stock_dca' ? 'stock_dca' : 'general',
-      tx_type: kindFilter === 'stock_dca' ? 'transfer' : 'expense',
+      kind: stock ? 'stock_dca' : 'general',
+      tx_type: stock ? 'transfer' : 'expense',
+      market: stock ? defaultStockMarket : '',
     })
     setDialogOpen(true)
   }
@@ -172,7 +208,10 @@ export function RecurringRulesPanel({
       to_account_name: toAccount?.name || '',
       frequency: rule.frequency,
       interval: String(rule.interval),
-      next_run_at: isoToLocalInput(rule.next_run_at),
+      // 2026-09-29:transfer/stock_dca 的 next_run_at 在第一期之後就不再變,
+      // 真正的下一期是 server 算的 upcoming_run_at;改這個欄位 server 會從新
+      // 時間重新起算(見 write/recurring_rules.py::update_recurring_rule_ep)。
+      next_run_at: isoToLocalInput(rule.upcoming_run_at || rule.next_run_at),
       end_at: rule.end_at ? isoToLocalInput(rule.end_at) : '',
       enabled: rule.enabled,
       advanced_mode: 'none',
@@ -192,7 +231,7 @@ export function RecurringRulesPanel({
       symbol: rule.symbol || '',
       security_name: rule.security_name || '',
       stock_fee_override: rule.stock_fee_rate != null || rule.stock_fee_min != null,
-      stock_fee_rate: rule.stock_fee_rate != null ? String(rule.stock_fee_rate * 100) : '',
+      stock_fee_rate: rule.stock_fee_rate != null ? rateToPercentText(rule.stock_fee_rate) : '',
       stock_fee_min: rule.stock_fee_min != null ? String(rule.stock_fee_min) : '',
     })
     setDialogOpen(true)
@@ -238,7 +277,7 @@ export function RecurringRulesPanel({
     Boolean(form.next_run_at.trim()) &&
     (isStockDca
       ? Boolean(form.from_account_id) && Boolean(form.to_account_id) &&
-        Boolean(form.market) && Boolean(form.symbol.trim())
+        Boolean(form.market || defaultStockMarket) && Boolean(form.symbol.trim())
       : isTransfer
         ? Boolean(form.from_account_id) && Boolean(form.to_account_id)
         : true)
@@ -340,6 +379,9 @@ export function RecurringRulesPanel({
                         ...form,
                         kind: k,
                         tx_type: k === 'stock_dca' ? 'transfer' : 'expense',
+                        market: k === 'stock_dca' ? form.market || defaultStockMarket : '',
+                        symbol: k === 'stock_dca' ? form.symbol : '',
+                        security_name: k === 'stock_dca' ? form.security_name : '',
                         category_id: '',
                         category_name: '',
                         account_id: '',
@@ -401,35 +443,33 @@ export function RecurringRulesPanel({
 
             {isStockDca ? (
               <>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <Label>{t('investments.field.market')}</Label>
-                    <Select
-                      value={form.market || 'TW'}
-                      disabled={!!form.editingId}
-                      onValueChange={(value) => onFormChange({ ...form, market: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {['TW', 'TWO', 'US', 'HK'].map((m) => (
-                          <SelectItem key={m} value={m}>
-                            {m}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label>{t('investments.field.symbol')}</Label>
-                    <Input
-                      disabled={!!form.editingId}
-                      value={form.symbol}
-                      onChange={(e) => onFormChange({ ...form, symbol: e.target.value.toUpperCase() })}
-                    />
-                  </div>
-                </div>
+                <SecuritySymbolField
+                  market={form.market || defaultStockMarket}
+                  symbol={form.symbol}
+                  disabled={!!form.editingId}
+                  onSearch={onSearchSecurities}
+                  onMarketChange={(market) =>
+                    onFormChange({
+                      ...form,
+                      market,
+                      // 換市場 = 換幣別,原本選的交割帳戶可能不再同幣別。
+                      from_account_id: '',
+                      from_account_name: '',
+                    })
+                  }
+                  onSymbolChange={(symbol) => onFormChange({ ...form, symbol: symbol.toUpperCase() })}
+                  onPick={(item) =>
+                    onFormChange({
+                      ...form,
+                      market: item.market,
+                      symbol: item.symbol,
+                      security_name: item.name || form.security_name,
+                      ...(item.market !== (form.market || defaultStockMarket)
+                        ? { from_account_id: '', from_account_name: '' }
+                        : {}),
+                    })
+                  }
+                />
                 <div className="space-y-1">
                   <Label>{t('investments.field.name')}</Label>
                   <Input
@@ -562,7 +602,18 @@ export function RecurringRulesPanel({
                       role="switch"
                       aria-checked={form.stock_fee_override}
                       onClick={() =>
-                        onFormChange({ ...form, stock_fee_override: !form.stock_fee_override })
+                        // 打開時預填帳戶目前生效的費率(含市場預設),不是 0——
+                        // 以前直接開關不打字存檔會存成 0% / 最低 0 元。
+                        onFormChange({
+                          ...form,
+                          stock_fee_override: !form.stock_fee_override,
+                          ...(!form.stock_fee_override && !form.stock_fee_rate && !form.stock_fee_min
+                            ? {
+                                stock_fee_rate: rateToPercentText(defaultStockFee.feeRate),
+                                stock_fee_min: String(defaultStockFee.feeMin),
+                              }
+                            : {}),
+                        })
                       }
                       className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
                         form.stock_fee_override ? 'bg-primary' : 'bg-muted-foreground/30'
@@ -576,7 +627,15 @@ export function RecurringRulesPanel({
                     </button>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    {t('recurringRules.field.customFeeHint')}
+                    {form.stock_fee_override
+                      ? t('recurringRules.field.customFeeDiscountHint', {
+                          discount: rateToPercentText(defaultStockFee.feeDiscount),
+                        })
+                      : t('recurringRules.field.customFeeDefaultHint', {
+                          rate: rateToPercentText(defaultStockFee.feeRate),
+                          discount: rateToPercentText(defaultStockFee.feeDiscount),
+                          min: String(defaultStockFee.feeMin),
+                        })}
                   </p>
                   {form.stock_fee_override ? (
                     <div className="grid grid-cols-2 gap-2">
@@ -886,9 +945,9 @@ export function RecurringRulesPanel({
       <AccountPickerDialog
         open={fromAccountPickerOpen}
         onClose={() => setFromAccountPickerOpen(false)}
-        accounts={accounts}
+        accounts={isStockDca ? settlementAccounts : accounts}
         value={form.from_account_name}
-        title={t('transactions.placeholder.fromAccountName')}
+        title={isStockDca ? t('investments.field.settlementAccount') : t('transactions.placeholder.fromAccountName')}
         onSelect={(row) =>
           onFormChange({ ...form, from_account_id: row.id, from_account_name: row.name.trim() })
         }
@@ -899,9 +958,30 @@ export function RecurringRulesPanel({
         accounts={isStockDca ? investmentAccounts : accounts}
         value={form.to_account_name}
         title={isStockDca ? t('investments.field.account') : t('transactions.placeholder.toAccountName')}
-        onSelect={(row) =>
-          onFormChange({ ...form, to_account_id: row.id, to_account_name: row.name.trim() })
-        }
+        onSelect={(row) => {
+          // 股票定期定額:交割帳戶還沒選時,帶入這個投資理財帳戶設定的預設交割戶
+          // (同幣別才帶)。
+          const next = { ...form, to_account_id: row.id, to_account_name: row.name.trim() }
+          const investment = accounts.find((a) => a.id === row.id)
+          // 還沒輸入代號時,市場跟著投資理財帳戶的預設市場/幣別走。
+          if (isStockDca && !form.symbol.trim() && investment) {
+            next.market = investment.investment_settings?.market || defaultMarketForCurrency(investment.currency)
+          }
+          const nextStockCurrency = (marketCurrency(next.market || defaultStockMarket) || '').toUpperCase()
+          if (isStockDca && !form.from_account_id) {
+            const defaultId = investment?.investment_settings?.settlementAccountId
+            const settlement = defaultId ? accounts.find((a) => a.id === defaultId) : undefined
+            if (settlement && (settlement.currency || '').toUpperCase() === nextStockCurrency) {
+              next.from_account_id = settlement.id
+              next.from_account_name = settlement.name.trim()
+            }
+          }
+          if (isStockDca && form.from_account_id === row.id) {
+            next.from_account_id = ''
+            next.from_account_name = ''
+          }
+          onFormChange(next)
+        }}
       />
 
       <RecurringDeleteChoiceDialog
@@ -1009,7 +1089,7 @@ function RecurringRuleCard({
           <div className="mt-0.5 text-[11px] text-muted-foreground">
             {t(`recurringRules.frequency.${rule.frequency}`)}
             {rule.interval > 1 ? ` ×${rule.interval}` : ''} ·{' '}
-            {t('recurringRules.label.nextRun')} {formatLocalDate(rule.next_run_at)}
+            {t('recurringRules.label.nextRun')} {formatLocalDate(rule.upcoming_run_at || rule.next_run_at)}
           </div>
           {rule.note ? (
             <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{rule.note}</div>

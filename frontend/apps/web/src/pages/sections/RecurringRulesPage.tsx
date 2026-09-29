@@ -10,6 +10,7 @@ import {
   fetchReadTransactions,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
+  searchSecurities,
   terminateRecurringRuleFuture,
   updateRecurringOccurrence,
   updateRecurringRule,
@@ -24,7 +25,13 @@ import {
   type WorkspaceCategory,
 } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beecount/ui'
-import { RecurringRulesPanel, recurringRuleDefaults, type RecurringRuleForm } from '@beecount/web-features'
+import {
+  RecurringRulesPanel,
+  defaultMarketForCurrency,
+  marketCurrency,
+  recurringRuleDefaults,
+  type RecurringRuleForm,
+} from '@beecount/web-features'
 
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useAuth } from '../../context/AuthContext'
@@ -197,12 +204,35 @@ export function RecurringRulesPage() {
       toast.error(t('transactions.error.categoryRequired'), t('notice.error'))
       return false
     }
-    // 股票定期定額(2026-09-28):市場/代號必填。
-    if (form.kind === 'stock_dca' && (!form.market || !form.symbol.trim())) {
+    // 股票定期定額(2026-09-28):市場/代號必填。市場沒選時跟 panel 顯示的預設
+    // 值一致(2026-09-29:以前 form.market 預設空字串,這裡永遠擋下)。
+    const stockMarket = form.market || defaultMarketForCurrency(currency)
+    if (form.kind === 'stock_dca' && !form.symbol.trim()) {
       toast.error(t('recurringRules.error.stockSecurityRequired'), t('notice.error'))
       return false
     }
+    if (form.kind === 'stock_dca') {
+      const settlement = accounts.find((a) => a.id === form.from_account_id)
+      const secCurrency = marketCurrency(stockMarket)
+      if (settlement?.currency && secCurrency && settlement.currency.toUpperCase() !== secCurrency) {
+        toast.error(t('recurringRules.error.stockSettlementCurrency'), t('notice.error'))
+        return false
+      }
+    }
     const nextRunAtIso = new Date(form.next_run_at).toISOString()
+    // 2026-09-29:transfer/stock_dca 規則第一期之後,「下次執行時間」只能往後改
+    // (server 會從新時間重新起算,往前改會重生成已經生成過的期數,server 回 400)。
+    const editingRule = form.editingId ? rules.find((r) => r.id === form.editingId) : undefined
+    if (
+      editingRule &&
+      editingRule.tx_type === 'transfer' &&
+      editingRule.generated_until_at &&
+      new Date(nextRunAtIso).getTime() <= new Date(editingRule.generated_until_at).getTime() &&
+      Math.abs(new Date(nextRunAtIso).getTime() - new Date(editingRule.next_run_at).getTime()) >= 60_000
+    ) {
+      toast.error(t('recurringRules.error.nextRunBeforeGenerated'), t('notice.error'))
+      return false
+    }
     const endAtIso = form.end_at.trim() ? new Date(form.end_at).toISOString() : null
     // 手續費/折扣/信用卡回饋(2026-08 使用者回饋):同 TransactionsPage.tsx
     // 既有邏輯,只在開啟開關時才送這幾個欄位;amount 送使用者輸入的原始
@@ -280,7 +310,7 @@ export function RecurringRulesPage() {
             ...stockFeeFields,
             reward_rule_ids: rewardRuleIds,
             kind: form.kind,
-            market: form.kind === 'stock_dca' ? form.market : null,
+            market: form.kind === 'stock_dca' ? stockMarket : null,
             symbol: form.kind === 'stock_dca' ? form.symbol.trim().toUpperCase() : null,
             security_name: form.kind === 'stock_dca' ? form.security_name.trim() || null : null,
           }),
@@ -435,6 +465,7 @@ export function RecurringRulesPage() {
             onUpdateFrom={onUpdateFrom}
             onTerminateFuture={onTerminateFuture}
             canManage={canManage}
+            onSearchSecurities={(q, market) => searchSecurities(token, q, market)}
           />
         )}
       </CardContent>

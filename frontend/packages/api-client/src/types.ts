@@ -1536,6 +1536,9 @@ export type ReadRecurringRule = {
   security_name?: string | null
   stock_fee_rate?: number | null
   stock_fee_min?: number | null
+  /** 2026-09-29:transfer/stock_dca 規則真正的下一期(next_run_at 第一期後
+   *  就不再變)。一般收支規則/已停用/沒有下一期時為 null,退回顯示 next_run_at。 */
+  upcoming_run_at?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null

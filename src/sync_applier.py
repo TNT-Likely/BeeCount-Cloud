@@ -269,6 +269,16 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("discountAmount", "discount_amount"),
         ("discountLabel", "discount_label"),
         ("rewardRuleIds", "reward_rule_sync_ids_json", _json_loads_safe),
+        # 股票定期定額(2026-09-28,2026-09-29 補):漏登記的話,任何沒帶這幾個
+        # 鍵的 partial push(舊版 App 推規則更新)會讓 upsert_recurring_rule
+        # 把 kind 沖回 'general'、market/symbol 沖成 NULL,規則從此變成普通
+        # 自動扣繳。
+        ("kind", "kind"),
+        ("market", "market"),
+        ("symbol", "symbol"),
+        ("securityName", "security_name"),
+        ("stockFeeRate", "stock_fee_rate"),
+        ("stockFeeMin", "stock_fee_min"),
     ]),
     "installment_plan": _MergeSpec(ReadInstallmentPlanProjection, [
         ("syncId", "sync_id"),

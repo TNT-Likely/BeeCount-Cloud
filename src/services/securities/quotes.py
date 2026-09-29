@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ...models import ReadStockTradeProjection, Security, SecurityQuote
+from ...models import ReadRecurringRuleProjection, ReadStockTradeProjection, Security, SecurityQuote
 from . import markets, store
 from .providers import twse, yahoo
 from .providers.base import BULK_TIMEOUT, QuoteData, new_client
@@ -196,8 +196,9 @@ async def get_quotes(
 
 
 def held_keys(db: Session) -> dict[str, set[str]]:
-    """目前有人持有(淨股數 > 0)的標的,依市場分組。只用粗略的「加總買入類
-    − 賣出」判斷要不要抓報價,不需要精確的移動平均成本。"""
+    """目前有人持有(淨股數 > 0)或有啟用中定期定額規則的標的,依市場分組。
+    只用粗略的「加總買入類 − 賣出」判斷要不要抓報價,不需要精確的移動平均
+    成本。"""
     signed = case(
         (ReadStockTradeProjection.trade_type == "sell", -ReadStockTradeProjection.shares),
         (
@@ -216,6 +217,17 @@ def held_keys(db: Session) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for market, symbol, net in rows:
         if net is not None and float(net) > 1e-9 and market and symbol:
+            out.setdefault(market.upper(), set()).add(symbol.upper())
+    # 股票定期定額(2026-09-29):啟用中的定期定額標的也要每天抓收盤價——還沒
+    # 持有(第一期還沒扣)的代號不在上面的持股清單裡,快取就永遠沒有報價。
+    dca_rows = db.execute(
+        select(ReadRecurringRuleProjection.market, ReadRecurringRuleProjection.symbol).where(
+            ReadRecurringRuleProjection.kind == "stock_dca",
+            ReadRecurringRuleProjection.enabled.is_(True),
+        )
+    ).all()
+    for market, symbol in dca_rows:
+        if market and symbol:
             out.setdefault(market.upper(), set()).add(symbol.upper())
     return out
 

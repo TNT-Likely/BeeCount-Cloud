@@ -143,6 +143,7 @@ def _run_stock_dca_materialization(db: Session) -> dict:
         "materialized": result["materialized"],
         "skipped_insufficient": result["skipped_insufficient"],
         "skipped_no_quote": result["skipped_no_quote"],
+        "skipped_stale": result["skipped_stale"],
     }
 
 

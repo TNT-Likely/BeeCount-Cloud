@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  createRecurringRule,
   createStockTrade,
   deleteStockTrade,
+  fetchReadRecurringRules,
   fetchSecurityQuotes,
   fetchStockTrades,
   fetchWorkspaceAccounts,
@@ -14,6 +16,8 @@ import {
   type Holding,
   type HoldingsSummary,
   type InvestmentSettings,
+  type ReadRecurringRule,
+  type RecurringFrequency,
   type SecurityQuote,
   type SecuritySearchItem,
   type StockTrade,
@@ -39,7 +43,9 @@ import {
   AccountPickerDialog,
   ConfirmDialog,
   DatePicker,
+  DateTimePicker,
   STOCK_MARKETS,
+  SecuritySymbolField,
   defaultMarketForCurrency,
   estimateDividend,
   formatPercent,
@@ -50,6 +56,7 @@ import {
   marketCurrency,
   percentTextToRate,
   rateToPercentText,
+  resolveInvestmentSettings,
   securityKind,
   sellTaxRateFor,
   stockGross,
@@ -58,12 +65,15 @@ import {
   suggestSellTax,
 } from '@beecount/web-features'
 
+import { useNavigate } from 'react-router-dom'
+
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
+import { routePath } from '../../state/router'
 import { PendingDividendsPanel } from './PendingDividendsPanel'
 import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass } from './investmentsShared'
 
@@ -88,6 +98,9 @@ export type TradeDialogState = {
   editing?: TradeRef
   initial?: { market?: string; symbol?: string; name?: string | null; type?: CreatableType }
   initialSettlementAccountId?: string
+  /** 2026-09-29:'dca' = 直接在股票交易 dialog 裡建立定期定額計畫(建立的是
+   *  kind='stock_dca' 的週期性規則,之後在「週期性交易」頁管理)。 */
+  mode?: 'trade' | 'dca'
 }
 
 export type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
@@ -123,6 +136,9 @@ export function InvestmentsPage() {
   const [settingsAccount, setSettingsAccount] = useState<WorkspaceAccount | null>(null)
   const [pendingDelete, setPendingDelete] = useState<TradeRef | null>(null)
   const [deleting, setDeleting] = useState(false)
+  // 2026-09-29:目前帳本的股票定期定額計畫,依投資理財帳戶列在各帳戶卡片下。
+  const [dcaRules, setDcaRules] = useState<ReadRecurringRule[]>([])
+  const navigate = useNavigate()
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -154,6 +170,23 @@ export function InvestmentsPage() {
     void refresh(true)
   }, [refresh])
 
+  const loadDcaRules = useCallback(async () => {
+    if (!activeLedgerId) {
+      setDcaRules([])
+      return
+    }
+    try {
+      const rows = await fetchReadRecurringRules(token, activeLedgerId)
+      setDcaRules(rows.filter((r) => r.kind === 'stock_dca'))
+    } catch {
+      setDcaRules([])
+    }
+  }, [token, activeLedgerId])
+
+  useEffect(() => {
+    void loadDcaRules()
+  }, [loadDcaRules])
+
   const loadTrades = useCallback(
     async (accountId: string, market: string, symbol: string) => {
       setTradesLoading(true)
@@ -178,13 +211,14 @@ export function InvestmentsPage() {
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const reloadAll = useCallback(async () => {
+    void loadDcaRules()
     await refresh(false)
     const key = expandedRef.current
     if (key) {
       const [accountId, market, symbol] = key.split('|')
       await loadTrades(accountId, market, symbol)
     }
-  }, [refresh, loadTrades])
+  }, [refresh, loadTrades, loadDcaRules])
 
   useSyncRefresh(() => {
     void reloadAll()
@@ -331,6 +365,9 @@ export function InvestmentsPage() {
                 <Button size="sm" onClick={() => setTradeDialog({ account })}>
                   {t('investments.button.addTrade')}
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setTradeDialog({ account, mode: 'dca' })}>
+                  {t('investments.button.addDca')}
+                </Button>
                 <Button size="sm" variant="outline" onClick={() => setSettingsAccount(account)}>
                   {t('investments.button.feeSettings')}
                 </Button>
@@ -350,13 +387,25 @@ export function InvestmentsPage() {
                   onEditTrade={(ref) => setTradeDialog({ account, editing: ref })}
                   onDeleteTrade={(ref) => setPendingDelete(ref)}
                   onQuickTrade={(h, type) =>
-                    setTradeDialog({
-                      account,
-                      initial: { market: h.market, symbol: h.symbol, name: h.security_name, type },
-                    })
+                    setTradeDialog(
+                      type === 'dca'
+                        ? {
+                            account,
+                            mode: 'dca',
+                            initial: { market: h.market, symbol: h.symbol, name: h.security_name },
+                          }
+                        : {
+                            account,
+                            initial: { market: h.market, symbol: h.symbol, name: h.security_name, type },
+                          },
+                    )
                   }
                 />
               )}
+              <DcaPlanList
+                rules={dcaRules.filter((r) => r.to_account_id === account.id)}
+                onManage={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'recurring-rules' }))}
+              />
               {closed.length > 0 && (
                 <div className="mt-3">
                   <button
@@ -447,7 +496,7 @@ function HoldingsTable({
   onToggle: (h: Holding) => void
   onEditTrade: (ref: TradeRef) => void
   onDeleteTrade: (ref: TradeRef) => void
-  onQuickTrade?: (h: Holding, type: CreatableType) => void
+  onQuickTrade?: (h: Holding, type: CreatableType | 'dca') => void
 }) {
   const t = useT()
   return (
@@ -518,7 +567,7 @@ function HoldingRowGroup({
   onToggle: () => void
   onEditTrade: (ref: TradeRef) => void
   onDeleteTrade: (ref: TradeRef) => void
-  onQuickTrade?: (type: CreatableType) => void
+  onQuickTrade?: (type: CreatableType | 'dca') => void
 }) {
   const t = useT()
   return (
@@ -593,6 +642,9 @@ function HoldingRowGroup({
                       {t('investments.tradeType.sell')}
                     </Button>
                   )}
+                  <Button size="sm" variant="outline" onClick={() => onQuickTrade('dca')}>
+                    {t('investments.button.addDca')}
+                  </Button>
                 </span>
               )}
             </div>
@@ -661,6 +713,8 @@ export function StockTradeDialog({
   const { token } = useAuth()
   const { retryOnConflict } = useLedgerWrite()
   const { account, editing, initial, initialSettlementAccountId } = state
+  const [mode, setMode] = useState<'trade' | 'dca'>(editing ? 'trade' : state.mode ?? 'trade')
+  const isDca = mode === 'dca'
   const settings = account.investment_settings ?? null
   const editingTrade = editing?.trade
 
@@ -689,9 +743,15 @@ export function StockTradeDialog({
   const [note, setNote] = useState(editingTrade?.note || '')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [results, setResults] = useState<SecuritySearchItem[]>([])
-  const [searchOpen, setSearchOpen] = useState(false)
-  const searchSeq = useRef(0)
+  // 定期定額模式(2026-09-29)專用欄位。
+  const [dcaAmount, setDcaAmount] = useState('')
+  const [dcaFrequency, setDcaFrequency] = useState<RecurringFrequency>('monthly')
+  const [dcaInterval, setDcaInterval] = useState('1')
+  const [dcaNextRun, setDcaNextRun] = useState(defaultDcaFirstRun)
+  const [dcaEndAt, setDcaEndAt] = useState('')
+  const [dcaFeeOverride, setDcaFeeOverride] = useState(false)
+  const [dcaFeeRate, setDcaFeeRate] = useState('')
+  const [dcaFeeMin, setDcaFeeMin] = useState('')
   // 選/輸入代號後自動帶入的現價;使用者自己改價格後就不再覆蓋。
   const [prefilledQuote, setPrefilledQuote] = useState<SecurityQuote | null>(null)
   const [priceEdited, setPriceEdited] = useState(Boolean(editingTrade))
@@ -701,6 +761,10 @@ export function StockTradeDialog({
   const isCash = tradeType === 'buy' || tradeType === 'sell' || tradeType === 'cash_dividend'
   const isDividend = tradeType === 'cash_dividend'
   const settlement = accounts.find((a) => a.id === settlementId)
+  // 定期定額不支援跨幣別交割(server 也會擋),交割帳戶要跟證券同幣別。
+  const dcaSettlementMismatch = Boolean(
+    isDca && settlement && (settlement.currency || '').toUpperCase() !== currency,
+  )
   const receiving = tradeType === 'reinvest' ? account : isCash ? settlement : undefined
   const crossCurrency = Boolean(receiving && (receiving.currency || '').toUpperCase() !== currency)
   const sharesNum = Number(shares) || 0
@@ -807,24 +871,6 @@ export function StockTradeDialog({
   const onSymbolChange = (value: string) => {
     setSymbol(value)
     clearPrefilledPrice(market, value)
-    const q = value.trim()
-    const seq = ++searchSeq.current
-    if (!q || editing) {
-      setResults([])
-      return
-    }
-    window.setTimeout(async () => {
-      if (seq !== searchSeq.current) return
-      try {
-        const isTaiwan = market === 'TW' || market === 'TWO'
-        const rows = await searchSecurities(token, q, isTaiwan ? null : market)
-        if (seq !== searchSeq.current) return
-        setResults(rows.slice(0, 8))
-        setSearchOpen(true)
-      } catch {
-        setResults([])
-      }
-    }, 350)
   }
 
   const pickResult = (r: SecuritySearchItem) => {
@@ -833,8 +879,6 @@ export function StockTradeDialog({
     setCurrency(r.currency.toUpperCase())
     setSymbol(r.symbol)
     setName(r.name)
-    setResults([])
-    setSearchOpen(false)
   }
 
   const heldShares = useMemo(() => {
@@ -855,7 +899,64 @@ export function StockTradeDialog({
     })
   })()
 
+  const dcaFeeSettings: InvestmentSettings | null = dcaFeeOverride
+    ? {
+        ...(settings ?? {}),
+        feeRate: percentTextToRate(dcaFeeRate) ?? 0,
+        feeMin: Number(dcaFeeMin) || 0,
+      }
+    : settings
+  const dcaAmountNum = Number(dcaAmount) || 0
+  const dcaFee = dcaAmountNum > 0 ? suggestFee(dcaAmountNum, dcaFeeSettings, market, currency) : 0
+  const resolvedFees = resolveInvestmentSettings(settings, market)
+
+  const onSaveDca = async () => {
+    const sym = symbol.trim().toUpperCase()
+    if (!sym) return toast.error(t('investments.error.symbolRequired'), t('notice.error'))
+    if (!(dcaAmountNum > 0)) return toast.error(t('recurringRules.error.amountInvalid'), t('notice.error'))
+    const interval = Math.round(Number(dcaInterval || '1'))
+    if (!Number.isFinite(interval) || interval < 1 || interval > 365) {
+      return toast.error(t('recurringRules.error.intervalInvalid'), t('notice.error'))
+    }
+    if (!dcaNextRun) return toast.error(t('recurringRules.error.nextRunAtRequired'), t('notice.error'))
+    if (!settlementId) return toast.error(t('investments.error.settlementRequired'), t('notice.error'))
+    if (dcaSettlementMismatch) {
+      return toast.error(t('recurringRules.error.stockSettlementCurrency'), t('notice.error'))
+    }
+    const ledgerId = activeLedgerId
+    if (!ledgerId) return toast.error(t('shell.selectLedgerFirst'), t('notice.error'))
+    setSaving(true)
+    try {
+      await retryOnConflict(ledgerId, (base) =>
+        createRecurringRule(token, ledgerId, base, {
+          tx_type: 'transfer',
+          kind: 'stock_dca',
+          amount: dcaAmountNum,
+          from_account_id: settlementId,
+          to_account_id: account.id,
+          market,
+          symbol: sym,
+          security_name: name.trim() || null,
+          stock_fee_rate: dcaFeeOverride ? percentTextToRate(dcaFeeRate) ?? 0 : null,
+          stock_fee_min: dcaFeeOverride ? Number(dcaFeeMin) || 0 : null,
+          frequency: dcaFrequency,
+          interval,
+          next_run_at: new Date(dcaNextRun).toISOString(),
+          end_at: dcaEndAt ? new Date(dcaEndAt).toISOString() : null,
+          note: note.trim() || null,
+          enabled: true,
+        }),
+      )
+      await onSaved()
+    } catch (err) {
+      toast.error(localizeError(err, t), t('notice.error'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const onSave = async () => {
+    if (isDca) return onSaveDca()
     const sym = symbol.trim().toUpperCase()
     if (!sym) return toast.error(t('investments.error.symbolRequired'), t('notice.error'))
     if (!(sharesNum > 0)) return toast.error(t('investments.error.sharesRequired'), t('notice.error'))
@@ -925,11 +1026,35 @@ export function StockTradeDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {editing ? t('investments.dialog.editTitle') : t('investments.dialog.createTitle')} · {account.name}
+            {editing
+              ? t('investments.dialog.editTitle')
+              : isDca
+                ? t('investments.dialog.createDcaTitle')
+                : t('investments.dialog.createTitle')}{' '}
+            · {account.name}
           </DialogTitle>
         </DialogHeader>
         <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
-          <div className="flex flex-wrap gap-2">
+          {!editing && (
+            <div className="flex gap-2">
+              {(['trade', 'dca'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={`flex-1 rounded-md border px-2.5 py-1.5 text-xs ${
+                    mode === m
+                      ? 'border-primary bg-primary/15 text-primary'
+                      : 'border-input text-muted-foreground hover:bg-accent/40'
+                  }`}
+                >
+                  {t(`investments.mode.${m}`)}
+                </button>
+              ))}
+            </div>
+          )}
+          {isDca && <p className="text-xs text-muted-foreground">{t('investments.dca.hint')}</p>}
+          <div className={`flex flex-wrap gap-2 ${isDca ? 'hidden' : ''}`}>
             {(editing ? [tradeType] : CREATABLE_TYPES).map((type) => (
               <Button
                 key={type}
@@ -942,75 +1067,101 @@ export function StockTradeDialog({
               </Button>
             ))}
           </div>
-          {TYPE_HINTS[tradeType] && (
+          {!isDca && TYPE_HINTS[tradeType] && (
             <p className="text-xs text-muted-foreground">{t(TYPE_HINTS[tradeType]!)}</p>
           )}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <Label>{t('investments.field.market')}</Label>
-              <select
-                className="flex h-10 w-full rounded-md border border-input bg-muted px-3 text-sm"
-                value={market}
-                disabled={Boolean(editing)}
-                onChange={(e) => {
-                  setMarket(e.target.value)
-                  setCurrency(marketCurrency(e.target.value) || currency)
-                }}
-              >
-                {STOCK_MARKETS.map((m) => (
-                  <option key={m.code} value={m.code}>
-                    {t(`investments.market.${m.code}`)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="relative col-span-2 space-y-1">
-              <Label>{t('investments.field.symbol')}</Label>
-              <Input
-                value={symbol}
-                disabled={Boolean(editing)}
-                placeholder={t('investments.field.symbolSearch')}
-                onChange={(e) => onSymbolChange(e.target.value)}
-                onFocus={() => results.length > 0 && setSearchOpen(true)}
-              />
-              {searchOpen && !editing && symbol.trim() && (
-                <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md">
-                  {results.map((r) => (
-                    <button
-                      key={`${r.market}:${r.symbol}`}
-                      type="button"
-                      className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-accent"
-                      onClick={() => pickResult(r)}
-                    >
-                      <span>
-                        <span className="font-medium">{r.symbol}</span> {r.name}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {t(`investments.market.${r.market}`)} · {r.currency}
-                      </span>
-                    </button>
-                  ))}
-                  {results.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground">{t('investments.searchNoResult')}</div>
-                  )}
-                  <button
-                    type="button"
-                    className="w-full border-t px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent"
-                    onClick={() => {
-                      setSymbol(symbol.trim().toUpperCase())
-                      setSearchOpen(false)
-                    }}
-                  >
-                    {t('investments.useTyped', { symbol: symbol.trim().toUpperCase() })}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+          <SecuritySymbolField
+            market={market}
+            symbol={symbol}
+            disabled={Boolean(editing)}
+            onSearch={(q, m) => searchSecurities(token, q, m)}
+            onMarketChange={(m) => {
+              setMarket(m)
+              setCurrency(marketCurrency(m) || currency)
+            }}
+            onSymbolChange={onSymbolChange}
+            onPick={pickResult}
+          />
           <div className="space-y-1">
             <Label>{t('investments.field.name')}</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </div>
+          {isDca ? (
+            <>
+              <div className="space-y-1">
+                <Label>{t('investments.dca.amount', { currency })}</Label>
+                <Input inputMode="decimal" value={dcaAmount} onChange={(e) => setDcaAmount(e.target.value)} />
+              </div>
+              <div className="space-y-2 rounded-md border border-input/60 bg-muted/30 p-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium">{t('recurringRules.field.customFee')}</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={dcaFeeOverride}
+                    onClick={() => {
+                      if (!dcaFeeOverride && !dcaFeeRate && !dcaFeeMin) {
+                        setDcaFeeRate(rateToPercentText(resolvedFees.feeRate))
+                        setDcaFeeMin(String(resolvedFees.feeMin))
+                      }
+                      setDcaFeeOverride(!dcaFeeOverride)
+                    }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                      dcaFeeOverride ? 'bg-primary' : 'bg-muted-foreground/30'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        dcaFeeOverride ? 'translate-x-[18px]' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {dcaFeeOverride
+                    ? t('recurringRules.field.customFeeDiscountHint', {
+                        discount: rateToPercentText(resolvedFees.feeDiscount),
+                      })
+                    : t('recurringRules.field.customFeeDefaultHint', {
+                        rate: rateToPercentText(resolvedFees.feeRate),
+                        discount: rateToPercentText(resolvedFees.feeDiscount),
+                        min: String(resolvedFees.feeMin),
+                      })}
+                </p>
+                {dcaFeeOverride && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('recurringRules.field.stockFeeRate')}</Label>
+                      <Input inputMode="decimal" value={dcaFeeRate} onChange={(e) => setDcaFeeRate(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('recurringRules.field.stockFeeMin')}</Label>
+                      <Input inputMode="decimal" value={dcaFeeMin} onChange={(e) => setDcaFeeMin(e.target.value)} />
+                    </div>
+                  </div>
+                )}
+              </div>
+              {dcaAmountNum > 0 && (
+                <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  <div className="font-semibold tabular-nums text-foreground">
+                    {t('investments.dca.preview', {
+                      total: formatStockMoney(dcaAmountNum + dcaFee, currency),
+                      fee: formatStockMoney(dcaFee, currency),
+                    })}
+                  </div>
+                  {priceNum > 0 && (
+                    <div className="mt-0.5">
+                      {t('investments.dca.previewShares', {
+                        price: formatPrice(priceNum),
+                        shares: formatShares(dcaAmountNum / priceNum),
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>{t('investments.field.shares')}</Label>
@@ -1080,9 +1231,11 @@ export function StockTradeDialog({
               </span>
             </div>
           )}
-          {isCash && (
+            </>
+          )}
+          {(isCash || isDca) && (
             <div className="space-y-1">
-              <Label>{t(isDividend ? 'investments.field.receivingAccount' : 'investments.field.settlementAccount')}</Label>
+              <Label>{t(isDividend && !isDca ? 'investments.field.receivingAccount' : 'investments.field.settlementAccount')}</Label>
               <button
                 type="button"
                 onClick={() => setPickerOpen(true)}
@@ -1097,7 +1250,53 @@ export function StockTradeDialog({
               </button>
             </div>
           )}
-          {crossCurrency && receiving && (
+          {dcaSettlementMismatch && (
+            <p className="-mt-2 text-xs text-destructive">{t('recurringRules.error.stockSettlementCurrency')}</p>
+          )}
+          {isDca && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>{t('recurringRules.field.frequency')}</Label>
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-muted px-3 text-sm"
+                    value={dcaFrequency}
+                    onChange={(e) => setDcaFrequency(e.target.value as RecurringFrequency)}
+                  >
+                    {(['daily', 'weekly', 'monthly', 'yearly'] as const).map((f) => (
+                      <option key={f} value={f}>
+                        {t(`recurringRules.frequency.${f}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>{t('recurringRules.field.interval')}</Label>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    max="365"
+                    value={dcaInterval}
+                    onChange={(e) => setDcaInterval(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>{t('investments.dca.firstRun')}</Label>
+                <DateTimePicker value={dcaNextRun} onChange={setDcaNextRun} />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('recurringRules.field.endAt')}</Label>
+                <DateTimePicker value={dcaEndAt} onChange={setDcaEndAt} clearable />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('investments.field.note')}</Label>
+                <Input value={note} onChange={(e) => setNote(e.target.value)} />
+              </div>
+            </>
+          )}
+          {!isDca && crossCurrency && receiving && (
             <div className="space-y-1">
               <Label>{t('investments.field.settlementAmount', { currency: receiving.currency || '' })}</Label>
               <Input
@@ -1108,7 +1307,7 @@ export function StockTradeDialog({
               <p className="text-xs text-muted-foreground">{t('investments.field.settlementAmountHint')}</p>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid grid-cols-2 gap-3 ${isDca ? 'hidden' : ''}`}>
             <div className="space-y-1">
               <Label>{t('investments.field.tradeDate')}</Label>
               <DatePicker value={tradeDate} onChange={setTradeDate} />
@@ -1131,7 +1330,11 @@ export function StockTradeDialog({
       <AccountPickerDialog
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        accounts={accounts.filter((a) => a.id !== account.id)}
+        accounts={accounts.filter(
+          (a) =>
+            a.id !== account.id &&
+            (!isDca || a.account_type === 'account_group' || (a.currency || '').toUpperCase() === currency),
+        )}
         value={settlement?.name || ''}
         title={t('investments.field.settlementAccount')}
         onSelect={(row) => {
@@ -1328,5 +1531,50 @@ function InvestmentSettingsDialog({
         }}
       />
     </Dialog>
+  )
+}
+
+/** 定期定額第一次扣款預設:明天 09:00(本地時間,DateTimePicker 格式)。 */
+function defaultDcaFirstRun(): string {
+  const d = new Date()
+  d.setDate(d.getDate() + 1)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T09:00`
+}
+
+/** 投資理財帳戶卡片底下的「定期定額計畫」清單(目前帳本)。管理(編輯/停用/
+ *  刪除/看已生成交易)一律導去「週期性交易」頁,這裡只負責讓使用者看得到。 */
+function DcaPlanList({ rules, onManage }: { rules: ReadRecurringRule[]; onManage: () => void }) {
+  const t = useT()
+  if (rules.length === 0) return null
+  return (
+    <div className="mt-4 rounded-md border border-input/60 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-medium">{t('investments.dca.plans')}</span>
+        <button type="button" className="text-xs text-primary hover:underline" onClick={onManage}>
+          {t('investments.dca.manage')}
+        </button>
+      </div>
+      <ul className="space-y-1.5">
+        {rules.map((r) => {
+          const freq = t(`recurringRules.frequency.${r.frequency}`)
+          const every = r.interval > 1 ? `${freq} ×${r.interval}` : freq
+          const next = r.upcoming_run_at || r.next_run_at
+          const ccy = marketCurrency(r.market || '') || ''
+          return (
+            <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span>
+                <span className="font-medium">{r.symbol}</span> {r.security_name}
+                {!r.enabled && <span className="ml-1 text-xs text-muted-foreground">{t('recurringRules.disabled')}</span>}
+              </span>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {every} {formatStockMoney(r.amount, ccy)}
+                {r.enabled && next ? ` · ${t('recurringRules.label.nextRun')}${new Date(next).toLocaleString()}` : ''}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }

@@ -281,6 +281,76 @@ rules` 的查詢額外排除 `kind='stock_dca'`**——這類規則雖然也是
 **已知限制**:不支援跨幣別 DCA;不會把使用者已輸入的轉帳金額/備註帶到 DCA
 規則(這是獨立的新建流程)。
 
+### 10.1 2026-09-29 修正(使用者回報 + 重新驗證)
+
+App 端說明:App repo `docs/changes/2026-09-29-stock-dca-fixes.md`(App 的同步
+欄位、固定 syncId、7 天補期上限、UI 入口)。
+
+**回報 → 根因**
+
+- Web「新增規則」按不下去:`RecurringRuleForm.market` 預設空字串,下拉選單只是
+  畫面上顯示 TW(`value={form.market || 'TW'}`),`canSubmit` 要求
+  `Boolean(form.market)` 永遠 false。
+- Web 輸入代號不會出現股票:DCA 表單的代號只是純文字框,沒接
+  `/read/securities/search`。
+- App 建的規則在 Web 圖示不對 / 排程不生成:App 沒推 `kind` 等欄位,Cloud 當成
+  普通 transfer;同時 **`sync_applier._LEDGER_MERGE_SPECS["recurring_rule"]` 跟
+  `snapshot_builder` 都沒登記這六個欄位**——Web 任何 PATCH(snapshot_mutator
+  在沒有 kind 的快照上改完、整筆 upsert)或舊版 App 的 partial push 都會把規則
+  沖回 `kind='general'`(CLAUDE.md SOP 第 3、6 點漏做)。
+- 排程只讀報價快取,而 `security_quote_close` 只抓已持有標的:第一期還沒買的
+  代號永遠 `quote_unavailable`。
+- `compute_account_balance` 沒排除 `happened_at > now` 的交易(一般收支規則會
+  預生成未來 12 個月的 occurrence)、也沒算轉帳手續費/折損,跟 Web 顯示的帳戶
+  餘額不一致,會誤判交割戶餘額不足。
+
+**修正**
+
+- `sync_applier.py`、`snapshot_builder.py`:登記 `kind/market/symbol/
+  securityName/stockFeeRate/stockFeeMin`(快照對 `kind='general'` 不寫 key,
+  維持既有規則形狀)。
+- `recurring_materializer.py`:
+  - `compute_account_balance` 對齊 `list_workspace_accounts`(`happened_at <=
+    now` + fee/discount),也影響自動扣繳、信用卡自動扣繳、餘額調整——三者本來
+    就宣稱跟 workspace 同一套公式。
+  - `materialize_due_stock_rules`:先挑出到期規則的標的呼叫 `_refresh_quotes`
+    (`quotes.get_quotes(refresh=True)`,會 rollback,所以在任何寫入前做、做完
+    重查規則);每期用 `stock_dca_occurrence_ids`(uuid5,App 同算法)當
+    tx/trade syncId,已存在就只推進度;超過 `STOCK_DCA_MAX_CATCH_UP`(7 天)的
+    期數略過不買並發 `stale_skipped` 通知。新增 `next_pending_occurrence`。
+- `quotes.held_keys`:加入啟用中 stock_dca 規則的標的,收盤排程每天抓。
+- `routers/write/recurring_rules.py`:
+  - 建立時擋交割帳戶跟證券不同幣別(`_assert_stock_dca_settlement_currency`,
+    v1 本來就不支援,以前只寫在文件裡)。
+  - 更新 stock_dca 時帳戶限制照樣成立(投資帳戶、from≠to、同幣別)。
+  - transfer/stock_dca 規則第一期之後改 `next_run_at`:晚於
+    `generated_until_at` → 清掉進度從新時間起算(`__reset_generated_until_at`
+    只在 mutate payload 內部傳,不暴露在 request schema);早於 → 400。以前改了
+    沒有任何效果。
+- `read/ledgers.py::list_recurring_rules`:新增 `upcoming_run_at`(transfer/
+  stock_dca 真正的下一期),Web 卡片與編輯表單改顯示它。
+- Web:
+  - 新元件 `web-features/components/SecuritySymbolField.tsx`(市場 + 代號搜尋
+    建議),股票交易 dialog 與週期性交易的 DCA 表單共用。
+  - `RecurringRulesPanel.tsx`:市場預設依帳本幣別/選中的投資帳戶;交割帳戶只列
+    同幣別;選投資帳戶自動帶入它設定的預設交割戶;開自訂手續費預填帳戶生效中的
+    費率(以前預填空、存檔變 0)並說明折扣會再乘上去。
+  - `InvestmentsPage.tsx`:帳戶卡片新增「定期定額」按鈕、持股展開列新增
+    「定期定額」快捷;股票交易 dialog 多一個「單筆交易 / 定期定額」切換,定期
+    定額模式直接建立 `kind='stock_dca'` 規則(含每期扣款試算);帳戶卡片下方列
+    出這個帳戶的定期定額計畫(連到週期性交易頁管理)。
+
+**入口**:投資 → 帳戶卡片「定期定額」/ 持股列「定期定額」/ 新增交易 dialog
+的「定期定額」切換;週期性交易 → 「股票定期定額」篩選。
+
+**測試**:`tests/test_recurring_stock_dca.py` 新增 11 個回歸測試(Web PATCH /
+App partial push 不沖掉 kind、transfer 排程不處理 stock_dca、run-now 補抓報價
+生成、App 已生成的期數不重複、未來預生成支出不影響餘額、跨幣別擋下、收盤標的
+含 DCA、uuid5 固定值、7 天補期、`upcoming_run_at` 與改下次執行時間)。
+
+**沒做**:台股定期定額實務上多半只買整數股,目前仍是碎股(投入金額 ÷ 股價);
+待使用者決定。
+
 ## 11. 待辦(Phase 3)
 
 - 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。
