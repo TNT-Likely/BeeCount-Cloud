@@ -76,6 +76,7 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { routePath } from '../../state/router'
+import { OpeningHoldingsDialog } from './OpeningHoldingsDialog'
 import { PendingDividendsPanel } from './PendingDividendsPanel'
 import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass } from './investmentsShared'
 
@@ -103,6 +104,8 @@ export type TradeDialogState = {
   /** 2026-09-29:'dca' = 直接在股票交易 dialog 裡建立定期定額計畫(建立的是
    *  kind='stock_dca' 的週期性規則,之後在「週期性交易」頁管理)。 */
   mode?: 'trade' | 'dca'
+  /** 2026-09-30:直接打開「批次新增期初持股」。 */
+  batchOpening?: boolean
 }
 
 export type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
@@ -369,6 +372,9 @@ export function InvestmentsPage() {
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setTradeDialog({ account, mode: 'dca' })}>
                   {t('investments.button.addDca')}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setTradeDialog({ account, batchOpening: true })}>
+                  {t('investments.button.openingBatch')}
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setSettingsAccount(account)}>
                   {t('investments.button.feeSettings')}
@@ -716,6 +722,7 @@ export function StockTradeDialog({
   const { retryOnConflict } = useLedgerWrite()
   const { account, editing, initial, initialSettlementAccountId } = state
   const [mode, setMode] = useState<'trade' | 'dca'>(editing ? 'trade' : state.mode ?? 'trade')
+  const [batchOpening, setBatchOpening] = useState(Boolean(state.batchOpening && !editing))
   const isDca = mode === 'dca'
   const settings = account.investment_settings ?? null
   const editingTrade = editing?.trade
@@ -815,7 +822,11 @@ export function StockTradeDialog({
       if (!taxEdited) setTax(est.tax > 0 ? numText(est.tax) : '')
       return
     }
-    if (!feeEdited) setFee(gross > 0 ? numText(suggestFee(gross, settings, market, currency)) : '')
+    // 期初持股填的是券商庫存的平均成本,通常已含手續費,不再另外估。
+    if (!feeEdited) {
+      const suggested = tradeType === 'opening' ? 0 : suggestFee(gross, settings, market, currency)
+      setFee(gross > 0 && suggested > 0 ? numText(suggested) : '')
+    }
     if (!taxEdited) {
       const suggested = tradeType === 'sell' ? suggestSellTax(gross, settings, market, currency, symbol) : 0
       setTax(gross > 0 && suggested > 0 ? numText(suggested) : '')
@@ -1027,6 +1038,18 @@ export function StockTradeDialog({
     }
   }
 
+  if (batchOpening) {
+    return (
+      <OpeningHoldingsDialog
+        account={account}
+        holdings={holdings}
+        activeLedgerId={activeLedgerId}
+        onClose={onClose}
+        onSaved={onSaved}
+      />
+    )
+  }
+
   return (
     <Dialog open onOpenChange={(next) => !next && !saving && onClose()}>
       <DialogContent className="max-w-lg">
@@ -1075,6 +1098,15 @@ export function StockTradeDialog({
           </div>
           {!isDca && TYPE_HINTS[tradeType] && (
             <p className="text-xs text-muted-foreground">{t(TYPE_HINTS[tradeType]!)}</p>
+          )}
+          {!isDca && !editing && tradeType === 'opening' && (
+            <button
+              type="button"
+              className="text-xs text-primary hover:underline"
+              onClick={() => setBatchOpening(true)}
+            >
+              {t('investments.opening.batchEntry')}
+            </button>
           )}
           <SecuritySymbolField
             market={market}
@@ -1203,7 +1235,9 @@ export function StockTradeDialog({
             {tradeType !== 'stock_dividend' && (
               <div className="space-y-1">
                 <Label>
-                  {t(isDividend ? 'investments.field.dividendPerShare' : 'investments.field.price', { currency })}
+                  {tradeType === 'opening'
+                    ? `${t('investments.field.avgCost')}（${currency}）`
+                    : t(isDividend ? 'investments.field.dividendPerShare' : 'investments.field.price', { currency })}
                 </Label>
                 <Input
                   inputMode="decimal"
@@ -1315,6 +1349,16 @@ export function StockTradeDialog({
                   />
                 </div>
               </div>
+              {Number(dcaInterval) >= 1 && (
+                <p className="-mt-1 text-xs text-muted-foreground">
+                  {t('recurringRules.intervalHint', {
+                    every:
+                    Math.round(Number(dcaInterval)) === 1
+                      ? t(`recurringRules.frequency.${dcaFrequency}`)
+                      : t(`recurringRules.every.${dcaFrequency}`, { n: Math.round(Number(dcaInterval)) }),
+                  })}
+                </p>
+              )}
               <div className="space-y-1">
                 <Label>{t('investments.dca.firstRun')}</Label>
                 <DateTimePicker value={dcaNextRun} onChange={setDcaNextRun} />

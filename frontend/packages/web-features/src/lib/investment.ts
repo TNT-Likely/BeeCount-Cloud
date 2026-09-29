@@ -346,3 +346,95 @@ export function stockDcaOrder(
   const fee = feeOf(gross)
   return { shares: n, gross, fee, total: gross + fee }
 }
+
+// ---------------------------------------------------------------------------
+// 批次期初持股(2026-09-30,STOCK_HOLDINGS_SD §10.3)。開始記帳前就持有的
+// 股票不用逐筆補記過去的買進:照券商「庫存」頁每一檔填股數 + 平均成本(或
+// 總成本)一筆期初持股。對齊 App `opening_holdings_import.dart`,兩邊測試
+// 用同一組字串/數字。
+// ---------------------------------------------------------------------------
+
+export type OpeningHoldingLine = { symbol: string; name: string | null; shares: number; cost: number }
+
+const OPENING_SYMBOL_RE = /^[A-Za-z0-9][A-Za-z0-9.-]*$/
+
+function parseOpeningNumber(token: string): number | null {
+  const cleaned = token
+    .replace(/[,，\s]/g, '')
+    .replace(/^(NT\$|US\$|HK\$|\$|¥|￥)/, '')
+    .replace(/(股|元|TWD|USD)$/i, '')
+  if (!/^\d+(\.\d+)?$/.test(cleaned)) return null
+  return Number(cleaned)
+}
+
+function splitOpeningLine(line: string): string[] {
+  // Excel/Google 試算表複製出來是 tab 分隔;空白切得出 3 欄以上用空白(逗號
+  // 當千分位/欄尾);否則當 CSV。
+  if (line.includes('\t')) return line.split('\t')
+  const bySpace = line
+    .split(/\s+/)
+    .map((t) => t.replace(/^[,，]+|[,，]+$/g, ''))
+    .filter(Boolean)
+  if (bySpace.length >= 3) return bySpace
+  return line.split(/[,，]/)
+}
+
+/** 一行一檔「代號 股數 成本」,可夾名稱;解析不出來的行算進 `skipped`。 */
+export function parseOpeningHoldingsText(text: string): { lines: OpeningHoldingLine[]; skipped: number } {
+  const lines: OpeningHoldingLine[] = []
+  let skipped = 0
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const tokens = splitOpeningLine(line)
+      .map((t) => t.trim().replace(/^"|"$/g, '').trim())
+      .filter(Boolean)
+    let symbol: string | null = null
+    const names: string[] = []
+    const numbers: number[] = []
+    for (const tok of tokens) {
+      if (symbol === null) {
+        if (OPENING_SYMBOL_RE.test(tok)) symbol = tok.toUpperCase()
+        else if (parseOpeningNumber(tok) === null) names.push(tok)
+        continue
+      }
+      const n = parseOpeningNumber(tok)
+      if (n !== null) numbers.push(n)
+      else names.push(tok)
+    }
+    if (symbol === null || numbers.length < 2 || !(numbers[0] > 0) || !(numbers[1] > 0)) {
+      skipped++
+      continue
+    }
+    lines.push({ symbol, name: names.length ? names.join(' ') : null, shares: numbers[0], cost: numbers[1] })
+  }
+  return { lines, skipped }
+}
+
+/**
+ * 期初持股要存成的價格/手續費。平均成本模式:價格 = 均價、手續費 0(券商
+ * 成本均價通常已含手續費)。總成本模式:價格 = 總成本 ÷ 股數(4 位小數),
+ * 價金取整的零頭放手續費,存下來的成本剛好等於輸入。
+ */
+export function openingTradeFromCost(
+  shares: number,
+  cost: number,
+  costIsTotal: boolean,
+  currency: string | null | undefined,
+): { price: number; fee: number } {
+  if (!costIsTotal || !(shares > 0)) return { price: cost, fee: 0 }
+  const price = Number((cost / shares).toFixed(4))
+  const gross = stockGross(shares, price, currency)
+  const fee = roundMoney(cost - gross, currency)
+  return { price, fee: fee > 0 ? fee : 0 }
+}
+
+export function openingTotalCost(
+  shares: number,
+  cost: number,
+  costIsTotal: boolean,
+  currency: string | null | undefined,
+): number {
+  const tr = openingTradeFromCost(shares, cost, costIsTotal, currency)
+  return stockGross(shares, tr.price, currency) + tr.fee
+}

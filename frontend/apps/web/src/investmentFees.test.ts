@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   estimateSell,
+  openingTotalCost,
+  openingTradeFromCost,
+  parseOpeningHoldingsText,
   securityKind,
   sellTaxRateFor,
   stockDcaOrder,
@@ -97,5 +100,49 @@ describe('定期定額下單試算(三端共用案例,2026-09-30)', () => {
     expect(order.fee).toBe(0.25)
     expect(stockDcaWholeShares('US')).toBe(false)
     expect(stockDcaWholeShares('two')).toBe(true)
+  })
+})
+
+// 同一組字串/數字也在 App test/services/investment/opening_holdings_import_test.dart。
+describe('期初持股匯入(App/Web 共用案例)', () => {
+  it('Tab 分隔(Excel 複製)可帶千分位與名稱,標題列略過', () => {
+    const r = parseOpeningHoldingsText('代號\t名稱\t股數\t平均成本\n0050\t元大台灣50\t1,000\t120.5\n2330\t台積電\t50\t580\n')
+    expect(r.skipped).toBe(1)
+    expect(r.lines).toEqual([
+      { symbol: '0050', name: '元大台灣50', shares: 1000, cost: 120.5 },
+      { symbol: '2330', name: '台積電', shares: 50, cost: 580 },
+    ])
+  })
+
+  it('空白分隔,逗號當千分位;CSV;小寫代號轉大寫', () => {
+    const r = parseOpeningHoldingsText('0056 2,000 35.2\n2330,台積電,50,580\nvoo 3.5 412.3\n')
+    expect(r.skipped).toBe(0)
+    expect(r.lines.map((l) => l.symbol)).toEqual(['0056', '2330', 'VOO'])
+    expect(r.lines[0]).toMatchObject({ shares: 2000, cost: 35.2 })
+    expect(r.lines[1].name).toBe('台積電')
+    expect(r.lines[2]).toMatchObject({ shares: 3.5, name: null })
+  })
+
+  it('名稱在代號前面、帶單位/貨幣符號也可以', () => {
+    const r = parseOpeningHoldingsText('元大高股息 0056 1000股 NT$35.2')
+    expect(r.lines).toEqual([{ symbol: '0056', name: '元大高股息', shares: 1000, cost: 35.2 }])
+  })
+
+  it('缺成本或數字為 0 的行略過', () => {
+    const r = parseOpeningHoldingsText('0050 1000\n2330 0 580\n\n   \n')
+    expect(r.lines).toEqual([])
+    expect(r.skipped).toBe(2)
+  })
+
+  it('平均成本:價格 = 均價、手續費 0', () => {
+    expect(openingTradeFromCost(1000, 120.5, false, 'TWD')).toEqual({ price: 120.5, fee: 0 })
+    expect(openingTotalCost(1000, 120.5, false, 'TWD')).toBe(120500)
+  })
+
+  it('總成本:存下來的成本剛好等於輸入', () => {
+    expect(openingTradeFromCost(3, 100, true, 'TWD')).toEqual({ price: 33.3333, fee: 1 })
+    expect(openingTotalCost(3, 100, true, 'TWD')).toBe(100)
+    expect(openingTradeFromCost(1234, 56357, true, 'TWD').fee).toBe(0)
+    expect(openingTotalCost(3.5, 1443.05, true, 'USD')).toBe(1443.05)
   })
 })

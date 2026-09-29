@@ -801,6 +801,17 @@ export function RecurringRulesPanel({
                 />
               </div>
             </div>
+            {/* 2026-09-30:使用者把「每月 30 號」填進間隔,變成每 30 個月一次。 */}
+            {Number(form.interval) >= 1 ? (
+              <p className="-mt-1 text-xs text-muted-foreground">
+                {t('recurringRules.intervalHint', {
+                  every:
+                    Math.round(Number(form.interval)) === 1
+                      ? t(`recurringRules.frequency.${form.frequency}`)
+                      : t(`recurringRules.every.${form.frequency}`, { n: Math.round(Number(form.interval)) }),
+                })}
+              </p>
+            ) : null}
 
             <div className="space-y-1">
               <Label>{t('recurringRules.field.nextRunAt')}</Label>
@@ -1068,7 +1079,7 @@ function RecurringRuleCard({
         >
           {rule.tx_type === 'transfer' ? (
             <span className="material-symbols-outlined text-2xl">
-              {isStockDca ? 'trending_up' : 'sync_alt'}
+              {isStockDca ? 'trending_up' : 'swap_horiz'}
             </span>
           ) : (
             <CategoryIcon
@@ -1095,8 +1106,10 @@ function RecurringRuleCard({
             ) : null}
           </div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {t(`recurringRules.frequency.${rule.frequency}`)}
-            {rule.interval > 1 ? ` ×${rule.interval}` : ''} ·{' '}
+            {rule.interval > 1
+              ? t(`recurringRules.every.${rule.frequency}`, { n: rule.interval })
+              : t(`recurringRules.frequency.${rule.frequency}`)}{' '}
+            ·{' '}
             {t('recurringRules.label.nextRun')} {formatLocalDate(rule.upcoming_run_at || rule.next_run_at)}
           </div>
           {rule.note ? (

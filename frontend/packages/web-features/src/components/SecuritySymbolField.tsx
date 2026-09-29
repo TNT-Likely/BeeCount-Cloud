@@ -14,6 +14,9 @@ import { STOCK_MARKETS } from '../lib/investment'
  * 方透過 `onSearch` 提供(只有呼叫方有 token)。台股(TW/TWO)搜尋不限市場,
  * 讓使用者打 0050 也能找到上櫃標的;選中結果時 `onPick` 會帶回正確的市場/
  * 幣別/名稱,由呼叫方決定要不要覆蓋自己的欄位。
+ *
+ * 2026-09-30:精準打完代號(例如 0056)離開輸入框時,搜尋結果裡有代號完全相符
+ * 的標的就自動當成選中它(帶入名稱/市場),不用再點建議清單,同 App。
  */
 export function SecuritySymbolField({
   market,
@@ -36,6 +39,38 @@ export function SecuritySymbolField({
   const [results, setResults] = useState<SecuritySearchItem[]>([])
   const [open, setOpen] = useState(false)
   const seq = useRef(0)
+  // 最近一次搜尋的字串/結果,離開輸入框時判斷有沒有代號完全相符的標的。
+  const lastSearch = useRef<{ query: string; rows: SecuritySearchItem[] } | null>(null)
+  const lastPicked = useRef<string | null>(null)
+
+  const exactMatch = (rows: SecuritySearchItem[], q: string) => {
+    const isTaiwan = market === 'TW' || market === 'TWO'
+    return rows.find(
+      (r) =>
+        r.symbol.toUpperCase() === q &&
+        (isTaiwan ? r.market === 'TW' || r.market === 'TWO' : r.market === market),
+    )
+  }
+
+  const autoPickExact = async () => {
+    const q = symbol.trim().toUpperCase()
+    if (!q || disabled || !onSearch) return
+    const current = seq.current
+    let rows = lastSearch.current?.query === q ? lastSearch.current.rows : null
+    if (!rows) {
+      try {
+        const isTaiwan = market === 'TW' || market === 'TWO'
+        rows = await onSearch(q, isTaiwan ? null : market)
+      } catch {
+        return
+      }
+      // 等搜尋回來期間使用者又改了代號/點了別的結果,就不動。
+      if (current !== seq.current) return
+    }
+    const hit = exactMatch(rows, q)
+    if (!hit || lastPicked.current === `${hit.market}:${hit.symbol}`) return
+    pick(hit)
+  }
 
   const onInput = (value: string) => {
     onSymbolChange(value)
@@ -52,6 +87,7 @@ export function SecuritySymbolField({
         const isTaiwan = market === 'TW' || market === 'TWO'
         const rows = await onSearch(q, isTaiwan ? null : market)
         if (current !== seq.current) return
+        lastSearch.current = { query: q.toUpperCase(), rows }
         setResults(rows.slice(0, 8))
         setOpen(true)
       } catch {
@@ -64,6 +100,7 @@ export function SecuritySymbolField({
     seq.current++
     setResults([])
     setOpen(false)
+    lastPicked.current = `${r.market}:${r.symbol}`
     onPick(r)
   }
 
@@ -92,7 +129,10 @@ export function SecuritySymbolField({
           placeholder={t('investments.field.symbolSearch')}
           onChange={(e) => onInput(e.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
-          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onBlur={() => {
+            window.setTimeout(() => setOpen(false), 150)
+            void autoPickExact()
+          }}
         />
         {open && !disabled && symbol.trim() && (
           <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md">
