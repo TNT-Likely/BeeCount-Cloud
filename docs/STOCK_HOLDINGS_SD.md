@@ -433,6 +433,21 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
 的話可以在 parser 前面加券商格式轉換);貼上時同代號多行不合併(各存一筆,持股計算
 結果相同)。
 
+### 10.4 投資帳戶詳情:持股版面、不能調整餘額(2026-09-30)
+
+- 問題:帳戶頁點進投資理財帳戶,原本跟一般帳戶一樣顯示「餘額/累計收入/累計支出」
+  加「調整餘額」按鈕。投資帳戶餘額是持股成本的帳面數,調整餘額會讓金額跟持股對不上。
+- `AccountDetailDialog.tsx`:`account_type === 'investment'` 時隱藏調整餘額列與一般統計,
+  改渲染 `InvestmentAccountPanel`(新檔 `components/dialogs/InvestmentAccountPanel.tsx`):
+  持股市值/成本/未實現損益(各幣別)、買進/賣出/定期定額/期初持股/費用設定按鈕、
+  持股表(可展開明細、編輯、刪除)、定期定額計畫。下面原本的交易列表保留,標題改成
+  「資金往來」(交割轉帳紀錄)。
+- 元件重用:`InvestmentsPage.tsx` 匯出 `HoldingsTable`、`DcaPlanList`、
+  `InvestmentSettingsDialog`、`holdingKey`、`TradeRef`;面板自己管 state,不動投資頁本身。
+- 入口:帳戶頁 → 點投資理財帳戶。
+- 刻意沒做:Cloud `balance-adjustment` 端點沒有拒絕投資帳戶(舊資料可能已有調整交易,
+  伺服器硬擋會讓舊客戶端寫入失敗)。
+
 ## 11. 待辦(Phase 3)
 
 - 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。

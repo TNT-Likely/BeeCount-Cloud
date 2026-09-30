@@ -91,7 +91,7 @@ import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass } fr
  * 帳本拉交易紀錄,編輯/刪除時用明細自己所在的帳本寫入。
  */
 
-type TradeRef = { ledgerId: string; trade: StockTrade }
+export type TradeRef = { ledgerId: string; trade: StockTrade }
 
 // 轉帳表單(TransactionsPage.tsx)偵測到轉入/轉出帳戶是投資理財帳戶時,會直接
 // 重用這個 dialog 開買進/賣出,`initialSettlementAccountId` 帶使用者已經選好
@@ -118,7 +118,7 @@ const TYPE_HINTS: Partial<Record<CreatableType, string>> = {
   reinvest: 'investments.tradeType.reinvestHint',
 }
 
-function holdingKey(accountId: string, market: string, symbol: string): string {
+export function holdingKey(accountId: string, market: string, symbol: string): string {
   return `${accountId}|${market}|${symbol}`
 }
 
@@ -485,7 +485,7 @@ export function InvestmentsPage() {
   )
 }
 
-function HoldingsTable({
+export function HoldingsTable({
   holdings,
   accountId,
   expanded,
@@ -1443,7 +1443,7 @@ const SETTINGS_FIELDS: {
   { key: 'nhiThreshold', labelKey: 'investments.settings.nhiThreshold', percent: false },
 ]
 
-function InvestmentSettingsDialog({
+export function InvestmentSettingsDialog({
   account,
   accounts,
   activeLedgerId,
@@ -1621,7 +1621,7 @@ function defaultDcaFirstRun(): string {
 
 /** 投資理財帳戶卡片底下的「定期定額計畫」清單(目前帳本)。管理(編輯/停用/
  *  刪除/看已生成交易)一律導去「週期性交易」頁,這裡只負責讓使用者看得到。 */
-function DcaPlanList({ rules, onManage }: { rules: ReadRecurringRule[]; onManage: () => void }) {
+export function DcaPlanList({ rules, onManage }: { rules: ReadRecurringRule[]; onManage: () => void }) {
   const t = useT()
   if (rules.length === 0) return null
   return (

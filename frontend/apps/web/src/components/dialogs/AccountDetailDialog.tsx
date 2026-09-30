@@ -66,6 +66,7 @@ import { dispatchOpenDetailTx, dispatchOpenEditAccount } from '../../lib/txDialo
 import { AccountStatementSection, BalanceAdjustmentButton } from './AccountReconciliationSection'
 import { CardRewardRulesSection } from './CardRewardRulesSection'
 import { DetailScopeToggle } from './DetailScopeToggle'
+import { InvestmentAccountPanel } from './InvestmentAccountPanel'
 
 type AccountWithStats = ReadAccount & {
   tx_count?: number | null
@@ -273,6 +274,9 @@ export function AccountDetailDialog({
   // AccountStatsHeader)跟頭部新增的週期選擇器(見 DialogHeader)都需要
   // 同一份資料,以前只有 CreditCardBillingSection 自己知道。
   const billing = useAccountBilling(account, token, activeLedgerId)
+  // 投資理財(股票)帳戶:餘額是持股成本的帳面數,不能調整餘額;統計與明細
+  // 改用 `InvestmentAccountPanel`(持股/市值/損益/買賣操作)。
+  const isInvestment = (account?.account_type || '') === 'investment'
   // 「選擇區間」清單彈窗(2026-09-06,對齊 mobile app 同名功能 + 比照
   // `ProjectDetailDialog` 同款 UI):切換帳戶時關閉,不沿用上一張卡的展開
   // 狀態。
@@ -401,7 +405,7 @@ export function AccountDetailDialog({
                 出現兩者,子卡必然不是 account_group,故不會有「只有連結、
                 沒有按鈕」時擠在最左邊 vs 最右邊的視覺落差問題。 */}
             {(billing.isBillingChild && billing.summary && onJumpToParentAccount) ||
-            account.account_type !== 'account_group' ? (
+            (account.account_type !== 'account_group' && !isInvestment) ? (
               <div
                 className={`flex items-center gap-2 border-b border-border/60 bg-muted/10 px-6 py-2 ${
                   billing.isBillingChild && billing.summary && onJumpToParentAccount ? 'justify-between' : 'justify-end'
@@ -417,11 +421,13 @@ export function AccountDetailDialog({
                     <span>{t('cardBilling.parentAccountLink', { name: billing.summary.account_name })}</span>
                   </button>
                 ) : null}
-                {account.account_type !== 'account_group' ? <BalanceAdjustmentButton account={account} /> : null}
+                {account.account_type !== 'account_group' && !isInvestment ? (
+                  <BalanceAdjustmentButton account={account} />
+                ) : null}
               </div>
             ) : null}
 
-            <AccountStatsHeader account={account} t={t} billing={billing} />
+            {isInvestment ? null : <AccountStatsHeader account={account} t={t} billing={billing} />}
 
             {/* 信用卡 / 银行卡专属信息:bank_name / 卡号末 4 / 信用额度 /
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
@@ -471,6 +477,13 @@ export function AccountDetailDialog({
             ) : null}
 
             <div className="min-h-0 flex-1 overflow-y-auto">
+              {isInvestment ? (
+                <>
+                  <InvestmentAccountPanel accountId={account.id} />
+                  <div className="px-6 pb-1 pt-3 text-sm font-medium">{t('investments.detail.cashFlow')}</div>
+                  <p className="px-6 pb-2 text-xs text-muted-foreground">{t('investments.detail.cashFlowHint')}</p>
+                </>
+              ) : null}
               <TransactionList
                 items={transactions}
                 tags={tags}
