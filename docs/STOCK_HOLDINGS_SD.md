@@ -444,6 +444,7 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
   「資金往來」(交割轉帳紀錄)。
 - 元件重用:`InvestmentsPage.tsx` 匯出 `HoldingsTable`、`DcaPlanList`、
   `InvestmentSettingsDialog`、`holdingKey`、`TradeRef`;面板自己管 state,不動投資頁本身。
+- 未實現損益口徑:面板頂端用 `valuation_by_currency − cost_by_currency`(帳戶設定 `pnlAfterSellCosts` 開啟時是扣預估賣出手續費/交易稅的淨值),跟 App、投資頁、持股表逐列加總一致;不可用 `market_value − cost`(會比 App 大)。
 - 入口:帳戶頁 → 點投資理財帳戶。
 - 刻意沒做:Cloud `balance-adjustment` 端點沒有拒絕投資帳戶(舊資料可能已有調整交易,
   伺服器硬擋會讓舊客戶端寫入失敗)。

@@ -166,6 +166,7 @@ export function InvestmentAccountPanel({ accountId }: { accountId: string }) {
   )
   const closed = useMemo(() => (data?.holdings ?? []).filter((h) => h.shares <= 0), [data])
   const currencies = Object.keys(data?.market_value_by_currency ?? {})
+  const afterSellCosts = open.some((h) => h.pnl_after_sell_costs)
 
   const openTrade = (initial?: TradeDialogState['initial']) => account && setTradeDialog({ account, initial })
 
@@ -177,7 +178,11 @@ export function InvestmentAccountPanel({ accountId }: { accountId: string }) {
           {currencies.map((ccy) => {
             const mv = data?.market_value_by_currency[ccy] ?? 0
             const cost = data?.cost_by_currency[ccy] ?? 0
-            const pnl = mv - cost
+            // 未實現損益 = 估值 − 成本。估值由 server 依帳戶設定(pnlAfterSellCosts,
+            // 預設開)決定是市值還是扣掉預估賣出手續費/交易稅的淨值,跟 App、
+            // 投資頁同一個口徑;不能在這裡用 市值 − 成本 自己算,會比 App 大。
+            const valuation = data?.valuation_by_currency?.[ccy] ?? mv
+            const pnl = valuation - cost
             return (
               <div key={ccy} className="grid grid-cols-3 gap-2 text-center">
                 <div>
@@ -196,6 +201,9 @@ export function InvestmentAccountPanel({ accountId }: { accountId: string }) {
                       <span className="ml-1 text-xs font-normal">({formatPercent((pnl / cost) * 100)})</span>
                     ) : null}
                   </div>
+                  {afterSellCosts ? (
+                    <div className="text-xs text-muted-foreground">{t('investments.pnlAfterSellCostsNote')}</div>
+                  ) : null}
                 </div>
               </div>
             )

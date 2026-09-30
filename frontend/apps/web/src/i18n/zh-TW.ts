@@ -396,6 +396,7 @@ const zhTW = {
   'admin.scheduledJobs.job.security_quote_close': '股票收盤價更新',
   'admin.scheduledJobs.job.security_dividend_sync': '除權息資料同步',
   'admin.scheduledJobs.job.security_dividend_detector': '待確認股利偵測',
+  'admin.scheduledJobs.job.stock_dca_materialization': '股票定期定額扣款產生',
   'nav.appVersion': 'App 版本提醒',
   'nav.licenses': '授權金鑰',
   'nav.broadcasts': "系統公告",

@@ -1347,6 +1347,7 @@ const zhCN = {
   'admin.scheduledJobs.job.security_quote_close': '股票收盘价更新',
   'admin.scheduledJobs.job.security_dividend_sync': '除权息数据同步',
   'admin.scheduledJobs.job.security_dividend_detector': '待确认股利检测',
+  'admin.scheduledJobs.job.stock_dca_materialization': '股票定期定额扣款生成',
   'nav.appVersion': 'App 版本提醒',
   'nav.licenses': '授权密钥',
   'nav.broadcasts': "系统公告",

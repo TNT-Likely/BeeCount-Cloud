@@ -397,6 +397,7 @@ const en = {
   'admin.scheduledJobs.job.security_quote_close': 'Stock closing price refresh',
   'admin.scheduledJobs.job.security_dividend_sync': 'Dividend event sync',
   'admin.scheduledJobs.job.security_dividend_detector': 'Pending dividend detection',
+  'admin.scheduledJobs.job.stock_dca_materialization': 'Stock DCA order generation',
   'nav.appVersion': 'App Version',
   'nav.licenses': 'License Keys',
   'nav.broadcasts': "Broadcasts",
