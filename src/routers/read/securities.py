@@ -5,6 +5,7 @@
 - `GET /workspace/holdings`:目前使用者所有投資理財帳戶的持股、市值、損益,
   並折算成主幣別——Web「投資市值(預估)」卡與持股分頁用。App 端自己用
   本地 stock_trade 算持股,只跟 server 拿報價。
+- `GET /workspace/realized-pnl`:已實現損益報表(Phase 3,每筆賣出一列 + 各幣別彙總)。
 - `GET /ledgers/{id}/stock-trades`:交易明細列表。
 - `GET /securities/pending-dividends`:待確認股利(Phase 2)。
 - `GET /securities/dividend-events`:某檔的除權息事件(持股詳情顯示用)。
@@ -35,11 +36,17 @@ from ...models import (
 from ...services.exchange_rate import fetcher as exchange_rate_fetcher
 from ...services.securities import dividends as dividend_service
 from ...services.securities import holdings as holdings_service
-from ...services.securities import markets
+from ...services.securities import markets, trade_fees
 from ...services.securities import quotes as quote_service
 from ...services.securities import search as search_service
-from ...services.securities import trade_fees
-from ._shared import _READ_SCOPE_DEP, _is_admin, _require_ledger, router
+from ._shared import (
+    _READ_SCOPE_DEP,
+    _analytics_range,
+    _is_admin,
+    _require_ledger,
+    _visible_workspace_ledgers,
+    router,
+)
 
 _SYMBOL_KEY = re.compile(r"^[A-Za-z]{2,4}:[A-Za-z0-9.\-]{1,24}$")
 _MAX_QUOTE_KEYS = 100
@@ -383,6 +390,267 @@ async def workspace_holdings(
         missing_rates=sorted(missing),
         stale=any_stale,
     )
+
+
+class RealizedEventOut(BaseModel):
+    trade_id: str
+    account_id: str | None
+    market: str
+    symbol: str
+    security_name: str | None = None
+    currency: str | None = None
+    date: str | None = None
+    shares: float
+    proceeds: float
+    cost_basis: float
+    pnl: float
+
+
+class RealizedSymbolOut(BaseModel):
+    market: str
+    symbol: str
+    security_name: str | None = None
+    currency: str | None = None
+    pnl: float
+    proceeds: float
+    cost_basis: float
+    sell_count: int
+    events: list[RealizedEventOut]
+
+
+class RealizedPnlOut(BaseModel):
+    year: int | None = None
+    # 有賣出紀錄的年份(新到舊),給前端年度篩選用。
+    years: list[int]
+    # 以下都依證券幣別分開,不跨幣別加總(同持股頁口徑)。
+    realized_pnl_by_currency: dict[str, float]
+    dividends_by_currency: dict[str, float]
+    symbols: list[RealizedSymbolOut]
+
+
+def _load_user_trade_rows(db: Session, user_id: str, account_id: str | None = None) -> list[holdings_service.TradeRow]:
+    stmt = select(ReadStockTradeProjection).where(ReadStockTradeProjection.user_id == user_id)
+    if account_id:
+        stmt = stmt.where(ReadStockTradeProjection.account_sync_id == account_id)
+    return [
+        holdings_service.TradeRow(
+            sync_id=t.sync_id, account_id=t.account_sync_id, market=t.market, symbol=t.symbol,
+            trade_type=t.trade_type, shares=float(t.shares or 0), price=t.price,
+            fee=float(t.fee or 0), tax=float(t.tax or 0), amount=float(t.amount or 0),
+            trade_date=t.trade_date, security_name=t.security_name, currency=t.currency,
+        )
+        for t in db.scalars(stmt).all()
+    ]
+
+
+def build_realized_pnl(
+    rows: list[holdings_service.TradeRow],
+    *,
+    account_ids: set[str] | None = None,
+    account_currency: dict[str, str | None] | None = None,
+    year: int | None = None,
+    symbol: str | None = None,
+) -> RealizedPnlOut:
+    """已實現損益彙總。損益一律用「全部歷史」算出每筆賣出的成本,再依
+    年度/標的/帳戶過濾(不能先過濾再算,移動平均成本會跑掉)。"""
+    events: list[holdings_service.RealizedEvent] = []
+    holdings_service.compute_holdings(rows, include_closed=True, events=events)
+    account_currency = account_currency or {}
+    sym_filter = symbol.upper() if symbol else None
+    if sym_filter and ":" in sym_filter:
+        sym_filter = sym_filter.split(":", 1)[1]
+
+    def _ccy(market: str, ccy: str | None, account_id: str | None) -> str:
+        return (ccy or account_currency.get(account_id or "") or "").upper()
+
+    def _keep(account_id: str | None, sym: str, date: str | None) -> bool:
+        if account_ids is not None and account_id not in account_ids:
+            return False
+        if sym_filter and sym != sym_filter:
+            return False
+        if year is not None and not (date and date[:4] == str(year)):
+            return False
+        return True
+
+    years = sorted({int(e.date[:4]) for e in events if e.date and e.date[:4].isdigit()
+                    and (account_ids is None or e.account_id in account_ids)}, reverse=True)
+    totals: dict[str, float] = {}
+    groups: dict[tuple[str, str], RealizedSymbolOut] = {}
+    for e in events:
+        if not _keep(e.account_id, e.symbol, e.date):
+            continue
+        ccy = _ccy(e.market, e.currency, e.account_id)
+        out = RealizedEventOut(
+            trade_id=e.trade_sync_id, account_id=e.account_id, market=e.market, symbol=e.symbol,
+            security_name=e.security_name, currency=ccy or None, date=e.date,
+            shares=round(e.shares, 6), proceeds=round(e.proceeds, 6),
+            cost_basis=round(e.cost_basis, 6), pnl=round(e.pnl, 6),
+        )
+        totals[ccy] = totals.get(ccy, 0.0) + e.pnl
+        g = groups.get((e.market, e.symbol))
+        if g is None:
+            g = RealizedSymbolOut(
+                market=e.market, symbol=e.symbol, security_name=e.security_name, currency=ccy or None,
+                pnl=0.0, proceeds=0.0, cost_basis=0.0, sell_count=0, events=[],
+            )
+            groups[(e.market, e.symbol)] = g
+        g.pnl = round(g.pnl + e.pnl, 6)
+        g.proceeds = round(g.proceeds + e.proceeds, 6)
+        g.cost_basis = round(g.cost_basis + e.cost_basis, 6)
+        g.sell_count += 1
+        g.events.append(out)
+    dividends: dict[str, float] = {}
+    for t in rows:
+        if t.trade_type not in ("cash_dividend", "reinvest"):
+            continue
+        date = holdings_service._date_key(t.trade_date) or None
+        if not _keep(t.account_id, t.symbol, date):
+            continue
+        ccy = _ccy(t.market, t.currency, t.account_id)
+        dividends[ccy] = dividends.get(ccy, 0.0) + t.amount
+    for g in groups.values():
+        g.events.sort(key=lambda x: (x.date or "", x.trade_id), reverse=True)
+    return RealizedPnlOut(
+        year=year,
+        years=years,
+        realized_pnl_by_currency={k: round(v, 6) for k, v in totals.items()},
+        dividends_by_currency={k: round(v, 6) for k, v in dividends.items()},
+        symbols=sorted(groups.values(), key=lambda g: -abs(g.pnl)),
+    )
+
+
+@router.get("/workspace/realized-pnl", response_model=RealizedPnlOut)
+def workspace_realized_pnl(
+    account_id: str | None = Query(default=None),
+    year: int | None = Query(default=None, ge=1990, le=2200),
+    symbol: str | None = Query(default=None, max_length=40),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RealizedPnlOut:
+    user_id = current_user.id
+    accounts = {
+        a.sync_id: a
+        for a in db.scalars(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == user_id,
+                UserAccountProjection.account_type == "investment",
+            )
+        ).all()
+    }
+    if account_id and account_id not in accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+    rows = _load_user_trade_rows(db, user_id)
+    return build_realized_pnl(
+        rows,
+        account_ids={account_id} if account_id else set(accounts),
+        account_currency={sid: (a.currency or "").upper() or None for sid, a in accounts.items()},
+        year=year,
+        symbol=symbol,
+    )
+
+
+class InvestmentFlowCurrencyOut(BaseModel):
+    currency: str
+    # 買進現金流出(含手續費)/ 賣出淨收入(已扣手續費+交易稅),證券幣別。
+    buy_amount: float
+    sell_amount: float
+    # buy_amount − sell_amount:這段期間「從現金轉進投資」的淨額(可為負)。
+    # 這是資金轉移,不是支出,也不計入收入/結餘。
+    net_invested: float
+    # 期間內手續費、交易稅合計(買+賣)。已含在 buy/sell_amount 內,另列只是讓
+    # 使用者看到成本;它們不會進收入/支出(轉帳的 feeAmount/discountAmount 本來
+    # 就只影響帳戶餘額,不進收支統計)。
+    fees: float
+    taxes: float
+    # 現金股利 + 股利再投入(已是收入交易,算在首頁收入內)。
+    dividends: float
+    buy_count: int
+    sell_count: int
+
+
+class InvestmentFlowOut(BaseModel):
+    scope: str
+    period: str | None = None
+    by_currency: list[InvestmentFlowCurrencyOut]
+
+
+@router.get("/workspace/investment-flow", response_model=InvestmentFlowOut)
+def workspace_investment_flow(
+    scope: str = Query(default="month", pattern="^(month|year|all)$"),
+    period: str | None = Query(default=None),
+    ledger_id: str | None = Query(default=None),
+    tz_offset_minutes: int = Query(default=0, ge=-720, le=840),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InvestmentFlowOut:
+    """首頁「投資淨投入」:買進/賣出/手續費稅/股利,各幣別分開。
+
+    期間口徑跟 `/workspace/analytics` 完全相同(同一個 `_analytics_range`,單帳本
+    用該帳本的月份起始日,多帳本維持自然月),所以跟首頁其它卡片的「本月」一致。
+    買進/賣出是轉帳到投資帳戶,不是支出/收入;期初持股、股票股利、分割不是現金
+    流動,不列入。"""
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin, ledger_id=ledger_id,
+    )
+    month_start_day = (ledgers[0].month_start_day or 1) if len(ledgers) == 1 else 1
+    start_at, end_at, normalized = _analytics_range(
+        scope=scope, period=period, tz_offset_minutes=tz_offset_minutes,  # type: ignore[arg-type]
+        month_start_day=month_start_day,
+    )
+    stmt = select(ReadStockTradeProjection).where(
+        ReadStockTradeProjection.user_id == current_user.id,
+        ReadStockTradeProjection.trade_type.in_(("buy", "sell", "cash_dividend", "reinvest")),
+    )
+    if ledger_id:
+        stmt = stmt.where(ReadStockTradeProjection.ledger_id.in_([lg.id for lg in ledgers] or [""]))
+    if start_at is not None and end_at is not None:
+        stmt = stmt.where(
+            ReadStockTradeProjection.trade_date >= start_at,
+            ReadStockTradeProjection.trade_date < end_at,
+        )
+    acct_currency = {
+        a.sync_id: (a.currency or "").upper()
+        for a in db.scalars(
+            select(UserAccountProjection).where(UserAccountProjection.user_id == current_user.id)
+        ).all()
+    }
+    agg: dict[str, dict[str, float]] = {}
+    for t in db.scalars(stmt).all():
+        cur = (t.currency or acct_currency.get(t.account_sync_id or "") or "").upper()
+        a = agg.setdefault(
+            cur,
+            {"buy": 0.0, "sell": 0.0, "fees": 0.0, "taxes": 0.0, "div": 0.0, "bc": 0, "sc": 0},
+        )
+        amount = float(t.amount or 0)
+        if t.trade_type == "buy":
+            a["buy"] += amount
+            a["bc"] += 1
+        elif t.trade_type == "sell":
+            a["sell"] += amount
+            a["sc"] += 1
+        else:
+            a["div"] += amount
+            continue
+        a["fees"] += float(t.fee or 0)
+        a["taxes"] += float(t.tax or 0)
+    out = [
+        InvestmentFlowCurrencyOut(
+            currency=cur,
+            buy_amount=round(v["buy"], 2),
+            sell_amount=round(v["sell"], 2),
+            net_invested=round(v["buy"] - v["sell"], 2),
+            fees=round(v["fees"], 2),
+            taxes=round(v["taxes"], 2),
+            dividends=round(v["div"], 2),
+            buy_count=int(v["bc"]),
+            sell_count=int(v["sc"]),
+        )
+        for cur, v in sorted(agg.items())
+    ]
+    return InvestmentFlowOut(scope=scope, period=normalized, by_currency=out)
 
 
 @router.get("/ledgers/{ledger_external_id}/stock-trades", response_model=list[StockTradeOut])

@@ -184,6 +184,23 @@ def test_holdings_shared_vectors(case):
                 assert g[key] == value, key
 
 
+def test_realized_events_shared_vectors():
+    for case in json.loads((FIXTURES / "stock_holdings_vectors.json").read_text())["cases"]:
+        if "realizedEvents" not in case:
+            continue
+        rows = [holdings.trade_row_from_payload(t) for t in case["trades"]]
+        events: list = []
+        holdings.compute_holdings(rows, include_closed=True, events=events)
+        got = [e.to_dict() for e in events]
+        assert len(got) == len(case["realizedEvents"])
+        for g, e in zip(got, case["realizedEvents"], strict=True):
+            for key, value in e.items():
+                if isinstance(value, (int, float)):
+                    assert g[key] == pytest.approx(value, abs=1e-6), key
+                else:
+                    assert g[key] == value, key
+
+
 def test_holdings_excludes_closed_positions_by_default():
     rows = [
         holdings.TradeRow("a", "acc", "US", "X", "buy", 1, 10, 0, 0, 10, "2026-01-01"),
@@ -584,6 +601,68 @@ def test_list_stock_trades_endpoint():
         assert r.status_code == 200, r.text
         [t] = r.json()
         assert t["symbol"] == "2330" and t["trade_type"] == "buy" and t["tx_id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_web_split_changes_shares_without_cash_flow_and_feeds_realized_report():
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-split@t.com")
+        assert _buy(client, hdr_web, shares=100, price=100, fee=0,
+                    trade_date="2026-01-01T02:00:00+00:00").status_code == 200
+        r = _buy(client, hdr_web, trade_type="split", shares=4, price=None, fee=0, settlement_account_id=None,
+                 trade_date="2026-02-01T02:00:00+00:00")
+        assert r.status_code == 200, r.text
+        split = next(t for t in _trade_rows(TS) if t.trade_type == "split")
+        assert split.shares == 4 and split.tx_sync_id is None and split.amount == 0
+        # 分割後可賣 400 股,賣超 401 擋下
+        assert _buy(client, hdr_web, trade_type="sell", shares=401, price=30, fee=0,
+                    trade_date="2026-03-01T02:00:00+00:00").status_code == 400
+        assert _buy(client, hdr_web, trade_type="sell", shares=100, price=30, fee=0,
+                    trade_date="2026-03-01T02:00:00+00:00").status_code == 200
+        rep = client.get("/api/v1/read/workspace/realized-pnl", headers=hdr_web)
+        assert rep.status_code == 200, rep.text
+        body = rep.json()
+        assert body["years"] == [2026]
+        assert body["realized_pnl_by_currency"] == {"TWD": pytest.approx(500)}
+        [sym] = body["symbols"]
+        assert sym["symbol"] == "2330" and sym["sell_count"] == 1
+        assert sym["events"][0]["cost_basis"] == pytest.approx(2500)
+        # 年度篩選:2025 沒有賣出
+        rep25 = client.get("/api/v1/read/workspace/realized-pnl", headers=hdr_web, params={"year": 2025}).json()
+        assert rep25["symbols"] == [] and rep25["realized_pnl_by_currency"] == {}
+        assert rep25["years"] == [2026]
+        assert client.get("/api/v1/read/workspace/realized-pnl", headers=hdr_web,
+                          params={"account_id": "nope"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mcp_stock_tools_return_holdings_and_realized_pnl(monkeypatch):
+    from src.mcp.tools import read_tools
+
+    client, TS = _make_client()
+    try:
+        monkeypatch.setattr(read_tools, "SessionLocal", TS)
+        _, hdr_web = _setup(client, "stk-mcp@t.com")
+        assert _buy(client, hdr_web, shares=100, price=100, fee=0,
+                    trade_date="2026-01-01T02:00:00+00:00").status_code == 200
+        assert _buy(client, hdr_web, trade_type="sell", shares=40, price=150, fee=0,
+                    trade_date="2026-03-01T02:00:00+00:00").status_code == 200
+        with TS() as db:
+            user = db.scalar(select(User).where(User.email == "stk-mcp@t.com"))
+            sec_id = quotes.store.ensure_security(db, market="TW", symbol="2330", name="台積電", currency="TWD")
+            db.add(SecurityQuote(security_id=sec_id, price=200.0, session="close", source="test"))
+            db.commit()
+            db.refresh(user)
+            db.expunge(user)
+        [h] = read_tools.list_stock_holdings(user)
+        assert h["symbol"] == "2330" and h["shares"] == 60 and h["market_value"] == 12000
+        assert h["unrealized_pnl"] == pytest.approx(12000 - 6000)
+        rep = read_tools.get_stock_realized_pnl(user, year=2026, symbol="TW:2330")
+        assert rep["realized_pnl_by_currency"] == {"TWD": pytest.approx(2000)}
+        assert read_tools.list_stock_holdings(user, account_name="不存在") == []
     finally:
         app.dependency_overrides.clear()
 

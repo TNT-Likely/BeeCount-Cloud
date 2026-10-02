@@ -21,8 +21,8 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ...models import ReadRecurringRuleProjection, ReadStockTradeProjection, Security, SecurityQuote
-from . import markets, store
-from .providers import twse, yahoo
+from . import data_source, markets, store
+from .providers import twse
 from .providers.base import BULK_TIMEOUT, QuoteData, new_client
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,7 @@ async def get_quotes(
     if not to_fetch:
         return [views[k] for k in keys]
 
+    source = data_source.load_source(db)
     bind = db.get_bind()
     # 打上游前放掉呼叫方 session 占用的連線(同 exchange_rate/fetcher.get_rates
     # 的理由:別讓慢上游把連線池吃滿)。這裡只讀過純資料,rollback 不影響。
@@ -172,7 +173,7 @@ async def get_quotes(
             lock = _locks.setdefault(f"{key[0]}:{key[1]}", asyncio.Lock())
             async with lock, sem:
                 try:
-                    fetched.append(await yahoo.fetch_quote(key[0], key[1], client=client))
+                    fetched.append(await data_source.fetch_quote(source, key[0], key[1], client))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("securities: quote fetch failed %s:%s err=%s", key[0], key[1], exc)
                     failed.add(key)
@@ -248,13 +249,14 @@ async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], n
     拿到前一交易日收盤,排程重試窗口過了就被當成「已完成」,快取卡在昨天。
     官方資料只在不比快取舊時才寫入,避免晚更新的舊日期蓋掉 Yahoo 的新價。"""
     fetched: list[QuoteData] = []
+    source = data_source.load_source(db)
     async with new_client() as client:
         sem = asyncio.Semaphore(_CONCURRENCY)
 
         async def _one(symbol: str) -> None:
             async with sem:
                 try:
-                    fetched.append(await yahoo.fetch_quote(market.code, symbol, client=client))
+                    fetched.append(await data_source.fetch_quote(source, market.code, symbol, client))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("securities: close fetch failed %s:%s err=%s", market.code, symbol, exc)
 

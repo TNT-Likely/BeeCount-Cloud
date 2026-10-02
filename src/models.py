@@ -117,6 +117,10 @@ class UserProfile(Base):
     # 只在 `routers/swipesmart.py` 內短暫解密用於呼叫 SwipeSmart,絕不明文
     # 回傳給前端。
     swipesmart_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Web 首頁卡片版面(顯示/隱藏 + 順序)JSON,跨裝置同步。
+    # 結構 `{"version":1,"cards":[{"id":"...","visible":true},...]}`,
+    # 由 `GET/PUT /profile/dashboard-layout` 讀寫;NULL = 使用預設版面。
+    dashboard_layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -1800,6 +1804,25 @@ class AppVersionCheckConfig(Base):
     # 低於這個版本(或根本沒帶 —— 舊版 App)時,server 拒絕該 App 的所有
     # 鑑權請求(426)。null = 不限制。
     min_sync_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class SecurityDataSourceConfig(Base):
+    """股票報價/除息資料來源設定(Phase 3,docs/STOCK_HOLDINGS_SD.md §12)。
+
+    單例表(`id=1`,同 `AppVersionCheckConfig`)。`provider`:`free`(Yahoo +
+    證交所/櫃買)或 `twelvedata`(付費,需要 `api_key_encrypted`)。API key 用
+    `services/secret_crypto` 加密;Admin API 不回傳明文,只回是否已設定。"""
+
+    __tablename__ = "security_data_source_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="free", server_default="free")
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

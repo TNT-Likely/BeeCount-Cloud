@@ -321,6 +321,98 @@ def list_budgets(user: User, *, ledger_id: str | None = None) -> list[dict[str, 
         return out
 
 
+def _stock_trade_rows(db: Session, user_id: str, account_id: str | None = None):
+    from ...routers.read.securities import _load_user_trade_rows
+
+    return _load_user_trade_rows(db, user_id, account_id)
+
+
+def _investment_accounts(db: Session, user_id: str) -> dict[str, UserAccountProjection]:
+    return {
+        a.sync_id: a
+        for a in db.scalars(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == user_id,
+                UserAccountProjection.account_type == "investment",
+            )
+        ).all()
+    }
+
+
+def list_stock_holdings(user: User, *, account_name: str | None = None) -> list[dict[str, Any]]:
+    """列出目前股票持股(股數、平均成本、成本、累計股利、已實現損益)與**快取**
+    報價推算的市值/未實現損益(不即時打上游,報價可能是上一個收盤價,看
+    quote_fetched_at)。金額都是證券幣別,不跨幣別加總。"""
+    from ...models import Security, SecurityQuote
+    from ...services.securities import holdings as holdings_service
+
+    with SessionLocal() as db:
+        accounts = _investment_accounts(db, user.id)
+        if account_name:
+            needle = account_name.strip().lower()
+            accounts = {k: a for k, a in accounts.items() if needle in (a.name or "").lower()}
+        rows = _stock_trade_rows(db, user.id)
+        held = [h for h in holdings_service.compute_holdings(rows) if h.account_id in accounts]
+        quote_by_key: dict[tuple[str, str], tuple[float, Any]] = {}
+        for sec, quote in db.execute(
+            select(Security, SecurityQuote).join(SecurityQuote, SecurityQuote.security_id == Security.id)
+        ).all():
+            quote_by_key[(sec.market, sec.symbol)] = (float(quote.price), quote.fetched_at)
+        out: list[dict[str, Any]] = []
+        for h in held:
+            acct = accounts[h.account_id]  # type: ignore[index]
+            d = h.to_dict()
+            ccy = (h.currency or acct.currency or "").upper() or None
+            item: dict[str, Any] = {
+                "account": acct.name,
+                "market": h.market,
+                "symbol": h.symbol,
+                "name": h.security_name,
+                "currency": ccy,
+                "shares": d["shares"],
+                "avg_cost": d["avgCost"],
+                "total_cost": d["totalCost"],
+                "realized_pnl": d["realizedPnl"],
+                "dividends": d["dividends"],
+            }
+            q = quote_by_key.get((h.market, h.symbol))
+            if q is not None:
+                price, fetched = q
+                value = h.shares * price
+                item.update({
+                    "price": price,
+                    "market_value": round(value, 2),
+                    "unrealized_pnl": round(value - h.total_cost, 2),
+                    "unrealized_pnl_percent": round((value - h.total_cost) / h.total_cost * 100, 2) if h.total_cost else None,
+                    "quote_fetched_at": fetched.isoformat() if fetched else None,
+                })
+            out.append(item)
+        return out
+
+
+def get_stock_realized_pnl(
+    user: User, *, year: int | None = None, symbol: str | None = None, account_name: str | None = None,
+) -> dict[str, Any]:
+    """已實現損益報表:依年度/標的/帳戶過濾;回傳各幣別損益與股利合計、
+    每檔標的的賣出明細(日期、股數、賣出收入、成本、損益)。"""
+    from ...routers.read.securities import build_realized_pnl
+
+    with SessionLocal() as db:
+        accounts = _investment_accounts(db, user.id)
+        if account_name:
+            needle = account_name.strip().lower()
+            accounts = {k: a for k, a in accounts.items() if needle in (a.name or "").lower()}
+        rows = _stock_trade_rows(db, user.id)
+        report = build_realized_pnl(
+            rows,
+            account_ids=set(accounts),
+            account_currency={k: (a.currency or "").upper() or None for k, a in accounts.items()},
+            year=year,
+            symbol=symbol,
+        )
+        return report.model_dump()
+
+
 def get_ledger_stats(user: User, *, ledger_id: str | None = None) -> dict[str, Any] | None:
     """账本统计 — 交易数 / 分类数 / 账户数 / 标签数 / 预算数。"""
     with SessionLocal() as db:

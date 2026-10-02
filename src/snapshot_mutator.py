@@ -2565,19 +2565,19 @@ def delete_card_reward_rule(snapshot: dict, rule_id: str, payload: dict | None =
 #
 # 「買股票就是一筆轉帳」:buy/sell 同時建立一筆 transfer 交易(交割帳戶 ⇄
 # 投資理財帳戶)+ 一筆 stock_trade(txId 指回那筆交易);opening(期初持股)/
-# stock_dividend(配股)沒有現金流動,只建 stock_trade。交易欄位的換算規則
+# stock_dividend(配股)/split(股票分割,shares=每 1 股變幾股的比例)沒有現金流動,只建 stock_trade。交易欄位的換算規則
 # 集中在 `stock_trade_tx_fields`,App 端 lib/services/investment/
 # stock_trade_tx_mapper.dart 是同一套規則的 Dart 版本,改一邊要改另一邊。
 # ============================================================================
 
-STOCK_TRADE_TYPES = {"buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"}
+STOCK_TRADE_TYPES = {"buy", "sell", "opening", "stock_dividend", "split", "cash_dividend", "reinvest"}
 # 需要交割帳戶 + 產生轉帳交易的類型。
 STOCK_TRADE_CASH_TYPES = {"buy", "sell"}
 # 產生 income 交易的類型(Phase 2 股利):cash_dividend 入交割帳戶,reinvest
 # 入投資理財帳戶本身(股利直接換成股數,帳戶餘額 = 成本跟著增加)。
 STOCK_TRADE_INCOME_TYPES = {"cash_dividend", "reinvest"}
 # web 可建的類型(待確認股利確認時也走同一套 create_stock_trade)。
-STOCK_TRADE_WEB_CREATABLE_TYPES = {"buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"}
+STOCK_TRADE_WEB_CREATABLE_TYPES = {"buy", "sell", "opening", "stock_dividend", "split", "cash_dividend", "reinvest"}
 # 股利 income 交易的分類(router 用 card_rewards.ensure_dividend_category 建好後
 # 透過這兩個 payload key 傳進來)。
 DIVIDEND_CATEGORY_ID_KEY = "__dividend_category_id"
@@ -2668,7 +2668,7 @@ def stock_trade_tx_fields(
 
 
 def _stock_trade_default_note(trade_type: str, symbol: str, name: str | None, shares: float) -> str:
-    label = {"buy": "買進", "sell": "賣出", "cash_dividend": "股利", "reinvest": "股利再投入"}.get(
+    label = {"buy": "買進", "sell": "賣出", "cash_dividend": "股利", "reinvest": "股利再投入", "split": "股票分割"}.get(
         trade_type, trade_type
     )
     shares_text = f"{shares:g}"
@@ -2691,7 +2691,7 @@ def _account_by_id(accounts: list[dict], account_id: str | None) -> dict | None:
 def _validate_stock_numbers(shares: float | None, price: float | None, fee: float, tax: float, *, trade_type: str) -> None:
     if shares is None or shares <= 0:
         raise ValueError("write validation failed: shares must be > 0")
-    if trade_type != "stock_dividend" and (price is None or price < 0):
+    if trade_type not in ("stock_dividend", "split") and (price is None or price < 0):
         raise ValueError("write validation failed: price must be >= 0")
     if fee < 0 or tax < 0:
         raise ValueError("write validation failed: fee/tax must be >= 0")
@@ -2871,9 +2871,9 @@ def create_stock_trade(snapshot: dict, payload: dict) -> tuple[dict, str]:
     price = _to_optional_float(payload.get("price"))
     fee = _to_optional_float(payload.get("fee")) or 0.0
     tax = _to_optional_float(payload.get("tax")) or 0.0
-    if trade_type in ("opening", "stock_dividend"):
+    if trade_type in ("opening", "stock_dividend", "split"):
         tax = 0.0
-    if trade_type == "stock_dividend":
+    if trade_type in ("stock_dividend", "split"):
         price = price or 0.0
         fee = 0.0
     _validate_stock_numbers(shares, price, fee, tax, trade_type=trade_type)

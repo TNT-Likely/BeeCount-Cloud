@@ -6,9 +6,9 @@
 
 ## 是什么
 
-MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 18 个 tool:
+MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 20 个 tool:
 
-- **11 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
+- **13 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger` / `list_stock_holdings` / `get_stock_realized_pnl`
 - **7 个 write tool**:`create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
 
 跟 LLM 聊天时可以这样说:
@@ -185,6 +185,8 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp`**,所有其�
 | `list_tags` | 列标签 | — |
 | `list_budgets` | 列预算 + 当月进度 | ledger_id |
 | `get_ledger_stats` | 账本统计 | ledger_id |
+| `list_stock_holdings` | 股票持股(股数/均价/成本/快取报价市值与未实现损益,各币别分开) | account_name |
+| `get_stock_realized_pnl` | 股票已实现损益报表(依年度/标的/账户) | year, symbol, account_name |
 | `get_analytics_summary` | 收入/支出/Top 分类 | scope (month\|year\|all), period |
 | `search` | 全文模糊搜 | q, limit |
 

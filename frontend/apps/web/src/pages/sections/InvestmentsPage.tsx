@@ -78,7 +78,7 @@ import { useLedgerWrite } from '../../app/useLedgerWrite'
 import { routePath } from '../../state/router'
 import { OpeningHoldingsDialog } from './OpeningHoldingsDialog'
 import { PendingDividendsPanel } from './PendingDividendsPanel'
-import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass } from './investmentsShared'
+import { dateValueToIso, formatQuoteTime, isoToDateValue, numText, pnlClass, splitRatioInfo } from './investmentsShared'
 
 /**
  * 投資頁(股票持股 2026-09-28,docs/STOCK_HOLDINGS_SD.md)。跟 App 功能對等:
@@ -108,14 +108,24 @@ export type TradeDialogState = {
   batchOpening?: boolean
 }
 
-export type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
-const CREATABLE_TYPES: CreatableType[] = ['buy', 'sell', 'opening', 'stock_dividend', 'cash_dividend', 'reinvest']
+export type CreatableType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'split' | 'cash_dividend' | 'reinvest'
+const CREATABLE_TYPES: CreatableType[] = ['buy', 'sell', 'opening', 'stock_dividend', 'split', 'cash_dividend', 'reinvest']
 
 const TYPE_HINTS: Partial<Record<CreatableType, string>> = {
   opening: 'investments.tradeType.openingHint',
   stock_dividend: 'investments.tradeType.stockDividendHint',
+  split: 'investments.tradeType.splitHint',
   cash_dividend: 'investments.tradeType.cashDividendHint',
   reinvest: 'investments.tradeType.reinvestHint',
+}
+
+/** 明細清單的分割文字:「分割 1→4」/「合併 2→1」。 */
+function splitLabel(ratio: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  const info = splitRatioInfo(ratio)
+  if (!info) return t('investments.tradeType.split')
+  return info.merge
+    ? t('investments.split.labelMerge', { n: info.n })
+    : t('investments.split.labelSplit', { n: info.n })
 }
 
 export function holdingKey(accountId: string, market: string, symbol: string): string {
@@ -284,9 +294,19 @@ export function InvestmentsPage() {
   return (
     <div className="space-y-4">
       <Card className="bc-panel">
-        <CardHeader>
-          <CardTitle>{t('nav.investments')}</CardTitle>
-          <p className="text-sm text-muted-foreground">{t('investments.desc')}</p>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle>{t('nav.investments')}</CardTitle>
+            <p className="mt-1.5 text-sm text-muted-foreground">{t('investments.desc')}</p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'realized-pnl' }))}
+          >
+            {t('nav.realizedPnl')}
+          </Button>
         </CardHeader>
         <CardContent>
           {summary && summary.accounts.some((a) => a.holdings.some((h) => h.shares > 0)) ? (
@@ -667,10 +687,14 @@ function HoldingRowGroup({
                     return (
                       <tr key={tr.id} className="border-t">
                         <td className="py-1.5">{isoToDateValue(tr.trade_date)}</td>
-                        <td className="py-1.5">{t(`investments.tradeType.${tr.trade_type}`)}</td>
+                        <td className="py-1.5">
+                          {tr.trade_type === 'split' ? splitLabel(tr.shares, t) : t(`investments.tradeType.${tr.trade_type}`)}
+                        </td>
                         <td className="py-1.5 text-right tabular-nums">
-                          {formatShares(tr.shares)}
-                          {tr.price !== null && tr.trade_type !== 'stock_dividend' ? ` @ ${formatPrice(tr.price)}` : ''}
+                          {tr.trade_type === 'split' ? '' : formatShares(tr.shares)}
+                          {tr.price !== null && tr.trade_type !== 'stock_dividend' && tr.trade_type !== 'split'
+                            ? ` @ ${formatPrice(tr.price)}`
+                            : ''}
                         </td>
                         <td className="py-1.5 text-right tabular-nums">
                           {tr.amount ? formatStockMoney(tr.amount, tr.currency) : ''}
@@ -769,6 +793,8 @@ export function StockTradeDialog({
   // 需要選「交割/入帳帳戶」的類型;reinvest 入投資理財帳戶本身。
   const isCash = tradeType === 'buy' || tradeType === 'sell' || tradeType === 'cash_dividend'
   const isDividend = tradeType === 'cash_dividend'
+  // 股票分割:shares = 每 1 股變成幾股,只有日期/標的/比例/備註。
+  const isSplit = tradeType === 'split'
   const settlement = accounts.find((a) => a.id === settlementId)
   // 定期定額不支援跨幣別交割(server 也會擋),交割帳戶要跟證券同幣別。
   const dcaSettlementMismatch = Boolean(
@@ -814,7 +840,7 @@ export function StockTradeDialog({
 
   // 成交金額變了就重算建議手續費/稅(使用者手動改過的欄位不動)。
   useEffect(() => {
-    if (tradeType === 'stock_dividend') return
+    if (tradeType === 'stock_dividend' || tradeType === 'split') return
     if (isDividend) {
       // 現金股利:手續費 = 股利手續費,稅 = 預扣稅 + 二代健保(同 server 估算)。
       const est = estimateDividend({ market, currency, shares: sharesNum, cashPerShare: priceNum, settings })
@@ -976,8 +1002,12 @@ export function StockTradeDialog({
     if (isDca) return onSaveDca()
     const sym = symbol.trim().toUpperCase()
     if (!sym) return toast.error(t('investments.error.symbolRequired'), t('notice.error'))
-    if (!(sharesNum > 0)) return toast.error(t('investments.error.sharesRequired'), t('notice.error'))
-    if (tradeType !== 'stock_dividend' && !price.trim()) {
+    if (isSplit) {
+      if (!(sharesNum > 0)) return toast.error(t('investments.error.splitRatioRequired'), t('notice.error'))
+    } else if (!(sharesNum > 0)) {
+      return toast.error(t('investments.error.sharesRequired'), t('notice.error'))
+    }
+    if (tradeType !== 'stock_dividend' && !isSplit && !price.trim()) {
       return toast.error(t('investments.error.priceRequired'), t('notice.error'))
     }
     if (isCash && !settlementId) {
@@ -998,7 +1028,18 @@ export function StockTradeDialog({
     try {
       if (editing) {
         await retryOnConflict(ledgerId, (base) =>
-          updateStockTrade(token, ledgerId, editing.trade.id, base, {
+          updateStockTrade(
+            token,
+            ledgerId,
+            editing.trade.id,
+            base,
+            isSplit
+              ? {
+                  shares: sharesNum,
+                  trade_date: dateValueToIso(tradeDate),
+                  note: note.trim() || null,
+                }
+              : {
             shares: sharesNum,
             price: priceNum,
             fee: Number(fee) || 0,
@@ -1008,7 +1049,8 @@ export function StockTradeDialog({
             note: note.trim() || null,
             ...(isCash ? { settlement_account_id: settlementId } : {}),
             ...(crossCurrency ? { settlement_amount: Number(settlementAmount) } : {}),
-          }),
+          },
+          ),
         )
       } else {
         await retryOnConflict(ledgerId, (base) =>
@@ -1019,8 +1061,8 @@ export function StockTradeDialog({
             symbol: sym,
             security_name: name.trim() || null,
             shares: sharesNum,
-            price: tradeType === 'stock_dividend' ? 0 : priceNum,
-            fee: tradeType === 'stock_dividend' ? 0 : Number(fee) || 0,
+            price: tradeType === 'stock_dividend' || isSplit ? 0 : priceNum,
+            fee: tradeType === 'stock_dividend' || isSplit ? 0 : Number(fee) || 0,
             tax: tradeType === 'sell' || isDividend ? Number(tax) || 0 : 0,
             currency,
             trade_date: dateValueToIso(tradeDate),
@@ -1122,7 +1164,11 @@ export function StockTradeDialog({
           />
           <div className="space-y-1">
             <Label>{t('investments.field.name')}</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              value={name}
+              disabled={Boolean(editing && isSplit)}
+              onChange={(e) => setName(e.target.value)}
+            />
           </div>
           {isDca ? (
             <>
@@ -1229,10 +1275,11 @@ export function StockTradeDialog({
             <>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label>{t('investments.field.shares')}</Label>
+              <Label>{t(isSplit ? 'investments.field.splitRatio' : 'investments.field.shares')}</Label>
               <Input inputMode="decimal" value={shares} onChange={(e) => setShares(e.target.value)} />
+              {isSplit && <p className="text-xs text-muted-foreground">{t('investments.field.splitRatioHint')}</p>}
             </div>
-            {tradeType !== 'stock_dividend' && (
+            {tradeType !== 'stock_dividend' && !isSplit && (
               <div className="space-y-1">
                 <Label>
                   {tradeType === 'opening'
@@ -1258,7 +1305,7 @@ export function StockTradeDialog({
               })}
             </div>
           )}
-          {tradeType !== 'stock_dividend' && (
+          {tradeType !== 'stock_dividend' && !isSplit && (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label>{t('investments.field.fee')}</Label>
@@ -1287,7 +1334,7 @@ export function StockTradeDialog({
               )}
             </div>
           )}
-          {tradeType !== 'stock_dividend' && (
+          {tradeType !== 'stock_dividend' && !isSplit && (
             <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-sm">
               <span className="text-xs text-muted-foreground">{t('investments.field.feeHint')}</span>
               <span className="font-semibold tabular-nums">

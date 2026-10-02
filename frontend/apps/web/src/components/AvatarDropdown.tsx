@@ -7,12 +7,14 @@ import {
   CalendarClock,
   Clock,
   CreditCard,
+  Database,
   FileStack,
   HandCoins,
   CandlestickChart,
   Info,
   Key,
   KeyRound,
+  LineChart,
   Languages,
   LogOut,
   Megaphone,
@@ -172,6 +174,13 @@ export function AvatarDropdown({
             {t('nav.investments')}
           </MenuButton>
           <MenuButton
+            icon={LineChart}
+            active={currentSection === 'realized-pnl'}
+            onClick={() => onNavigate('realized-pnl')}
+          >
+            {t('nav.realizedPnl')}
+          </MenuButton>
+          <MenuButton
             icon={FileStack}
             active={currentSection === 'tx-templates'}
             onClick={() => onNavigate('tx-templates')}
@@ -243,6 +252,13 @@ export function AvatarDropdown({
                 onClick={() => onNavigate('admin-app-version')}
               >
                 {t('nav.appVersion')}
+              </MenuButton>
+              <MenuButton
+                icon={Database}
+                active={currentSection === 'admin-security-data-source'}
+                onClick={() => onNavigate('admin-security-data-source')}
+              >
+                {t('nav.securityDataSource')}
               </MenuButton>
               <MenuButton
                 icon={KeyRound}

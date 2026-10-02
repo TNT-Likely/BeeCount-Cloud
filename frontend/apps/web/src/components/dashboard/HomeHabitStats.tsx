@@ -10,6 +10,8 @@ interface Props {
   /** 全量 counts，用来算平均每天/每笔。 */
   ledgerCounts?: WorkspaceLedgerCounts
   currency?: string
+  /** 本月轉入投資的說明文字(買股票是轉帳,不算支出,所以儲蓄率不扣它);沒有則不顯示。 */
+  investedNote?: string
 }
 
 /**
@@ -20,7 +22,7 @@ interface Props {
  *
  * 目的：把用户"记账这件事本身"的行为数据做可视化，跟具体账目互补。
  */
-export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }: Props) {
+export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY', investedNote }: Props) {
   const t = useT()
   const monthIncome = monthSummary?.income_total ?? 0
   const monthExpense = monthSummary?.expense_total ?? 0
@@ -98,6 +100,11 @@ export function HomeHabitStats({ monthSummary, ledgerCounts, currency = 'CNY' }:
               ? t('home.habit.savingRate.good').replace('{rate}', savingRate.toFixed(0))
               : t('home.habit.savingRate.bad')}
         </div>
+        {investedNote && (
+          <div className="relative mt-0.5 text-[11px] text-muted-foreground" data-testid="habit-invest-note">
+            {investedNote}
+          </div>
+        )}
       </div>
 
       {/* 卡 2：本月日均支出 */}

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 
 import type {
+  InvestmentFlow,
   ReadBudget,
   ReadLedger,
   WorkspaceAnalyticsAnomalyMonth,
@@ -15,10 +16,11 @@ import type {
   WorkspaceAnalyticsSummary,
   WorkspaceLedgerCounts
 } from '@beecount/api-client'
-import { Amount, periodRangeText, type BudgetUsage } from '@beecount/web-features'
+import { Amount, formatStockMoney, periodRangeText, type BudgetUsage } from '@beecount/web-features'
 import { useT } from '@beecount/ui'
 
 import { HeroInsightsRow } from './HeroInsightsRow'
+import { describeNetInvested, dividendsOf, netInvestedRows } from './stock/flowUtil'
 
 type HeroScope = 'month' | 'year' | 'all'
 
@@ -38,6 +40,9 @@ interface Props {
   /** 异常月份(scope=year analytics 返回),空数组 + hasEnoughMonths=true 显示 ✓ */
   anomalyMonths?: WorkspaceAnalyticsAnomalyMonth[]
   hasEnoughMonthsForAnomaly?: boolean
+  /** 投資淨投入(買進−賣出,各幣別分開;買股票是轉帳,不計入支出)。沒有投資帳戶時不傳。 */
+  investmentFlow?: Record<HeroScope, InvestmentFlow | null>
+  onOpenInvestments?: () => void
 }
 
 // 三个 scope 的 label/hint 在组件里 t() 时动态查,这里只留 value 列表
@@ -64,7 +69,9 @@ export function HomeHero({
   budgets,
   budgetUsageById,
   anomalyMonths,
-  hasEnoughMonthsForAnomaly
+  hasEnoughMonthsForAnomaly,
+  investmentFlow,
+  onOpenInvestments
 }: Props) {
   const t = useT()
   const [scope, setScope] = useState<HeroScope>('month')
@@ -94,6 +101,9 @@ export function HomeHero({
   const income = activeSummary?.income_total ?? 0
   const expense = activeSummary?.expense_total ?? 0
   const balance = activeSummary?.balance ?? income - expense
+
+  const flowRows = netInvestedRows(investmentFlow?.[scope])
+  const dividendIncome = dividendsOf(investmentFlow?.[scope], currency)
 
   const txCount = ledgerCounts?.tx_count ?? 0
   const days = ledgerCounts?.days_since_first_tx ?? 0
@@ -176,6 +186,20 @@ export function HomeHero({
             tone={balance >= 0 ? 'positive' : 'negative'}
             className="mt-1 block font-black tracking-tight"
           />
+          {flowRows.length > 0 && (
+            <button
+              type="button"
+              data-testid="hero-invest-note"
+              onClick={onOpenInvestments}
+              className="mt-1 block max-w-full text-left text-[11px] text-muted-foreground transition-colors hover:text-primary"
+            >
+              {describeNetInvested(flowRows, formatStockMoney, {
+                out: (amount) => t('home.hero.investOut', { amount }),
+                in: (amount) => t('home.hero.investIn', { amount })
+              }).join(' · ')}{' '}
+              ›
+            </button>
+          )}
 
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <HeroStat
@@ -195,6 +219,11 @@ export function HomeHero({
                 tone="positive"
                 className="mt-0.5 block leading-tight"
               />
+              {dividendIncome > 0 && (
+                <div className="text-[10px] text-muted-foreground" data-testid="hero-dividend-note">
+                  {t('home.hero.incomeIncludesDividends', { amount: formatStockMoney(dividendIncome, currency) })}
+                </div>
+              )}
             </HeroStat>
             <HeroStat
               icon={<ArrowUpRight className="h-3.5 w-3.5 text-expense" />}

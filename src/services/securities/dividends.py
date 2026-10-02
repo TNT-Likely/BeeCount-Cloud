@@ -43,8 +43,8 @@ from ...models import (
 )
 from .. import notifications as notification_service
 from . import holdings as holdings_service
-from . import markets, store
-from .providers import twse, yahoo
+from . import data_source, markets, store
+from .providers import twse
 from .providers.base import BULK_TIMEOUT, DividendData, new_client
 
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def upsert_events(db: Session, events: Iterable[DividendData], *, names: dict[tu
     return count
 
 
-async def _fetch_events(keys: set[tuple[str, str]]) -> list[DividendData]:
+async def _fetch_events(keys: set[tuple[str, str]], source: data_source.DataSource | None = None) -> list[DividendData]:
     out: list[DividendData] = []
     tw_markets = {m for m, _ in keys if m in ("TW", "TWO")}
     if tw_markets:
@@ -235,7 +235,7 @@ async def _fetch_events(keys: set[tuple[str, str]]) -> list[DividendData]:
         async def _one(key: tuple[str, str]) -> None:
             async with sem:
                 try:
-                    out.extend(await yahoo.fetch_dividends(key[0], key[1], client))
+                    out.extend(await data_source.fetch_dividends(source or data_source.FREE, key[0], key[1], client))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("securities: yahoo dividend fetch failed %s:%s err=%s", key[0], key[1], exc)
 
@@ -252,7 +252,7 @@ def sync_dividend_events(db: Session, *, now: datetime | None = None,
     if not names:
         return {"symbols": 0, "events": 0}
     if events is None:
-        events = asyncio.run(_fetch_events(set(names)))
+        events = asyncio.run(_fetch_events(set(names), data_source.load_source(db)))
     changed = upsert_events(db, events, names=names, now=now)
     db.commit()
     return {"symbols": len(names), "events": changed}

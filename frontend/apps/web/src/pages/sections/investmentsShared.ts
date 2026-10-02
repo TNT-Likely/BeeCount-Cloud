@@ -37,3 +37,18 @@ export function numText(value: number | null | undefined): string {
   if (value === null || value === undefined) return ''
   return String(Number(value.toFixed(6)))
 }
+
+/**
+ * 股票分割比例的顯示資料:shares 欄位存「每 1 股變成幾股」。
+ * 比例 ≥ 1 → 拆股「1→N」;< 1 → 反向分割(合併)「N→1」,N = 1/比例。
+ * 回傳 null 代表比例不合法(≤ 0 或非有限數)。
+ */
+export function splitRatioInfo(ratio: number): { merge: boolean; n: number } | null {
+  if (!Number.isFinite(ratio) || ratio <= 0) return null
+  if (ratio >= 1) return { merge: false, n: trimNumber(ratio) }
+  return { merge: true, n: trimNumber(1 / ratio) }
+}
+
+function trimNumber(v: number): number {
+  return Number(v.toFixed(4))
+}

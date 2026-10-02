@@ -24,7 +24,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, notifications, pats, profile, read, sync, swipesmart, write, ws
-from .routers import admin_app_version, admin_backup, admin_broadcasts, admin_licenses, admin_scheduled_jobs, internal_tasks, mcp_calls, two_factor
+from .routers import admin_app_version, admin_backup, admin_broadcasts, admin_licenses, admin_scheduled_jobs, admin_security_data_source, internal_tasks, mcp_calls, two_factor
 from .routers import license as license_router
 from .routers import app_version as app_version_router
 from .routers import ai as ai_router
@@ -175,6 +175,11 @@ app.include_router(
     admin_app_version.router,
     prefix=f"{settings.api_prefix}/admin/app-version-config",
     tags=["admin-app-version"],
+)
+app.include_router(
+    admin_security_data_source.router,
+    prefix=f"{settings.api_prefix}/admin/security-data-source",
+    tags=["admin-security-data-source"],
 )
 app.include_router(
     admin_licenses.router,

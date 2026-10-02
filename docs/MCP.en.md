@@ -6,9 +6,9 @@ Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your Bee
 
 ## What it is
 
-MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 17 tools:
+MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 19 tools:
 
-- **11 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
+- **13 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger` / `list_stock_holdings` / `get_stock_realized_pnl`
 - **6 write tools** — `create_transaction` / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
 
 Inside your favourite LLM client you can just say:
@@ -187,6 +187,8 @@ PAT and access tokens are strictly partitioned: **PATs only work against `/api/v
 | `list_tags` | List tags | — |
 | `list_budgets` | Budgets + current-month progress | ledger_id |
 | `get_ledger_stats` | Ledger stats | ledger_id |
+| `list_stock_holdings` | Stock holdings (shares, avg cost, cost, cached-quote value & unrealized PnL, per currency) | account_name |
+| `get_stock_realized_pnl` | Realized stock PnL report by year/symbol/account | year, symbol, account_name |
 | `get_analytics_summary` | Income / expense / top categories | scope (month\|year\|all), period |
 | `search` | Full-text fuzzy search | q, limit |
 

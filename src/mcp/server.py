@@ -1,4 +1,4 @@
-"""BeeCount Cloud MCP server — 注册所有 18 个 tool,导出 ASGI app。
+"""BeeCount Cloud MCP server — 注册所有 20 个 tool,导出 ASGI app。
 
 设计:.docs/mcp-server-design.md。
 
@@ -290,6 +290,47 @@ async def list_budgets(
     return await _logged_call(
         ctx, name="list_budgets", scope=SCOPE_MCP_READ, kwargs={"ledger_id": ledger_id},
         body=lambda user: asyncio.to_thread(read_tools.list_budgets, user, ledger_id=ledger_id),
+    )
+
+
+@mcp.tool()
+async def list_stock_holdings(
+    ctx: Context, account_name: str | None = None
+) -> list[dict[str, Any]]:
+    """List current stock holdings (shares, average cost, dividends, realized PnL)
+    with market value / unrealized PnL from CACHED quotes (not live). Amounts are in
+    each security's own currency; never sum across currencies.
+
+    Args:
+        account_name: optional fuzzy filter on the investment account name.
+    """
+    return await _logged_call(
+        ctx, name="list_stock_holdings", scope=SCOPE_MCP_READ, kwargs={"account_name": account_name},
+        body=lambda user: asyncio.to_thread(read_tools.list_stock_holdings, user, account_name=account_name),
+    )
+
+
+@mcp.tool()
+async def get_stock_realized_pnl(
+    ctx: Context,
+    year: int | None = None,
+    symbol: str | None = None,
+    account_name: str | None = None,
+) -> dict[str, Any]:
+    """Realized stock PnL report: per-currency totals + dividends, and every sell
+    (date, shares, proceeds, cost basis, pnl) grouped by security.
+
+    Args:
+        year: calendar year of the sell date; omit for all time.
+        symbol: e.g. '2330' or 'TW:2330'.
+        account_name: optional fuzzy filter on the investment account name.
+    """
+    return await _logged_call(
+        ctx, name="get_stock_realized_pnl", scope=SCOPE_MCP_READ,
+        kwargs={"year": year, "symbol": symbol, "account_name": account_name},
+        body=lambda user: asyncio.to_thread(
+            read_tools.get_stock_realized_pnl, user, year=year, symbol=symbol, account_name=account_name
+        ),
     )
 
 

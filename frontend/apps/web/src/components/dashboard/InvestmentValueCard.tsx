@@ -18,12 +18,23 @@ import { routePath } from '../../state/router'
  * 這裡用 refresh=false 只讀 server 報價快取,避免資產頁每次進來都等上游
  * 報價;投資頁本身才會觸發補抓。有待確認股利(Phase 2)時多一行提示。
  */
-export function InvestmentValueCard() {
+interface Props {
+  /** 首頁(2026-10-03)由 `useHomeStockData` 統一載入後傳入,卡片自己不再重複抓。
+   *  不傳(資產頁)= 維持原本自己抓 holdings + 待確認股利的行為。 */
+  summary?: HoldingsSummary | null
+  pendingCount?: number
+  className?: string
+}
+
+export function InvestmentValueCard({ summary: externalSummary, pendingCount: externalPending, className }: Props = {}) {
   const t = useT()
   const navigate = useNavigate()
   const { token } = useAuth()
-  const [summary, setSummary] = usePageCache<HoldingsSummary | null>('accounts:investmentSummary', null)
-  const [pendingCount, setPendingCount] = useState(0)
+  const external = externalSummary !== undefined
+  const [ownSummary, setSummary] = usePageCache<HoldingsSummary | null>('accounts:investmentSummary', null)
+  const [ownPending, setPendingCount] = useState(0)
+  const summary = external ? externalSummary : ownSummary
+  const pendingCount = external ? (externalPending ?? 0) : ownPending
 
   const load = useCallback(async () => {
     try {
@@ -40,10 +51,10 @@ export function InvestmentValueCard() {
   }, [token])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    if (!external) void load()
+  }, [load, external])
   useSyncRefresh(() => {
-    void load()
+    if (!external) void load()
   })
 
   if (!summary || !summary.accounts.some((a) => a.holdings.some((h) => h.shares > 0))) return null
@@ -53,7 +64,7 @@ export function InvestmentValueCard() {
 
   return (
     <Card
-      className="bc-panel mb-4 cursor-pointer transition-colors hover:bg-accent/30"
+      className={`bc-panel cursor-pointer transition-colors hover:bg-accent/30 ${className ?? 'mb-4'}`}
       onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'investments' }))}
     >
       <CardContent className="flex flex-wrap items-end justify-between gap-3 p-5">

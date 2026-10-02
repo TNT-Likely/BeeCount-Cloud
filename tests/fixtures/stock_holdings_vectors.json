@@ -57,6 +57,53 @@
       "expected": [
         {"accountId": "acc_a", "market": "US", "symbol": "QQQ", "shares": 0, "totalCost": 0, "avgCost": 0, "realizedPnl": 80, "dividends": 0}
       ]
+    },
+    {
+      "name": "split_4_for_1_then_sell",
+      "trades": [
+        {"syncId": "s3", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "sell", "shares": 100, "price": 30, "fee": 0, "tax": 0, "amount": 3000, "tradeDate": "2026-03-01T00:00:00+00:00"},
+        {"syncId": "s2", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "split", "shares": 4, "price": null, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-02-01T00:00:00+00:00"},
+        {"syncId": "s1", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "buy", "shares": 100, "price": 100, "fee": 0, "tax": 0, "amount": 10000, "tradeDate": "2026-01-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "0050", "shares": 300, "totalCost": 7500, "avgCost": 25, "realizedPnl": 500, "dividends": 0}
+      ],
+      "realizedEvents": [
+        {"tradeSyncId": "s3", "accountId": "acc_a", "market": "TW", "symbol": "0050", "date": "2026-03-01", "shares": 100, "proceeds": 3000, "costBasis": 2500, "pnl": 500}
+      ]
+    },
+    {
+      "name": "split_4_for_1_only_avg_cost_divides",
+      "trades": [
+        {"syncId": "p2", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "split", "shares": 4, "price": null, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-02-01T00:00:00+00:00"},
+        {"syncId": "p1", "accountId": "acc_a", "market": "TW", "symbol": "0050", "tradeType": "buy", "shares": 100, "price": 100, "fee": 0, "tax": 0, "amount": 10000, "tradeDate": "2026-01-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "0050", "shares": 400, "totalCost": 10000, "avgCost": 25, "realizedPnl": 0, "dividends": 0}
+      ]
+    },
+    {
+      "name": "reverse_split_2_for_1",
+      "trades": [
+        {"syncId": "r2", "accountId": "acc_a", "market": "US", "symbol": "XYZ", "tradeType": "split", "shares": 0.5, "price": null, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-02-01T00:00:00+00:00"},
+        {"syncId": "r1", "accountId": "acc_a", "market": "US", "symbol": "XYZ", "tradeType": "buy", "shares": 1000, "price": 10, "fee": 0, "tax": 0, "amount": 10000, "tradeDate": "2026-01-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "US", "symbol": "XYZ", "shares": 500, "totalCost": 10000, "avgCost": 20, "realizedPnl": 0, "dividends": 0}
+      ]
+    },
+    {
+      "name": "same_day_order_stock_dividend_split_cash_dividend_sell",
+      "trades": [
+        {"syncId": "d5", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "sell", "shares": 100, "price": 10, "fee": 0, "tax": 0, "amount": 1000, "tradeDate": "2026-06-01T00:00:00+00:00"},
+        {"syncId": "d4", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "cash_dividend", "shares": 100, "price": null, "fee": 0, "tax": 0, "amount": 50, "tradeDate": "2026-06-01T00:00:00+00:00"},
+        {"syncId": "d3", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "split", "shares": 2, "price": null, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-06-01T00:00:00+00:00"},
+        {"syncId": "d2", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "stock_dividend", "shares": 20, "price": 0, "fee": 0, "tax": 0, "amount": 0, "tradeDate": "2026-06-01T00:00:00+00:00"},
+        {"syncId": "d1", "accountId": "acc_a", "market": "TW", "symbol": "0056", "tradeType": "opening", "shares": 100, "price": 12, "fee": 0, "tax": 0, "amount": 1200, "tradeDate": "2026-01-01T00:00:00+00:00"}
+      ],
+      "expected": [
+        {"accountId": "acc_a", "market": "TW", "symbol": "0056", "shares": 140, "totalCost": 700, "avgCost": 5, "realizedPnl": 500, "dividends": 50}
+      ]
     }
   ]
 }

@@ -16,7 +16,7 @@ import {
 } from '@beecount/api-client'
 import { fetchBudgetsWithUsage, periodLabel, type BudgetUsage } from '@beecount/web-features'
 
-import { ComparisonReportCard } from '../../components/dashboard/ComparisonReportCard'
+import { useHomeStockData } from '../../components/dashboard/stock/useHomeStockData'
 import { OverviewSection } from '../../components/sections/OverviewSection'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
@@ -24,6 +24,7 @@ import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { setAppBadge } from '../../lib/pwa-badge'
 import { dispatchOpenDetailCategory } from '../../lib/txDialogEvents'
+import { routePath } from '../../state/router'
 
 /**
  * 首页 overview 仪表 —— 读多视角 analytics(year/month/all)+ ledgerCounts
@@ -42,6 +43,10 @@ export function OverviewPage() {
   // 想看的是「当前账本里活跃的账户/标签」,所以 stats 用 ledger 过滤,
   // 缓存也按账本分桶。资产页/标签页要跨账本时另外不带 ledgerId 拉。
   const bucket = activeLedgerId || '__none__'
+  const stock = useHomeStockData(
+    activeLedgerId || null,
+    Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
+  )
   const [accounts, setAccounts] = usePageCache<WorkspaceAccount[]>(`overview:${bucket}:accounts`, [])
   const [tags, setTags] = usePageCache<WorkspaceTag[]>(`overview:${bucket}:tags`, [])
   // 当前账本下的全部分类(用于把 TopCategoriesList 里的 category_name 反查
@@ -313,10 +318,10 @@ export function OverviewPage() {
           navigate(`/app/transactions${suffix}`)
         }}
         onCategoryClickFromTop={onCategoryClickFromHome}
+        stock={stock}
+        onOpenInvestments={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'investments' }))}
       />
-      {/* 比較報表(§2.10 Phase 5):自給自足的獨立小工具,不進上面
-          usePageCache 的批量 analytics 抓取管線(見組件內注釋),風險最小。 */}
-      <ComparisonReportCard />
+      {/* 比較報表(§2.10 Phase 5)現在是 dashboardRegistry 裡的一張卡片('comparison')。 */}
     </div>
   )
 }

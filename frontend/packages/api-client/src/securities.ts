@@ -93,7 +93,14 @@ export type HoldingsSummary = {
   stale: boolean
 }
 
-export type StockTradeType = 'buy' | 'sell' | 'opening' | 'stock_dividend' | 'cash_dividend' | 'reinvest'
+export type StockTradeType =
+  | 'buy'
+  | 'sell'
+  | 'opening'
+  | 'stock_dividend'
+  | 'split'
+  | 'cash_dividend'
+  | 'reinvest'
 
 export type StockTrade = {
   id: string
@@ -117,7 +124,9 @@ export type StockTrade = {
 export type StockTradeCreatePayload = {
   account_id: string
   /** cash_dividend:shares=持有股數、price=每股股利、fee=股利手續費、tax=預扣稅+二代健保,
-   *  入 settlement_account_id;reinvest:入投資理財帳戶本身。 */
+   *  入 settlement_account_id;reinvest:入投資理財帳戶本身;
+   *  split:shares=「每 1 股變成幾股」的比例(1 拆 4 → 4;2 合 1 → 0.5),
+   *  price/fee/tax 不需要、不需交割帳戶、不建轉帳交易。 */
   trade_type: StockTradeType
   market: string
   symbol: string
@@ -326,4 +335,103 @@ export async function restorePendingDividend(token: string, pendingId: number): 
 export async function fetchDividendEvents(token: string, market: string, symbol: string): Promise<DividendEvent[]> {
   const params = new URLSearchParams({ symbol: `${market}:${symbol}` })
   return authedGet<DividendEvent[]>(`/read/securities/dividend-events?${params.toString()}`, token)
+}
+
+
+// ---------------------------------------------------------------------------
+// 已實現損益報表(Phase 3):`/read/workspace/realized-pnl`,各幣別分開、不跨幣別加總。
+// ---------------------------------------------------------------------------
+
+export type RealizedPnlEvent = {
+  trade_id: string
+  account_id: string | null
+  market: string
+  symbol: string
+  security_name: string | null
+  currency: string | null
+  date: string | null
+  shares: number
+  proceeds: number
+  cost_basis: number
+  pnl: number
+}
+
+export type RealizedPnlSymbol = {
+  market: string
+  symbol: string
+  security_name: string | null
+  currency: string | null
+  pnl: number
+  proceeds: number
+  cost_basis: number
+  sell_count: number
+  events: RealizedPnlEvent[]
+}
+
+export type RealizedPnlReport = {
+  /** null = 全部年度。 */
+  year: number | null
+  /** 有賣出紀錄的年份,新到舊。 */
+  years: number[]
+  realized_pnl_by_currency: Record<string, number>
+  dividends_by_currency: Record<string, number>
+  /** server 已依損益絕對值由大到小排序。 */
+  symbols: RealizedPnlSymbol[]
+}
+
+export async function fetchRealizedPnl(
+  token: string,
+  options?: { accountId?: string | null; year?: number | null; symbol?: string | null },
+): Promise<RealizedPnlReport> {
+  const params = new URLSearchParams()
+  if (options?.accountId) params.set('account_id', options.accountId)
+  if (options?.year) params.set('year', String(options.year))
+  const sym = options?.symbol?.trim()
+  if (sym) params.set('symbol', sym)
+  const qs = params.toString()
+  return authedGet<RealizedPnlReport>(`/read/workspace/realized-pnl${qs ? `?${qs}` : ''}`, token)
+}
+
+// ---------------------------------------------------------------------------
+// 首頁「投資淨投入」(2026-10-03):`/read/workspace/investment-flow`。
+// 買進/賣出是轉帳到投資帳戶,不是支出/收入;金額各證券幣別分開、不跨幣別加總。
+// ---------------------------------------------------------------------------
+
+export type InvestmentFlowCurrency = {
+  currency: string
+  /** 買進現金流出(含手續費)。 */
+  buy_amount: number
+  /** 賣出淨收入(已扣手續費+交易稅)。 */
+  sell_amount: number
+  /** buy_amount − sell_amount,可為負(賣多於買)。 */
+  net_invested: number
+  /** 手續費 / 交易稅合計(已含在 buy/sell_amount 內,不進收支統計)。 */
+  fees: number
+  taxes: number
+  /** 現金股利 + 股利再投入(已是收入交易,算在首頁收入內)。 */
+  dividends: number
+  buy_count: number
+  sell_count: number
+}
+
+export type InvestmentFlow = {
+  scope: 'month' | 'year' | 'all'
+  period: string | null
+  by_currency: InvestmentFlowCurrency[]
+}
+
+export async function fetchInvestmentFlow(
+  token: string,
+  options: {
+    scope: 'month' | 'year' | 'all'
+    period?: string | null
+    ledgerId?: string | null
+    tzOffsetMinutes?: number
+  },
+): Promise<InvestmentFlow> {
+  const params = new URLSearchParams({ scope: options.scope })
+  if (options.period) params.set('period', options.period)
+  if (options.ledgerId) params.set('ledger_id', options.ledgerId)
+  if (options.tzOffsetMinutes !== undefined) params.set('tz_offset_minutes', String(options.tzOffsetMinutes))
+  return authedGet<InvestmentFlow>(`/read/workspace/investment-flow?${params.toString()}`, token)
 }

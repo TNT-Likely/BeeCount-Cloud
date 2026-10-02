@@ -1,4 +1,4 @@
-import { API_BASE, authedGet, authedPatch, resolveApiUrl } from './http'
+import { API_BASE, authedGet, authedPatch, authedPut, resolveApiUrl } from './http'
 import { extractApiError } from './errors'
 import type { AIConfig, ProfileAppearance, ProfileMe } from './types'
 
@@ -74,4 +74,25 @@ export async function uploadProfileAvatar(
     ...profile,
     avatar_url: resolveApiUrl(profile.avatar_url)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Web 首頁卡片版面(2026-10-03):跨裝置同步的「顯示/隱藏 + 順序」。
+// cards 陣列順序即顯示順序;server 不認識卡片註冊表,未知 id 原樣保存。
+// ---------------------------------------------------------------------------
+
+export type DashboardLayoutCard = { id: string; visible: boolean }
+export type DashboardLayout = { version: number; cards: DashboardLayoutCard[] }
+
+/** `layout: null` = 使用者沒自訂過(用預設版面)。 */
+export async function fetchDashboardLayout(token: string): Promise<{ layout: DashboardLayout | null }> {
+  return authedGet<{ layout: DashboardLayout | null }>('/profile/dashboard-layout', token)
+}
+
+/** 整體替換;送空 cards = 還原預設。 */
+export async function putDashboardLayout(
+  token: string,
+  layout: DashboardLayout,
+): Promise<{ layout: DashboardLayout | null }> {
+  return authedPut<{ layout: DashboardLayout | null }>('/profile/dashboard-layout', token, layout)
 }

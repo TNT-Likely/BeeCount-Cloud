@@ -17,6 +17,9 @@ from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
 from ..models import User, UserProfile
 from ..schemas import (
+    DASHBOARD_LAYOUT_MAX_BYTES,
+    DashboardLayoutIn,
+    DashboardLayoutOut,
     UserProfileAvatarUploadOut,
     UserProfileOut,
     UserProfilePatchRequest,
@@ -249,6 +252,56 @@ async def patch_my_profile(
         ai_config=ai_config,
         primary_currency=profile.primary_currency,
     )
+
+
+def _parse_dashboard_layout(raw: str | None) -> DashboardLayoutIn | None:
+    if not raw:
+        return None
+    try:
+        return DashboardLayoutIn.model_validate_json(raw)
+    except ValueError:
+        logger.warning("profile dashboard_layout_json parse failed: %s", raw[:80])
+        return None
+
+
+@router.get("/dashboard-layout", response_model=DashboardLayoutOut)
+def get_dashboard_layout(
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DashboardLayoutOut:
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    return DashboardLayoutOut(
+        layout=_parse_dashboard_layout(profile.dashboard_layout_json) if profile else None
+    )
+
+
+@router.put("/dashboard-layout", response_model=DashboardLayoutOut)
+def put_dashboard_layout(
+    req: DashboardLayoutIn,
+    _scopes: set[str] = Depends(_PATCH_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DashboardLayoutOut:
+    """整體替換首頁版面。送空 cards = 還原預設(存 NULL)。"""
+    raw = None
+    if req.cards:
+        raw = req.model_dump_json()
+        if len(raw.encode("utf-8")) > DASHBOARD_LAYOUT_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Dashboard layout too large",
+            )
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
+    now = datetime.now(timezone.utc)
+    if profile is None:
+        profile = UserProfile(user_id=current_user.id, dashboard_layout_json=raw, updated_at=now)
+        db.add(profile)
+    else:
+        profile.dashboard_layout_json = raw
+        profile.updated_at = now
+    db.commit()
+    return DashboardLayoutOut(layout=req if req.cards else None)
 
 
 @router.post("/avatar", response_model=UserProfileAvatarUploadOut)

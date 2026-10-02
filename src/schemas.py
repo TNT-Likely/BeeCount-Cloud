@@ -2,7 +2,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # 6 位 hex，开头必须有 #；字母大小写都接受，validator 会归一化成大写。
@@ -128,6 +128,41 @@ class UserProfilePatchRequest(BaseModel):
 class UserProfileAvatarUploadOut(BaseModel):
     avatar_url: str
     avatar_version: int
+
+
+DASHBOARD_LAYOUT_MAX_CARDS = 60
+DASHBOARD_LAYOUT_MAX_BYTES = 8 * 1024
+
+
+class DashboardLayoutCard(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
+    visible: bool = True
+
+
+class DashboardLayoutIn(BaseModel):
+    """Web 首頁版面。`cards` 的陣列順序即顯示順序;id 重複只留第一筆。
+    server 不認識的 id 也保留(讓舊版客戶端不會抹掉新版客戶端新增的卡片),
+    由各客戶端自己合併時丟棄。"""
+
+    version: int = Field(default=1, ge=1, le=1000)
+    cards: list[DashboardLayoutCard] = Field(default_factory=list, max_length=DASHBOARD_LAYOUT_MAX_CARDS)
+
+    @model_validator(mode="after")
+    def _dedupe(self) -> "DashboardLayoutIn":
+        seen: set[str] = set()
+        out: list[DashboardLayoutCard] = []
+        for c in self.cards:
+            if c.id in seen:
+                continue
+            seen.add(c.id)
+            out.append(c)
+        self.cards = out
+        return self
+
+
+class DashboardLayoutOut(BaseModel):
+    # None = 使用者沒自訂過,客戶端用預設版面。
+    layout: DashboardLayoutIn | None = None
 
 
 class AuthTokenResponse(BaseModel):
@@ -2660,7 +2695,7 @@ class WriteStockTradeCreateRequest(WriteBaseRequest):
     price = 每股股利、fee = 股利手續費、tax = 預扣稅+二代健保。"""
 
     account_id: str = Field(min_length=1, max_length=255)
-    trade_type: Literal["buy", "sell", "opening", "stock_dividend", "cash_dividend", "reinvest"]
+    trade_type: Literal["buy", "sell", "opening", "stock_dividend", "split", "cash_dividend", "reinvest"]
     market: str = Field(min_length=2, max_length=16)
     symbol: str = Field(min_length=1, max_length=32)
     security_name: str | None = Field(default=None, max_length=255)

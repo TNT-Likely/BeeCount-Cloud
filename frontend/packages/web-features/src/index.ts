@@ -1,4 +1,5 @@
 export * from './components/AccountListRow'
+export * from './components/SortableCardGrid'
 export * from './components/AccountPickerDialog'
 export * from './components/Amount'
 export * from './components/AvatarCropDialog'

@@ -635,6 +635,24 @@ export type AppVersionConfig = {
   last_check_error: string | null
 }
 
+/** 後台「股票資料來源」(Phase 3):免費(Yahoo + 證交所/櫃買)或 Twelve Data(付費)。 */
+export type SecurityDataSourceProvider = 'free' | 'twelvedata'
+
+export type SecurityDataSourceConfig = {
+  provider: SecurityDataSourceProvider
+  providers: string[]
+  /** API key 只回布林值,永遠不回傳明文。 */
+  api_key_set: boolean
+  last_test_at: string | null
+  last_test_error: string | null
+}
+
+export type SecurityDataSourceTestResult = {
+  ok: boolean
+  message: string
+  price: number | null
+}
+
 // ---------------------------------------------------------------------------
 // 授權金鑰(docs/LICENSE_KEYS.md)
 // ---------------------------------------------------------------------------

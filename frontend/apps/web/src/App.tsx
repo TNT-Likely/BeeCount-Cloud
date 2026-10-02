@@ -100,6 +100,14 @@ const InstallmentPlansPage = lazy(() =>
 const DebtsPage = lazy(() =>
   import('./pages/sections/DebtsPage').then((m) => ({ default: m.DebtsPage })),
 )
+const RealizedPnlPage = lazy(() =>
+  import('./pages/sections/RealizedPnlPage').then((m) => ({ default: m.RealizedPnlPage })),
+)
+const AdminSecurityDataSourcePage = lazy(() =>
+  import('./pages/sections/AdminSecurityDataSourcePage').then((m) => ({
+    default: m.AdminSecurityDataSourcePage,
+  })),
+)
 const InvestmentsPage = lazy(() =>
   import('./pages/sections/InvestmentsPage').then((m) => ({ default: m.InvestmentsPage })),
 )
@@ -343,6 +351,14 @@ function AppRoutes() {
           }
         />
         <Route
+          path="realized-pnl"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <RealizedPnlPage />
+            </Suspense>
+          }
+        />
+        <Route
           path="tx-templates"
           element={
             <Suspense fallback={<RouteFallback />}>
@@ -443,6 +459,14 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <AdminAppVersionPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="admin/security-data-source"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AdminSecurityDataSourcePage />
             </Suspense>
           }
         />

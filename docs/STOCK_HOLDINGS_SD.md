@@ -1,6 +1,6 @@
 # 股票持股(Stock Holdings)設計文件
 
-日期:2026-09-28(Phase 1 持股/報價;Phase 2 股利見 §7)
+日期:2026-09-28(Phase 1 持股/報價;Phase 2 股利見 §7;Phase 3 見 §11)
 App 端對應文件:BeeCount 主 repo `docs/changes/2026-09-28-stock-holdings.md`。
 
 ## 需求與已確認決策
@@ -449,6 +449,171 @@ Z 不扣款」,買不起 1 股時紅字提示;週期性交易表單與 App 編�
 - 刻意沒做:Cloud `balance-adjustment` 端點沒有拒絕投資帳戶(舊資料可能已有調整交易,
   伺服器硬擋會讓舊客戶端寫入失敗)。
 
-## 11. 待辦(Phase 3)
+## 11. Phase 3(2026-10-02)
 
-- 股票分割、已實現損益報表、AI 查詢持股、管理後台切換付費資料來源。
+App 端對應文件:App repo `docs/changes/2026-10-02-stock-phase3.md`。
+
+### 11.1 股票分割
+
+- **沒有新資料表/欄位、沒有 migration**:`stock_trade.trade_type` 多一個值 `split`。
+  `shares` 欄位存「**每 1 股變成幾股**」的比例(1 拆 4 = 4;2 合 1 反向分割 = 0.5);
+  `price`/`fee`/`tax`/`amount` 皆 0、無轉帳交易(`tx_sync_id` 為空),跟 `stock_dividend`
+  一樣只建明細。
+- `holdings.compute_holdings`:股數 *= 比例,總成本不變(平均成本自動 ÷ 比例)。同日排序
+  改為 opening, buy, reinvest, stock_dividend, **split**, cash_dividend, sell。
+- 每個投資帳戶要各自記一筆(分割是帳戶層級的明細,不是標的層級的事件)。
+- 共用測試向量新增 `split_4_for_1_then_sell`、`reverse_split_2_for_1`(App repo 同檔也要有)。
+- 改動點:`holdings.py`、`snapshot_mutator.py`(`STOCK_TRADE_TYPES` /
+  `STOCK_TRADE_WEB_CREATABLE_TYPES` / 建立時 price、fee、tax 歸零 / `_validate_stock_numbers`)、
+  `schemas.py::WriteStockTradeCreateRequest.trade_type`。
+- 刻意沒做:自動偵測分割(Yahoo/Twelve Data 的 split 資料之後可以做成像待確認股利那樣的
+  通知);分割前已存在的歷史交易不重算(算法本來就是依日期即時彙總,不需要)。
+
+### 11.2 已實現損益報表
+
+- `holdings.compute_holdings(..., events=[])`:每筆賣出 append 一個 `RealizedEvent`
+  (`tradeSyncId`/`shares`/`proceeds`/`costBasis`/`pnl`,賣當下的移動平均成本),共用向量
+  檔的 `realizedEvents` 區塊跟 App 對數字。
+- `GET /read/workspace/realized-pnl?account_id=&year=&symbol=`(`routers/read/securities.py::
+  build_realized_pnl`):**先用全部歷史算出每筆賣出的成本,再依年度/標的/帳戶過濾**(先過濾
+  會讓移動平均成本跑掉)。回傳各幣別損益與股利合計(不跨幣別加總)、有賣出的年份、依標的
+  分組的賣出明細(標的依損益絕對值排序,明細新到舊)。股利 = 期間內 cash_dividend + reinvest。
+- Web:`RealizedPnlPage.tsx`(`/app/realized-pnl`);App:已實現損益頁(本機資料即時算)。
+
+### 11.3 AI 查詢持股(MCP)
+
+- 新增兩個 MCP read tool(`mcp/tools/read_tools.py` / `mcp/server.py`):
+  `list_stock_holdings(account_name?)`(股數/均價/成本/股利/已實現 + **快取**報價的市值與
+  未實現損益,不即時打上游,附 `quote_fetched_at`)、`get_stock_realized_pnl(year?, symbol?,
+  account_name?)`。金額都是證券幣別,不跨幣別加總。見 `docs/MCP.md`。
+- App 內建 AI 不在這次範圍(它走自己的本機資料,不經 MCP)。
+
+### 11.4 後台切換付費資料來源
+
+- 表 `security_data_source_config`(migration `0061`,單例 id=1):`provider`(`free` |
+  `twelvedata`)、`api_key_encrypted`(`secret_crypto` Fernet,JWT_SECRET 輪換會失效)、
+  `last_test_at`/`last_test_error`。
+- `services/securities/data_source.py`:`load_source(db)` 取得 `DataSource`(純資料,打上游
+  前先讀好);`fetch_quote` / `fetch_dividends` 付費來源失敗(額度、代號不支援、逾時)一律
+  **退回 Yahoo**;付費除息回空也退回。接線:`quotes.get_quotes`(盤中補抓)、
+  `quotes._fetch_close`(收盤排程逐檔)、`dividends.sync_dividend_events`。證交所/櫃買官方
+  批次來源(台股全市場收盤、除權息預告表)不受影響,仍是台股最主要的來源。
+- `providers/twelvedata.py`:`/quote`(`close`、`previous_close`、`timestamp`)、
+  `/dividends`(`range=1y`,`ex_date`/`amount`);台股等非美市場用 `mic_code`(TW=XTAI、TWO=ROCO、
+  HK=XHKG、JP=XTKS、SS=XSHG、SZ=XSHE、KS=XKRX、KQ=XKOS、LSE=XLON)。**回應格式依官方文件
+  實作、測試用手寫樣本,尚未用真實 key 打過——上線前先在後台按「測試連線」,並用台股/港股
+  代號手動確認 mic_code 對得上。**
+- 後台 API(`routers/admin_security_data_source.py`,`/admin/security-data-source`,admin +
+  ops scope):`GET`/`PUT`(api_key 留空 = 不變更、`clear_api_key`、twelvedata 必須有 key)/
+  `POST /test`(用存好的 key 抓 AAPL)。API key 絕不回傳,只回 `api_key_set`。Web 頁:
+  `AdminSecurityDataSourcePage.tsx`。App 不需要改(報價一律來自 server)。
+- 刻意沒做:搜尋(`search.py`)與證券清單不走付費來源;逐檔報價以外的批次/串流端點;
+  多個付費 provider 之間的優先順序(目前只有一個)。新增 provider = 在 `PROVIDERS` 加代碼、
+  `providers/<name>.py` 實作 `fetch_quote`/`fetch_dividends`、`data_source` 兩個函式加分支。
+
+### 11.5 仍待辦
+
+- AI 辨識/自動偵測股票分割並通知、券商對帳單 CSV 匯入。
+
+## 12. 首頁股票資訊與自訂版面(2026-10-03)
+
+### 12.1 買股票算不算支出:口徑
+
+- 買進 = 轉帳(交割帳戶 → 投資理財帳戶),賣出 = 轉回,**都不是支出/收入**。首頁「本月收入/
+  支出/結餘」、儲蓄率、日均支出維持原定義,不把投資扣進去;股利是 `income` 交易,**算收入**
+  (結餘卡的收入下方標「含股利 X」,僅當股利幣別等於帳本幣別時顯示)。
+- 查證現有口徑:買賣轉帳的手續費/交易稅走轉帳的 `feeAmount`(買,轉出端多扣)/
+  `discountAmount`(賣,轉入端少收),`/workspace` 帳戶餘額(`routers/read/workspace.py`
+  `transfer_from`/`transfer_to`、`recurring_materializer.compute_account_balance`)會算進
+  帳戶餘額,但收支統計只算 income/expense,所以**手續費/稅不進首頁支出**。本次不改這個口徑,
+  只在投資區塊另外顯示「手續費/稅」。
+- 讓使用者看得到錢去哪:
+  - 結餘下方小字「另有 X 淨投入投資(未計入支出)›」(點擊進投資頁);淨投入為負(賣多於買)
+    改顯示「另有 X 由投資轉回(未計入收入)」。多幣別用 ` + ` 串接成一句。跟著 本月/今年/彙總
+    切換。
+  - 儲蓄率卡下方小字:「另有 X 轉入投資,不算支出、儲蓄率不扣」(儲蓄率仍是 (收入−支出)/收入)。
+  - 「本月投資淨投入」卡:各幣別 淨投入、買進、賣出、手續費/稅、股利。
+
+### 12.2 後端:`GET /read/workspace/investment-flow`
+
+`routers/read/securities.py::workspace_investment_flow`。
+
+- 參數:`scope=month|year|all`(預設 month)、`period`(同 analytics 的 `YYYY-MM`/`YYYY`,
+  省略 = 當前週期)、`ledger_id`(external id,省略 = 使用者全部帳本)、`tz_offset_minutes`
+  (同 analytics,東半球為正)。期間邊界直接用 analytics 的 `_analytics_range`(單帳本用該帳本的
+  `month_start_day`,多帳本維持自然月),所以跟首頁其它卡片的「本月」一致。
+  (使用者原始需求寫的是 `period=month|year|all`,實作沿用 analytics 的 `scope` + `period`
+  命名,避免同一個概念兩套參數名。)
+- 回傳 `{scope, period, by_currency:[{currency, buy_amount, sell_amount, net_invested, fees,
+  taxes, dividends, buy_count, sell_count}]}`,證券幣別分開、不跨幣別加總:
+  - `buy_amount` = Σ 買進明細 `amount`(股數×價格+手續費,現金流出);`sell_amount` = Σ 賣出
+    `amount`(扣手續費+稅後的淨收入);`net_invested` = buy − sell(可為負)。
+  - `fees`/`taxes` = 買+賣的手續費/交易稅合計(**已含在 buy/sell_amount 內**,另列只是呈現成本)。
+  - `dividends` = `cash_dividend` + `reinvest` 的 `amount`(已是收入交易)。
+  - 期初持股(opening)、股票股利、分割不是現金流動,不列入。
+- 資料來源只有 `read_stock_trade_projection`(不重算持股);沒有買賣時 `by_currency=[]`。
+- 測試:`tests/test_investment_flow.py`(跨幣別彙總、`tz_offset_minutes` 切月、買股票不進
+  analytics 的收入/支出、`scope` 驗證)。
+
+### 12.3 首頁股票卡片
+
+資料由 `components/dashboard/stock/useHomeStockData.ts` 統一載入一次(各卡片只顯示):
+`/read/workspace/holdings?refresh=false`(只讀 server 報價快取)、`investment-flow`(month/year/all)、
+`/read/workspace/realized-pnl?year=今年`、`pending-dividends?status=pending`、
+`/read/ledgers/{id}/recurring-rules`(篩 `kind=stock_dca` 且啟用)、持有標的(最多 8 檔)的
+`/read/securities/dividend-events`。**沒有任何投資理財帳戶時只打 holdings 一個請求**,且整組股票卡片
+(`requiresInvestment`)與結餘旁的投資小字都不顯示。
+
+| 卡片 id | 內容 |
+| :--- | :--- |
+| `stock.value` | 投資市值 + 未實現損益(重用 `InvestmentValueCard`,改成可由外部傳入資料) |
+| `stock.today` | 今日漲跌:Σ 持股 × (報價 − 前收),各幣別分開 |
+| `stock.flow` | 本月投資淨投入(12.2) |
+| `stock.realized` | 今年已實現損益 + 股利(各幣別) |
+| `stock.top` | 持股 Top 5(同標的跨帳戶合併;不同幣別先依幣別總市值排序,不直接比大小) |
+| `stock.alloc` | 持股配置圓環(依標的;多幣別時用幣別籤切換,不跨幣別合併) |
+| `stock.dividends` | 待確認股利 + 持股近期/即將除權息(目前沒有「全市場未來除息預告」API,只有持有標的已公告的場次) |
+| `stock.dca` | 定期定額計畫:下次扣款日(`upcoming_run_at`,沒有則 `next_run_at`)與金額 |
+
+刻意沒做:持股配置「依幣別佔比」(需要各幣別匯率換算,holdings API 沒有逐筆回傳匯率;現在只有依標的)。
+
+### 12.4 自訂首頁版面
+
+- **卡片註冊表**集中在 `components/dashboard/dashboardRegistry.tsx`(`HOME_CARDS`,陣列順序 = 預設順序):
+  `id`(穩定,會存 server,不可改名)、`titleKey`(i18n)、`section`(summary/stock/analysis,
+  只用來在「可新增」清單分組)、`full`(整列或半寬)、`defaultVisible`、`requiresInvestment`、`render`。
+  共 19 張:原本首頁的 11 組件 + 8 張股票卡片(比較報表也成為一張卡片 `comparison`)。
+  原本的「擴展分析」分隔線取消(扁平網格全域排序)。
+- 純邏輯在 `lib/dashboardLayout.ts`(有 vitest):`mergeLayout` 容錯規則——
+  未知 id(新版 client 才有的卡片)不顯示但存檔時**原樣保留**在尾端,避免舊版 client 存檔抹掉;
+  註冊表新增而已存版面沒有的卡片 → 依預設位置插入(接在預設順序前一張卡片之後),可見性取預設;
+  重複 id 取第一筆;壞資料忽略。
+- 狀態/同步在 `lib/useDashboardLayout.ts`:載入前用預設版面;每次修改(隱藏/顯示/拖曳)**樂觀更新
+  並立即 PUT**,同時只送一個請求(期間的新修改只保留最後一份);失敗 → toast + 回滾到最後一次
+  伺服器確認的版面;編輯中不被 sync 事件覆蓋。「還原預設」= PUT 空 `cards`(server 存 NULL)。
+- 編輯 UI:`OverviewSection` 右上「自訂首頁」→ 編輯模式,每張卡片有拖曳把手/隱藏鈕,上方「可新增的
+  卡片」清單(依分區分組,點擊加到最後一張可見卡片之後)、「還原預設」、「完成」。拖曳用專案已有的
+  `@dnd-kit/core` + `sortable`(`rectSortingStrategy` 支援兩欄格狀),新元件
+  `packages/web-features/src/components/SortableCardGrid.tsx`(dnd-kit 只是 web-features 的依賴,
+  放在這個 package 就不必替 apps/web 新增依賴)。拖曳限於單一網格、全域排序(不分區)。
+
+### 12.5 版面儲存 API(`routers/profile.py`,App 日後要同步版面可對齊)
+
+- `UserProfile.dashboard_layout_json`(Text, nullable;migration `0062_dashboard_layout`)。
+- `GET /api/v1/profile/dashboard-layout` → `{"layout": null | {"version":1,"cards":[{"id":"hero","visible":true},…]}}`;
+  `null` = 沒自訂過,用預設版面。scope 同 `/profile/me` GET。
+- `PUT /api/v1/profile/dashboard-layout`(body 同上 `layout` 物件;整體替換,scope 同 `PATCH /profile/me`)→ 回傳
+  同 GET。驗證:`cards` ≤ 60 張、`id` 1~64 字元且限 `[A-Za-z0-9_.:-]`、重複 id 只留第一筆、序列化後 ≤ 8KB
+  (超過 413)、格式錯誤 422。**送空 `cards` = 還原預設**(存 NULL,回 `layout:null`)。
+- **server 不認識卡片註冊表**,所以不存在的 id 不會被丟棄(跟原需求「丟棄」不同,刻意的:server 一丟,舊版 client
+  存檔就會把新版 client 的卡片設定洗掉);由各 client 合併時自行忽略。`PATCH /profile/me` 不會動這個欄位。
+- 沒有廣播 `profile_change`:其它裝置在下次 sync 事件或重新載入時讀到。
+- 測試:`tests/test_dashboard_layout.py`。
+
+### 12.6 驗證與限制
+
+- 手動驗證用獨立 SQLite 造資料(台幣/美元投資帳戶、買進/賣出/股利/定期定額、一般收支),首頁各數字
+  與手算一致(本月淨投入 TWD 476,495 = 600,855 + 15,020 − 139,380、手續費/稅 1,495、股利 3,300、
+  今日漲跌 +11,200)。
+- 無法在這個瀏覽器工具完整驗證的:鍵盤拖曳(空白鍵拾起/方向鍵)與工具內建的 drag 動作(沒有中間 pointermove,
+  dnd-kit 不啟動),拖曳排序改用合成 pointer 事件序列驗證。

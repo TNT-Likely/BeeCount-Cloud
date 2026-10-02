@@ -21,6 +21,9 @@ import type {
   DataCleanupResult,
   DataCleanupScanReport,
   ScheduledJobConfig,
+  SecurityDataSourceConfig,
+  SecurityDataSourceProvider,
+  SecurityDataSourceTestResult,
   ScheduledJobRunNowResult,
   UserAdmin,
   UserAdminCreatePayload,
@@ -178,6 +181,27 @@ export async function updateAppVersionConfig(
 
 export async function checkAppVersionNow(token: string): Promise<AppVersionCheckNowResult> {
   return authedPost<AppVersionCheckNowResult>('/admin/app-version-config/check-now', token, {})
+}
+
+// 股票資料來源(Phase 3,docs/STOCK_HOLDINGS_SD.md §11)。admin + ops scope。
+export async function fetchSecurityDataSource(token: string): Promise<SecurityDataSourceConfig> {
+  return authedGet<SecurityDataSourceConfig>('/admin/security-data-source', token)
+}
+
+export async function updateSecurityDataSource(
+  token: string,
+  payload: {
+    provider?: SecurityDataSourceProvider
+    /** 留空/不帶 = 不變更。 */
+    api_key?: string
+    clear_api_key?: boolean
+  },
+): Promise<SecurityDataSourceConfig> {
+  return authedPut<SecurityDataSourceConfig>('/admin/security-data-source', token, payload)
+}
+
+export async function testSecurityDataSource(token: string): Promise<SecurityDataSourceTestResult> {
+  return authedPost<SecurityDataSourceTestResult>('/admin/security-data-source/test', token, {})
 }
 
 // 授權金鑰管理(docs/LICENSE_KEYS.md)。server 端疊 require_admin_user +

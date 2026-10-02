@@ -11,6 +11,8 @@
 - opening/buy:股數 += s,成本 += amount(amount ≤ 0 時退回 s×price+fee)。
 - reinvest:股數 += s,成本 += amount,同時計入累計股利。
 - stock_dividend(配股):股數 += s,成本不變(攤低平均成本)。
+- split(股票分割,Phase 3):`shares` 欄位存「每 1 股變成幾股」的比例(1 拆 4 =
+  4;反向分割 2 合 1 = 0.5),股數 *= 比例,成本不變。無現金流動。
 - cash_dividend:只計入累計股利。
 - sell:依賣出當下平均成本扣除成本,已實現損益 += amount − 扣除成本;
   賣超(s > 持有股數)時只扣掉持有的部分,股數歸零。
@@ -28,8 +30,9 @@ _TYPE_ORDER = {
     "buy": 1,
     "reinvest": 2,
     "stock_dividend": 3,
-    "cash_dividend": 4,
-    "sell": 5,
+    "split": 4,
+    "cash_dividend": 5,
+    "sell": 6,
 }
 
 
@@ -135,10 +138,50 @@ def sort_trades(trades: Iterable[TradeRow]) -> list[TradeRow]:
     )
 
 
-def compute_holdings(trades: Iterable[TradeRow], *, include_closed: bool = False) -> list[Holding]:
+@dataclass
+class RealizedEvent:
+    """一筆賣出的已實現損益(已實現損益報表用,App `RealizedEvent` 同欄位)。"""
+
+    trade_sync_id: str
+    account_id: str | None
+    market: str
+    symbol: str
+    security_name: str | None
+    currency: str | None
+    date: str | None
+    shares: float
+    proceeds: float
+    cost_basis: float
+
+    @property
+    def pnl(self) -> float:
+        return self.proceeds - self.cost_basis
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tradeSyncId": self.trade_sync_id,
+            "accountId": self.account_id,
+            "market": self.market,
+            "symbol": self.symbol,
+            "securityName": self.security_name,
+            "currency": self.currency,
+            "date": self.date,
+            "shares": _r(self.shares),
+            "proceeds": _r(self.proceeds),
+            "costBasis": _r(self.cost_basis),
+            "pnl": _r(self.pnl),
+        }
+
+
+def compute_holdings(
+    trades: Iterable[TradeRow],
+    *,
+    include_closed: bool = False,
+    events: list[RealizedEvent] | None = None,
+) -> list[Holding]:
     """回傳每個 (account, market, symbol) 的持股。`include_closed=False` 時
     濾掉股數為 0 的(已全部賣出),但已實現損益仍保留在 include_closed=True
-    的結果裡。"""
+    的結果裡。`events` 傳入 list 時,每筆賣出會 append 一筆 `RealizedEvent`。"""
     book: dict[tuple[str | None, str, str], Holding] = {}
     for t in sort_trades(trades):
         key = (t.account_id, t.market, t.symbol)
@@ -168,12 +211,21 @@ def compute_holdings(trades: Iterable[TradeRow], *, include_closed: bool = False
             h.dividends += t.amount
         elif t.trade_type == "stock_dividend":
             h.shares += s
+        elif t.trade_type == "split":
+            if t.shares > 0:
+                h.shares *= t.shares
         elif t.trade_type == "cash_dividend":
             h.dividends += t.amount
         elif t.trade_type == "sell":
             sold = min(s, h.shares)
             cost_out = h.avg_cost * sold
             h.realized_pnl += t.amount - cost_out
+            if events is not None:
+                events.append(RealizedEvent(
+                    trade_sync_id=t.sync_id, account_id=t.account_id, market=t.market,
+                    symbol=t.symbol, security_name=h.security_name, currency=h.currency,
+                    date=date_key, shares=sold, proceeds=t.amount, cost_basis=cost_out,
+                ))
             h.shares -= sold
             h.total_cost -= cost_out
             if h.shares <= EPS:

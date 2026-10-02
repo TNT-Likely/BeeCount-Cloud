@@ -23,6 +23,7 @@ export const APP_SECTIONS: AppSection[] = [
   'installment-plans',
   'debts',
   'investments',
+  'realized-pnl',
   'tx-templates',
   'ledgers',
   'overview',
@@ -37,6 +38,7 @@ export const APP_SECTIONS: AppSection[] = [
   'admin-data-cleanup',
   'admin-scheduled-jobs',
   'admin-app-version',
+  'admin-security-data-source',
   'admin-licenses',
   'admin-broadcasts'
 ]
@@ -108,6 +110,8 @@ function parseRootSection(parts: string[]): AppSection {
       return 'debts'
     case 'investments':
       return 'investments'
+    case 'realized-pnl':
+      return 'realized-pnl'
     case 'tx-templates':
       return 'tx-templates'
     case 'ledgers':
@@ -192,6 +196,9 @@ export function parseRoute(pathname: string): AppRoute {
     if (parts[2] === 'data-cleanup') return { kind: 'app', ledgerId: '', section: 'admin-data-cleanup' }
     if (parts[2] === 'scheduled-jobs') return { kind: 'app', ledgerId: '', section: 'admin-scheduled-jobs' }
     if (parts[2] === 'app-version') return { kind: 'app', ledgerId: '', section: 'admin-app-version' }
+    if (parts[2] === 'security-data-source') {
+      return { kind: 'app', ledgerId: '', section: 'admin-security-data-source' }
+    }
     if (parts[2] === 'licenses') return { kind: 'app', ledgerId: '', section: 'admin-licenses' }
     if (parts[2] === 'broadcasts') return { kind: 'app', ledgerId: '', section: 'admin-broadcasts' }
     return { kind: 'app', ledgerId: '', section: DEFAULT_APP_SECTION }
@@ -212,6 +219,7 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'installment-plans' ||
     parts[1] === 'debts' ||
     parts[1] === 'investments' ||
+    parts[1] === 'realized-pnl' ||
     parts[1] === 'tx-templates' ||
     parts[1] === 'overview'
   ) {
@@ -258,6 +266,8 @@ export function routePath(route: AppRoute): string {
       return '/app/debts'
     case 'investments':
       return '/app/investments'
+    case 'realized-pnl':
+      return '/app/realized-pnl'
     case 'tx-templates':
       return '/app/tx-templates'
     case 'ledgers':
@@ -286,6 +296,8 @@ export function routePath(route: AppRoute): string {
       return '/app/admin/scheduled-jobs'
     case 'admin-app-version':
       return '/app/admin/app-version'
+    case 'admin-security-data-source':
+      return '/app/admin/security-data-source'
     case 'admin-licenses':
       return '/app/admin/licenses'
     case 'admin-broadcasts':
