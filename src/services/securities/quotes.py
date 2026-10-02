@@ -241,21 +241,12 @@ def _close_done(view: QuoteView, market: markets.Market, threshold: datetime, no
 
 
 async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], now: datetime) -> int:
-    count = 0
-    if market.code in ("TW", "TWO"):
-        try:
-            async with new_client(BULK_TIMEOUT) as client:
-                snapshot = await (twse.fetch_twse(client) if market.code == "TW" else twse.fetch_tpex(client))
-            store.upsert_securities(db, snapshot.securities, now=now)
-            db.flush()
-            count += store.upsert_quotes(db, snapshot.quotes, session="close", now=now)
-            got = {q.symbol for q in snapshot.quotes}
-            symbols = symbols - got
-            if not symbols:
-                return count
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("securities: %s official close fetch failed, fallback yahoo err=%s", market.code, exc)
+    """收盤價抓取:Yahoo 優先(收盤後很快就有今天的價),台股/櫃買 Yahoo 失敗的
+    標的再用證交所/櫃買官方資料補。
 
+    順序原因(2026-10-02):證交所 openapi 常到晚上才更新當日資料,先抓它會
+    拿到前一交易日收盤,排程重試窗口過了就被當成「已完成」,快取卡在昨天。
+    官方資料只在不比快取舊時才寫入,避免晚更新的舊日期蓋掉 Yahoo 的新價。"""
     fetched: list[QuoteData] = []
     async with new_client() as client:
         sem = asyncio.Semaphore(_CONCURRENCY)
@@ -272,7 +263,27 @@ async def _fetch_close(db: Session, market: markets.Market, symbols: set[str], n
         store.ensure_security(
             db, market=q.market, symbol=q.symbol, name=q.name, currency=q.currency or market.currency,
         )
-    count += store.upsert_quotes(db, fetched, session="close", now=now)
+    count = store.upsert_quotes(db, fetched, session="close", now=now)
+
+    missing = symbols - {q.symbol for q in fetched}
+    if missing and market.code in ("TW", "TWO"):
+        try:
+            async with new_client(BULK_TIMEOUT) as client:
+                snapshot = await (twse.fetch_twse(client) if market.code == "TW" else twse.fetch_tpex(client))
+            store.upsert_securities(db, snapshot.securities, now=now)
+            db.flush()
+            cached = _load(db, [(market.code, s) for s in missing])
+            usable = []
+            for q in snapshot.quotes:
+                if q.symbol not in missing:
+                    continue
+                old = cached[(market.code, q.symbol)].quote_time
+                if old is not None and q.quote_time is not None and q.quote_time < old:
+                    continue
+                usable.append(q)
+            count += store.upsert_quotes(db, usable, session="close", now=now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("securities: %s official close fetch failed err=%s", market.code, exc)
     return count
 
 

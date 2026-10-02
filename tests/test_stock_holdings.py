@@ -779,7 +779,11 @@ def test_refresh_close_quotes_only_after_close_and_only_held(monkeypatch):
             calls["twse"] += 1
             return twse.parse_twse(tw_rows)
 
+        async def _yahoo_down(m, s, client=None):
+            raise RuntimeError("yahoo down")
+
         monkeypatch.setattr(twse, "fetch_twse", _twse)
+        monkeypatch.setattr(yahoo, "fetch_quote", _yahoo_down)  # Yahoo 失敗 → 官方備援
         before_close = datetime(2026, 9, 24, 5, 0, tzinfo=timezone.utc)  # 台北 13:00
         after_close = datetime(2026, 9, 24, 7, 30, tzinfo=timezone.utc)  # 台北 15:30
         with TS() as db:
@@ -792,6 +796,46 @@ def test_refresh_close_quotes_only_after_close_and_only_held(monkeypatch):
             # 同一天再跑:資料日期就是今天 → 已完成,不再打上游
             assert quotes.refresh_close_quotes(db, now=after_close)["markets"] == 0
             assert calls["twse"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_refresh_close_quotes_prefers_yahoo_and_ignores_stale_official(monkeypatch):
+    """2026-10-02:證交所晚更新(還是前一交易日)時,收盤價要以 Yahoo 為準,
+    且官方舊資料不得蓋掉較新的快取。"""
+    client, TS = _make_client()
+    try:
+        _, hdr_web = _setup(client, "stk-j2@t.com")
+        _buy(client, hdr_web)
+        calls = {"twse": 0}
+        tw_rows = json.loads((FIXTURES / "twse_stock_day_all.json").read_text())
+
+        async def _twse(client=None):
+            calls["twse"] += 1
+            return twse.parse_twse(tw_rows)
+
+        monkeypatch.setattr(twse, "fetch_twse", _twse)
+        monkeypatch.setattr(yahoo, "fetch_quote", _fake_quote(2500.0, prev=2475.0))
+        after_close = datetime(2026, 9, 24, 7, 30, tzinfo=timezone.utc)
+        with TS() as db:
+            quotes.refresh_close_quotes(db, now=after_close)
+            row = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
+            assert row.price == 2500.0 and row.source == "yahoo" and calls["twse"] == 0
+
+        # Yahoo 之後失敗,官方資料日期較舊 → 不覆蓋
+        async def _yahoo_down(m, s, client=None):
+            raise RuntimeError("yahoo down")
+
+        monkeypatch.setattr(yahoo, "fetch_quote", _yahoo_down)
+        with TS() as db:
+            old = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
+            old.session = "intraday"  # 讓它被視為尚未完成
+            db.commit()
+            for r in tw_rows:
+                r["Date"] = "1150923"  # 比 Yahoo 的 9/24 舊一天
+            quotes.refresh_close_quotes(db, now=after_close)
+            row = db.execute(select(SecurityQuote).join(Security).where(Security.symbol == "2330")).scalar_one()
+            assert calls["twse"] == 1 and row.price == 2500.0 and row.source == "yahoo"
     finally:
         app.dependency_overrides.clear()
 
