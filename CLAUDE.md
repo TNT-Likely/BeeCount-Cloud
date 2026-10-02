@@ -100,7 +100,7 @@ cd frontend && pnpm -C apps/web test:unit   # vitest run src (僅單元測試)
 
 | 模組 / 主題 | 核心職責與程式碼入口 | 對應說明文件 |
 | :--- | :--- | :--- |
-| **資料庫 Schema（維運參考）** | `src/models.py` 全部 39 張表的中文表名/欄位說明 | [`docs/DATABASE_SCHEMA.md`](./docs/DATABASE_SCHEMA.md) |
+| **資料庫 Schema（維運參考）** | `src/models.py` 全部 49 張表（含 3.7.0 股票持股 5 張）的中文表名/欄位說明 | [`docs/DATABASE_SCHEMA.md`](./docs/DATABASE_SCHEMA.md) |
 | **同步架構 (Sync)** | `routers/sync/`, `sync_applier.py`, `ws.py` (LWW, Change ID, 鎖粒度) | [`docs/SYNC_ARCHITECTURE.md`](./docs/SYNC_ARCHITECTURE.md) |
 | **Moze 功能對標 (Phase 0~5)** | 週期性收支, 分期付款, 拆帳, 借還款, 信用卡, 範本 | [`docs/MOZE_FEATURE_GAP_SD.md`](./docs/MOZE_FEATURE_GAP_SD.md) |
 | **信用卡與群組模型** | `services/credit_card_billing.py`, `credit_card_autopay.py` | [`docs/PH4_CREDIT_CARD_WEB_UI_MANUAL_TEST_PLAN.md`](./docs/PH4_CREDIT_CARD_WEB_UI_MANUAL_TEST_PLAN.md) |

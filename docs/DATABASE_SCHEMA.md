@@ -7,7 +7,7 @@
 > 架構背景請先看 [`CLAUDE.md`](../CLAUDE.md) 與 [`SYNC_ARCHITECTURE.md`](./SYNC_ARCHITECTURE.md)。三個容易混淆的概念先澄清：
 > 1. **`ledger_snapshot` 不是一張實體資料表**，而是 `sync_changes.entity_type` 欄位的其中一個值（協定層的邏輯快照，用來給 mobile 端 `/sync/full` 首次同步/重裝用），新程式碼禁止再主動寫入。
 > 2. **對帳 / 延後入帳不是獨立表**，只是 `read_tx_projection` 上的 `deferred_posting_at`、`reconciled_at` 兩個欄位。
-> 3. 借還款餘額、分期已繳期數、專案花費彙總、信用卡回饋金額等「彙總數字」都**不落表**，是讀取時即時從交易反查加總算出，避免多處聯動重算造成資料漂移。
+> 3. 借還款餘額、分期已繳期數、專案花費彙總、信用卡回饋金額、**股票持股（股數/平均成本/已實現損益）**等「彙總數字」都**不落表**，是讀取時即時從交易反查加總算出，避免多處聯動重算造成資料漂移。
 
 ---
 
@@ -23,6 +23,8 @@
 8. [匯率快取](#8-匯率快取)
 9. [備份系統（rclone 多遠端加密備份）](#9-備份系統rclone-多遠端加密備份)
 10. [背景排程管理](#10-背景排程管理)
+11. [授權金鑰](#11-授權金鑰)
+12. [股票持股（3.7.0）](#12-股票持股370)
 
 ---
 
@@ -354,9 +356,17 @@
 | enabled | Boolean | default True | 是否啟用 |
 | generated_until_at | DateTime | nullable | 已批次生成交易到哪個時間點 |
 | advanced_rule_json | Text | nullable | 複雜規則設定（如「每週六日」），簡單頻率無法表達時使用 |
+| kind | String(16) | server_default "general", index | 【3.7.0】規則種類：`general`=一般週期性收支（既有語意）/ `stock_dca`=股票定期定額。`stock_dca` 必為 `tx_type='transfer'`（轉出=交割帳戶、轉入=投資理財帳戶、amount=每期投入金額，以證券幣別計） |
+| market | String(16) | nullable | 【3.7.0】僅 `stock_dca`：證券市場代碼（同 `securities.market`） |
+| symbol | String(32) | nullable | 【3.7.0】僅 `stock_dca`：證券代號 |
+| security_name | Text | nullable | 【3.7.0】僅 `stock_dca`：證券名稱（顯示用） |
+| stock_fee_rate | Float | nullable | 【3.7.0】定期定額專屬手續費率，null=沿用投資帳戶預設 |
+| stock_fee_min | Float | nullable | 【3.7.0】定期定額專屬最低手續費，null=沿用投資帳戶預設 |
 | source_change_id | BigInteger | default 0 | 診斷用：來源同步事件 ID |
 
-索引：`ix_read_recurring_rule_due(enabled, next_run_at)`
+索引：`ix_read_recurring_rule_due(enabled, next_run_at)`、`ix_read_recurring_rule_kind(kind)`【3.7.0】
+
+> `stock_dca` 規則到期時由 `services.recurring_materializer.materialize_due_stock_rules` 當下抓報價、算股數/手續費，建立轉帳交易與對應的 `stock_trade` 明細（見第 12 節）。
 
 ### `read_installment_plan_projection` — 分期付款計劃表（ReadInstallmentPlanProjection）
 信用卡/貸款分期付款計劃的主檔。建立時系統會依攤還方式一次算出全部期數，寫入 `read_installment_period_projection` 明細與對應的交易紀錄。
@@ -542,6 +552,7 @@
 | hidden | Boolean | default False | 是否隱藏（只影響列表顯示，不影響統計） |
 | swipesmart_card_id | String(255) | nullable | 對應 SwipeSmart 服務的卡片 ID（僅信用卡類型有意義） |
 | include_in_total | Boolean | default True | 是否納入總餘額/淨資產計算 |
+| investment_settings_json | Text | nullable | 【3.7.0】投資理財帳戶的預設手續費/交易稅設定（JSON），僅 `account_type` 為投資理財時有意義；定期定額規則未覆寫手續費時沿用此值 |
 
 ### `user_exchange_rate_projection` — 手動匯率設定表（UserExchangeRateProjection）
 使用者手動覆寫的貨幣匯率（優先於系統自動抓取的匯率）。
@@ -842,6 +853,121 @@ rclone 遠端儲存位置配置（如 S3、Google Drive），也可以是加密�
 | revoked_at | DateTime | nullable | 撤銷時間（非 null = 立即失效） |
 
 另：`app_version_check_config.min_sync_version`（String(32), nullable）= 最低可同步 App 版本，null 不限制。
+
+
+---
+
+## 12. 股票持股（3.7.0）
+
+> 3.7.0 新增股票持股功能（設計文件：[`STOCK_HOLDINGS_SD.md`](./STOCK_HOLDINGS_SD.md)；Migration：`0058_stock_holdings`、`0059_stock_dividends`、`0060_recurring_stock_dca`）。共新增 **5 張表**，並擴充 2 張既有表（`user_account_projection.investment_settings_json`、`read_recurring_rule_projection` 的股票定期定額欄位，見第 4、5 節）。
+>
+> 分成兩類，**不要混用**：
+> - **全域市場資料（不分使用者、不進 sync）**：`securities`、`security_quotes`、`security_dividend_events`——跟 `exchange_rate_cache` 同款，是 server 自己從外部來源（證交所/櫃買 OpenAPI、Yahoo）抓的。
+> - **使用者資料**：`read_stock_trade_projection`（**sync entity** `stock_trade`，ledger-scoped）；`pending_dividends`（**server 專屬狀態，不進 sync**，App/Web 都透過 API 讀寫）。
+>
+> **持股不落庫**：股數、平均成本（移動平均成本法）、已實現損益、未實現損益一律在讀取時由 `read_stock_trade_projection` 即時彙總（`services/securities/holdings.py`），與借還款餘額同一設計理由。
+
+### `securities` — 證券清單（Security）
+全域證券主檔，業務鍵 `(market, symbol)`。台股由 `security_master_refresh` 排程從證交所/櫃買 OpenAPI 整批同步；其它市場在使用者搜尋（Yahoo）時才 upsert。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK, autoincrement | 證券內部 ID |
+| market | String(16) | not null | 市場代碼：TW=上市、TWO=上櫃、US、HK…（見 `services/securities/markets.py`） |
+| symbol | String(32) | not null | 證券代號 |
+| name | Text | not null, default "" | 證券名稱 |
+| currency | String(16) | not null | 計價幣別 |
+| kind | String(16) | not null, default "stock" | 類型：`stock`/`etf`/`bond_etf`/`other`（僅搜尋結果顯示用） |
+| is_active | Boolean | server_default true | 是否仍在市場上（下市/停用為 false） |
+| updated_at | DateTime | default 更新時 | 最後更新時間 |
+
+唯一索引：`ux_securities_market_symbol(market, symbol)`
+
+### `security_quotes` — 最新報價快取（SecurityQuote）
+每檔證券一行的最新報價。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| security_id | Integer | PK, FK→securities.id (CASCADE) | 對應證券 |
+| price | Float | not null | 最新價 |
+| prev_close | Float | nullable | 前一日收盤價（算當日漲跌用） |
+| quote_time | DateTime | nullable | 報價本身的時間（交易所時間轉 UTC），不是抓取時間 |
+| session | String(16) | not null, default "close" | `close`=收盤價（收盤排程寫入）/ `intraday`=盤中延遲報價（使用者開 App/Web 時補抓） |
+| source | String(32) | not null | 報價來源 |
+| fetched_at | DateTime | default 抓取時 | 抓取時間 |
+
+### `security_dividend_events` — 除權息事件（SecurityDividendEvent）
+全域除權息資料，業務鍵 `(security_id, ex_date)`。官方預告表常先公告除息日、金額之後才補，所以金額欄位會被更新；官方來源（twse/tpex）寫過的事件不會被 Yahoo 蓋掉（`services/securities/dividends.upsert_events`）。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK, autoincrement | 事件 ID |
+| security_id | Integer | FK→securities.id (CASCADE), not null | 對應證券 |
+| ex_date | Date | not null | 除權息日 |
+| pay_date | Date | nullable | 發放日 |
+| cash_per_share | Float | not null, default 0.0 | 每股現金股利（證券幣別） |
+| stock_per_share | Float | not null, default 0.0 | 每股配股數（台股無償配股率，0.05=每 1000 股配 50 股） |
+| currency | String(16) | nullable | 股利幣別 |
+| source | String(32) | not null | 來源：`twse`/`tpex`（官方，優先）/`yahoo` |
+| updated_at | DateTime | default 更新時 | 最後更新時間 |
+
+唯一索引：`ux_security_dividend_events_sec_date(security_id, ex_date)`
+
+### `pending_dividends` — 待確認股利（PendingDividend）
+`security_dividend_detector` 排程在除息日（含）之後，依「除息日前一天收盤時」的持股股數，替每個持有該標的的投資理財帳戶建一筆並發通知；使用者在 App/Web 確認實收金額（或選擇再投入）後，由 server 建立 income 交易 + `stock_trade` 明細。**不是 sync entity。** 狀態仍為 pending 時，`est_*` 估算欄位每次排程依最新持股重算；已確認的股利若使用者之後刪掉建出的明細，排程會改回 pending（不重發通知）。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| id | Integer | PK, autoincrement | 流水號 |
+| user_id | String(36) | FK→users.id (CASCADE), not null | 所屬使用者 |
+| ledger_id | String(36) | FK→ledgers.id (CASCADE), not null | 入帳落在哪本帳（取該帳戶這檔標的最近一筆明細所在帳本） |
+| account_sync_id | String(255) | not null | 持有該標的的投資理財帳戶 |
+| event_id | Integer | FK→security_dividend_events.id (CASCADE), not null | 對應除權息事件 |
+| market | String(16) | not null | 市場代碼（冗餘，方便顯示） |
+| symbol | String(32) | not null | 證券代號 |
+| security_name | Text | nullable | 證券名稱 |
+| currency | String(16) | nullable | 幣別 |
+| shares | Float | not null, default 0.0 | 除息日前一天收盤時的持股股數 |
+| est_gross | Float | not null, default 0.0 | 估算股利總額（稅前） |
+| est_fee | Float | not null, default 0.0 | 估算手續費（如匯費） |
+| est_tax | Float | not null, default 0.0 | 估算稅額（如補充保費） |
+| est_net | Float | not null, default 0.0 | 估算實收金額 |
+| est_stock_shares | Float | not null, default 0.0 | 估算配股股數 |
+| status | String(16) | not null, default "pending" | `pending`/`confirmed`/`dismissed` |
+| created_trade_ids | Text | nullable | 確認時建立的 `stock_trade` syncId（JSON 陣列字串），用來判斷是否被刪掉 |
+| created_at | DateTime | default 建立時 | 建立時間 |
+| updated_at | DateTime | default 更新時 | 更新時間 |
+| resolved_at | DateTime | nullable | 確認/略過時間 |
+
+索引：`ux_pending_dividends_user_account_event(user_id, account_sync_id, event_id)` 唯一、`ix_pending_dividends_user_status(user_id, status)`
+
+### `read_stock_trade_projection` — 股票交易明細（ReadStockTradeProjection）
+**Ledger-scoped sync entity（`stock_trade`）**，PK 形狀同借還款。持股由這張表即時彙總（移動平均成本法）。`tx_sync_id` 指向對應的轉帳/收入交易（買進/賣出/現金股利/再投入才有；期初持股、配股沒有現金流動，為 null），兩者由同一次寫入一起建立、一起刪除。
+
+| 欄位 | 型別 | 屬性 | 中文說明 |
+|---|---|---|---|
+| ledger_id | String(36) | FK→ledgers.id (CASCADE), PK(複合) | 所屬帳本 |
+| sync_id | String(255) | PK(複合) | 明細同步 ID |
+| user_id | String(36) | FK→users.id (CASCADE), index | 所屬使用者 |
+| account_sync_id | String(255) | nullable | 投資理財帳戶 |
+| market | String(16) | default "" | 市場代碼 |
+| symbol | String(32) | default "" | 證券代號 |
+| security_name | Text | nullable | 證券名稱 |
+| trade_type | String(32) | default "buy" | `buy`買進 / `sell`賣出 / `opening`期初持股 / `cash_dividend`現金股利 / `stock_dividend`配股 / `reinvest`股利再投入 |
+| shares | Float | default 0.0 | 股數 |
+| price | Float | nullable | 成交單價 |
+| fee | Float | default 0.0 | 手續費 |
+| tax | Float | default 0.0 | 交易稅 |
+| amount | Float | default 0.0 | 以證券幣別計的現金影響（正數）：buy/opening=股數×價格+手續費；sell=股數×價格−手續費−交易稅；cash_dividend/reinvest=實收金額；stock_dividend=0 |
+| currency | String(16) | nullable | 證券幣別 |
+| trade_date | DateTime | nullable | 交易日期 |
+| tx_sync_id | String(255) | nullable | 對應的轉帳/收入交易 syncId |
+| dividend_event_ref | String(64) | nullable | 股利明細對應的除權息事件（`security_dividend_events.id` 字串），非股利為 null |
+| note | Text | nullable | 備註 |
+| created_by_user_id | String(36) | nullable | 建立者 |
+| source_change_id | BigInteger | default 0 | 診斷用：來源同步事件 ID |
+
+索引：`ix_read_stock_trade_projection_user_id(user_id)`、`ix_read_stock_trade_account(user_id, account_sync_id)`、`ix_read_stock_trade_symbol(market, symbol)`
 
 ---
 

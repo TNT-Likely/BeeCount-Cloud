@@ -521,6 +521,19 @@ def _materialize_period_end(
     追上)。`settlement_month_offset` 為 `None`(維持現況『期間結束當天入帳
     』)時只看 -1,跟修正前行為完全一致。"""
     already_paid = _already_paid_keys(db, user_id=rule.user_id, rule_sync_id=rule.sync_id)
+    # 補發差額(2026-10-01 使用者回報):整期結算後才替消費補綁回饋規則/補記
+    # 合格交易,該期 `capped_reward` 會變大,但去重鍵(期末日期)早就記過,
+    # 以前永遠不會再被結算。這裡累計「每期已入帳總額」(原始鍵 + `#N` 補發鍵),
+    # 重新算出的 capped_reward 比已入帳多時只補發差額,少時(退款等)不動。
+    paid_amount_by_period: dict[str, float] = {}
+    for key, amount in db.execute(
+        select(CardRewardPayout.dedup_key, CardRewardPayout.amount).where(
+            CardRewardPayout.user_id == rule.user_id,
+            CardRewardPayout.rule_sync_id == rule.sync_id,
+        )
+    ).all():
+        base_key = key.split("#", 1)[0]
+        paid_amount_by_period[base_key] = paid_amount_by_period.get(base_key, 0.0) + (amount or 0.0)
     group_rules = card_rewards.fetch_cap_group_rules(db, user_id=rule.user_id, base_rules=[rule])
     lookback = (rule.settlement_month_offset or 0) + 1
     paid_any = False
@@ -544,15 +557,25 @@ def _materialize_period_end(
                 continue  # 排程/資料還沒修好,留到下次重試,不記去重
 
             period_end = this_result["period_end"]
-            dedup_key = period_end.isoformat()
-            if dedup_key in already_paid:
-                continue  # 這期已經結算過,看還有沒有其它還沒入帳的
-
+            period_key = period_end.isoformat()
             settlement_date = card_rewards.compute_settlement_date(rule, period_end=period_end)
             if settlement_date is None or now.date() < settlement_date:
                 continue  # 這期還沒到規則設定的入帳日,留到下次 tick 重試
 
-            reward_amount = this_result["capped_reward"]
+            is_top_up = period_key in already_paid
+            if is_top_up:
+                reward_amount = round(
+                    this_result["capped_reward"] - paid_amount_by_period.get(period_key, 0.0), 2,
+                )
+                if reward_amount <= 0.005:
+                    continue  # 這期已結算且沒有新增的回饋
+                suffix = 2
+                while f"{period_key}#{suffix}" in already_paid:
+                    suffix += 1
+                dedup_key = f"{period_key}#{suffix}"
+            else:
+                dedup_key = period_key
+                reward_amount = this_result["capped_reward"]
             if reward_amount <= 0:
                 # 不記去重:跟逐筆結算(per-tx dedup_key = 交易自己的 sync_id)
                 # 不同,這裡的 dedup_key 是整期共用的日期字串——如果在使用者
@@ -566,7 +589,7 @@ def _materialize_period_end(
                 happened_at=card_rewards._date_to_utc_dt(settlement_date),
                 reward_account_id=rule.reward_account_id, amount=reward_amount,
                 note=(
-                    f"信用卡回饋入帳：{rule.label}"
+                    f"信用卡回饋{'補發' if is_top_up else '入帳'}：{rule.label}"
                     f"（{this_result['period_start'].isoformat()}~{period_end.isoformat()}）"
                 ),
             )
@@ -575,13 +598,15 @@ def _materialize_period_end(
                 amount=reward_amount, payout_tx_sync_id=payout_tx_sync_id, now=now,
             )
             already_paid.add(dedup_key)
+            already_paid.add(period_key)
+            paid_amount_by_period[period_key] = paid_amount_by_period.get(period_key, 0.0) + reward_amount
 
             ledger_external_id = notification_service.resolve_ledger_external_id(db, ledger_id)
             notification_service.create_notification(
                 db,
                 user_id=rule.user_id,
                 category="card_reward",
-                title=f"信用卡回饋入帳：{rule.label}",
+                title=f"信用卡回饋{'補發' if is_top_up else '入帳'}：{rule.label}",
                 body=(
                     f"本期回饋 {reward_amount:.2f} 已存入"
                     f"{_account_name(db, user_id=rule.user_id, sync_id=rule.reward_account_id) or '指定帳戶'}。"
@@ -589,7 +614,7 @@ def _materialize_period_end(
                 payload={
                     "ruleId": rule.sync_id,
                     "accountId": rule.account_sync_id,
-                    "periodEnd": dedup_key,
+                    "periodEnd": period_key,
                     "ledgerId": ledger_external_id,
                 },
             )

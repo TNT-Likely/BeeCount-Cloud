@@ -608,6 +608,55 @@ def test_period_end_pays_once_after_cycle_closes_and_dedups():
         app.dependency_overrides.clear()
 
 
+def test_period_end_tops_up_when_reward_rule_bound_after_settlement():
+    """整期已結算後才替消費補綁回饋規則:補發差額(不重複發已入帳的部分),
+    再重跑不會再補。"""
+    client, TS = _make_client()
+    try:
+        email = "crp5b@t.com"
+        now = datetime.now(timezone.utc)
+        billing_day = (now.date() - timedelta(days=10)).day
+        hdr_app, hdr_web = _login_and_seed(client, "lgp5b", email, billing_day=billing_day, payment_due_day=25)
+        rule_id = _create_rule(
+            client, hdr_web, "lgp5b",
+            settlement_type="period_end", reward_account_id="acc-wallet",
+        )
+        cycle_start, _cycle_end = credit_card.most_recently_closed_cycle(now.date(), billing_day)
+        spend_at = datetime.combine(cycle_start, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
+        _push(client, hdr_app, "lgp5b", "transaction", "tx-1",
+              {"syncId": "tx-1", "type": "expense", "amount": 300.0, "happenedAt": _iso(spend_at),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        # 第二筆當時忘了選回饋規則。
+        _push(client, hdr_app, "lgp5b", "transaction", "tx-2",
+              {"syncId": "tx-2", "type": "expense", "amount": 200.0, "happenedAt": _iso(spend_at),
+               "accountId": "acc-card", "accountName": "信用卡"},
+              device_id="d-app")
+        with TS() as db:
+            card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert [t.amount for t in _income_tx_to(TS, "acc-wallet")] == [30.0]
+
+        # 事後補綁:重跑要補發差額 20(200 * 10%),且只補一次。
+        _push(client, hdr_app, "lgp5b", "transaction", "tx-2",
+              {"syncId": "tx-2", "type": "expense", "amount": 200.0, "happenedAt": _iso(spend_at),
+               "accountId": "acc-card", "accountName": "信用卡", "rewardRuleIds": [rule_id]},
+              device_id="d-app")
+        with TS() as db:
+            result = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result == {"tx_payouts": 0, "period_payouts": 1}
+        assert sorted(t.amount for t in _income_tx_to(TS, "acc-wallet")) == [20.0, 30.0]
+
+        with TS() as db:
+            result2 = card_reward_payout.materialize_due_card_reward_payouts(db, now=now)
+            db.commit()
+        assert result2 == {"tx_payouts": 0, "period_payouts": 0}
+        assert len(_income_tx_to(TS, "acc-wallet")) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_period_end_skips_when_no_billing_schedule():
     client, TS = _make_client()
     try:

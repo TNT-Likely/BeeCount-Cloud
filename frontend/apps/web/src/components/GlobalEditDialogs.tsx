@@ -55,6 +55,7 @@ import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
 import { localizeError } from '../i18n/errors'
 import { onOpenEditCategory, onOpenEditTx, onOpenNewTx } from '../lib/txDialogEvents'
+import { buildRecurringUpdateFromPayload, type RecurringUpdateFromSource } from '../lib/recurringUpdateFrom'
 
 /** Phase 24:週期性收支差異化編輯的上下文——由 onOpenEditTx 的
  * `recurringEditMode` option 帶入,存檔時決定分流到哪支 API(見
@@ -910,18 +911,14 @@ export function GlobalEditDialogs() {
               )?.id,
           )
           .filter((id): id is string => Boolean(id))
-        const updateFromPayload: RecurringUpdateFromPayload = {
-          tx_type: editTxForm.tx_type,
-          amount: finalAmountNum,
-          note: payload.note,
-          category_id: editTxForm.tx_type === 'transfer' ? undefined : resolvedCategoryId || undefined,
-          account_id: editTxForm.tx_type === 'transfer' ? undefined : resolvedAccountId || undefined,
-          from_account_id: editTxForm.tx_type === 'transfer' ? resolvedFromAccountId || undefined : undefined,
-          to_account_id: editTxForm.tx_type === 'transfer' ? resolvedToAccountId || undefined : undefined,
-          merchant: payload.merchant,
-          project_id: payload.project_id || undefined,
-          tag_ids: resolvedTagIds,
-        }
+        const updateFromPayload: RecurringUpdateFromPayload = buildRecurringUpdateFromPayload({
+          txPayload: payload as RecurringUpdateFromSource,
+          categoryId: resolvedCategoryId,
+          accountId: resolvedAccountId,
+          fromAccountId: resolvedFromAccountId,
+          toAccountId: resolvedToAccountId,
+          tagIds: resolvedTagIds,
+        })
         await retryOnConflict(ledgerId, (base) =>
           updateRecurringRuleFrom(
             token, ledgerId, editRecurringContext.ruleId, editTxForm.editingId!, base, updateFromPayload,

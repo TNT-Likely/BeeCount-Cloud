@@ -135,6 +135,7 @@ import { consumePendingShareText } from '../../lib/pwa-intake'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
+import { buildRecurringUpdateFromPayload, type RecurringUpdateFromSource } from '../../lib/recurringUpdateFrom'
 
 type Notice = {
   type: 'default' | 'destructive'
@@ -2411,18 +2412,14 @@ export function TransactionsPage() {
           )
         }
         if (txForm.editingId && recurringEditContext && recurringEditContext.mode === 'future') {
-          const updateFromPayload: RecurringUpdateFromPayload = {
-            tx_type: txForm.tx_type,
-            amount: finalAmountNum,
-            note: payload.note ?? undefined,
-            category_id: isTransfer ? undefined : payload.category_id ?? undefined,
-            account_id: isTransfer ? undefined : payload.account_id ?? undefined,
-            from_account_id: isTransfer ? payload.from_account_id ?? undefined : undefined,
-            to_account_id: isTransfer ? payload.to_account_id ?? undefined : undefined,
-            merchant: payload.merchant ?? undefined,
-            project_id: payload.project_id ?? undefined,
-            tag_ids: txTagIds,
-          }
+          const updateFromPayload: RecurringUpdateFromPayload = buildRecurringUpdateFromPayload({
+            txPayload: payload as RecurringUpdateFromSource,
+            categoryId: payload.category_id,
+            accountId: payload.account_id,
+            fromAccountId: payload.from_account_id,
+            toAccountId: payload.to_account_id,
+            tagIds: txTagIds,
+          })
           return updateRecurringRuleFrom(
             token, ledgerId, recurringEditContext.ruleId, txForm.editingId, base, updateFromPayload,
           )
