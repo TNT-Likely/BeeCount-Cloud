@@ -1,132 +1,132 @@
-# BeeCount Cloud &nbsp; [English](./README.en.md)
+# BeeCount Cloud &nbsp; [简体中文](./README.zh-CN.md)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
-[![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE_EN)
 
-[🌐 官网](https://count.beejz.com) · [📖 文档](https://count.beejz.com/docs/intro) · [💝 捐赠](#-捐赠支持) · [🤝 商务合作](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)
+[🌐 Website](https://count.beejz.com/en/) · [📖 Docs](https://count.beejz.com/en/docs/intro) · [💝 Donate](#-donate) · [🤝 Business](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)
 
-**[BeeCount(蜜蜂记账)](https://github.com/TNT-Likely/BeeCount) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
+**Self-hosted sync cloud for the [BeeCount](https://github.com/TNT-Likely/BeeCount) personal accounting app.** Keep iOS / Android / Web books on one ledger you fully own — no ads, no subscription, no third-party lock-in.
 
-![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
+![BeeCount Cloud Web console](./docs/screenshot-en.png)
 
-> 🤖 **新:用 LLM 直接管理账本** — BeeCount Cloud 内置 [MCP](https://count.beejz.com/docs/mcp) server,在 Claude Desktop / Cursor / Cline 里跟 LLM 自然语言对话就能查询交易、记账、改预算。👉 **[查看 MCP 文档](https://count.beejz.com/docs/mcp)**
+> 🤖 **New: drive your ledger from an LLM** — BeeCount Cloud ships a built-in [MCP](https://count.beejz.com/en/docs/mcp) server. Query transactions, log expenses, tweak budgets right inside Claude Desktop / Cursor / Cline. 👉 **[Read the MCP docs](https://count.beejz.com/en/docs/mcp)**
 
 ---
 
-## 🤔 为什么选 BeeCount Cloud
+## 🤔 Why BeeCount Cloud
 
-### vs 其他自托管账本
+### vs Other Self-Hosted Ledgers
 
-| 项 | BeeCount Cloud | Firefly III | Actual Budget | Maybe Finance |
+| Item | BeeCount Cloud | Firefly III | Actual Budget | Maybe Finance |
 |---|---|---|---|---|
-| 移动端原生 App | ✅ iOS + Android | ❌ Web only | ⚠️ 仅 Web PWA | ❌ Web only |
-| 实时多端同步 | ✅ WebSocket 秒级 | ❌ 无 | ⚠️ 文件同步 | ❌ 无 |
-| AI 智能记账 | ✅ AI / OCR / 语音 | ❌ | ❌ | ⚠️ 部分 |
-| 部署成本 | 单容器 + 1 个 volume | 容器 + Postgres | 容器 + 文件存储 | 多服务 |
-| 加密备份 | ✅ AES-256 + 多远端 | ⚠️ 手动 | ❌ | ⚠️ 手动 |
-| 中文 / i18n | ✅ 简繁中英 | ⚠️ 部分 | ❌ | ❌ |
+| Native mobile apps | ✅ iOS + Android | ❌ Web only | ⚠️ Web PWA | ❌ Web only |
+| Real-time multi-device sync | ✅ WebSocket sub-sec | ❌ None | ⚠️ File sync | ❌ None |
+| AI bookkeeping | ✅ AI / OCR / voice | ❌ | ❌ | ⚠️ Partial |
+| Deployment cost | Single container + 1 volume | Container + Postgres | Container + file storage | Multi-service |
+| Encrypted backup | ✅ AES-256 + multi-remote | ⚠️ Manual | ❌ | ⚠️ Manual |
+| Chinese / i18n | ✅ Simp/Trad/EN | ⚠️ Partial | ❌ | ❌ |
 
-### vs 商业云账本
+### vs Commercial Cloud Ledgers
 
-- 🔐 **隐私第一** — 数据不离开你的服务器,开发者无法访问
-- 💰 **完全免费** — 一个 Docker volume 的成本,没有订阅
-- 🛡️ **无锁定** — 数据 = SQLite + 附件文件,随时打包带走
-- 🔓 **代码可审计** — 全开源,FastAPI + React 都在仓库里
-
----
-
-## ✨ 核心特性
-
-### 同步
-
-- **双向实时同步** — 手机 / 网页改动约 2 秒内送达其他设备(WebSocket)
-- **离线优先** — App 本地先写,恢复网络后自动对账;冲突按"最后写入 + 设备 ID"确定性解决
-- **实体级变更** — 交易 / 账户 / 分类 / 标签 / 预算 分别跟踪,不做全量快照覆盖
-- **会话自愈** — token 过期自动用本地凭证重登,网络抖动后设备重连不掉线
-- **深度体检** — 同步页下拉刷新时对比本地和云端计数,发现差异自动修复
-
-### 共享账本(多人协作)
-
-- **Owner / Editor 双角色** — Owner 邀请 / 踢人 / 改账本元数据;Editor 共记交易
-- **一键邀请** — Owner 在 App / Web 上生成邀请码(默认 24 小时),Editor 输码即加入
-- **谁记的 / 谁编辑的** — 每条交易自动标 creator + last editor(头像 + 角色,App 编辑器 + Web 详情弹窗都展示)
-- **成员收支统计** — Web 端独立图表弹窗(柱图 + 饼图 + KPI),App 端简版列表
-- **实时 WS 推送** — 任一成员改动其他成员秒级看到,离线期间被踢 / 接受邀请也能正确收敛
-
-### 记账
-
-- **多账本**,每本独立币种
-- **交易** — 收入 / 支出 / 转账,多账户、分类、标签、附件
-- **预算** — 按分类或总额,月 / 年周期
-- **周期记账**(App)
-- **CSV 导入导出**(App,支持支付宝/微信账单)
-- **丰富图表** — 月度趋势、分类占比、年度热力图、储蓄率、标签/账户 Top 排行
-
-### 偏好(跨端同步)
-
-- 主题色、收支配色、头像、昵称
-- 月份显示格式、紧凑金额、交易时间展示开关
-- AI 服务商配置 + 自定义提示词(App AI 集成)
-
-### Web 控制台
-
-- 完整记账 UI(交易 / 账户 / 分类 / 标签 / 预算)
-- 响应式 Dashboard(与 App 观感一致,移动端友好)
-- **⌘K 命令面板 + AI 文档问答** — 任意页面 ⌘K(macOS)/ Ctrl+K 打开搜索;输入 `?xxx` 或选「问 AI」,基于官方文档 RAG 检索 + 用 App 配的 LLM 生成答案,自动贴 source 链接
-- **PWA 支持** — 浏览器地址栏的"安装"图标点一下,即可作为独立 app 装到桌面 / Dock,断网时离线读缓存
-- 三语 — 简体中文 / 繁體中文 / English
-- 深浅色主题 + 个性化主题色
-- 管理面板 — 设备 / 健康 / 同步错误 / 备份归档 / **实时服务端日志**
-
-### 管理与运维
-
-- 内存 ring buffer 日志查看器(级别 / 来源 / 关键词过滤 + 自动刷新)
-- 设备会话列表、在线状态、强制下线
-- Prometheus `/metrics`,`/ready` 健康探针
+- 🔐 **Privacy first** — Data never leaves your server, developer can't access
+- 💰 **Completely free** — Cost = one Docker volume, no subscription
+- 🛡️ **No lock-in** — Data = SQLite + attachment files, walk away anytime
+- 🔓 **Auditable code** — Fully open-source, FastAPI + React in repos
 
 ---
 
-## 🔐 备份系统
+## ✨ Features
 
-> 单容器自带的**多远端 + AES-256 加密**备份系统。本地数据库 / 附件 / JWT 密钥可定时自动推送到任意 S3 / R2 / B2 / WebDAV / Google Drive / OneDrive。
+### Core Sync
 
-### 关键特性
+- **Two-way realtime sync** — mobile / web changes land on other devices within ~2 seconds via WebSocket
+- **Offline-first** — mobile app writes locally, reconciles on reconnect; conflicts resolved by deterministic Last-Write-Wins with device tie-break
+- **Entity-level diff** — transactions / accounts / categories / tags / budgets each tracked individually, no full-snapshot overwrites
+- **Auto session recovery** — token refresh failures auto-retry with stored credentials; devices stay online across network hiccups
+- **Deep health check** — pull-to-refresh compares local vs remote counts and self-repairs differences
 
-- **rclone 多远端 fan-out** — 一份备份并行推到多个远端做冗余,任何一家挂了都还有
-- **AES-256 加密 zip** — 备份文件是标准的密码加密 zip,**用户从对象存储下载下来双击 → macOS Archive Utility / 7-Zip / Keka / WinRAR 自动弹密码框 → 解开**(脱离 BeeCount 服务也能恢复)
-- **APScheduler cron 调度** — 标准 cron 表达式,时区跟随容器 `TZ`
-- **保留期清理** — 保留最近 N 天,旧的自动删,`keep_at_least=1` 防误配
-- **Web 三标签页**:
-  - **远端配置** — S3 / R2 / B2 / WebDAV 等表单填写,32 位口令一键生成
-  - **定时任务** — cron 预设、多远端选择、立即运行
-  - **历史与进度** — 实时上传进度、历史记录、一键 Restore
-- **Restore 隔离目录** — 服务端恢复**绝不动 live data**,只往 `<DATA_DIR>/restore/<run_id>/` 写,用户手动 cp/rsync 替换
-- **审计日志** — 每次创建 / 测试 / 揭露 / 备份运行都打 audit log
+### Shared ledgers (multi-user collaboration)
 
-### 默认推荐
+- **Owner / Editor roles** — Owners invite / remove / rename; Editors co-write transactions
+- **One-click invite** — Owner generates a 6-digit invite code in App or Web (default 24 h TTL); Editor enters the code to join
+- **Who wrote / who last edited** — every transaction tagged with creator + last editor (avatar + role surfaced in the App editor and Web detail dialog)
+- **Member balance stats** — Web dedicated dialog with charts (bar + pie + KPIs); App compact list
+- **Realtime WS push** — every member sees changes within seconds; kicked-while-offline and accept-invite both converge correctly on reconnect
 
-- **每天 4 点本地时间**,保留 30 天,加密 + 包含附件
-- **2 个远端冗余**(如 R2 + WebDAV),其中之一挂了不影响
+### Bookkeeping
 
-### 灾难恢复
+- **Multi-ledger** with per-ledger currency
+- **Transactions** — income / expense / transfer, multiple accounts, categories, tags, attachments
+- **Budgets** — per-category or total, monthly / yearly period
+- **Recurring transactions** (mobile)
+- **CSV import / export** (mobile, supports Alipay / WeChat bills)
+- **Rich analytics** — monthly trends, category breakdowns, year heatmap, savings rate, top tags / accounts
 
-只要你有 .zip 文件 + 口令,任何系统、任何标准解压工具都能解开备份,不依赖 BeeCount 服务存在。
+### Appearance & Preferences (synced)
+
+- Theme color, income/expense color scheme, avatar, display name
+- Month display format, compact amount, transaction time visibility
+- AI provider configs + custom prompts (mobile AI integration)
+
+### Web Console
+
+- Full bookkeeping UI (transactions / accounts / categories / tags / budgets)
+- Interactive dashboard (mobile-like, responsive)
+- **⌘K command palette + AI doc Q&A** — ⌘K (macOS) / Ctrl+K from anywhere; type `?xxx` or pick "Ask AI" to RAG-retrieve from official docs and stream an answer using your App-configured LLM, with source links auto-attached
+- **PWA support** — Click the install icon in your browser's address bar to install as a desktop app; works offline with cached data
+- Three languages — English / Simplified Chinese / Traditional Chinese
+- Dark / light mode with personalized primary color
+- Admin panel — devices, health, sync errors, backup artifacts, **live server logs**
+
+### Admin & Ops
+
+- In-memory ring buffer log viewer (level / source / keyword filter + auto-refresh)
+- Device session list, online indicator, forced signout
+- `/metrics` Prometheus endpoint, `/ready` health probe
 
 ---
 
-## 📸 截图
+## 🔐 Backup System
 
-| 中文 UI | English UI |
-|---------|------------|
-| ![ZH](./docs/screenshot-zh.png) | ![EN](./docs/screenshot-en.png) |
+> **Multi-remote + AES-256 encrypted backup**, built into the single container. Local DB / attachments / JWT secret can be auto-pushed to any S3 / R2 / B2 / WebDAV / Google Drive / OneDrive on a schedule.
+
+### Highlights
+
+- **rclone multi-remote fan-out** — One backup pushed in parallel to multiple remotes for redundancy
+- **AES-256 encrypted zip** — Backup files are standard password-protected ZIP archives. **Download from your bucket, double-click → macOS Archive Utility / 7-Zip / Keka / WinRAR auto-prompts for password → extracted** (recoverable even without BeeCount service)
+- **APScheduler cron** — Standard cron expressions, timezone follows container `TZ`
+- **Retention cleanup** — Keep last N days, old ones auto-deleted, `keep_at_least=1` defends against misconfiguration
+- **Web 3-tab UI**:
+  - **Remotes** — S3 / R2 / B2 / WebDAV form, 32-byte passphrase one-click generation
+  - **Schedules** — cron presets, multi-remote selection, "run now"
+  - **History & progress** — live upload progress, history, one-click Restore
+- **Restore isolation** — Server-side restore **never touches live data**, only writes to `<DATA_DIR>/restore/<run_id>/`, user manually cp/rsync to replace
+- **Audit log** — Every create / test / reveal / backup run is audit-logged
+
+### Default Recommendation
+
+- **Daily 4 AM local time**, 30-day retention, encrypted + include attachments
+- **2 redundant remotes** (e.g. R2 + WebDAV) — one fails, other survives
+
+### Disaster Recovery
+
+As long as you have the `.zip` file + passphrase, any system, any standard archive tool can extract the backup — no dependency on BeeCount service.
 
 ---
 
-## 🚀 Docker Compose 部署
+## 📸 Screenshots
 
-预构建镜像 [`sunxiao0721/beecount-cloud`](https://hub.docker.com/r/sunxiao0721/beecount-cloud) 一体化打包 FastAPI 后端 + Web 控制台 — 单容器 + 一个数据卷,搞定。
+| English UI | Simplified Chinese UI |
+|:---:|:---:|
+| ![English UI](./docs/screenshot-en.png) | ![Simplified Chinese UI](./docs/screenshot-zh.png) |
 
-### 1) 新建 `docker-compose.yml`
+---
+
+## 🚀 Docker Compose Deployment
+
+The prebuilt image [`sunxiao0721/beecount-cloud`](https://hub.docker.com/r/sunxiao0721/beecount-cloud) bundles FastAPI backend + Web console — single container + one data volume.
+
+### 1) Create `docker-compose.yml`
 
 ```yaml
 services:
@@ -138,61 +138,62 @@ services:
     volumes:
       - ./data:/data
     environment:
-      # —— 可选:启用 ⌘K「AI 文档问答」(对官方文档做 RAG 检索)——
-      # 不填这把 key 也行,功能就走 fallback「跳官网搜文档」,其它功能完全不受影响。
-      # 默认走 SiliconFlow 免费 quota(月 10 万次问答足够小规模自托管),
-      # 注册 https://siliconflow.cn 拿 key 填进来即可。
+      # —— Optional: enable ⌘K "AI Doc Q&A" (RAG over official docs) ——
+      # Leaving the key empty is fine — the feature falls back to "open docs site
+      # search". All other features keep working regardless.
+      # Default uses SiliconFlow's free tier (~100k queries/month for self-hosters).
+      # Register at https://siliconflow.cn to grab a free key.
       EMBEDDING_BASE_URL: https://api.siliconflow.cn/v1
       EMBEDDING_MODEL: BAAI/bge-m3
-      EMBEDDING_API_KEY: ""        # ← 填你的 SiliconFlow key 启用 AI Q&A
+      EMBEDDING_API_KEY: ""        # ← fill in your SiliconFlow key to enable AI Q&A
 ```
 
-> 兼容的 embedding provider 完整列表(SiliconFlow / OpenAI / 智谱 / 阿里 / 火山 / Voyage / Mistral / Jina / Together / 自托管 Ollama...)+ 切换说明 见 [`.env.example`](./.env.example)。**关键约束**:`EMBEDDING_MODEL` 必须跟 docker image 里自带的 sqlite 索引 build 时一致(默认 `BAAI/bge-m3`),换 model 必须双侧同步重 build 索引。
+> Full list of compatible embedding providers (SiliconFlow / OpenAI / Zhipu / Aliyun / Doubao / Voyage / Mistral / Jina / Together / self-hosted Ollama / ...) and switching notes — see [`.env.example`](./.env.example). **Key constraint**: `EMBEDDING_MODEL` must match the embedding model used to build the bundled sqlite index (default `BAAI/bge-m3`); switching models requires rebuilding the index on both sides.
 
-> 文档索引会保留镜像内置版本作为离线兜底，并默认每 6 小时从 BeeCount-Website 检查一次更新；更新会校验完整中英文索引后热切换，不需要重启或重建镜像。可在「设置 → 健康」查看构建时间并由管理员手动更新；用 `RAG_INDEX_REFRESH_INTERVAL_SECONDS=0` 关闭自动检查。
+> The image-bundled index remains the offline fallback. By default Cloud checks BeeCount-Website for a newer index every six hours, validates the complete Chinese and English pair, then hot-swaps it without a restart or image rebuild. Settings → Health shows build times and lets administrators update now; set `RAG_INDEX_REFRESH_INTERVAL_SECONDS=0` to disable automatic checks.
 
-### 2) 启动
+### 2) Start
 
 ```bash
 docker compose up -d
-# 查看首次启动生成的随机管理员账号密码:
-docker compose logs beecount-cloud | grep -A 10 "初次启动"
+# View first-launch admin credentials:
+docker compose logs beecount-cloud | grep -A 10 "BeeCount Cloud —"
 ```
 
-看到类似:
+The startup log currently uses Chinese labels: `邮箱` means email and `密码` means password. Output looks like:
 
 ```
  BeeCount Cloud — 初次启动,已自动创建管理员账号:
 
    邮箱:    owner@example.com
-   密码:    FIDodUnwprkw1zUi
+   密码:    <generated password>
 ```
 
-拿这个账号:
+With this account:
 
-- 浏览器访问 `http://<你的服务器 IP>:8869` 即可用 **Web 管理端**
-- App 里选「BeeCount Cloud」,填服务器地址 + 上面账号登录
+- Open `http://<your-server-ip>:8869` in browser → **Web admin console**
+- In the App, choose "BeeCount Cloud" and enter the server URL + credentials
 
-### 3) 升级
+### 3) Upgrade
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-Alembic 迁移会在容器启动时自动执行(详见[数据库迁移](#-数据库迁移))。
+Alembic migrations run automatically on container startup (see [Database Migrations](#️-database-migrations)).
 
-### 4) 备份
+### 4) Backup
 
-`./data/` 目录包含所有持久化数据:SQLite 数据库、附件、备份归档、JWT 密钥。直接打包目录即可:
+The `./data/` directory contains all persistent data: SQLite database, attachments, backup archives, JWT secret. Just tar the directory:
 
 ```bash
 tar czf beecount-$(date +%F).tar.gz ./data
 ```
 
-或更推荐的:配置内置的**多远端加密备份**(见[备份系统](#-备份系统)),自动 cron 推到 S3 / R2 / WebDAV。
+Or recommended: configure the built-in **multi-remote encrypted backup** (see [Backup System](#-backup-system)) for automatic cron pushes to S3 / R2 / WebDAV.
 
-### 5) 自定义初始管理员
+### 5) Custom Initial Admin
 
 ```yaml
 services:
@@ -202,83 +203,83 @@ services:
     ports:
       - "8869:8080"
     environment:
-      # 自指定管理员账号(替代默认随机生成):
+      # Override default random admin:
       BOOTSTRAP_ADMIN_EMAIL: me@example.com
-      BOOTSTRAP_ADMIN_PASSWORD: <你的强密码>
-      # 调度器时区(默认 Asia/Shanghai,跟容器 TZ 同步):
+      BOOTSTRAP_ADMIN_PASSWORD: <strong password>
+      # Scheduler timezone (default: Asia/Shanghai, follows container TZ):
       # TZ: Asia/Shanghai
     volumes:
       - ./data:/data
 ```
 
-### 6) 公网部署
+### 6) Public Deployment
 
-建议在前面套一层 nginx / caddy 做 HTTPS + 域名。App 和 Web 都支持 `https://` 地址。
+Front with nginx / caddy for HTTPS + domain. App and Web both support `https://` URLs.
 
 ---
 
-## 🗄️ 数据库迁移
+## 🗄️ Database Migrations
 
-schema 版本由 [Alembic](https://alembic.sqlalchemy.org/) 管理。
+Schema versions are managed by [Alembic](https://alembic.sqlalchemy.org/).
 
-**每次容器启动**入口脚本会执行:
+**On every container startup**, the entrypoint script runs:
 
 ```bash
 alembic upgrade head && uvicorn server:app --host 0.0.0.0 --port 8080
 ```
 
-所以升级镜像后,任何新迁移会在服务接收请求前自动按顺序执行。数据持久化在 `./data/` 目录,升级无需手动介入。
+So after pulling a new image, any new migrations execute in order before requests are served. Data persists in `./data/`, no manual intervention needed.
 
-如果迁移失败(罕见),容器会退出、数据库保留在升级前的版本上 — 修复问题后 `docker compose pull && up -d` 重试即可。
-
----
-
-## 📱 移动端 App 接入
-
-安装 [BeeCount](https://github.com/TNT-Likely/BeeCount) App(iOS / Android),然后在 App 中:
-
-1. 设置 → 云服务 → BeeCount Cloud
-2. 填写服务器地址(如 `https://your-domain.com`)和登录凭证
-3. 开启同步 — 首次同步会把本地已有数据推送到云端
+If a migration fails (rare), the container exits with the database left at the pre-upgrade version — fix the issue and `docker compose pull && up -d` to retry.
 
 ---
 
-## 🛠️ 本地开发
+## 📱 Mobile App Setup
+
+Install [BeeCount](https://github.com/TNT-Likely/BeeCount) (iOS / Android), then:
+
+1. Settings → Cloud Service → BeeCount Cloud
+2. Enter server URL (e.g. `https://your-domain.com`) and credentials
+3. Enable sync — first sync pushes local data to cloud
+
+---
+
+## 🛠️ Local Development
 
 <details>
-<summary>点击展开开发环境搭建</summary>
+<summary>Click to expand setup</summary>
 
-### 依赖
+### Requirements
 
 - Python `3.11+`
-- Node `20+`、pnpm `9+`
+- Node `20+`, pnpm `9+`
 
-### 首次安装
+### First-time Install
 
 ```bash
 make setup-backend
 pnpm -C frontend install
 ```
 
-### 本地启动
+### Local Start
 
 ```bash
-# 终端 1 — API(端口 8080)
+# Terminal 1 — API (port 8080)
 make migrate
 make dev-api
 
-# 终端 2 — Web 开发服务(端口 5173)
+# Terminal 2 — Web dev server (port 5173)
 make dev-web
 ```
 
-### 示例账号
+### Demo Account
 
 ```bash
 make seed-demo
 # Email: owner@example.com  Password: 123456
 ```
 
-### 测试
+### Tests
 
 ```bash
 make test        # pytest
@@ -288,20 +289,20 @@ pnpm -C frontend/apps/web test:unit
 pnpm -C frontend/apps/web exec tsc --noEmit --skipLibCheck
 ```
 
-### 一键联动
+### One-shot
 
 ```bash
 make dev-up
 ```
 
-### 前端包结构
+### Frontend Package Layout
 
-- `frontend/apps/web` — shell、路由、页面编排
-- `frontend/packages/api-client` — HTTP + 类型化响应
-- `frontend/packages/web-features` — 业务面板、权限、格式化
-- `frontend/packages/ui` — shadcn 风格基座(Radix)
+- `frontend/apps/web` — shell, routing, page composition
+- `frontend/packages/api-client` — HTTP + typed responses
+- `frontend/packages/web-features` — business panels, permissions, formatting
+- `frontend/packages/ui` — shadcn-style base (Radix)
 
-### 构建 Docker 镜像
+### Build Docker Image
 
 ```bash
 docker build -t sunxiao0721/beecount-cloud:dev .
@@ -314,78 +315,78 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 ---
 
-## 📚 更多文档
+## 📚 More Documentation
 
-- [部署指南](./docs/DEPLOYMENT.md)
-- [迁移与回滚](./docs/MIGRATION.md)
-- [可观测性](./docs/OBSERVABILITY.md)
-- [同步架构](./docs/SYNC_ARCHITECTURE.md)
-- [MCP server(LLM 集成)](./docs/MCP.md) — Claude Desktop / Cursor / Cline 通过 PAT 直接操作账本([English](./docs/MCP.en.md))
-- 运行时 OpenAPI / Swagger UI: 访问 `http://your-domain.com/docs`
+- [Deployment Guide](./docs/DEPLOYMENT.md)
+- [Migration & Rollback](./docs/MIGRATION.md)
+- [Observability](./docs/OBSERVABILITY.md)
+- [Sync Architecture](./docs/SYNC_ARCHITECTURE.md)
+- [MCP server (LLM integration)](./docs/MCP.en.md) — Claude Desktop / Cursor / Cline talk to your ledgers via a PAT
+- Runtime OpenAPI / Swagger UI: visit `http://your-domain.com/docs`
 
 ---
 
-## 💝 捐赠支持
+## 💝 Donate
 
-BeeCount 和 BeeCount Cloud 由同一作者维护。如果这些项目对你有帮助，欢迎请作者喝杯咖啡 ☕，支持持续开发。
+BeeCount and BeeCount Cloud are maintained by the same developer. If these projects help you, consider buying the developer a coffee ☕ to support continued development.
 
-### 捐赠方式
+### How to Donate
 
 [![PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?logo=paypal&logoColor=white&style=for-the-badge)](https://paypal.me/sunxiaoyes)
 
-<details><summary>支付宝 / 微信二维码</summary>
+<details><summary>Alipay / WeChat QR codes</summary>
 
-| 支付宝 | 微信支付 |
+| Alipay | WeChat Pay |
 |:---:|:---:|
-| <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/alipay.png" width="160" alt="支付宝"/> | <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/wechat.png" width="160" alt="微信支付"/> |
+| <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/alipay.png" width="160" alt="Alipay"/> | <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/wechat.png" width="160" alt="WeChat"/> |
 
 </details>
 
 **USDT (TRC20)**: `TKBV69B2AoU67p3vDhnJUbMJtZ1DxuUF5C`
 
 <details>
-<summary>币安二维码</summary>
+<summary>Binance QR code</summary>
 
-![币安](https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/binance.png)
+![Binance](https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/binance.png)
 
 </details>
 
-感谢支持项目的朋友们，支持者头像见 [App 支持者列表](https://github.com/TNT-Likely/BeeCount/blob/main/README.md#感谢支持者)。
+Thank you to everyone who supports the projects. See the [App supporter list](https://github.com/TNT-Likely/BeeCount/blob/main/README_EN.md#supporters).
 
 ---
 
-## 🤝 商务合作
+## 🤝 Business Inquiries
 
-欢迎商业授权、部署协助、定制开发与合作咨询。请邮件联系，并简要说明你的需求与使用场景。
+For commercial licensing, deployment assistance, custom development, or partnerships, email us with a brief description of your needs and use case.
 
 **[📧 sunxiaoyes@outlook.com](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)**
 
 ---
 
-## 📄 许可证
+## 📄 License
 
-本项目采用 **商业源代码许可证(Business Source License,BSL)**。
+This project uses the **Business Source License (BSL)**.
 
-| 用途 | 许可 |
+| Use Case | License |
 |---|---|
-| ✅ **个人自部署** | 完全免费 |
-| ✅ **学习研究** | 完全免费 |
-| ✅ **开源贡献** | 欢迎参与 |
-| ❌ **商业使用** | 需要付费授权 |
+| ✅ **Personal self-hosting** | Completely free |
+| ✅ **Learning / research** | Completely free |
+| ✅ **Open-source contribution** | Welcome |
+| ❌ **Commercial use** | Requires paid license |
 
-**什么算商业使用**:
+**What counts as commercial use**:
 
-- 把 BeeCount Cloud 作为商业 SaaS 提供给客户
-- 在盈利性组织中部署使用
-- 基于本软件提供付费云服务
-- 转售或集成到付费产品里
+- Operating BeeCount Cloud as a commercial SaaS for customers
+- Deploying in a for-profit organization
+- Providing paid cloud services based on this software
+- Reselling or integrating into a paid product
 
-如需商业授权,请通过 [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues) 联系。详见 [LICENSE](./LICENSE)。
+For commercial licensing, contact via [GitHub Issues](https://github.com/TNT-Likely/BeeCount-Cloud/issues). See [LICENSE](./LICENSE_EN).
 
 ---
 
-## 🔗 相关链接
+## 🔗 Links
 
-- 移动端 App: <https://github.com/TNT-Likely/BeeCount>
+- Mobile App: <https://github.com/TNT-Likely/BeeCount>
 - Docker Hub: <https://hub.docker.com/r/sunxiao0721/beecount-cloud>
-- 问题反馈: <https://github.com/TNT-Likely/BeeCount-Cloud/issues>
+- Issue Tracker: <https://github.com/TNT-Likely/BeeCount-Cloud/issues>

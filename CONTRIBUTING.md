@@ -5,7 +5,7 @@
 ## 提交 PR
 
 1. Fork 本仓库并创建特性分支；
-2. 开发环境与运行方式见 [README](README.md)；
+2. 开发环境与运行方式见 [README](README.zh-CN.md)；
 3. 提交前确保后端/前端测试通过，PR 描述中说明变更内容与动机；
 4. 勾选 PR 模板中的贡献者许可条款确认框。
 
@@ -28,7 +28,7 @@ Thanks for your interest in BeeCount Cloud! Issues and pull requests are welcome
 ### Submitting a PR
 
 1. Fork the repository and create a feature branch;
-2. See the [README](README.en.md) for development setup;
+2. See the [README](README.md) for development setup;
 3. Make sure backend/frontend tests pass, and describe the what & why in your PR;
 4. Check the Contributor License Terms box in the PR template.
 
