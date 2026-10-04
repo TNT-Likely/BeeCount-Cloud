@@ -1,7 +1,10 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { WorkspaceAccount } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useLocale, useT } from '@beecount/ui'
+import { convertTypeTotalsToBase } from '@beecount/web-features'
+import { useMemo } from 'react'
 
+import { usePrimaryCurrencyRates } from '../../hooks/usePrimaryCurrencyRates'
 import { formatCompactTick } from '../../i18n/format'
 
 interface Props {
@@ -28,20 +31,17 @@ export function AssetCompositionDonut({ accounts }: Props) {
   const t = useT()
   const { locale } = useLocale()
   const chinese = locale.startsWith('zh')
-  // 按类型**带符号**累加(与 assetAggregation 的负债符号口径一致:欠款为负、
-  // 溢缴为正,透支资产为负),饼图分段才对类型合计取 abs 当体量 —— 绝不逐账户
-  // abs,否则同类型内正负互抵的账户会被虚增。
-  const totals = new Map<string, number>()
-  for (const a of accounts) {
-    const key = a.account_type || 'other'
-    // 用 balance(= initial_balance + 净流水)而非 initial_balance。用户常常
-    // 把初始余额留 0,靠日常记账累积现金/微信/支付宝等账户流水 —— 若只看
-    // initial_balance,donut 会全空;资产页走 balance 兜底所以正常。
-    const raw = typeof a.balance === 'number' && a.balance !== null
-      ? a.balance
-      : a.initial_balance ?? 0
-    totals.set(key, (totals.get(key) || 0) + raw)
-  }
+  // 跨币种折算(#104):账户是工作区全局的,可能混着 CNY/USD/SGD。旧实现直接把
+  // 各账户 balance 按 1:1 裸加($1000 当 ¥1000,issue #104 的 11,500 就是这么来的)。
+  // 现在统一走 assetAggregation 铁律:按币种切分 → 每币种类型小计 × 汇率折进
+  // 主币种 → 缺失汇率的整币种剔除(missing 出脚注),绝不按 1 折入。
+  // 单币种用户折算率恒 1,数字与旧实现完全一致,零视觉变化。
+  const { effectiveBase, singleCurrency, needsBase, rates, rateOverrides, loading } =
+    usePrimaryCurrencyRates(accounts)
+  const { totals, missing } = useMemo(
+    () => convertTypeTotalsToBase(accounts, effectiveBase, rates, rateOverrides),
+    [accounts, effectiveBase, rates, rateOverrides],
+  )
   const allRows = Array.from(totals.entries())
     .map(([type, signed]) => ({
       type,
@@ -78,7 +78,21 @@ export function AssetCompositionDonut({ accounts }: Props) {
         <CardTitle className="text-base">{t('home.assetComp.title')}</CardTitle>
       </CardHeader>
       <CardContent>
-        {data.length === 0 ? (
+        {accounts.length === 0 ? (
+          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+            {t('home.assetComp.empty')}
+          </div>
+        ) : loading ? (
+          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+            {t('home.assetComp.loading')}
+          </div>
+        ) : needsBase ? (
+          // 多币种但未设主币种:与资产页汇总卡同款引导,绝不猜币种按 1 折算。
+          <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
+            <p className="text-sm font-medium">{t('accounts.needBaseCurrency.title')}</p>
+            <p className="text-xs text-muted-foreground">{t('accounts.needBaseCurrency.desc')}</p>
+          </div>
+        ) : data.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
             {t('home.assetComp.empty')}
           </div>
@@ -114,7 +128,16 @@ export function AssetCompositionDonut({ accounts }: Props) {
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('home.assetComp.totalAsset')}</div>
-                <div className="text-sm font-bold">{fmt(totalAsset)}</div>
+                {/* 多币种折算视图:与资产页汇总卡同款 ≈ 前缀 + 目标币种码。 */}
+                <div className="flex items-baseline gap-0.5">
+                  {!singleCurrency ? (
+                    <span className="font-mono text-[10px] text-muted-foreground">≈</span>
+                  ) : null}
+                  <div className="text-sm font-bold">{fmt(totalAsset)}</div>
+                  {!singleCurrency ? (
+                    <span className="text-[10px] text-muted-foreground">{effectiveBase}</span>
+                  ) : null}
+                </div>
                 {totalLiability > 0 ? (
                   <div className="mt-0.5 text-[10px] text-rose-500">{t('home.assetComp.liability').replace('{value}', fmt(totalLiability))}</div>
                 ) : null}
@@ -138,6 +161,12 @@ export function AssetCompositionDonut({ accounts }: Props) {
             </ul>
           </div>
         )}
+        {/* 缺失汇率的币种被剔除而非 1:1 折入,必须告知用户少了哪些(与资产页同口径)。 */}
+        {!singleCurrency && !needsBase && missing.length > 0 ? (
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            {t('accounts.converted.missing', { currencies: missing.join(' / ') })}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   )

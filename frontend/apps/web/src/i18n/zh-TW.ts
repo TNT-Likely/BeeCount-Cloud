@@ -743,6 +743,7 @@ const zhTW = {
   'home.assetComp.empty': '暫無帳戶資料',
   'home.assetComp.totalAsset': '總資產',
   'home.assetComp.liability': '負債 {value}',
+  'home.assetComp.loading': '匯率載入中…',
 
   // 資產頁「走勢 / 組成」切換
   'accounts.trendOrComposition.trend': '走勢',
