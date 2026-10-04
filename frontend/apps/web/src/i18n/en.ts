@@ -747,6 +747,7 @@ const en = {
   'home.assetComp.empty': 'No accounts yet',
   'home.assetComp.totalAsset': 'Total assets',
   'home.assetComp.liability': 'Liabilities {value}',
+  'home.assetComp.loading': 'Loading exchange rates…',
 
   'accounts.trendOrComposition.trend': 'Trend',
   'accounts.trendOrComposition.composition': 'Composition',

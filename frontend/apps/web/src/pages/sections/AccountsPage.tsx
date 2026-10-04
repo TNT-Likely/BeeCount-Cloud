@@ -472,8 +472,10 @@ export function AccountsPage() {
   const converted = useMemo(() => {
     const byCur = splitByCurrency(rows)
     if (byCur.size === 0) return null
-    // 主币种未设时:单币种回退到该唯一币种(折算率 1,零误差);多币种则无从折算。
-    const effectiveBase = base || (byCur.size === 1 ? [...byCur.keys()][0] : '')
+    // 单币种一律折算到该唯一币种(折算率恒 1、零误差)—— 即使主币种已设且不同:
+    // 否则单币种外币用户的汇率永远不会被拉(下方只在 ≥2 币种时拉),整币种会被
+    // 剔成 0(#104 同族口径问题)。多币种用主币种;未设主币种则无从折算(needsBase)。
+    const effectiveBase = byCur.size === 1 ? [...byCur.keys()][0] : base
     if (!effectiveBase) return { needsBase: true } as const
     // 单币种(effectiveBase 即本币 且 仅 1 种)不显汇率脚注 / ≈ 前缀。
     const singleCurrency = byCur.size === 1

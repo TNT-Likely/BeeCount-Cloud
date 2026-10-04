@@ -137,3 +137,45 @@ export function mergeGroupsToBase(
   }
   return [...merged.values()]
 }
+
+/**
+ * 首页「资产构成」donut 的跨币种折算聚合(#104)。
+ *
+ * 输入工作区全部账户(可能多账本多币种),按 {@link splitByCurrency} 切分后:
+ *   - 每币种内按账户类型**带符号**累加(欠款为负、溢缴为正,同
+ *     {@link computeCurrencySummary} 的负债符号口径,绝不逐账户 abs);
+ *   - 每币种的类型小计 × {@link effectiveRateToBase} 折进主币种,按类型跨币种合并;
+ *   - **铁律对齐**:缺失汇率的整币种剔除(missing 返回给展示层出脚注),
+ *     绝不按 1 折入 —— 与净资产/资产/负债折算同口径。
+ *
+ * 返回 `totals`:key = 账户类型(原始 account_type,空归 'other'),value =
+ * 主币种带符号合计;`missing` = 被剔除的币种(大写、排序)。负债类型也在
+ * totals 里带符号出现,由调用方按自己的类型分组决定展示(donut 只画资产类)。
+ */
+export function convertTypeTotalsToBase(
+  rows: ReadAccount[],
+  base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+): { totals: Map<string, number>; missing: string[] } {
+  const totals = new Map<string, number>()
+  const missing = new Set<string>()
+  for (const [cur, curRows] of splitByCurrency(rows)) {
+    const eff = effectiveRateToBase(cur, base, auto, overrides)
+    if (!eff) {
+      missing.add(cur)
+      continue
+    }
+    // 先按类型攒该币种小计,再整体 × rate —— 与 mergeGroupsToBase 的
+    // 「subtotal 求和后折算」同构,避免逐行乘法的浮点噪声。
+    const perType = new Map<string, number>()
+    for (const row of curRows) {
+      const type = row.account_type || 'other'
+      perType.set(type, (perType.get(type) ?? 0) + accountBalance(row))
+    }
+    for (const [type, subtotal] of perType) {
+      totals.set(type, (totals.get(type) ?? 0) + subtotal * eff.rate)
+    }
+  }
+  return { totals, missing: [...missing].sort() }
+}

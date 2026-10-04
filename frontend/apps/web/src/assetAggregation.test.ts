@@ -4,6 +4,7 @@ import {
   type AssetGroup,
   computeCurrencySummary,
   computeTypeGroups,
+  convertTypeTotalsToBase,
   effectiveRateToBase,
   mergeGroupsToBase,
   splitByCurrency
@@ -224,5 +225,72 @@ describe('mergeGroupsToBase — 折算合并构成', () => {
     // 只剩 CNY 的 1000;EUR 的 999 既没按 1 加、也没生成新组。
     expect(cash.subtotals[0].value).toBe(1000)
     expect(cash.subtotals[0].value).not.toBe(1999)
+  })
+})
+
+/**
+ * convertTypeTotalsToBase 契约 —— 首页「资产构成」donut 的折算聚合(#104)。
+ * 历史 bug:donut 把各账户 balance 按 1:1 裸加,$1000 当 ¥1000(issue #104
+ * 的 11,500 = 10,000 CNY + 1,000 USD + 500 SGD)。这里锁住修复后的口径。
+ */
+describe('convertTypeTotalsToBase — donut 跨币种折算', () => {
+  function auto(rates: Record<string, string>): ExchangeRatesResponse {
+    return { rates, rate_date: '2025-01-01' } as ExchangeRatesResponse
+  }
+
+  it('issue #104 复现:多币种按汇率折算到主币种,绝不再出 11,500 这种裸加值', () => {
+    // base=CNY;auto: 1 CNY = 0.25 USD(→1 USD=4 CNY)、1 CNY = 0.2 SGD(→1 SGD=5 CNY)。
+    const rows = [
+      acc({ account_type: 'cash', currency: 'CNY', balance: 10_000 }),
+      acc({ account_type: 'bank_card', currency: 'USD', balance: 1_000 }),
+      acc({ account_type: 'alipay', currency: 'SGD', balance: 500 })
+    ]
+    const { totals, missing } = convertTypeTotalsToBase(rows, 'CNY', auto({ USD: '0.25', SGD: '0.2' }), [])
+    expect(missing).toEqual([])
+    // cash 10,000;bank_card 4,000;alipay 2,500 —— 折算后各自独立。
+    expect(totals.get('cash')).toBeCloseTo(10_000)
+    expect(totals.get('bank_card')).toBeCloseTo(4_000)
+    expect(totals.get('alipay')).toBeCloseTo(2_500)
+    // 旧 bug 的裸加 = 11,500;任何类型都不该出现这个值。
+    for (const v of totals.values()) expect(v).not.toBe(11_500)
+  })
+
+  it('缺失汇率的整币种剔除并回报 missing,绝不按 1 折入', () => {
+    const rows = [
+      acc({ account_type: 'cash', currency: 'CNY', balance: 10_000 }),
+      acc({ account_type: 'cash', currency: 'SGD', balance: 500 })
+    ]
+    const { totals, missing } = convertTypeTotalsToBase(rows, 'CNY', auto({ USD: '0.25' }), [])
+    expect(missing).toEqual(['SGD'])
+    expect(totals.get('cash')).toBe(10_000) // 不是 10,500
+  })
+
+  it('同类型跨币种合并;负债类型带符号保留(欠款为负)', () => {
+    const rows = [
+      acc({ account_type: 'cash', currency: 'CNY', balance: 1_000 }),
+      acc({ account_type: 'cash', currency: 'USD', balance: 100 }), // ×4 = 400
+      acc({ account_type: 'credit_card', currency: 'USD', balance: -300 }) // ×4 = -1,200
+    ]
+    const { totals, missing } = convertTypeTotalsToBase(rows, 'CNY', auto({ USD: '0.25' }), [])
+    expect(missing).toEqual([])
+    expect(totals.get('cash')).toBeCloseTo(1_400)
+    expect(totals.get('credit_card')).toBeCloseTo(-1_200)
+  })
+
+  it('单币种折算到自己:率恒 1,余额原样(含 balance→initial_balance 回退)', () => {
+    const rows = [
+      acc({ account_type: 'cash', currency: 'usd', balance: null, initial_balance: 77 }),
+      acc({ account_type: 'bank_card', currency: 'USD', balance: 12 })
+    ]
+    const { totals, missing } = convertTypeTotalsToBase(rows, 'USD', null, [])
+    expect(missing).toEqual([])
+    expect(totals.get('cash')).toBe(77)
+    expect(totals.get('bank_card')).toBe(12)
+  })
+
+  it('空账户列表:空 totals,missing 为空', () => {
+    const { totals, missing } = convertTypeTotalsToBase([], 'CNY', auto({ USD: '0.25' }), [])
+    expect(totals.size).toBe(0)
+    expect(missing).toEqual([])
   })
 })

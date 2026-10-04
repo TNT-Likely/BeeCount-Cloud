@@ -294,6 +294,7 @@ const zhCN = {
   'home.assetComp.empty': '暂无账户数据',
   'home.assetComp.totalAsset': '总资产',
   'home.assetComp.liability': '负债 {value}',
+  'home.assetComp.loading': '汇率加载中…',
 
   // 资产页「走势 / 构成」切换
   'accounts.trendOrComposition.trend': '走势',
