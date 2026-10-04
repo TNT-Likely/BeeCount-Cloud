@@ -1,12 +1,15 @@
 import { useCallback, useState } from 'react'
+import { ArrowUpRight, BookOpen } from 'lucide-react'
 
-import { Card, CardContent, useT, useToast } from '@beecount/ui'
+import { Card, CardContent, useLocale, useT, useToast } from '@beecount/ui'
 import { type AIConfig, patchProfileMe } from '@beecount/api-client'
 
 import { CapabilityBindingCard } from '../../components/ai-config/CapabilityBindingCard'
 import { ProvidersCard } from '../../components/ai-config/ProvidersCard'
 import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
+import { useWebConfig } from '../../context/WebConfigContext'
+import { projectWebsiteUrl } from '../../lib/projectWebsite'
 
 /**
  * AI 配置编辑页 —— providers CRUD + capability binding + 高级字段只读折叠。
@@ -22,6 +25,8 @@ import { localizeError } from '../../i18n/errors'
 export function SettingsAiPage() {
   const t = useT()
   const toast = useToast()
+  const { locale } = useLocale()
+  const { projectPartnershipsEnabled } = useWebConfig()
   const { token, profileMe, refreshProfile } = useAuth()
   const [saving, setSaving] = useState(false)
 
@@ -47,6 +52,20 @@ export function SettingsAiPage() {
   return (
     <div className="space-y-4">
       <ProvidersCard config={config} saving={saving} onSave={saveAiConfig} />
+      {projectPartnershipsEnabled && (
+        <div className="flex flex-col items-start gap-1 px-1 sm:items-end">
+          <a
+            href={projectWebsiteUrl('/docs/ai/overview', locale)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            {t('ai.providers.guide.title')}
+            <ArrowUpRight className="h-3 w-3" />
+          </a>
+        </div>
+      )}
       <CapabilityBindingCard config={config} saving={saving} onSave={saveAiConfig} />
 
       {!profileMe?.ai_config ? (

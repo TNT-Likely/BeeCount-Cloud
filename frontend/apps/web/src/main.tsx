@@ -14,6 +14,7 @@ import {
 } from '@beecount/ui'
 
 import { App } from './App'
+import { WebConfigProvider } from './context/WebConfigContext'
 import { dictionaries } from './i18n'
 import { setupInstallPrompt } from './lib/pwa-install'
 import { setupLaunchQueue } from './lib/pwa-launch'
@@ -56,7 +57,9 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <PrimaryColorProvider>
           <ToastProvider>
-            <App />
+            <WebConfigProvider>
+              <App />
+            </WebConfigProvider>
           </ToastProvider>
         </PrimaryColorProvider>
       </ThemeProvider>

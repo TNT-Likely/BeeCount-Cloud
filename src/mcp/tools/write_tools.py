@@ -34,7 +34,8 @@ from ...models import (
     User,
 )
 from ...security import SCOPE_APP_WRITE, _create_token
-from .read_tools import _parse_dt, _resolve_ledger, live_ledgers
+from ..datetime_utils import parse_transaction_datetime
+from .read_tools import _resolve_ledger, live_ledgers
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ async def create_transaction(
     tags: list[str] | None = None,
     ledger_id: str | None = None,
     currency: str | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """新建一笔交易。category / account 用名字。happened_at 不传 = 当前时间。
 
@@ -160,6 +162,10 @@ async def create_transaction(
         raise ValueError(f"Invalid tx_type: {tx_type}")
     if amount <= 0:
         raise ValueError("amount must be positive")
+    happened = (
+        parse_transaction_datetime(happened_at, time_zone=time_zone)
+        if happened_at is not None else datetime.now(timezone.utc)
+    )
 
     with SessionLocal() as db:
         led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
@@ -186,7 +192,6 @@ async def create_transaction(
     if mcp_tag_missing:
         await _ensure_mcp_tag(user, ledger_external_id)
 
-    happened = _parse_dt(happened_at) if happened_at else datetime.now(timezone.utc)
     body: dict[str, Any] = {
         "base_change_id": 0,
         "tx_type": tx_type,
@@ -248,8 +253,13 @@ async def update_transaction(
     happened_at: str | None = None,
     note: str | None = None,
     tags: list[str] | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """更新现有交易。只更新传入的字段。"""
+    happened = (
+        parse_transaction_datetime(happened_at, time_zone=time_zone)
+        if happened_at is not None else None
+    )
     with SessionLocal() as db:
         existing = db.scalar(
             select(ReadTxProjection).where(
@@ -278,8 +288,8 @@ async def update_transaction(
         if tx_type not in {"expense", "income", "transfer"}:
             raise ValueError(f"Invalid tx_type: {tx_type}")
         patch["tx_type"] = tx_type
-    if happened_at is not None:
-        patch["happened_at"] = _parse_dt(happened_at).isoformat()
+    if happened is not None:
+        patch["happened_at"] = happened.isoformat()
     if note is not None:
         patch["note"] = note
     if category is not None:
@@ -430,6 +440,7 @@ async def create_transactions(
     *,
     transactions: list[dict[str, Any]],
     ledger_id: str | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """批量新建交易(Excel / 对账单导入等)。
 
@@ -472,7 +483,13 @@ async def create_transactions(
         if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
             raise ValueError(f"transactions[{i}]: amount must be a positive number")
         happened_at = raw.get("happened_at")
-        happened = _parse_dt(happened_at) if happened_at else datetime.now(timezone.utc)
+        try:
+            happened = (
+                parse_transaction_datetime(happened_at, time_zone=time_zone)
+                if happened_at is not None else datetime.now(timezone.utc)
+            )
+        except ValueError as exc:
+            raise ValueError(f"transactions[{i}]: {exc}") from exc
         item: dict[str, Any] = {
             "tx_type": tx_type,
             "amount": float(amount),

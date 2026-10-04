@@ -75,6 +75,12 @@ app = FastAPI(
 def public_version() -> dict:
     return {"name": _beecount_cloud_name, "version": _beecount_cloud_version}
 
+
+@app.get(f"{settings.api_prefix}/web-config")
+def public_web_config() -> dict:
+    """仅公开 Web 展示开关，不暴露实例密钥或其它配置。"""
+    return {"project_partnerships_enabled": get_settings().project_partnerships_enabled}
+
 app.state.ws_manager = WSConnectionManager()
 install_request_middleware(app)
 register_exception_handlers(app)

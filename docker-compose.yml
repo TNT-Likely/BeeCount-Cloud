@@ -36,6 +36,11 @@ services:
       # EXCHANGE_RATE_UPSTREAM: ""
 
       # ===== 其它常用环境变量(详见 docs/DEPLOYMENT.md)=====
+      # Cloud 时区用于调度和 MCP 的无偏移量时间，镜像默认 Asia/Shanghai。
+      # TZ: "Asia/Shanghai"
+      # SCHEDULER_TIMEZONE: "Asia/Shanghai"
+      # 关闭 Web 关于页商务入口及 AI 接入指南，无需重建镜像。
+      # PROJECT_PARTNERSHIPS_ENABLED: "false"
       # CORS_ORIGINS: "https://your-domain.com"
       # REGISTRATION_ENABLED: "false"
       # TOTP_ISSUER_NAME: "BeeCount"
