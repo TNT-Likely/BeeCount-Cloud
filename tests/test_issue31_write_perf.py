@@ -240,7 +240,7 @@ def test_a3_bulk_unknown_category_errors(monkeypatch) -> None:
                 write_tools.create_transactions(
                     user,
                     transactions=[{"amount": 5, "category": "NoSuchCat",
-                                   "happened_at": "2026-05-01"}],
+                                   "happened_at": "2026-05-01T00:00:00+00:00"}],
                     ledger_id=led,
                 )
             )
