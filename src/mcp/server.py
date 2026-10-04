@@ -351,6 +351,7 @@ async def create_transaction(
     tags: list[str] | None = None,
     ledger_id: str | None = None,
     currency: str | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """Create a new transaction.
 
@@ -359,7 +360,12 @@ async def create_transaction(
         tx_type: 'expense' (default), 'income', or 'transfer'.
         category: Existing category name (server rejects unknown names).
         account: Existing account name. For transfers this is the from-account.
-        happened_at: ISO date or datetime. Defaults to now.
+        happened_at: ISO date or datetime. Defaults to now. Preserve the source
+            UTC offset; never append Z to a local CSV time. Offset-free values
+            use Cloud SCHEDULER_TIMEZONE, then TZ; without either, time_zone is required.
+        time_zone: Source IANA timezone (e.g. Asia/Shanghai), used only when
+            Cloud has no timezone configured and happened_at has no offset.
+            For a source in a different timezone, provide timestamps with offsets.
         note: Optional memo.
         tags: Optional list of tag names.
         ledger_id: Optional; uses active ledger if omitted.
@@ -371,7 +377,7 @@ async def create_transaction(
     kw = dict(
         amount=amount, tx_type=tx_type, category=category, account=account,
         happened_at=happened_at, note=note, tags=tags, ledger_id=ledger_id,
-        currency=currency,
+        currency=currency, time_zone=time_zone,
     )
     return await _logged_call(
         ctx, name="create_transaction", scope=SCOPE_MCP_WRITE, kwargs=kw,
@@ -384,6 +390,7 @@ async def create_transactions(
     ctx: Context,
     transactions: list[dict[str, Any]],
     ledger_id: str | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """Create many transactions at once — use this for bulk imports.
 
@@ -400,8 +407,14 @@ async def create_transactions(
         ledger_id: Optional. If omitted and you have multiple ledgers, the tool
             refuses to guess and returns the candidate list — re-call with an id.
             Max 200 transactions per call; split larger imports across calls.
+        time_zone: Source IANA timezone for offset-free CSV dates/times, used
+            only if Cloud has neither SCHEDULER_TIMEZONE nor TZ configured.
+            Preserve explicit offsets; NEVER relabel local CSV times as Z/UTC.
+            Cloud timezone has priority for offset-free values. For a different
+            source timezone, include each timestamp's actual offset. A missing
+            timezone or ambiguous DST time rejects the batch before any writes.
     """
-    kw = dict(transactions=transactions, ledger_id=ledger_id)
+    kw = dict(transactions=transactions, ledger_id=ledger_id, time_zone=time_zone)
     return await _logged_call(
         ctx, name="create_transactions", scope=SCOPE_MCP_WRITE, kwargs=kw,
         body=lambda user: write_tools.create_transactions(user, **kw),
@@ -419,11 +432,18 @@ async def update_transaction(
     happened_at: str | None = None,
     note: str | None = None,
     tags: list[str] | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
-    """Patch an existing transaction. Only the fields you pass are changed."""
+    """Patch an existing transaction. Only the fields you pass are changed.
+
+    happened_at preserves explicit UTC offsets. Offset-free dates/times use
+    Cloud SCHEDULER_TIMEZONE, then TZ, then the optional source IANA time_zone.
+    Never append Z to local time; ask for the source timezone if none is known.
+    """
     kw = dict(
         sync_id=sync_id, amount=amount, tx_type=tx_type, category=category,
         account=account, happened_at=happened_at, note=note, tags=tags,
+        time_zone=time_zone,
     )
     return await _logged_call(
         ctx, name="update_transaction", scope=SCOPE_MCP_WRITE, kwargs=kw,

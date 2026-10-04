@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Cloud,
   Github,
+  Handshake,
   Smartphone,
   Sparkles,
 } from 'lucide-react'
@@ -16,7 +17,11 @@ import {
   DialogHeader,
   DialogTitle,
   useT,
+  useLocale,
 } from '@beecount/ui'
+
+import { useWebConfig } from '../context/WebConfigContext'
+import { projectWebsiteUrl } from '../lib/projectWebsite'
 
 /**
  * 「关于 BeeCount」弹窗 —— 之前的「更新日志」+「GitHub 仓库」两条菜单合一。
@@ -160,6 +165,8 @@ function isNewerVersion(latest: string | null, current: string | null): boolean 
 
 export function AboutDialog({ open, onOpenChange }: Props) {
   const t = useT()
+  const { locale } = useLocale()
+  const { projectPartnershipsEnabled } = useWebConfig()
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -231,7 +238,7 @@ export function AboutDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden">
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t('about.title')}</DialogTitle>
         </DialogHeader>
@@ -317,6 +324,24 @@ export function AboutDialog({ open, onOpenChange }: Props) {
             ))}
           </div>
         </div>
+
+        {projectPartnershipsEnabled && (
+          <a
+            href={projectWebsiteUrl('/business', locale)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 flex items-center gap-3 rounded-lg border border-border/50 px-3 py-3 text-sm transition hover:bg-muted/40"
+          >
+            <Handshake className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <span className="text-xs font-medium">{t('about.partnership.title')}</span>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                {t('about.partnership.description')}
+              </p>
+            </div>
+            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          </a>
+        )}
 
         {/* Release 列表 */}
         <div className="mt-3 mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

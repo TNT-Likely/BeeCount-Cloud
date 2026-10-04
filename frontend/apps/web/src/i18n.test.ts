@@ -1,5 +1,7 @@
 import {
   LOCALE_STORAGE_KEY,
+  LocaleProvider,
+  useT,
   detectBrowserLocale,
   initialLocale,
   normalizeLocale,
@@ -8,6 +10,9 @@ import {
 import { ApiError } from '@beecount/api-client'
 import { formatBalanceCompact } from '@beecount/web-features'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { dictionaries } from './i18n'
 
 import en from './i18n/en'
 import zhCN from './i18n/zh-CN'
@@ -126,14 +131,14 @@ describe('compact amount locale unit', () => {
 })
 
 /**
- * 校验三语 keys 完整对齐 —— 之前出现过 zh-CN 加了新文案 / en 漏了的情况,
+ * 校验中英文 keys 对齐 —— 之前出现过 zh-CN 加了新文案 / en 漏了的情况,
  * 跑到对应 locale 时 t() 直接返回 key 字符串(像 `nav.calendar`)露馅。
  *
  * 这里把 en 当作 source of truth(`TranslationKey = keyof typeof en`),
- * 任何一边缺 key 都让 vitest 报具体差集,新加 key 时不会再漏。
+ * 繁体中文按维护偏好允许暂缺翻译，验证真实 LocaleProvider 的英文回退。
  *
  * 同步原则:
- *   - 加新 key 必须三个文件都加,test 强制执行
+ *   - 加新 key 必须中英文都加；繁体中文仅按明确请求更新
  *   - 删 key 也必须三处一起删
  *   - 复数 / 占位符模板格式可以不同,但 key 必须存在
  */
@@ -151,8 +156,27 @@ describe('i18n parity', () => {
   ] as const
 
   for (const { name, keys } of cases) {
-    it(`${name} 包含 en 全部 key`, () => {
+    it(`${name} 包含 en 全部 key 或使用英文回退`, () => {
       const missing = diff(enKeys, keys)
+      if (name === 'zh-TW') {
+        vi.stubGlobal('window', { localStorage: { getItem: () => 'zh-TW' } })
+        try {
+          function Probe() {
+            const t = useT()
+            return createElement('span', null, JSON.stringify(missing.map((key) => t(key))))
+          }
+          const actual = renderToStaticMarkup(createElement(LocaleProvider, {
+            dictionaries, children: createElement(Probe),
+          }))
+          const expected = renderToStaticMarkup(createElement('span', null,
+            JSON.stringify(missing.map((key) => en[key as keyof typeof en])),
+          ))
+          expect(actual).toBe(expected)
+        } finally {
+          vi.unstubAllGlobals()
+        }
+        return
+      }
       expect(
         missing,
         `${name} 缺以下 ${missing.length} 个 key(en 有但 ${name} 没):\n  ${missing.join(

@@ -74,11 +74,18 @@ def _resolve_ledger(
 
 
 def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str, Any]:
+    # SQLite 丢失 tzinfo，但存储值已是 UTC；返回时补回，避免 Agent 再次误判。
+    happened = row.happened_at
+    if happened is not None:
+        happened = (
+            happened.replace(tzinfo=timezone.utc) if happened.tzinfo is None
+            else happened.astimezone(timezone.utc)
+        )
     return {
         "sync_id": row.sync_id,
         "tx_type": row.tx_type,
         "amount": float(row.amount or 0),
-        "happened_at": row.happened_at.isoformat() if row.happened_at else None,
+        "happened_at": happened.isoformat() if happened else None,
         "note": row.note,
         "category_name": category_name or row.category_name,
         "account_name": row.account_name,

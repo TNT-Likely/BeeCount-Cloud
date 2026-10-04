@@ -81,6 +81,9 @@ const zhCN = {
   'avatar.about': '关于',
   // 「关于」弹窗 —— 合并旧的「更新日志」+「GitHub 仓库」两条入口
   'about.title': '关于 BeeCount',
+  'about.partnership.title': 'BeeCount 项目商务合作',
+  'about.partnership.description': '联系项目作者，洽谈 AI 服务、项目赞助与部署合作。',
+  'ai.providers.guide.title': '服务商接入指南',
   'about.reposHeader': '项目仓库',
   'about.changelogHeader': '更新日志',
   'about.repos.app.title': '移动端 App',

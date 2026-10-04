@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_prefix: str = "/api/v1"
     web_static_dir: str = "/app/static"
+    # Cloud 的显式时区；Docker 默认 Asia/Shanghai，也支持 .env 中的 TZ。
+    cloud_timezone: str = Field(default="", alias="TZ")
+    project_partnerships_enabled: bool = Field(default=True, alias="PROJECT_PARTNERSHIPS_ENABLED")
 
     database_url: str = Field(default="sqlite:///./beecount.db")
 

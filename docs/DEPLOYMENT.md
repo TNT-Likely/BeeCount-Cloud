@@ -11,6 +11,44 @@ docker compose up -d --build
 - Backup artifact dir: `/data/backups` (`BACKUP_STORAGE_DIR`)
 - App collaboration read/device scope: `ALLOW_APP_RW_SCOPES` defaults to `true` (set `false` only if you explicitly want to restrict App RW scopes)
 
+### Cloud timezone
+
+The official image defaults to `TZ=Asia/Shanghai`. You can explicitly override it
+under the service's `environment` section in Compose:
+
+```yaml
+environment:
+  TZ: "Asia/Shanghai"
+  # Optional: takes precedence over TZ for scheduling and offset-free MCP times.
+  # SCHEDULER_TIMEZONE: "Asia/Shanghai"
+```
+
+Recreate the container after changing environment variables (`docker compose up -d`).
+MCP transaction timestamps with explicit UTC offsets retain their actual instant;
+offset-free timestamps use `SCHEDULER_TIMEZONE`, then `TZ`. See
+[MCP time rules](./MCP.md#交易时间与-csv-时区) for source-timezone fallback and CSV examples.
+Older MCP versions ignore these defaults when writing transactions; setting `TZ`
+alone does not fix their eight-hour shift. Existing records are not rewritten.
+
+### Project cooperation links
+
+Web's About dialog includes a secondary **BeeCount project business cooperation**
+link, and AI settings includes a provider setup guide. Both open the project's
+website in a new tab. They do not change provider configuration or load advertising
+scripts. The AI settings entry is a single secondary guide link.
+
+Self-host operators can hide both links with a backend runtime setting:
+
+```yaml
+environment:
+  PROJECT_PARTNERSHIPS_ENABLED: "false"
+```
+
+The default is `true`. Recreate the container to apply the setting; no frontend
+rebuild is required. Public `GET /api/v1/web-config` (or the configured API prefix)
+returns only this display flag. Web hides these links until configuration loads,
+and also hides them if this endpoint is unavailable on an older backend.
+
 ## 2) Health checks
 
 - Liveness: `GET /healthz`
