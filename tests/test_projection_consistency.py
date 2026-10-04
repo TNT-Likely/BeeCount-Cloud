@@ -132,6 +132,51 @@ def test_mobile_push_tx_creates_projection_row():
         app.dependency_overrides.clear()
 
 
+def test_mobile_push_transaction_type_change_clears_stale_transfer_accounts():
+    """切换交易类型时，partial sync 不能恢复旧的转出/转入账户关联。"""
+    client, engine, sf = _make_client()
+    try:
+        tok = _register_and_login(client, "tx-type-switch@t.com", device_id="tx-switch", client_type="app")
+        hdr = {"Authorization": f"Bearer {tok}"}
+        _push(client, hdr, "tx-switch", "lg1", [
+            {
+                "ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t-switch",
+                "action": "upsert", "updated_at": _iso(),
+                "payload": {
+                    "syncId": "t-switch", "type": "transfer", "amount": 5.25,
+                    "happenedAt": _iso(),
+                    "fromAccountId": "a-rich", "fromAccountName": "活期富",
+                    "toAccountId": "a-salary", "toAccountName": "工资卡",
+                },
+            },
+        ])
+        _push(client, hdr, "tx-switch", "lg1", [
+            {
+                "ledger_id": "lg1", "entity_type": "transaction", "entity_sync_id": "t-switch",
+                "action": "upsert", "updated_at": _iso(),
+                "payload": {
+                    "syncId": "t-switch", "type": "expense", "amount": 5.25,
+                    "happenedAt": _iso(),
+                    "accountId": "a-salary", "accountName": "工资卡",
+                },
+            },
+        ])
+        lid = _get_ledger_internal_id(sf, "lg1")
+        with sf() as db:
+            tx = db.scalar(select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == lid, ReadTxProjection.sync_id == "t-switch"
+            ))
+            assert tx is not None
+            assert tx.tx_type == "expense"
+            assert tx.account_sync_id == "a-salary"
+            assert tx.from_account_sync_id is None
+            assert tx.from_account_name is None
+            assert tx.to_account_sync_id is None
+            assert tx.to_account_name is None
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_mobile_push_tx_delete_removes_projection_row():
     client, engine, sf = _make_client()
     try:

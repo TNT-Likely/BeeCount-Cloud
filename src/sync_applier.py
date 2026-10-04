@@ -485,10 +485,15 @@ def merge_with_existing(
         )
     )
     if existing is None:
+        if entity_type == "transaction":
+            from .transaction_normalization import normalize_transaction_accounts
+            return normalize_transaction_accounts(payload)
         return payload
     merged = _merge_from_spec(spec, existing, payload)
     if entity_type == "transaction":
         merged = _sync_native_amount_after_merge(existing, payload, merged)
+        from .transaction_normalization import normalize_transaction_accounts
+        merged = normalize_transaction_accounts(merged)
     return merged
 
 

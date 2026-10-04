@@ -3,6 +3,7 @@ import {
   accountBalance,
   type AssetGroup,
   computeCurrencySummary,
+  computeTypeGroups,
   effectiveRateToBase,
   mergeGroupsToBase,
   splitByCurrency
@@ -21,6 +22,16 @@ function acc(p: Partial<ReadAccount> & { balance?: number | null }): ReadAccount
 }
 
 describe('asset aggregation — 绝不跨币种相加', () => {
+  it('未知账户类型归入其他分组而不会从资产列表消失', () => {
+    const groups = computeTypeGroups(
+      [acc({ name: 'Wallet', account_type: 'ewallet', balance: 12 })],
+      (key) => key
+    )
+    expect(groups).toHaveLength(1)
+    expect(groups[0].type).toBe('other')
+    expect(groups[0].rows[0].name).toBe('Wallet')
+  })
+
   it('splitByCurrency 按归一化币种码分组(缺省 CNY、大小写归一)', () => {
     const map = splitByCurrency([
       acc({ currency: 'CNY', balance: 100 }),

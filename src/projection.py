@@ -30,6 +30,7 @@ from .models import (
     UserExchangeRateProjection,
     UserTagProjection,
 )
+from .transaction_normalization import normalize_transaction_accounts
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ def upsert_tx(
     source_change_id: int,
     payload: dict[str, Any],
 ) -> None:
+    payload = normalize_transaction_accounts(payload)
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return

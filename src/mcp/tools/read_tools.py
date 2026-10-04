@@ -28,9 +28,10 @@ from ...models import (
     UserCategoryProjection,
     UserTagProjection,
 )
+from ...routers.read._shared import _is_ledger_deleted
+
 # 复用 read 端的唯一权威"软删除"判定 —— 保证 MCP 与 web/mobile 账本可见性口径
 # 一致(issue #31)。read._shared 不依赖 mcp,无循环 import。
-from ...routers.read._shared import _is_ledger_deleted
 
 
 # ---------- helpers ----------------------------------------------------------
@@ -88,9 +89,13 @@ def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str,
         "happened_at": happened.isoformat() if happened else None,
         "note": row.note,
         "category_name": category_name or row.category_name,
+        "category_id": row.category_sync_id,
         "account_name": row.account_name,
+        "account_id": row.account_sync_id,
         "from_account_name": row.from_account_name,
+        "from_account_id": row.from_account_sync_id,
         "to_account_name": row.to_account_name,
+        "to_account_id": row.to_account_sync_id,
         "tags": row.tags_csv or "",
     }
 
@@ -174,8 +179,8 @@ def list_transactions(
             query = query.where(func.abs(ReadTxProjection.amount) >= min_amount)
         if max_amount is not None:
             query = query.where(func.abs(ReadTxProjection.amount) <= max_amount)
-        if q:
-            query = query.where(ReadTxProjection.note.ilike(f"%{q}%"))
+        if q and q.strip():
+            query = query.where(_search_condition(db, user.id, q.strip()))
 
         # 先取总数
         total_q = select(func.count()).select_from(query.subquery())
@@ -436,7 +441,7 @@ def get_analytics_summary(
 
 
 def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
-    """全文模糊搜交易备注 / 分类名 / 账户名。"""
+    """全文模糊搜交易备注、分类、账户及标签（包括标签 ID 关联）。"""
     if not q.strip():
         return []
     with SessionLocal() as db:
@@ -444,11 +449,7 @@ def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
             select(ReadTxProjection)
             .where(
                 ReadTxProjection.user_id == user.id,
-                or_(
-                    ReadTxProjection.note.ilike(f"%{q}%"),
-                    ReadTxProjection.category_name.ilike(f"%{q}%"),
-                    ReadTxProjection.account_name.ilike(f"%{q}%"),
-                ),
+                _search_condition(db, user.id, q.strip()),
             )
             .order_by(ReadTxProjection.happened_at.desc())
             .limit(max(1, min(limit, 100)))
@@ -458,6 +459,28 @@ def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
 
 
 # ---------- internal helpers -------------------------------------------------
+
+
+def _search_condition(db, user_id: str, text: str):
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    conditions = [column.ilike(pattern, escape="\\") for column in (
+        ReadTxProjection.note,
+        ReadTxProjection.category_name,
+        ReadTxProjection.account_name,
+        ReadTxProjection.from_account_name,
+        ReadTxProjection.to_account_name,
+        ReadTxProjection.tags_csv,
+    )]
+    ids = db.scalars(select(UserTagProjection.sync_id).where(
+        UserTagProjection.user_id == user_id,
+        UserTagProjection.name.ilike(pattern, escape="\\"),
+    )).all()
+    for sync_id in ids:
+        conditions.append(ReadTxProjection.tag_sync_ids_json.like(
+            f'%"{sync_id}"%', escape="\\"
+        ))
+    return or_(*conditions)
 
 
 def _parse_dt(value: str, *, end_of_day: bool = False) -> datetime:

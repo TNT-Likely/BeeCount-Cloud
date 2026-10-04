@@ -36,6 +36,7 @@ from .auth import (
     get_mcp_user_from_context,
     require_mcp_scope,
 )
+from .schemas import BatchTransactionItem
 from .tools import read_tools, write_tools
 
 logger = logging.getLogger(__name__)
@@ -388,7 +389,7 @@ async def create_transaction(
 @mcp.tool()
 async def create_transactions(
     ctx: Context,
-    transactions: list[dict[str, Any]],
+    transactions: list[BatchTransactionItem],
     ledger_id: str | None = None,
     time_zone: str | None = None,
 ) -> dict[str, Any]:
@@ -414,7 +415,11 @@ async def create_transactions(
             source timezone, include each timestamp's actual offset. A missing
             timezone or ambiguous DST time rejects the batch before any writes.
     """
-    kw = dict(transactions=transactions, ledger_id=ledger_id, time_zone=time_zone)
+    kw = dict(
+        transactions=[item.model_dump() for item in transactions],
+        ledger_id=ledger_id,
+        time_zone=time_zone,
+    )
     return await _logged_call(
         ctx, name="create_transactions", scope=SCOPE_MCP_WRITE, kwargs=kw,
         body=lambda user: write_tools.create_transactions(user, **kw),
