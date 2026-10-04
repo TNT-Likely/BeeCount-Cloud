@@ -3,6 +3,8 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
 [![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
 
+[🌐 Website](https://count.beejz.com/en/) · [📖 Docs](https://count.beejz.com/en/docs/intro) · [💝 Donate](#-donate) · [🤝 Business](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)
+
 **Self-hosted sync cloud for the [BeeCount](https://github.com/TNT-Likely/BeeCount) personal accounting app.** Keep iOS / Android / Web books on one ledger you fully own — no ads, no subscription, no third-party lock-in.
 
 ![BeeCount Cloud Web console](./docs/screenshot-en.png)
@@ -321,6 +323,43 @@ docker run -p 8080:8080 -v beecount_data:/data \
 - [Sync Architecture](./docs/SYNC_ARCHITECTURE.md)
 - [MCP server (LLM integration)](./docs/MCP.en.md) — Claude Desktop / Cursor / Cline talk to your ledgers via a PAT
 - Runtime OpenAPI / Swagger UI: visit `http://your-domain.com/docs`
+
+---
+
+## 💝 Donate
+
+BeeCount and BeeCount Cloud are maintained by the same developer. If these projects help you, consider buying the developer a coffee ☕ to support continued development.
+
+### How to Donate
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?logo=paypal&logoColor=white&style=for-the-badge)](https://paypal.me/sunxiaoyes)
+
+<details><summary>Alipay / WeChat QR codes</summary>
+
+| Alipay | WeChat Pay |
+|:---:|:---:|
+| <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/alipay.png" width="160" alt="Alipay"/> | <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/wechat.png" width="160" alt="WeChat"/> |
+
+</details>
+
+**USDT (TRC20)**: `TKBV69B2AoU67p3vDhnJUbMJtZ1DxuUF5C`
+
+<details>
+<summary>Binance QR code</summary>
+
+![Binance](https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/binance.png)
+
+</details>
+
+Thank you to everyone who supports the projects. See the [App supporter list](https://github.com/TNT-Likely/BeeCount/blob/main/README_EN.md#supporters).
+
+---
+
+## 🤝 Business Inquiries
+
+For commercial licensing, deployment assistance, custom development, or partnerships, email us with a brief description of your needs and use case.
+
+**[📧 sunxiaoyes@outlook.com](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)**
 
 ---
 
