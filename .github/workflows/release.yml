@@ -138,8 +138,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.vars.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # registry cache 而不是 gha cache:GHA cache 按 ref 隔离,每个新 tag
+          # 都读不到上个 tag 存的缓存,等于每次发版全量冷构建。存到 Docker Hub
+          # 的 buildcache tag 后跨 tag / 跨 dispatch 通用,换 tag 也能命中。
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
       - name: Generate release notes (tag push only)
         if: ${{ github.event_name == 'push' }}
