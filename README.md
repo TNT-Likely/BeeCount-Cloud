@@ -3,6 +3,8 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/beecount-cloud)](https://hub.docker.com/r/sunxiao0721/beecount-cloud)
 [![License](https://img.shields.io/badge/license-BSL-blue)](./LICENSE)
 
+[🌐 官网](https://count.beejz.com) · [📖 文档](https://count.beejz.com/docs/intro) · [💝 捐赠](#-捐赠支持) · [🤝 商务合作](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)
+
 **[BeeCount(蜜蜂记账)](https://github.com/TNT-Likely/BeeCount) App 的自部署同步云端。** 让 iOS / Android / Web 三端共用一份完全属于你的账本 — 无广告、无订阅、无第三方依赖。
 
 ![BeeCount Cloud Web 控制台](./docs/screenshot-zh.png)
@@ -320,6 +322,43 @@ docker run -p 8080:8080 -v beecount_data:/data \
 - [同步架构](./docs/SYNC_ARCHITECTURE.md)
 - [MCP server(LLM 集成)](./docs/MCP.md) — Claude Desktop / Cursor / Cline 通过 PAT 直接操作账本([English](./docs/MCP.en.md))
 - 运行时 OpenAPI / Swagger UI: 访问 `http://your-domain.com/docs`
+
+---
+
+## 💝 捐赠支持
+
+BeeCount 和 BeeCount Cloud 由同一作者维护。如果这些项目对你有帮助，欢迎请作者喝杯咖啡 ☕，支持持续开发。
+
+### 捐赠方式
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-0070BA?logo=paypal&logoColor=white&style=for-the-badge)](https://paypal.me/sunxiaoyes)
+
+<details><summary>支付宝 / 微信二维码</summary>
+
+| 支付宝 | 微信支付 |
+|:---:|:---:|
+| <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/alipay.png" width="160" alt="支付宝"/> | <img src="https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/wechat.png" width="160" alt="微信支付"/> |
+
+</details>
+
+**USDT (TRC20)**: `TKBV69B2AoU67p3vDhnJUbMJtZ1DxuUF5C`
+
+<details>
+<summary>币安二维码</summary>
+
+![币安](https://raw.githubusercontent.com/TNT-Likely/BeeCount/main/docs/donate/binance.png)
+
+</details>
+
+感谢支持项目的朋友们，支持者头像见 [App 支持者列表](https://github.com/TNT-Likely/BeeCount/blob/main/README.md#感谢支持者)。
+
+---
+
+## 🤝 商务合作
+
+欢迎商业授权、部署协助、定制开发与合作咨询。请邮件联系，并简要说明你的需求与使用场景。
+
+**[📧 sunxiaoyes@outlook.com](mailto:sunxiaoyes@outlook.com?subject=BeeCount%20Business%20Inquiry)**
 
 ---
 
