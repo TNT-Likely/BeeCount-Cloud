@@ -946,7 +946,7 @@ const ACCOUNT_ORDER: string[] = [
 export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string): AssetGroup[] {
   const buckets: Record<string, ReadAccount[]> = {}
   for (const row of rows) {
-    const key = row.account_type || 'other'
+    const key = ACCOUNT_ORDER.includes(row.account_type || '') ? row.account_type! : 'other'
     buckets[key] = buckets[key] || []
     buckets[key].push(row)
   }

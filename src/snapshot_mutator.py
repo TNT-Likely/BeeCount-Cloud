@@ -6,6 +6,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from .transaction_normalization import normalize_transaction_accounts
+
 logger = logging.getLogger(__name__)
 
 
@@ -336,6 +338,7 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     item["excludeFromStats"] = bool(payload.get("exclude_from_stats"))
     item["excludeFromBudget"] = bool(payload.get("exclude_from_budget"))
     _mark_entity_actor(item, payload, create=True)
+    item = normalize_transaction_accounts(item)
 
     _ensure_list(target, "items").append(item)
     # 跳过 _sort_transactions(方案 B):snapshot 不写回,排序徒劳
@@ -461,6 +464,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
         if req_key in payload and payload.get(req_key) is not None:
             item[snapshot_key] = bool(payload.get(req_key))
     _mark_entity_actor(item, payload, create=False)
+    item.update(normalize_transaction_accounts(item))
 
     # 方案 B 后 snapshot 不写回 DB,items 排序只对 mutator 内部无意义 → 跳过(原 30ms/5k)。
     # projection 读路径走 SQL ORDER BY,顺序由 index 保证。

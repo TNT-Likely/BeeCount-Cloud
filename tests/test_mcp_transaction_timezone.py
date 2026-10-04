@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -18,7 +19,13 @@ from src.deps import require_any_scopes
 from src.main import app
 from src.mcp.datetime_utils import parse_transaction_datetime
 from src.mcp.tools import read_tools, write_tools
-from src.models import ReadTxProjection, User, UserTagProjection
+from src.models import (
+    ReadTxProjection,
+    User,
+    UserAccountProjection,
+    UserCategoryProjection,
+    UserTagProjection,
+)
 from src.routers.write import _shared as write_shared
 from src.security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
 
@@ -77,6 +84,28 @@ def test_invalid_cloud_timezone_is_not_silently_ignored(monkeypatch):
         parse_transaction_datetime("2026-05-23T21:28:52", time_zone="UTC")
     # 明确给出的时间不依赖 Cloud 的默认时区。
     assert parse_transaction_datetime("2026-05-23T13:28:52Z").hour == 13
+
+
+def test_batch_amount_schema_accepts_numeric_strings_and_rejects_invalid_values():
+    from src.mcp.schemas import BatchTransactionItem
+
+    assert BatchTransactionItem(amount="12.50").amount == 12.5
+    for value in [True, 0, -1, "not-a-number"]:
+        with pytest.raises(ValidationError):
+            BatchTransactionItem(amount=value)
+
+
+def test_create_transactions_tool_schema_describes_batch_items():
+    from src.mcp.server import mcp
+
+    tool = mcp._tool_manager._tools["create_transactions"]
+    schema = tool.parameters
+    item_schema = schema["$defs"]["BatchTransactionItem"]
+    assert item_schema["properties"]["amount"]["exclusiveMinimum"] == 0
+    assert item_schema["additionalProperties"] is False
+    assert schema["properties"]["transactions"]["items"]["$ref"] == (
+        "#/$defs/BatchTransactionItem"
+    )
 
 
 @pytest.mark.parametrize("date,reason", [
@@ -168,6 +197,114 @@ def test_update_uses_cloud_timezone(ledger):
     run_tool(write_tools.update_transaction(user, sync_id=result["sync_id"], happened_at="2026-05-24T09:00:00"))
     rows = client.get(f"/api/v1/read/ledgers/{ledger_id}/transactions", headers=headers).json()
     assert datetime.fromisoformat(rows[0]["happened_at"].replace("Z", "+00:00")) == datetime(2026, 5, 24, 1, tzinfo=timezone.utc)
+
+
+def test_mcp_write_persists_entity_ids_and_searches_default_tag(ledger):
+    user, ledger_id, client, headers, sessions = ledger
+    with sessions() as db:
+        category = db.scalar(
+            select(UserCategoryProjection).where(
+                UserCategoryProjection.user_id == user.id,
+                UserCategoryProjection.kind == "expense",
+            )
+        )
+        account = db.scalar(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == user.id,
+            )
+        )
+        if category is None:
+            category = UserCategoryProjection(
+                user_id=user.id, sync_id="cat-mcp-test", name="MCP Food", kind="expense",
+            )
+            db.add(category)
+        if account is None:
+            account = UserAccountProjection(
+                user_id=user.id, sync_id="acc-mcp-test", name="MCP Cash",
+                account_type="cash", currency="CNY",
+            )
+            db.add(account)
+        db.commit()
+        category_name, category_id = category.name, category.sync_id
+        account_name, account_id = account.name, account.sync_id
+
+    result = run_tool(write_tools.create_transaction(
+        user,
+        ledger_id=ledger_id,
+        amount=18,
+        category=category_name,
+        account=account_name,
+        happened_at="2026-05-23T21:28:52",
+    ))
+
+    with sessions() as db:
+        row = db.scalar(
+            select(ReadTxProjection).where(ReadTxProjection.sync_id == result["sync_id"])
+        )
+        assert row is not None
+        assert row.category_sync_id == category_id
+        assert row.account_sync_id == account_id
+
+    serialized = read_tools.list_transactions(user, ledger_id=ledger_id)["items"]
+    tx = next(item for item in serialized if item["sync_id"] == result["sync_id"])
+    assert tx["category_id"] == category_id
+    assert tx["account_id"] == account_id
+
+    assert any(item["sync_id"] == result["sync_id"] for item in read_tools.search(user, q="MCP"))
+    assert any(
+        item["sync_id"] == result["sync_id"]
+        for item in read_tools.list_transactions(user, ledger_id=ledger_id, q="MCP")["items"]
+    )
+
+
+def test_transaction_type_switch_clears_inactive_account_fields():
+    from src.snapshot_mutator import create_transaction, update_transaction
+
+    snapshot, tx_id = create_transaction(
+        {"version": 2, "items": []},
+        {
+            "tx_type": "transfer",
+            "amount": 20,
+            "happened_at": "2026-05-23T13:28:52+00:00",
+            "from_account_id": "acc-from",
+            "from_account_name": "From",
+            "to_account_id": "acc-to",
+            "to_account_name": "To",
+        },
+    )
+    snapshot = update_transaction(
+        snapshot,
+        tx_id,
+        {
+            "tx_type": "expense",
+            "account_id": "acc-expense",
+            "account_name": "Expense",
+        },
+    )
+    item = snapshot["items"][0]
+    assert item["accountId"] == "acc-expense"
+    assert item["accountName"] == "Expense"
+    assert item["fromAccountId"] is None
+    assert item["fromAccountName"] is None
+    assert item["toAccountId"] is None
+    assert item["toAccountName"] is None
+
+    snapshot = update_transaction(
+        snapshot,
+        tx_id,
+        {
+            "tx_type": "transfer",
+            "from_account_id": "acc-new-from",
+            "from_account_name": "New From",
+            "to_account_id": "acc-new-to",
+            "to_account_name": "New To",
+        },
+    )
+    item = snapshot["items"][0]
+    assert item["accountId"] is None
+    assert item["accountName"] is None
+    assert item["fromAccountId"] == "acc-new-from"
+    assert item["toAccountId"] == "acc-new-to"
 
 
 def test_invalid_batch_has_no_partial_transactions_or_mcp_tag(ledger):
