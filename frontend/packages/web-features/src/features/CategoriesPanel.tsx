@@ -23,7 +23,7 @@ import type { ReadCategory, WorkspaceCategory } from '@beecount/api-client'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
-import { childrenOfCategory, splitCategoryTree } from '../lib/categoryTree'
+import { childrenOfCategory, splitCategoryTree, subtreeTxCount } from '../lib/categoryTree'
 import { useSingleFlight } from '../lib/singleFlight'
 import type { CategoryForm } from '../forms'
 
@@ -262,6 +262,18 @@ function CategoriesCardBody({
     }),
     [rows]
   )
+  // 父分类 tile 的显示笔数 = 直接笔数 + 子分类笔数(subtreeTxCount)。**仅
+  // 展示用** —— 父级候选("先空再分")与删除守卫仍按直接笔数判断,见
+  // parentCandidateRows / CategoriesPage.onDelete。
+  const displayCountById = useMemo(() => {
+    const out: Record<string, number> = { ...txCountById }
+    for (const kind of ['expense', 'income', 'transfer'] as CategoryKind[]) {
+      for (const parent of grouped.parentsByKind[kind]) {
+        out[parent.id] = subtreeTxCount(parent, grouped.childrenByParent, txCountById)
+      }
+    }
+    return out
+  }, [grouped, txCountById])
 
   if (rows.length === 0) {
     return null  // 空态由外层 panel 渲染(带新建 CTA)
@@ -347,7 +359,7 @@ function CategoriesCardBody({
                         key={parent.id}
                         category={parent}
                         renderIcon={renderIcon}
-                        count={txCountById[parent.id] ?? 0}
+                        count={displayCountById[parent.id] ?? 0}
                         countUnit={countUnit}
                         hasChildren={hasChildren}
                         expanded={isExpanded}

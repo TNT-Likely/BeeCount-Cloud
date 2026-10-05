@@ -695,8 +695,23 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         # 全部失配,子分类从所有视图消失。parentSyncId 是稳定 FK,不需要动。
         # 这里只刷快照 JSON;projection 侧由 rename_cascade_category 统一处理
         # (write/_shared._collect_renames 触发,mobile push 路径同函数)。
+        #
+        # FK 感知:有 parentSyncId 的行**只认 FK** —— FK 指向本分类才跟随
+        # (名字悬空也跟着刷,顺带自愈);FK 指向别的分类时绝不认领,哪怕名字
+        # 撞上旧名 —— 典型场景:父分类 A 改名 B 后被删,留下 parent_name=A、
+        # FK 悬空的孤儿行;之后新建一个 A 再改名,按名匹配会把孤儿"过继"给
+        # 新分类,parent_name 刷成 B 而 FK 依旧悬空,名字和 FK 从此互相矛盾
+        # (2026-10-05 验证环境实测踩中)。老数据无 FK 才按 (kind, parent_name)
+        # 兜底,与 projection 侧 rename_cascade_category 的双条件一致。
         for row in categories:
             if str(row.get("syncId") or "") == category_id:
+                continue
+            row_fk = str(row.get("parentSyncId") or "").strip()
+            if row_fk:
+                if row_fk == category_id:
+                    row["parentName"] = new_name
+                    if old_kind != new_kind:
+                        row["kind"] = new_kind
                 continue
             if str(row.get("parentName") or "").strip() == old_name and str(
                 row.get("kind") or ""

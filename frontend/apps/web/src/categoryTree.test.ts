@@ -1,4 +1,4 @@
-import { childrenOfCategory, splitCategoryTree } from '@beecount/web-features'
+import { childrenOfCategory, splitCategoryTree, subtreeTxCount } from '@beecount/web-features'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -96,6 +96,22 @@ describe('splitCategoryTree', () => {
     expect(topLevel.map((r) => r.id).sort()).toEqual(['cat-child-legacy', 'cat-income'])
     expect(Object.keys(childGroups)).toHaveLength(0)
   })
+
+  it('名字兜底只认 level=1 候选 —— 同名 L2 孤儿不收养子分类', () => {
+    // server 按名反查父级时限定 level=1;L2 孤儿(父已删)即使与某子分类的
+    // parent_name 同名,也不能在 UI 里把它"收养"成自己的子分类。
+    const orphanL2 = row({
+      id: 'cat-orphan-l2',
+      name: '家常菜',
+      level: 2,
+      parent_name: '已删父',
+      parent_sync_id: 'cat-dead',
+    })
+    const { topLevel, childGroups } = splitCategoryTree([orphanL2, CHILD_LEGACY])
+    // 兜底键解析不到任何 level=1 父行 → 两行都顶级,谁也不挂谁
+    expect(topLevel.map((r) => r.id).sort()).toEqual(['cat-child-legacy', 'cat-orphan-l2'])
+    expect(Object.keys(childGroups)).toHaveLength(0)
+  })
 })
 
 describe('childrenOfCategory', () => {
@@ -103,5 +119,19 @@ describe('childrenOfCategory', () => {
     const { childGroups } = splitCategoryTree([PARENT, CHILD_FK, CHILD_LEGACY])
     const children = childrenOfCategory(childGroups, PARENT)
     expect(children.map((r) => r.id).sort()).toEqual(['cat-child-fk', 'cat-child-legacy'])
+  })
+})
+
+describe('subtreeTxCount', () => {
+  it('父级显示笔数 = 直接笔数 + 子分类笔数(与预算用量口径一致)', () => {
+    const { childGroups } = splitCategoryTree([PARENT, CHILD_FK, CHILD_LEGACY])
+    const counts = { 'cat-parent': 2, 'cat-child-fk': 3, 'cat-child-legacy': 5 }
+    expect(subtreeTxCount(PARENT, childGroups, counts)).toBe(10)
+  })
+
+  it('无子分类 / 无交易记录时等于直接笔数', () => {
+    const { childGroups } = splitCategoryTree([PARENT])
+    expect(subtreeTxCount(PARENT, childGroups, { 'cat-parent': 7 })).toBe(7)
+    expect(subtreeTxCount(PARENT, childGroups, {})).toBe(0)
   })
 })

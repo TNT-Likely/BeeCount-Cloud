@@ -427,3 +427,71 @@ def test_web_delete_guard_counts_child_by_parent_sync_id_alone() -> None:
         assert "child" in text.lower() or "subcateg" in text.lower() or "校验" in text
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# 改名级联的 FK 感知:同名新父不认领已删父的孤儿行                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_web_rename_reusing_dead_parent_name_leaves_fk_orphans_alone() -> None:
+    """回归(2026-10-05 验证环境实测踩中):旧父 A 改名后被删,留下
+    parent_name=A、FK 悬空的孤儿行;之后新建同名 A 再改名 B —— mutator 的
+    子分类改名级联按**名**匹配会把孤儿"过继"进来:parent_name 刷成 B 而
+    FK 依旧悬空,名字与 FK 从此互相矛盾。级联必须 FK 感知:有 parentSyncId
+    的行只认 FK,FK 指向别的分类绝不认领;新父名下真正的 FK 子行照常级联。"""
+    client, TS = _make_client()
+    try:
+        owner = _register(client, "cat101-orphan@example.com")
+        ledger_id = "L_CAT101_ORPHAN"
+        _seed_ledger(client, owner["access_token"], owner["device_id"], ledger_id)
+        web = _login_web(client, "cat101-orphan@example.com")
+        web_token = web["access_token"]
+
+        # mobile push:父 A + FK 子行,再 push 删除父(push 路径无子分类守卫,
+        # 拦截由 mobile 本地负责)→ 孤儿:parent_name=餐饮、FK=cat101-dead
+        _push_category(client, owner["access_token"], "cat101-dead", {
+            "name": "餐饮", "kind": "expense", "level": 1,
+        }, device_id=owner["device_id"])
+        _push_category(client, owner["access_token"], "cat101-orphan-child", {
+            "name": "午餐", "kind": "expense", "level": 2,
+            "parentName": "餐饮", "parentSyncId": "cat101-dead",
+        }, device_id=owner["device_id"])
+        res = client.post(
+            "/api/v1/sync/push",
+            headers={"Authorization": f"Bearer {owner['access_token']}"},
+            json={
+                "device_id": owner["device_id"],
+                "changes": [{
+                    "ledger_id": ledger_id,
+                    "entity_type": "category",
+                    "entity_sync_id": "cat101-dead",
+                    "action": "delete",
+                    "payload": {},
+                    "updated_at": _iso(),
+                }],
+            },
+        )
+        assert res.status_code == 200, res.text
+        orphan = _projection_row(TS, "cat101-orphan-child")
+        assert orphan.parent_sync_id == "cat101-dead"
+        assert orphan.parent_name == "餐饮"
+
+        # web:新建同名父 A + 挂一个真子行(FK 按名解析到新 A)
+        new_parent = _create_category(client, web_token, ledger_id, name="餐饮", level=1)
+        assert new_parent != "cat101-dead"
+        new_child = _create_category(
+            client, web_token, ledger_id, name="粉面", level=2, parent_name="餐饮"
+        )
+
+        # web 改名 餐饮 → 餐饮 2:核心断言 —— 孤儿纹丝不动,真子行级联
+        _rename_category(client, web_token, ledger_id, new_parent, name="餐饮 2")
+
+        orphan = _projection_row(TS, "cat101-orphan-child")
+        assert orphan.parent_name == "餐饮", "孤儿 parent_name 不该被同名新父的改名刷掉"
+        assert orphan.parent_sync_id == "cat101-dead", "孤儿 FK 不许被级联改挂"
+        real = _projection_row(TS, new_child)
+        assert real.parent_name == "餐饮 2", "新父的 FK 子行应照常级联"
+        assert real.parent_sync_id == new_parent
+    finally:
+        app.dependency_overrides.clear()

@@ -17,6 +17,10 @@ export type CategoryRowLike = Pick<
   'id' | 'name' | 'kind' | 'parent_name'
 > & {
   parent_sync_id?: string | null
+  /** 仅名字兜底分组用:server 按 (name, kind, level=1) 反查父级,这里同契约。
+   * FK 分组不要求 level —— FK 本身就是权威。缺省视为候选(server 老数据
+   * level 可能为 NULL)。 */
+  level?: number | null
 }
 
 /** 子分类的归属键:FK 有效 → 按 FK;否则按 (kind, parent_name) 兜底。 */
@@ -37,6 +41,13 @@ export function categoryParentGroupKeys(parent: CategoryRowLike): string[] {
   return keys
 }
 
+/** 只有 level=1(或缺省)的行能凭**名字**收养子分类 —— server 侧按名反查
+ * 父级时也限定 level=1,两边契约一致;否则一个 L2 孤儿若与某子分类的
+ * parent_name 同名,会在 UI 里错误"收养"它。 */
+function isParentCandidateByName(row: CategoryRowLike): boolean {
+  return row.level == null || Number(row.level) === 1
+}
+
 export function splitCategoryTree<T extends CategoryRowLike>(rows: T[]): {
   topLevel: T[]
   childGroups: Record<string, T[]>
@@ -46,7 +57,9 @@ export function splitCategoryTree<T extends CategoryRowLike>(rows: T[]): {
   for (const row of rows) {
     parentIds.add(row.id)
     const name = (row.name || '').trim().toLowerCase()
-    if (name) parentNameKeys.add(`name:${(row.kind || '').trim()}::${name}`)
+    if (name && isParentCandidateByName(row)) {
+      parentNameKeys.add(`name:${(row.kind || '').trim()}::${name}`)
+    }
   }
   const topLevel: T[] = []
   const childGroups: Record<string, T[]> = {}
@@ -86,3 +99,23 @@ export function childrenOfCategory<T extends CategoryRowLike>(
 
 /** WorkspaceCategory 是 ReadCategory 的超集,这里只要断言结构兼容即可。 */
 export type AnyCategoryRow = ReadCategory | WorkspaceCategory
+
+/**
+ * 父分类 tile 的**显示**笔数:本分类直接笔数 + 全部子分类笔数。用户看"这个
+ * 分类有几笔"的直觉是含子分类的(预算用量在 server 侧也是这个口径上卷)。
+ *
+ * **只用于展示**:父级候选("先空再分":有直接交易的分类不能再挂子分类,
+ * mobile 同款契约)和删除守卫仍必须用直接笔数 tx_count,上卷数会让有子分类
+ * 的父级从父级候选里消失、删除拦截文案失真。
+ */
+export function subtreeTxCount<T extends CategoryRowLike>(
+  parent: T,
+  childGroups: Record<string, T[]>,
+  txCountById: Record<string, number>,
+): number {
+  let total = txCountById[parent.id] ?? 0
+  for (const child of childrenOfCategory(childGroups, parent)) {
+    total += txCountById[child.id] ?? 0
+  }
+  return total
+}

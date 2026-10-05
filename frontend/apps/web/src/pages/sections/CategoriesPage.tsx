@@ -197,19 +197,10 @@ export function CategoriesPage() {
           const ws =
             (rows.find((r) => r.id === row.id) as WorkspaceCategory | undefined) ||
             (row as WorkspaceCategory)
-          const txCount = ws.tx_count ?? 0
-          if (txCount > 0) {
-            toast.error(
-              t('categories.delete.blockedByTransactions', {
-                name: ws.name,
-                count: txCount,
-              }),
-              t('notice.error'),
-            )
-            return
-          }
           // #101:FK 优先计数,parent_name 仅兜底老数据(FK 缺失时才看名字,
-          // 且要求同 kind,与 server delete_category 双条件一致)。
+          // 且要求同 kind,与 server delete_category 双条件一致)。**先查子
+          // 分类再查交易**,与 server 守卫顺序一致 —— 父分类 tile 显示的是
+          // 含子分类的上卷笔数,先报交易会让文案跟数字对不上。
           const childCount = rows.filter(
             (r) =>
               r.id !== ws.id &&
@@ -223,6 +214,17 @@ export function CategoriesPage() {
               t('categories.delete.blockedByChildren', {
                 name: ws.name,
                 count: childCount,
+              }),
+              t('notice.error'),
+            )
+            return
+          }
+          const txCount = ws.tx_count ?? 0
+          if (txCount > 0) {
+            toast.error(
+              t('categories.delete.blockedByTransactions', {
+                name: ws.name,
+                count: txCount,
               }),
               t('notice.error'),
             )
