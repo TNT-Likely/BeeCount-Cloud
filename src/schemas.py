@@ -578,6 +578,9 @@ class ReadCategoryOut(BaseModel):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None
+    # 父子关系稳定 FK(0013):client 优先按它建父子链,父分类改名不影响。
+    # parent_name 保留作 legacy 兜底(老数据未回填时为 NULL)。#101
+    parent_sync_id: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -906,6 +909,8 @@ class WriteCategoryCreateRequest(WriteBaseRequest):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None = None
+    # 稳定 FK(#101):有它优先按它挂父,无则服务端按 (parent_name, kind) 兜底解析。
+    parent_sync_id: str | None = None
 
 
 class WriteCategoryUpdateRequest(WriteBaseRequest):
@@ -919,6 +924,7 @@ class WriteCategoryUpdateRequest(WriteBaseRequest):
     icon_cloud_file_id: str | None = None
     icon_cloud_sha256: str | None = None
     parent_name: str | None = None
+    parent_sync_id: str | None = None
 
 
 class WriteTagCreateRequest(WriteBaseRequest):

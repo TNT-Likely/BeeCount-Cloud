@@ -385,6 +385,37 @@ def upsert_category(
                 func.coalesce(UserCategoryProjection.level, 1) == 1,
             )
         )
+    # #101 防御:payload 只带 parent_name 且解析失败(典型:父分类已改名,老快照 /
+    # 旧客户端还传着旧名),而库里有未失效的 parent_sync_id —— 此时信任库里的
+    # 稳定 FK,parent_name 沿用旧值等 rename cascade 修正,**绝不能把有效的
+    # parent_sync_id 抹成 NULL**(issue 回归清单点名)。payload 显式带 parentSyncId
+    # (含显式 NULL 的重挂)或 parent_name 为空(挂到顶级)时不走保留逻辑。
+    if parent_sync_id is None and parent_name:
+        prev_parent = db.execute(
+            select(
+                UserCategoryProjection.parent_sync_id,
+                UserCategoryProjection.parent_name,
+            ).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.sync_id == sync_id,
+            )
+        ).first()
+        if prev_parent is not None and prev_parent.parent_sync_id:
+            parent_sync_id = prev_parent.parent_sync_id
+            parent_name = prev_parent.parent_name
+
+    # #101:FK 一旦确定(无论来自 payload、merge 补齐还是上面的保留逻辑),
+    # parent_name 以 FK 指向的父行现名为权威 —— payload 带着改名前的旧名时
+    # (老客户端 merge 后必带),不许把 cascade 刷好的名字再写回旧值。
+    if parent_sync_id:
+        fk_parent_name = db.scalar(
+            select(UserCategoryProjection.name).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.sync_id == parent_sync_id,
+            )
+        )
+        if fk_parent_name:
+            parent_name = fk_parent_name
 
     values = {
         "user_id": user_id,
@@ -563,8 +594,16 @@ def rename_cascade_category(
     category_sync_id: str,
     new_name: str | None,
     new_kind: str | None = None,
+    old_name: str | None = None,
 ) -> None:
-    """category 是 user-global,rename 时刷遍该用户所有 ledger 的 read_tx_projection。"""
+    """category 是 user-global,rename 时刷遍该用户所有 ledger 的 read_tx_projection。
+
+    #101:除了交易 denorm 列,子分类的 parent_name 也要跟着刷 —— Web 全链路按
+    parent_name 分组/守卫,父改名后子行悬空就会从所有视图消失。双保险:
+    先按稳定 FK parent_sync_id 刷(权威,0013 起存在),再对 parent_sync_id
+    尚未回填的老行按 (旧名, kind) 兜底刷一次(顺手把它们的 parent_sync_id
+    补上,自愈老数据)。web write 与 mobile push 两条路径都汇入本函数。
+    """
     from sqlalchemy import update
 
     values: dict[str, Any] = {"category_name": new_name}
@@ -578,6 +617,38 @@ def rename_cascade_category(
         )
         .values(**values)
     )
+
+    if not new_name:
+        return
+    # ① 稳定 FK:直接刷所有挂在它下面的子行,无需旧名。
+    db.execute(
+        update(UserCategoryProjection)
+        .where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.parent_sync_id == category_sync_id,
+        )
+        .values(parent_name=new_name)
+    )
+    # ② 兜底:parent_sync_id 为 NULL 的老数据行,按 (旧名, kind) 匹配。
+    #    kind 必须限定 —— 不同 kind 下同名一级分类是允许的,按名裸刷会误伤。
+    if old_name and old_name != new_name:
+        parent_kind = new_kind or db.scalar(
+            select(UserCategoryProjection.kind).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.sync_id == category_sync_id,
+            )
+        )
+        if parent_kind:
+            db.execute(
+                update(UserCategoryProjection)
+                .where(
+                    UserCategoryProjection.user_id == user_id,
+                    UserCategoryProjection.parent_sync_id.is_(None),
+                    UserCategoryProjection.parent_name == old_name,
+                    UserCategoryProjection.kind == parent_kind,
+                )
+                .values(parent_name=new_name, parent_sync_id=category_sync_id)
+            )
 
 
 def rename_cascade_tag(

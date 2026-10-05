@@ -401,10 +401,10 @@ def _emit_entity_diffs(
         projection.rename_cascade_account(
             db, user_id=current_user.id, account_sync_id=sync_id, new_name=new_name,
         )
-    for sync_id, _old, new_name, new_kind in category_renames:
+    for sync_id, old_name, new_name, new_kind in category_renames:
         projection.rename_cascade_category(
             db, user_id=current_user.id, category_sync_id=sync_id,
-            new_name=new_name, new_kind=new_kind,
+            new_name=new_name, new_kind=new_kind, old_name=old_name,
         )
     for sync_id, old, new, _ in tag_renames:
         projection.rename_cascade_tag(

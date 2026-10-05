@@ -632,13 +632,21 @@ function toEditable(
   // 了这种父类名字,我们 lookup 时拒绝命中,categoryId 留空 → 用户在 Picker
   // 里手动选具体子分类。否则保存的 tx 关联到一个不该被选的父类,projection
   // 行为虽然 ok 但跟 mobile 行为不一致。
-  const parentNamesWithChildren = new Set<string>()
+  // #101:「有子分类的父类」判定 FK(parent_sync_id)优先,parent_name 仅
+  // 老数据兜底(且限定同 kind,与 server 守卫一致)—— 否则父改名后误判无子。
+  const parentIdsWithChildren = new Set<string>()
+  const legacyParentNamesWithChildren = new Set<string>()
   for (const c of categories) {
-    if (c.parent_name) parentNamesWithChildren.add(c.parent_name)
+    const fk = (c.parent_sync_id || '').trim()
+    if (fk) parentIdsWithChildren.add(fk)
+    else if (c.parent_name) legacyParentNamesWithChildren.add(`${c.kind}::${c.parent_name}`)
   }
   const isSelectableCategory = (c: WorkspaceCategory) => {
-    if (c.parent_name) return true   // 子分类,可选
-    return !parentNamesWithChildren.has(c.name)   // 父分类无子,可选
+    if (c.parent_name || c.parent_sync_id) return true   // 子分类,可选
+    return (
+      !parentIdsWithChildren.has(c.id) &&
+      !legacyParentNamesWithChildren.has(`${c.kind}::${c.name}`)  // 父分类无子,可选
+    )
   }
 
   const matchCategory = (name: string, kind: 'expense' | 'income' | 'transfer'): WorkspaceCategory | null => {

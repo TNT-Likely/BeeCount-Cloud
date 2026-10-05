@@ -253,6 +253,10 @@ export type ReadCategory = {
   icon_cloud_file_id?: string | null
   icon_cloud_sha256?: string | null
   parent_name: string | null
+  // 二级分类父子关系的稳定 FK(parent 的 sync_id)。client 优先用它建父子链,
+  // parent_name 是显示 / 兜底(#101)。WorkspaceCategory / SharedCategoryItem
+  // 里为必填,这里可缺省兼容旧接口。
+  parent_sync_id?: string | null
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null

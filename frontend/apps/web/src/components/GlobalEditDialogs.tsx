@@ -355,6 +355,7 @@ export function GlobalEditDialogs() {
         icon_cloud_file_id: cat.icon_cloud_file_id || '',
         icon_cloud_sha256: cat.icon_cloud_sha256 || '',
         parent_name: cat.parent_name || '',
+        parent_sync_id: cat.parent_sync_id || '',
       })
       try {
         const cats = await fetchWorkspaceCategories(token, { ledgerId, limit: 500 })
@@ -384,6 +385,8 @@ export function GlobalEditDialogs() {
         icon_cloud_file_id: editCatForm.icon_cloud_file_id || null,
         icon_cloud_sha256: editCatForm.icon_cloud_sha256 || null,
         parent_name: editCatForm.parent_name || null,
+        // #101:稳定 FK 一并提交;server 端 FK 权威(名字由父行现名修正)。
+        parent_sync_id: editCatForm.parent_sync_id || null,
       }
       await retryOnConflict(ledgerId, (base) =>
         editCatForm.editingId

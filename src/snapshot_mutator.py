@@ -616,6 +616,7 @@ def create_category(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "iconCloudFileId": payload.get("icon_cloud_file_id"),
         "iconCloudSha256": payload.get("icon_cloud_sha256"),
         "parentName": payload.get("parent_name"),
+        "parentSyncId": payload.get("parent_sync_id"),  # #101 稳定 FK
     }
     _mark_entity_actor(category, payload, create=True)
     categories.append(category)
@@ -646,9 +647,34 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         ("icon_cloud_file_id", "iconCloudFileId"),
         ("icon_cloud_sha256", "iconCloudSha256"),
         ("parent_name", "parentName"),
+        ("parent_sync_id", "parentSyncId"),
     ]:
         if req_key in payload:
             category[snapshot_key] = payload.get(req_key)
+
+    # #101:parent_name 显式变更时同步 parentSyncId —— upsert 侧 FK 权威,
+    # 只改名字不刷 FK 会导致 (a) 重挂到别的父被 FK 拉回旧父,(b) 改挂顶级被
+    # FK 拉回。payload 显式带 parent_sync_id 时以它为准,不做解析。
+    if "parent_name" in payload and "parent_sync_id" not in payload:
+        new_parent_name = str(category.get("parentName") or "").strip()
+        if not new_parent_name:
+            category["parentSyncId"] = None
+        else:
+            new_kind_early = str(category.get("kind") or "").strip()
+            parent_row = next(
+                (
+                    row
+                    for row in categories
+                    if str(row.get("syncId") or "") != category_id
+                    and str(row.get("name") or "").strip() == new_parent_name
+                    and str(row.get("kind") or "").strip() == new_kind_early
+                    and int(row.get("level") or 1) == 1
+                ),
+                None,
+            )
+            category["parentSyncId"] = (
+                str(parent_row["syncId"]) if parent_row else None
+            )
 
     new_name = str(category.get("name") or "").strip()
     new_kind = str(category.get("kind") or "").strip()
@@ -665,6 +691,20 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
             if tx.get("categoryName") == old_name and tx.get("categoryKind") == old_kind:
                 tx["categoryName"] = new_name
                 tx["categoryKind"] = new_kind
+        # #101:子分类的 parentName 必须跟着改名,否则 Web 按 parent_name 分组
+        # 全部失配,子分类从所有视图消失。parentSyncId 是稳定 FK,不需要动。
+        # 这里只刷快照 JSON;projection 侧由 rename_cascade_category 统一处理
+        # (write/_shared._collect_renames 触发,mobile push 路径同函数)。
+        for row in categories:
+            if str(row.get("syncId") or "") == category_id:
+                continue
+            if str(row.get("parentName") or "").strip() == old_name and str(
+                row.get("kind") or ""
+            ).strip() == old_kind:
+                row["parentName"] = new_name
+                if old_kind != new_kind:
+                    # kind 变更同样要求子分类跟随(父子 kind 必须一致)。
+                    row["kind"] = new_kind
     _mark_entity_actor(category, payload, create=False)
     return target
 
@@ -681,12 +721,21 @@ def delete_category(snapshot: dict, category_id: str, payload: dict | None = Non
     # 无主交易污染 ledger。前端也有同款拦截,这里是兜底服务端校验防止旧客户
     # 端 / 直接 API 调用绕过。
     if old_name and old_kind:
+        # #101:子分类守卫改双条件 —— parentSyncId(稳定 FK,改名后依然正确)
+        # 或 parentName+kind(老数据未回填 FK 时的兜底)。只按名字计数的话,
+        # 父分类改名后名字链断掉,守卫计 0,删除会漏拦并留下永久孤儿行。
         child_count = sum(
             1
             for row in categories
             if str(row.get("syncId") or "") != category_id
-            and str(row.get("parentName") or "").strip() == old_name
-            and str(row.get("kind") or "").strip() == old_kind
+            and (
+                # FK 指向即是子分类,不受 kind 限定(数据异常也要拦,防孤儿)。
+                str(row.get("parentSyncId") or "").strip() == category_id
+                or (
+                    str(row.get("kind") or "").strip() == old_kind
+                    and str(row.get("parentName") or "").strip() == old_name
+                )
+            )
         )
         if child_count > 0:
             raise ValueError(

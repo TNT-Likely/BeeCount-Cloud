@@ -117,6 +117,8 @@ export function CategoriesPage() {
         icon_cloud_file_id: form.icon_cloud_file_id || null,
         icon_cloud_sha256: form.icon_cloud_sha256 || null,
         parent_name: form.parent_name || null,
+        // #101:稳定 FK 一并提交;server 端 FK 权威(名字由父行现名修正)。
+        parent_sync_id: form.parent_sync_id || null,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -148,6 +150,7 @@ export function CategoriesPage() {
       icon_cloud_file_id: row.icon_cloud_file_id || '',
       icon_cloud_sha256: row.icon_cloud_sha256 || '',
       parent_name: row.parent_name || '',
+      parent_sync_id: row.parent_sync_id || '',
     })
     setEditDialogOpen(true)
   }, [])
@@ -205,11 +208,15 @@ export function CategoriesPage() {
             )
             return
           }
+          // #101:FK 优先计数,parent_name 仅兜底老数据(FK 缺失时才看名字,
+          // 且要求同 kind,与 server delete_category 双条件一致)。
           const childCount = rows.filter(
             (r) =>
               r.id !== ws.id &&
-              r.parent_name === ws.name &&
-              r.kind === ws.kind,
+              ((r.parent_sync_id || '').trim() === ws.id ||
+                (!(r.parent_sync_id || '').trim() &&
+                  r.parent_name === ws.name &&
+                  r.kind === ws.kind)),
           ).length
           if (childCount > 0) {
             toast.error(

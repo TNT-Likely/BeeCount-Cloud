@@ -23,6 +23,7 @@ import type { ReadCategory, WorkspaceCategory } from '@beecount/api-client'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
+import { childrenOfCategory, splitCategoryTree } from '../lib/categoryTree'
 import { useSingleFlight } from '../lib/singleFlight'
 import type { CategoryForm } from '../forms'
 
@@ -233,17 +234,13 @@ function CategoriesCardBody({
       income: [],
       transfer: []
     }
-    const childrenByParent: Record<string, WorkspaceCategory[]> = {}
-    for (const row of rows) {
-      const kind = (row.kind as CategoryKind) || 'expense'
-      const parent = (row.parent_name || '').trim()
-      if (parent) {
-        childrenByParent[`${kind}::${parent.toLowerCase()}`] =
-          childrenByParent[`${kind}::${parent.toLowerCase()}`] || []
-        childrenByParent[`${kind}::${parent.toLowerCase()}`].push(row)
-      } else {
-        parentsByKind[kind].push(row)
-      }
+    // #101:子分类归属 parent_sync_id(稳定 FK)优先,parent_name 仅老数据
+    // 兜底;归属键解析不到父行(FK 指向已删父分类的老孤儿)→ 按顶级渲染,
+    // 不许静默吞掉。
+    const { topLevel, childGroups } = splitCategoryTree(rows)
+    const childrenByParent = childGroups
+    for (const row of topLevel) {
+      parentsByKind[(row.kind as CategoryKind) || 'expense'].push(row)
     }
     for (const kind of Object.keys(parentsByKind) as CategoryKind[]) {
       parentsByKind[kind].sort(
@@ -273,8 +270,9 @@ function CategoriesCardBody({
   const parents = grouped.parentsByKind[activeKind]
   const kinds: CategoryKind[] = ['expense', 'income', 'transfer']
 
+  // #101:FK 优先 + 名字兜底合并(去重),同父下新老子行都能挂上。
   const childrenOf = (parent: WorkspaceCategory) =>
-    grouped.childrenByParent[`${activeKind}::${parent.name.toLowerCase()}`] || []
+    childrenOfCategory(grouped.childrenByParent, parent)
 
   // 一级分类按 columns 切成若干"行";展开父级所在行的下方插一个子类容器
   // (跟 CategorySelector 的"原地展开"同款),避免子类跑到整页网格末尾。
@@ -652,9 +650,15 @@ export function CategoriesPanel({
     })
   }, [rows, form.kind, form.editingId, txCountById])
 
-  // 当前选中的父级 row(用 form.parent_name 反查同 kind 的 level=1) — 用于
-  // CategoryPickerDialog 的 selectedId 高亮 + 触发按钮显示图标。
+  // 当前选中的父级 row(#101:优先按 form.parent_sync_id(FK)反查,parent_name
+  // 仅兜底老表单状态) — 用于 CategoryPickerDialog 的 selectedId 高亮 + 触发
+  // 按钮显示图标。
   const selectedParentRow = useMemo(() => {
+    const fk = (form.parent_sync_id || '').trim()
+    if (fk) {
+      const byFk = rows.find((row) => row.id === fk)
+      if (byFk) return byFk
+    }
     const name = (form.parent_name || '').trim().toLowerCase()
     if (!name) return null
     return (
@@ -665,7 +669,7 @@ export function CategoriesPanel({
           (row.name || '').trim().toLowerCase() === name,
       ) ?? null
     )
-  }, [rows, form.kind, form.parent_name])
+  }, [rows, form.kind, form.parent_name, form.parent_sync_id])
 
   // 同 kind 同名查重(workspace 维度。fetchWorkspaceCategories 已经按
   // current_user.id 过滤,所以 rows 自然是用户作用域的)。编辑模式排除自己以
@@ -830,11 +834,13 @@ export function CategoriesPanel({
                     ? form.kind
                     : 'expense'}
                   onValueChange={(value) => {
-                    // 改 kind 后,parent_name 可能跟新 kind 不匹配,清掉避免幻象。
+                    // 改 kind 后,parent 可能跟新 kind 不匹配,清掉避免幻象
+                    // (FK 一起清,#101)。
                     onFormChange({
                       ...form,
                       kind: value as CategoryForm['kind'],
                       parent_name: '',
+                      parent_sync_id: '',
                       level: '1',
                     })
                   }}
@@ -1042,13 +1048,20 @@ export function CategoriesPanel({
           onFormChange({
             ...form,
             parent_name: cat.name.trim(),
+            parent_sync_id: cat.id,  // #101:FK 跟名字一起提交
             level: '2',
           })
         }}
         onClear={
           form.editingId && form.level === '2'
             ? undefined
-            : () => onFormChange({ ...form, parent_name: '', level: '1' })
+            : () =>
+                onFormChange({
+                  ...form,
+                  parent_name: '',
+                  parent_sync_id: '',
+                  level: '1',
+                })
         }
         clearLabel={t('common.none')}
       />

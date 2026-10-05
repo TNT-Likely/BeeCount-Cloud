@@ -63,6 +63,8 @@ export type CategoryForm = {
   icon_cloud_file_id: string
   icon_cloud_sha256: string
   parent_name: string
+  /** 选中的父分类 sync_id(#101 FK 优先,名字只是显示)。 */
+  parent_sync_id: string
 }
 
 import { pickRandomTagColor } from './lib/tagColorPalette'
@@ -140,7 +142,8 @@ export const categoryDefaults = (): CategoryForm => ({
   custom_icon_path: '',
   icon_cloud_file_id: '',
   icon_cloud_sha256: '',
-  parent_name: ''
+  parent_name: '',
+  parent_sync_id: ''
 })
 
 export const tagDefaults = (): TagForm => ({

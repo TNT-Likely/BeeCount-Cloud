@@ -155,6 +155,9 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("iconCloudFileId", "icon_cloud_file_id"),
         ("iconCloudSha256", "icon_cloud_sha256"),
         ("parentName", "parent_name"),
+        # #101:mobile push 的稳定 FK 通道。漏登记会导致 payload 里的
+        # parentSyncId 被 merge 丢弃、upsert 只能按名反查(父改名后失配)。
+        ("parentSyncId", "parent_sync_id"),
     ]),
     "tag": _MergeSpec(UserTagProjection, [
         ("syncId", "sync_id"),
@@ -398,6 +401,7 @@ def _detect_and_run_rename_cascade_user(
                 db, user_id=user_id, category_sync_id=sync_id,
                 new_name=new_name,
                 new_kind=str(payload.get("kind") or "").strip() or None,
+                old_name=old_name,
             )
     elif entity_type == "tag":
         prev_row = db.scalar(
