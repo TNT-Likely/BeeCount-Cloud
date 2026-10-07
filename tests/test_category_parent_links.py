@@ -124,6 +124,18 @@ def test_legacy_mobile_reparent_and_stale_name_preservation(workspace):
     assert (row["parent_sync_id"], row["parent_name"]) == (other, "购物")
 
 
+def test_ambiguous_legacy_mobile_parent_name_is_not_guessed(workspace):
+    parent = create(workspace, "餐饮")
+    with workspace[4]() as db:
+        row = db.scalar(select(UserCategoryProjection).where(UserCategoryProjection.sync_id == parent))
+        db.add(UserCategoryProjection(user_id=row.user_id, sync_id="duplicate-parent", name=row.name,
+                                      kind=row.kind, level=1))
+        db.commit()
+    push(workspace, "legacy-child", {"name": "早餐", "kind": "expense", "level": 2, "parentName": "餐饮"})
+    row = next(c for c in categories(workspace) if c["id"] == "legacy-child")
+    assert row["parent_sync_id"] is None
+
+
 def test_explicit_reparent_and_clear_parent(workspace):
     parent = create(workspace, "餐饮")
     other = create(workspace, "购物")

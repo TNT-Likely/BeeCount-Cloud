@@ -377,14 +377,16 @@ def upsert_category(
     parent_name = _as_str(payload.get("parentName"))
     parent_sync_id = _as_str(payload.get("parentSyncId"))
     if parent_sync_id is None and parent_name:
-        parent_sync_id = db.scalar(
+        parent_ids = db.scalars(
             select(UserCategoryProjection.sync_id).where(
                 UserCategoryProjection.user_id == user_id,
                 UserCategoryProjection.name == parent_name,
                 UserCategoryProjection.kind == _as_str(payload.get("kind")),
                 func.coalesce(UserCategoryProjection.level, 1) == 1,
+                UserCategoryProjection.sync_id != sync_id,
             )
-        )
+        ).all()
+        parent_sync_id = parent_ids[0] if len(parent_ids) == 1 else None
     if parent_sync_id:
         parent = db.scalar(select(UserCategoryProjection).where(
             UserCategoryProjection.user_id == user_id,
