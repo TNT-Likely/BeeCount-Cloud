@@ -14,7 +14,7 @@ def full_snapshot(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SyncFullResponse:
-    """给 mobile 的首次/全量同步。方案 B 后从 projection 懒构建(按 change_id 缓存)。
+    """给 mobile 的首次/全量同步。从 projection 懒构建,跟踪账本与全局版本。
 
     mobile 协议兼容:返回 payload_json 还是 `{content: json_str, metadata: {...}}`,
     content 是序列化 snapshot —— mobile 零改动。
@@ -51,11 +51,16 @@ def full_snapshot(
     if ledger_change_id == 0:
         return SyncFullResponse(ledger_id=ledger_id, snapshot=None, latest_cursor=latest_cursor)
 
-    # 按 change_id 缓存 —— 同一版本下所有请求复用。build 一次 ~15ms,之后 miss→hit。
-    cached = snapshot_cache.get(ledger.id, ledger_change_id)
+    # 分类等 user-global 更新不会推进 ledger change_id。缓存必须同时跟踪
+    # owner 的全局版本;change_id 在全表单调递增,取 max 可覆盖任一侧的变更。
+    # 返回给 mobile 的 ledger cursor 仍使用原账本版本,不改变同步协议。
+    cache_change_id = max(
+        ledger_change_id, snapshot_builder.latest_user_change_id(db, ledger.user_id)
+    )
+    cached = snapshot_cache.get(ledger.id, cache_change_id)
     if cached is None:
         cached = snapshot_builder.build(db, ledger)
-        snapshot_cache.put(ledger.id, ledger_change_id, cached)
+        snapshot_cache.put(ledger.id, cache_change_id, cached)
 
     payload_json = {
         "content": json.dumps(cached, ensure_ascii=False),
@@ -75,5 +80,3 @@ def full_snapshot(
             updated_by_device_id=None,
         ),
     )
-
-

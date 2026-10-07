@@ -2,7 +2,7 @@
 
 方案 B 里 projection 是权威源,snapshot 不再 runtime 写入。但 mobile 协议
 (`/sync/full`)、snapshot_mutator(web write 路径)还吃 snapshot dict 作输入,所以
-提供一个按 (ledger_id, max_change_id) 缓存的 builder。
+提供 builder 与 ledger / owner user-global 两侧的版本查询供全量同步缓存使用。
 
 字段 shape 跟原先 mobile push 来的 snapshot 完全对齐 —— mobile 客户端零改动。
 """
@@ -306,6 +306,19 @@ def latest_change_id(db: Session, ledger_id: str) -> int:
     return int(
         db.scalar(
             select(func.max(SyncChange.change_id)).where(SyncChange.ledger_id == ledger_id)
+        )
+        or 0
+    )
+
+
+def latest_user_change_id(db: Session, user_id: str) -> int:
+    """Snapshot 中账户、分类、标签的 owner user-global 版本。"""
+    return int(
+        db.scalar(
+            select(func.max(SyncChange.change_id)).where(
+                SyncChange.scope == "user",
+                SyncChange.user_id == user_id,
+            )
         )
         or 0
     )

@@ -100,6 +100,24 @@ def test_mobile_rename_and_partial_child_update_keep_parent(workspace):
     assert write(workspace, "DELETE", f"/{parent}").status_code == 400
 
 
+def test_warm_full_snapshot_tracks_mobile_user_global_category_changes(workspace):
+    parent = create(workspace, "餐饮")
+    child = create(workspace, "早餐", level=2, parent_sync_id=parent)
+    before = full_snapshot(workspace)  # Warm the process-local ledger snapshot cache.
+    assert next(c for c in before["categories"] if c["syncId"] == parent)["name"] == "餐饮"
+
+    push(workspace, parent, {"name": "伙食"})
+    after = {c["syncId"]: c for c in full_snapshot(workspace)["categories"]}
+    assert after[parent]["name"] == "伙食"
+    assert (after[child]["parentSyncId"], after[child]["parentName"]) == (parent, "伙食")
+
+    push(workspace, child, {"name": "早饭"})
+    child_after = next(c for c in full_snapshot(workspace)["categories"] if c["syncId"] == child)
+    assert (child_after["name"], child_after["parentSyncId"], child_after["parentName"]) == (
+        "早饭", parent, "伙食"
+    )
+
+
 def test_partial_web_edit_and_legacy_reparent(workspace):
     parent = create(workspace, "餐饮")
     other = create(workspace, "购物")
