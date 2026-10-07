@@ -71,6 +71,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # 全量同步后外币折算全部丢失(apply 缺省 nativeAmount=amount 退化 1:1)。
         ReadTxProjection.currency_code,
         ReadTxProjection.native_amount,
+        ReadTxProjection.exclude_from_stats,
+        ReadTxProjection.exclude_from_budget,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -83,12 +85,14 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          to_sid, to_name,
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
-         currency_code, native_amount) = row
+         currency_code, native_amount, exclude_from_stats, exclude_from_budget) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
             "amount": amount,
             "happenedAt": _to_iso_utc(happened_at),
+            "excludeFromStats": bool(exclude_from_stats),
+            "excludeFromBudget": bool(exclude_from_budget),
         }
         if note is not None:
             item["note"] = note
