@@ -28,6 +28,7 @@ import {
   CurrencySelectorTrigger,
   loadRatesToBase,
   resolveCurrencyFields,
+  groupCategories,
 } from '@beecount/web-features'
 
 import { useAuth } from '../../context/AuthContext'
@@ -632,14 +633,8 @@ function toEditable(
   // 了这种父类名字,我们 lookup 时拒绝命中,categoryId 留空 → 用户在 Picker
   // 里手动选具体子分类。否则保存的 tx 关联到一个不该被选的父类,projection
   // 行为虽然 ok 但跟 mobile 行为不一致。
-  const parentNamesWithChildren = new Set<string>()
-  for (const c of categories) {
-    if (c.parent_name) parentNamesWithChildren.add(c.parent_name)
-  }
-  const isSelectableCategory = (c: WorkspaceCategory) => {
-    if (c.parent_name) return true   // 子分类,可选
-    return !parentNamesWithChildren.has(c.name)   // 父分类无子,可选
-  }
+  const { childrenByParent } = groupCategories(categories)
+  const isSelectableCategory = (c: WorkspaceCategory) => !childrenByParent[c.id]?.length
 
   const matchCategory = (name: string, kind: 'expense' | 'income' | 'transfer'): WorkspaceCategory | null => {
     if (!name) return null

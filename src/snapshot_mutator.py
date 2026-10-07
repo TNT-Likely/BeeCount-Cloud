@@ -590,6 +590,54 @@ def delete_account(snapshot: dict, account_id: str, payload: dict | None = None)
     return target
 
 
+def _category_is_child(row: dict, parent: dict) -> bool:
+    if row.get("syncId") == parent.get("syncId"):
+        return False
+    parent_id = str(row.get("parentSyncId") or "").strip()
+    if parent_id:
+        return parent_id == parent.get("syncId")
+    return bool(parent.get("name")) and row.get("kind") == parent.get("kind") and (
+        str(row.get("parentName") or "").strip() == str(parent["name"]).strip()
+    )
+
+
+def _set_category_parent(categories: list[dict], category: dict, payload: dict, *, creating=False) -> None:
+    """Resolve explicit parent edits; omitted fields preserve even unresolved legacy links."""
+    explicit = creating or "parent_sync_id" in payload or "parent_name" in payload
+    parent_id = str(category.get("parentSyncId") or "").strip()
+    parent_name = str(category.get("parentName") or "").strip()
+    if "parent_sync_id" in payload:
+        parent_id = str(payload.get("parent_sync_id") or "").strip()
+        parent_name = str(payload.get("parent_name") or "").strip()
+    elif "parent_name" in payload:
+        new_name = str(payload.get("parent_name") or "").strip()
+        if new_name != parent_name:
+            parent_id = ""
+        parent_name = new_name
+
+    candidates = [row for row in categories
+                  if row.get("syncId") != category.get("syncId")
+                  and row.get("kind") == category.get("kind")
+                  and (row.get("level") or 1) == 1
+                  and not row.get("parentSyncId") and not row.get("parentName")]
+    matches = [row for row in candidates if row.get("syncId") == parent_id] if parent_id else [
+        row for row in candidates if parent_name and str(row.get("name") or "").strip() == parent_name
+    ]
+    if parent_id or parent_name:
+        if len(matches) != 1:
+            if explicit:
+                raise ValueError("write validation failed: invalid category parent")
+            return  # Unresolved historical rows stay editable without guessing a parent.
+        if payload.get("level") == 1:
+            raise ValueError("write validation failed: top-level category cannot have a parent")
+        category.update(parentSyncId=matches[0]["syncId"], parentName=matches[0]["name"], level=2)
+    elif explicit:
+        if category.get("level") == 2:
+            raise ValueError("write validation failed: child category requires a parent")
+        category["parentSyncId"] = None
+        category["parentName"] = None
+
+
 def create_category(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     categories = _ensure_list(target, "categories")
@@ -615,8 +663,8 @@ def create_category(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "customIconPath": payload.get("custom_icon_path"),
         "iconCloudFileId": payload.get("icon_cloud_file_id"),
         "iconCloudSha256": payload.get("icon_cloud_sha256"),
-        "parentName": payload.get("parent_name"),
     }
+    _set_category_parent(categories, category, payload, creating=True)
     _mark_entity_actor(category, payload, create=True)
     categories.append(category)
     return target, sync_id
@@ -629,6 +677,13 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
     _assert_actor_can_modify(category, payload)
     old_name = str(category.get("name") or "").strip()
     old_kind = str(category.get("kind") or "").strip()
+    children = [row for row in categories if _category_is_child(row, category)]
+    if children and (
+        ("kind" in payload and payload["kind"] != old_kind)
+        or payload.get("level") == 2
+        or payload.get("parent_sync_id") or payload.get("parent_name")
+    ):
+        raise ValueError("write validation failed: category with children cannot change kind or parent")
 
     if "name" in payload:
         category["name"] = _normalize_name(payload.get("name"))
@@ -645,10 +700,11 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         ("custom_icon_path", "customIconPath"),
         ("icon_cloud_file_id", "iconCloudFileId"),
         ("icon_cloud_sha256", "iconCloudSha256"),
-        ("parent_name", "parentName"),
     ]:
         if req_key in payload:
             category[snapshot_key] = payload.get(req_key)
+
+    _set_category_parent(categories, category, payload)
 
     new_name = str(category.get("name") or "").strip()
     new_kind = str(category.get("kind") or "").strip()
@@ -661,6 +717,9 @@ def update_category(snapshot: dict, category_id: str, payload: dict) -> dict:
         raise ValueError("write validation failed: duplicated category")
 
     if old_name and old_kind and (old_name != new_name or old_kind != new_kind):
+        for child in children:
+            child["parentSyncId"] = category["syncId"]
+            child["parentName"] = new_name
         for tx in _ensure_list(target, "items"):
             if tx.get("categoryName") == old_name and tx.get("categoryKind") == old_kind:
                 tx["categoryName"] = new_name
@@ -680,18 +739,10 @@ def delete_category(snapshot: dict, category_id: str, payload: dict | None = Non
     # 要求用户先迁移这些数据。比"允许删除并 orphan"安全 — 避免误删导致一堆
     # 无主交易污染 ledger。前端也有同款拦截,这里是兜底服务端校验防止旧客户
     # 端 / 直接 API 调用绕过。
+    child_count = sum(_category_is_child(row, category) for row in categories)
+    if child_count > 0:
+        raise ValueError(f"write validation failed: category has {child_count} child categories")
     if old_name and old_kind:
-        child_count = sum(
-            1
-            for row in categories
-            if str(row.get("syncId") or "") != category_id
-            and str(row.get("parentName") or "").strip() == old_name
-            and str(row.get("kind") or "").strip() == old_kind
-        )
-        if child_count > 0:
-            raise ValueError(
-                f"write validation failed: category has {child_count} child categories"
-            )
         tx_count = sum(
             1
             for tx in _ensure_list(target, "items")

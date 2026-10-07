@@ -30,6 +30,7 @@ export function sharedCategoryToReadCategory(c: SharedCategoryItem): ReadCategor
     icon_cloud_file_id: c.icon_cloud_file_id,
     icon_cloud_sha256: c.icon_cloud_sha256,
     parent_name: c.parent_name,
+    parent_sync_id: c.parent_sync_id,
     last_change_id: 0,
     ledger_id: null,
     ledger_name: null,

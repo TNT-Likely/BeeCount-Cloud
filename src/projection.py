@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -385,6 +385,15 @@ def upsert_category(
                 func.coalesce(UserCategoryProjection.level, 1) == 1,
             )
         )
+    if parent_sync_id:
+        parent = db.scalar(select(UserCategoryProjection).where(
+            UserCategoryProjection.user_id == user_id,
+            UserCategoryProjection.sync_id == parent_sync_id,
+            UserCategoryProjection.kind == _as_str(payload.get("kind")),
+            func.coalesce(UserCategoryProjection.level, 1) == 1,
+        ))
+        if parent is not None:
+            parent_name = parent.name
 
     values = {
         "user_id": user_id,
@@ -563,6 +572,8 @@ def rename_cascade_category(
     category_sync_id: str,
     new_name: str | None,
     new_kind: str | None = None,
+    old_name: str | None = None,
+    old_kind: str | None = None,
 ) -> None:
     """category 是 user-global,rename 时刷遍该用户所有 ledger 的 read_tx_projection。"""
     from sqlalchemy import update
@@ -578,6 +589,22 @@ def rename_cascade_category(
         )
         .values(**values)
     )
+    parent = db.scalar(select(UserCategoryProjection).where(
+        UserCategoryProjection.user_id == user_id,
+        UserCategoryProjection.sync_id == category_sync_id,
+    ))
+    legacy_name = old_name or (parent.name if parent is not None else None)
+    legacy_kind = old_kind or (parent.kind if parent is not None else new_kind)
+    db.execute(update(UserCategoryProjection).where(
+        UserCategoryProjection.user_id == user_id,
+        UserCategoryProjection.sync_id != category_sync_id,
+        or_(
+            UserCategoryProjection.parent_sync_id == category_sync_id,
+            and_(UserCategoryProjection.parent_sync_id.is_(None),
+                 UserCategoryProjection.parent_name == legacy_name,
+                 UserCategoryProjection.kind == legacy_kind),
+        ),
+    ).values(parent_name=new_name, parent_sync_id=category_sync_id))
 
 
 def rename_cascade_tag(

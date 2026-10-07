@@ -212,12 +212,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserCategoryProjection.icon_cloud_file_id,
         UserCategoryProjection.icon_cloud_sha256,
         UserCategoryProjection.parent_name,
+        UserCategoryProjection.parent_sync_id,
     ).where(UserCategoryProjection.user_id == user_id).order_by(
         UserCategoryProjection.sort_order.asc(),
         UserCategoryProjection.name.asc(),
     )
     for (sid, name, kind, level, sort_order, icon, icon_type,
-         custom_icon, icon_fid, icon_sha, parent) in db.execute(cat_stmt).all():
+         custom_icon, icon_fid, icon_sha, parent, parent_id) in db.execute(cat_stmt).all():
         cat: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if kind:
             cat["kind"] = kind
@@ -237,6 +238,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             cat["iconCloudSha256"] = icon_sha
         if parent:
             cat["parentName"] = parent
+        if parent_id:
+            cat["parentSyncId"] = parent_id
         categories.append(cat)
 
     # Tags —— user-global per-user。
