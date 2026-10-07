@@ -11,6 +11,9 @@ read 端过滤(收支分析 / 预算用量)与 schema/写端契约由后续任�
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+
+import pytest
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -179,5 +182,62 @@ def test_partial_update_preserves_exclude_flags() -> None:
         assert row.amount == 600.0
         # 标记必须保留,不被抹成 False(D6 核心)
         assert row.exclude_from_stats is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("stats,budget", [(False, False), (False, True), (True, False), (True, True)])
+def test_full_snapshot_preserves_both_exclude_flags(stats: bool, budget: bool) -> None:
+    client, TS = _make_client()
+    try:
+        owner = _register(client, f"full-{stats}-{budget}@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        ledger_id = f"L_FULL_{stats}_{budget}"
+        _seed_ledger(client, token, device, ledger_id)
+        _push_tx(client, token, device, ledger_id, {
+            "syncId": "tx-copy",
+            "type": "expense",
+            "amount": 123.0,
+            "happenedAt": datetime.now(timezone.utc).isoformat(),
+            "excludeFromStats": stats,
+            "excludeFromBudget": budget,
+        })
+        response = client.get("/api/v1/sync/full", params={"ledger_id": ledger_id},
+                              headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, response.text
+        item = json.loads(response.json()["snapshot"]["payload"]["content"])["items"][0]
+        assert item["excludeFromStats"] is stats
+        assert item["excludeFromBudget"] is budget
+
+        # A later partial push must also retain independent flag values.
+        _push_tx(client, token, device, ledger_id, {
+            "syncId": "tx-copy", "type": "expense", "amount": 456.0,
+            "happenedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        response = client.get("/api/v1/sync/full", params={"ledger_id": ledger_id},
+                              headers={"Authorization": f"Bearer {token}"})
+        item = json.loads(response.json()["snapshot"]["payload"]["content"])["items"][0]
+        assert item["amount"] == 456.0
+        assert item["excludeFromStats"] is stats
+        assert item["excludeFromBudget"] is budget
+
+        # Web writes use the rebuilt snapshot as their previous state.
+        login = client.post("/api/v1/auth/login", json={
+            "email": f"full-{stats}-{budget}@example.com",
+            "password": "123456", "client_type": "web",
+        })
+        assert login.status_code == 200, login.text
+        edited = client.patch(
+            f"/api/v1/write/ledgers/{ledger_id}/transactions/tx-copy",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+            json={"base_change_id": response.json()["snapshot"]["change_id"], "note": "edited in web"},
+        )
+        assert edited.status_code == 200, edited.text
+        response = client.get("/api/v1/sync/full", params={"ledger_id": ledger_id},
+                              headers={"Authorization": f"Bearer {token}"})
+        item = json.loads(response.json()["snapshot"]["payload"]["content"])["items"][0]
+        assert item["note"] == "edited in web"
+        assert item["excludeFromStats"] is stats
+        assert item["excludeFromBudget"] is budget
     finally:
         app.dependency_overrides.clear()
