@@ -317,6 +317,8 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 ## 📚 More Documentation
 
+- [Cloud release history](./CHANGELOG.md) · [Website changelog](https://count.beejz.com/en/docs/cloud-changelog)
+- [Project release and isolated QA skills](https://github.com/TNT-Likely/BeeCount/blob/main/docs/contributing/PROJECT_SKILLS_ZH.md) — maintained in BeeCount, installed per repository for Codex and Claude Code
 - [Deployment Guide](./docs/DEPLOYMENT.md)
 - [Migration & Rollback](./docs/MIGRATION.md)
 - [Observability](./docs/OBSERVABILITY.md)

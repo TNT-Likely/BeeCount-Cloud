@@ -316,6 +316,8 @@ docker run -p 8080:8080 -v beecount_data:/data \
 
 ## 📚 更多文档
 
+- [Cloud 版本记录](./CHANGELOG.md) · [官网更新日志](https://count.beejz.com/docs/cloud-changelog)
+- [项目发布与隔离验收 skill](https://github.com/TNT-Likely/BeeCount/blob/main/docs/contributing/PROJECT_SKILLS_ZH.md) — 在 BeeCount 仓维护，按项目安装到 Codex / Claude Code
 - [部署指南](./docs/DEPLOYMENT.md)
 - [迁移与回滚](./docs/MIGRATION.md)
 - [可观测性](./docs/OBSERVABILITY.md)
