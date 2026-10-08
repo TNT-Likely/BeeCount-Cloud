@@ -577,6 +577,11 @@ def test_execute_creates_transactions_and_atomic_rollback_on_error(monkeypatch):
         try:
             txs = db.scalars(select(ReadTxProjection)).all()
             assert len(txs) == 3, [t.note for t in txs]
+            # 分类 name → categoryId 解析:不落 id 的话投影 category_sync_id
+            # 全 NULL,分类页/按分类统计永远 0 笔
+            assert all(t.category_sync_id for t in txs), [
+                (t.category_name, t.category_sync_id) for t in txs
+            ]
         finally:
             db.close()
     finally:

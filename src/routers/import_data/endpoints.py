@@ -471,6 +471,26 @@ async def _do_execute(
                 {"stage": "categories", "done": i, "total": len(category_diff)},
             )
 
+        # 2.5 name+kind → syncId 解析表。导入交易只有 category_name,不解析
+        # 成 categoryId 的话,投影 category_sync_id 落 NULL,分类页统计
+        # 永远 0 笔(mobile push 路径由 App 自己带 categoryId,web 没有)。
+        # snapshot 此时已含既有 + 本次新建的全部分类。同名同 kind 优先二级
+        # (leaf):导入交易引用的是 leaf 分类。
+        category_id_by_key: dict[tuple[str, str], str] = {}
+        for cat in snapshot.get("categories", []) or []:
+            if not isinstance(cat, dict):
+                continue
+            cat_name = str(cat.get("name") or "").strip().lower()
+            cat_kind = str(cat.get("kind") or "").strip()
+            cat_sid = str(cat.get("syncId") or "")
+            if not cat_name or not cat_sid or cat_kind not in {
+                "expense", "income", "transfer",
+            }:
+                continue
+            key = (cat_name, cat_kind)
+            if cat.get("level") == 2 or key not in category_id_by_key:
+                category_id_by_key[key] = cat_sid
+
         # 3. tags(包括 auto_tags)
         all_tag_names = _collect_new_tags(txs, auto_tags, existing_tag_names)
         for i, name in enumerate(all_tag_names, 1):
@@ -503,7 +523,9 @@ async def _do_execute(
                 skipped += 1
             else:
                 seen_keys.add(dedup_key)
-                tx_payload = _build_tx_payload(tx, auto_tags, actor_payload_base)
+                tx_payload = _build_tx_payload(
+                    tx, auto_tags, actor_payload_base, category_id_by_key
+                )
                 try:
                     snapshot, _ = create_transaction(snapshot, tx_payload)
                 except (KeyError, ValueError, PermissionError) as exc:
@@ -814,7 +836,12 @@ def _collect_new_tags(txs, auto_tags: list[str], existing: set[str]) -> list[str
     return seen
 
 
-def _build_tx_payload(tx, auto_tags: list[str], actor_base: dict) -> dict:
+def _build_tx_payload(
+    tx,
+    auto_tags: list[str],
+    actor_base: dict,
+    category_id_by_key: dict[tuple[str, str], str] | None = None,
+) -> dict:
     user_tags = list(tx.tag_names)
     merged = user_tags + [t for t in auto_tags if t and t not in user_tags]
     payload = {
@@ -834,6 +861,11 @@ def _build_tx_payload(tx, auto_tags: list[str], actor_base: dict) -> dict:
         "from_account_name": tx.from_account_name,
         "to_account_name": tx.to_account_name,
     }
+    # 分类 name → categoryId(leaf)。不落 id 的话分类页/按分类统计永远 0 笔。
+    if tx.category_name and tx.tx_type != "transfer" and category_id_by_key:
+        payload["category_id"] = category_id_by_key.get(
+            (tx.category_name.strip().lower(), tx.tx_type)
+        )
     if merged:
         payload["tags"] = merged
     return payload
