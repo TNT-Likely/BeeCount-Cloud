@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { WorkspaceCategory } from '@beecount/api-client'
 
 import { CategoryIcon } from './CategoryIcon'
+import { categoryParent, groupCategories } from '../lib/categoryHierarchy'
 
 type CategorySelectorKind = 'expense' | 'income'
 
@@ -10,7 +11,7 @@ type CategorySelectorProps = {
   /** 分类类型,只有 expense / income 让选(transfer 是虚拟分类不参与选择)。 */
   kind: CategorySelectorKind
   /** 全量分类列表(workspace dedup 后),通常从 fetchWorkspaceCategories 拿。
-   *  组件内部按 kind 过滤 + 按 parent_name 分组,父级展示在网格,点开后子级
+   *  组件内部按 kind 过滤 + 稳定父分类 ID 分组,父级展示在网格,点开后子级
    *  在父行下方原地展开。 */
   rows: readonly WorkspaceCategory[]
   /** 选中的分类 syncId(可选)。会高亮 + 自动展开父级 + 滚动到视口。 */
@@ -60,29 +61,15 @@ export function CategorySelector({
   // selectedId 变化(外部 set)时跑一次,内部点击后用户可能手动折叠。
   const lastSelectedRef = useRef<string | null | undefined>(null)
 
-  // 按 kind 过滤 + parent_name 分组(parent_name 空 = 顶级)。sort_order 升序,
-  // 同 sort 再按 name。跟 app `getTopLevelCategories` / `getSubCategories` 行为
-  // 对齐。
-  const { topLevels, childrenByParentName } = useMemo(() => {
+  const { topLevels, childrenByParent } = useMemo(() => {
     const inKind = rows.filter((row) => row.kind === kind)
-    const tops: WorkspaceCategory[] = []
-    const children: Record<string, WorkspaceCategory[]> = {}
-    for (const row of inKind) {
-      const parent = (row.parent_name || '').trim()
-      if (parent) {
-        const key = parent.toLowerCase()
-        children[key] = children[key] || []
-        children[key].push(row)
-      } else {
-        tops.push(row)
-      }
-    }
+    const { topLevels: tops, childrenByParent: children } = groupCategories(inKind)
     const sorter = (a: WorkspaceCategory, b: WorkspaceCategory) =>
       (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
       (a.name || '').localeCompare(b.name || '')
     tops.sort(sorter)
     for (const k of Object.keys(children)) children[k].sort(sorter)
-    return { topLevels: tops, childrenByParentName: children }
+    return { topLevels: tops, childrenByParent: children }
   }, [rows, kind])
 
   // 找到 selectedId 对应的行,用来决定是否要自动展开父级
@@ -95,15 +82,7 @@ export function CategorySelector({
     if (lastSelectedRef.current === selectedId) return
     lastSelectedRef.current = selectedId
     if (!selectedRow) return
-    const parent = (selectedRow.parent_name || '').trim()
-    if (!parent) return
-    // 找到父级的 syncId(rows 里 name+kind 唯一的 level=1)
-    const parentRow = rows.find(
-      (r) =>
-        r.kind === kind &&
-        Number(r.level) === 1 &&
-        (r.name || '').trim().toLowerCase() === parent.toLowerCase()
-    )
+    const parentRow = categoryParent(selectedRow, rows)
     if (parentRow?.id) setExpandedParentId(parentRow.id)
   }, [selectedRow, selectedId, rows, kind])
 
@@ -129,7 +108,7 @@ export function CategorySelector({
     'grid gap-3 [grid-template-columns:repeat(var(--cols),minmax(0,1fr))]'
 
   const handleParentTap = (top: WorkspaceCategory) => {
-    const childList = childrenByParentName[(top.name || '').toLowerCase()]
+    const childList = childrenByParent[top.id]
     const hasChildren = (childList?.length ?? 0) > 0
     if (hasChildren) {
       setExpandedParentId((prev) => (prev === top.id ? null : top.id))
@@ -145,14 +124,14 @@ export function CategorySelector({
       {rowsOfTops.map((row, rowIdx) => {
         const expandedInRow = row.find((c) => c.id === expandedParentId)
         const expandedChildren = expandedInRow
-          ? childrenByParentName[(expandedInRow.name || '').toLowerCase()] ?? []
+          ? childrenByParent[expandedInRow.id] ?? []
           : []
 
         return (
           <div key={`row-${rowIdx}`} className="space-y-3">
             <div className={gridClass} style={gridStyle}>
               {row.map((top) => {
-                const childList = childrenByParentName[(top.name || '').toLowerCase()]
+                const childList = childrenByParent[top.id]
                 const hasChildren = (childList?.length ?? 0) > 0
                 const isExpanded = expandedParentId === top.id
                 const isSelected = selectedId === top.id

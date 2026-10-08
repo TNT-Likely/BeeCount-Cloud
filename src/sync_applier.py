@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
 from . import projection
@@ -155,6 +155,7 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("iconCloudFileId", "icon_cloud_file_id"),
         ("iconCloudSha256", "icon_cloud_sha256"),
         ("parentName", "parent_name"),
+        ("parentSyncId", "parent_sync_id"),
     ]),
     "tag": _MergeSpec(UserTagProjection, [
         ("syncId", "sync_id"),
@@ -398,6 +399,8 @@ def _detect_and_run_rename_cascade_user(
                 db, user_id=user_id, category_sync_id=sync_id,
                 new_name=new_name,
                 new_kind=str(payload.get("kind") or "").strip() or None,
+                old_name=old_name,
+                old_kind=prev_row.kind,
             )
     elif entity_type == "tag":
         prev_row = db.scalar(
@@ -516,7 +519,25 @@ def merge_with_existing_user(
     )
     if existing is None:
         return payload
-    return _merge_from_spec(spec, existing, payload)
+    merged = _merge_from_spec(spec, existing, payload)
+    # Old mobile clients may move a child using only parentName. Preserve the
+    # existing ID for omissions/stale unresolved names, but honor an explicit
+    # name that uniquely resolves to another root owned by this same user.
+    if entity_type == "category" and "parentSyncId" not in payload and "parentName" in payload:
+        parent_name = str(payload.get("parentName") or "").strip()
+        if parent_name:
+            parents = db.scalars(select(UserCategoryProjection.sync_id).where(
+                UserCategoryProjection.user_id == user_id,
+                UserCategoryProjection.name == parent_name,
+                UserCategoryProjection.kind == merged.get("kind"),
+                func.coalesce(UserCategoryProjection.level, 1) == 1,
+                UserCategoryProjection.sync_id != sync_id,
+            )).all()
+            if len(parents) == 1:
+                merged["parentSyncId"] = parents[0]
+        elif payload.get("parentName") is not None and merged.get("level") == 1:
+            merged["parentSyncId"] = ""
+    return merged
 
 
 # --------------------------------------------------------------------------- #

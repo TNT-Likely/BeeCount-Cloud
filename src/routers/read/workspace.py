@@ -773,6 +773,7 @@ def list_workspace_categories(
                 icon_cloud_file_id=cat.icon_cloud_file_id,
                 icon_cloud_sha256=cat.icon_cloud_sha256,
                 parent_name=cat.parent_name,
+                parent_sync_id=cat.parent_sync_id,
                 last_change_id=cat_last_change_id,
                 ledger_id="",
                 ledger_name="",

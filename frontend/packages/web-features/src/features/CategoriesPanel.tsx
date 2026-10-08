@@ -25,6 +25,7 @@ import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { getIconGroupsByKind, type CategoryIconItem } from '../lib/categoryIconGroups'
 import { useSingleFlight } from '../lib/singleFlight'
 import type { CategoryForm } from '../forms'
+import { categoryParent, groupCategories } from '../lib/categoryHierarchy'
 
 type CategoryKind = 'expense' | 'income' | 'transfer'
 
@@ -233,17 +234,10 @@ function CategoriesCardBody({
       income: [],
       transfer: []
     }
-    const childrenByParent: Record<string, WorkspaceCategory[]> = {}
-    for (const row of rows) {
+    const { topLevels, childrenByParent } = groupCategories(rows)
+    for (const row of topLevels) {
       const kind = (row.kind as CategoryKind) || 'expense'
-      const parent = (row.parent_name || '').trim()
-      if (parent) {
-        childrenByParent[`${kind}::${parent.toLowerCase()}`] =
-          childrenByParent[`${kind}::${parent.toLowerCase()}`] || []
-        childrenByParent[`${kind}::${parent.toLowerCase()}`].push(row)
-      } else {
-        parentsByKind[kind].push(row)
-      }
+      parentsByKind[kind].push(row)
     }
     for (const kind of Object.keys(parentsByKind) as CategoryKind[]) {
       parentsByKind[kind].sort(
@@ -274,7 +268,7 @@ function CategoriesCardBody({
   const kinds: CategoryKind[] = ['expense', 'income', 'transfer']
 
   const childrenOf = (parent: WorkspaceCategory) =>
-    grouped.childrenByParent[`${activeKind}::${parent.name.toLowerCase()}`] || []
+    grouped.childrenByParent[parent.id] || []
 
   // 一级分类按 columns 切成若干"行";展开父级所在行的下方插一个子类容器
   // (跟 CategorySelector 的"原地展开"同款),避免子类跑到整页网格末尾。
@@ -652,20 +646,14 @@ export function CategoriesPanel({
     })
   }, [rows, form.kind, form.editingId, txCountById])
 
-  // 当前选中的父级 row(用 form.parent_name 反查同 kind 的 level=1) — 用于
+  // 当前选中的父级 row(优先稳定 ID) — 用于
   // CategoryPickerDialog 的 selectedId 高亮 + 触发按钮显示图标。
   const selectedParentRow = useMemo(() => {
-    const name = (form.parent_name || '').trim().toLowerCase()
-    if (!name) return null
-    return (
-      rows.find(
-        (row) =>
-          row.kind === form.kind &&
-          Number(row.level) === 1 &&
-          (row.name || '').trim().toLowerCase() === name,
-      ) ?? null
-    )
-  }, [rows, form.kind, form.parent_name])
+    return categoryParent({
+      id: form.editingId || '', name: form.name, kind: form.kind, level: 2,
+      parent_name: form.parent_name, parent_sync_id: form.parent_sync_id,
+    }, rows) ?? null
+  }, [rows, form.kind, form.name, form.editingId, form.parent_name, form.parent_sync_id])
 
   // 同 kind 同名查重(workspace 维度。fetchWorkspaceCategories 已经按
   // current_user.id 过滤,所以 rows 自然是用户作用域的)。编辑模式排除自己以
@@ -835,6 +823,7 @@ export function CategoriesPanel({
                       ...form,
                       kind: value as CategoryForm['kind'],
                       parent_name: '',
+                      parent_sync_id: '',
                       level: '1',
                     })
                   }}
@@ -1042,13 +1031,14 @@ export function CategoriesPanel({
           onFormChange({
             ...form,
             parent_name: cat.name.trim(),
+            parent_sync_id: cat.id,
             level: '2',
           })
         }}
         onClear={
           form.editingId && form.level === '2'
             ? undefined
-            : () => onFormChange({ ...form, parent_name: '', level: '1' })
+            : () => onFormChange({ ...form, parent_name: '', parent_sync_id: '', level: '1' })
         }
         clearLabel={t('common.none')}
       />

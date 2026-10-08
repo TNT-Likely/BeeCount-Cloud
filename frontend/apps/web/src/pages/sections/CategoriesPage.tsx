@@ -18,6 +18,7 @@ import {
   CategoriesPanel,
   ConfirmDialog,
   categoryDefaults,
+  categoryIsChild,
   type CategoryForm,
 } from '@beecount/web-features'
 
@@ -117,6 +118,7 @@ export function CategoriesPage() {
         icon_cloud_file_id: form.icon_cloud_file_id || null,
         icon_cloud_sha256: form.icon_cloud_sha256 || null,
         parent_name: form.parent_name || null,
+        parent_sync_id: form.parent_sync_id || null,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -148,6 +150,7 @@ export function CategoriesPage() {
       icon_cloud_file_id: row.icon_cloud_file_id || '',
       icon_cloud_sha256: row.icon_cloud_sha256 || '',
       parent_name: row.parent_name || '',
+      parent_sync_id: row.parent_sync_id || '',
     })
     setEditDialogOpen(true)
   }, [])
@@ -206,10 +209,7 @@ export function CategoriesPage() {
             return
           }
           const childCount = rows.filter(
-            (r) =>
-              r.id !== ws.id &&
-              r.parent_name === ws.name &&
-              r.kind === ws.kind,
+            (r) => categoryIsChild(r, ws),
           ).length
           if (childCount > 0) {
             toast.error(
