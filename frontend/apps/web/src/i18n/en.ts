@@ -33,6 +33,8 @@ const en = {
   'login.twofa.hint': 'Verify within 5 minutes — re-login required after timeout.',
   'shell.ledger': 'Ledger',
   'shell.ledger.empty': 'Create ledger',
+  'shell.initialLoadError': 'Could not load your profile and ledgers. Please try again.',
+  'shell.initialLoadRetry': 'Try again',
   'shell.ledgerFilter': 'Ledger Filter',
   'shell.accountFilter': 'Account Filter',
   'shell.userFilter': 'User Filter',

@@ -37,6 +37,7 @@ import { parseRoute, routePath } from '../state/router'
 interface Props {
   onOpenLogs: () => void
   onOpenAbout: () => void
+  loading?: boolean
 }
 
 /**
@@ -50,7 +51,7 @@ interface Props {
  * 导航通过 react-router `useNavigate`,当前高亮依据 `useLocation().pathname`
  * 反解析到 AppSection。
  */
-export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
+export function AppHeader({ onOpenLogs, onOpenAbout, loading = false }: Props) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
@@ -129,7 +130,12 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 </span>
               </div>
             </button>
-            {ledgers.length > 0 ? (
+            {loading ? (
+              <span
+                className="ml-1 hidden h-8 w-[180px] animate-pulse rounded-md bg-muted md:block"
+                aria-hidden="true"
+              />
+            ) : ledgers.length > 0 ? (
               <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
                 <SelectTrigger className="ml-1 hidden h-8 w-[180px] border-border/50 bg-background/60 text-xs md:flex">
                   <SelectValue placeholder={t('shell.ledger')} />
@@ -293,7 +299,9 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                 <ScrollText className="h-4 w-4" />
               </button>
             ) : null}
-            {profileMe?.email ? (
+            {loading ? (
+              <span className="h-8 w-8 animate-pulse rounded-full bg-muted" aria-hidden="true" />
+            ) : profileMe?.email ? (
               <AvatarDropdown
                 profileMe={{
                   email: profileMe.email,
@@ -314,7 +322,9 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
         </div>
 
         <div className="flex items-center gap-2 border-t border-border/50 py-2 md:hidden">
-          {ledgers.length > 0 ? (
+          {loading ? (
+            <span className="h-8 flex-1 animate-pulse rounded-md bg-muted" aria-hidden="true" />
+          ) : ledgers.length > 0 ? (
             <Select value={activeLedgerId || undefined} onValueChange={setActiveLedgerId}>
               <SelectTrigger className="h-8 flex-1 border-border/50 bg-background/60 text-xs">
                 <SelectValue placeholder={t('shell.ledger')} />
