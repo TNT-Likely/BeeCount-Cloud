@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { resolveApiUrl, type AttachmentRef, type WorkspaceTag, type WorkspaceTransaction } from '@beecount/api-client'
 import {
   Button,
@@ -76,7 +75,7 @@ export function TransactionDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="flex max-w-md flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[90dvh] max-w-md flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b border-border/60 px-6 py-4">
           <DialogTitle className="text-sm font-medium text-muted-foreground">
             {t('detail.transaction.title')}
@@ -84,7 +83,7 @@ export function TransactionDetailDialog({
         </DialogHeader>
 
         {tx ? (
-          <div className="flex flex-col">
+          <div className="min-h-0 overflow-y-auto">
             {/* 大金额 */}
             <div className="flex flex-col items-center gap-1 border-b border-border/60 bg-muted/20 px-6 py-6">
               <span className="text-[11px] uppercase tracking-widest text-muted-foreground">
@@ -425,26 +424,10 @@ function AttachmentLightbox({
   const url = fileId ? previewMap[fileId] : undefined
   const fileName = current?.originalName || current?.fileName || ''
 
-  // 必须 Portal 到 document.body — TransactionDetailDialog 用的 Radix Dialog
-  // 内部带 transform(用于居中动画),会创造新的 CSS containing block,导致
-  // `fixed inset-0` 元素被困在 Dialog 大小内,看起来"大图只在弹窗里"。
-  // Portal 把节点挂到 body,跳出 Dialog 的 containing block,真正占满 viewport。
-  if (typeof document === 'undefined') return null
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4"
-      // 仅当**点击点恰好是这个 div 本身**(也就是黑色空白区域)才关闭。
-      // 子元素冒泡上来的 click 不会触发 — e.target 是子元素,e.currentTarget
-      // 是这个 div,两者不等就跳过。这是 React 模态框的标准模式,不依赖
-      // stopPropagation,也不被 disabled button 的浏览器行为坑(disabled button
-      // 在某些浏览器里 click 事件会绕过 button 直接冒泡到祖先,普通
-      // stopPropagation 拦不住)。
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-      role="dialog"
-      aria-modal="true"
-    >
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <DialogContent showCloseButton={false} className="inset-0 left-0 top-0 z-[100] flex h-[100dvh] w-screen max-w-none translate-x-0 translate-y-0 items-center justify-center rounded-none border-0 bg-black/95 p-4 text-white">
+      <DialogTitle className="sr-only">{fileName}</DialogTitle>
       <button
         type="button"
         onClick={onClose}
@@ -498,7 +481,7 @@ function AttachmentLightbox({
           ) : null}
         </div>
       </div>
-    </div>,
-    document.body,
+    </DialogContent>
+    </Dialog>
   )
 }

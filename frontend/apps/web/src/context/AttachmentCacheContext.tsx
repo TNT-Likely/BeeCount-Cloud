@@ -48,6 +48,7 @@ export interface AttachmentCacheContextValue {
   ensureLoaded: (fileId: string) => void
   /** 批量触发 —— 列表进入时一次性把所有可见行的 fileId 推进来。 */
   ensureLoadedMany: (fileIds: string[]) => void
+  resolvePreview: (fileId: string) => Promise<string | null>
 }
 
 const AttachmentCacheContext = createContext<AttachmentCacheContextValue | null>(null)
@@ -60,43 +61,43 @@ const AttachmentCacheContext = createContext<AttachmentCacheContextValue | null>
 export function AttachmentCacheProvider({ children }: { children: ReactNode }) {
   const { token } = useAuth()
   const [previewMap, setPreviewMap] = useState<Record<string, string>>({})
-  const inflightRef = useRef<Set<string>>(new Set())
+  const inflightRef = useRef(new Map<string, Promise<string | null>>())
   const previewMapRef = useRef(previewMap)
   previewMapRef.current = previewMap
+  const alive = useRef(true)
 
-  const ensureLoaded = useCallback(
-    (fileId: string) => {
-      const normalized = fileId.trim()
-      if (!normalized) return
-      if (previewMapRef.current[normalized] !== undefined) return
-      if (inflightRef.current.has(normalized)) return
-      inflightRef.current.add(normalized)
-      void (async () => {
-        try {
-          const response = await downloadAttachment(token, normalized)
-          if (!isPreviewableImage(response.mimeType, response.fileName)) {
-            // 不是图片:写空串标记"已探测过,不再重试"。
-            setPreviewMap((prev) => ({ ...prev, [normalized]: '' }))
-            return
-          }
-          const url = URL.createObjectURL(response.blob)
-          setPreviewMap((prev) => {
-            if (prev[normalized]) {
-              URL.revokeObjectURL(url)
-              return prev
-            }
-            return { ...prev, [normalized]: url }
-          })
-        } catch {
-          // 下载失败也写空串,防止 UI 跟着 retry 风暴
-          setPreviewMap((prev) => ({ ...prev, [normalized]: '' }))
-        } finally {
-          inflightRef.current.delete(normalized)
-        }
-      })()
-    },
-    [token]
-  )
+  const resolvePreview = useCallback((fileId: string): Promise<string | null> => {
+    const id = fileId.trim()
+    if (!id) return Promise.resolve(null)
+    const cached = previewMapRef.current[id]
+    if (cached) return Promise.resolve(cached)
+    const pending = inflightRef.current.get(id)
+    if (pending) return pending
+    const request = (async () => {
+      try {
+        const response = await downloadAttachment(token, id)
+        if (!alive.current || !isPreviewableImage(response.mimeType, response.fileName)) return null
+        const url = URL.createObjectURL(response.blob)
+        previewMapRef.current = { ...previewMapRef.current, [id]: url }
+        setPreviewMap(previewMapRef.current)
+        return url
+      } finally {
+        inflightRef.current.delete(id)
+      }
+    })()
+    inflightRef.current.set(id, request)
+    return request
+  }, [token])
+
+  const ensureLoaded = useCallback((fileId: string) => {
+    const id = fileId.trim()
+    if (!id || previewMapRef.current[id] !== undefined) return
+    void resolvePreview(id).then((url) => {
+      if (!url && alive.current) setPreviewMap((prev) => ({ ...prev, [id]: '' }))
+    }).catch(() => {
+      if (alive.current) setPreviewMap((prev) => ({ ...prev, [id]: '' }))
+    })
+  }, [resolvePreview])
 
   const ensureLoadedMany = useCallback(
     (fileIds: string[]) => {
@@ -107,7 +108,9 @@ export function AttachmentCacheProvider({ children }: { children: ReactNode }) {
 
   // Provider unmount(登出 / 切换用户)时一次性释放所有 blob URL。
   useEffect(() => {
+    alive.current = true
     return () => {
+      alive.current = false
       for (const url of Object.values(previewMapRef.current)) {
         if (url) URL.revokeObjectURL(url)
       }
@@ -115,8 +118,8 @@ export function AttachmentCacheProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<AttachmentCacheContextValue>(
-    () => ({ previewMap, ensureLoaded, ensureLoadedMany }),
-    [previewMap, ensureLoaded, ensureLoadedMany]
+    () => ({ previewMap, ensureLoaded, ensureLoadedMany, resolvePreview }),
+    [previewMap, ensureLoaded, ensureLoadedMany, resolvePreview]
   )
 
   return (

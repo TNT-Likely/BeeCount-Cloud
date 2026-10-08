@@ -38,3 +38,5 @@ export * from './format'
 export * from './forms'
 export * from './nav'
 export * from './permissions'
+
+export { uploadTransactionImage } from './lib/transactionAttachments'
