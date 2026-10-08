@@ -280,6 +280,7 @@ export function TransactionsPanel({
   const t = useT()
   const open = dialogOpen
   const setOpen = (next: boolean) => { if (!saving) onDialogOpenChange(next) }
+  const [selectingImages, setSelectingImages] = useState(false)
   const attachmentEditor = useRef<TransactionAttachmentEditorHandle>(null)
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
@@ -344,9 +345,9 @@ export function TransactionsPanel({
   const isTransfer = form.tx_type === 'transfer'
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
   // 转账必须两端都选（否则无法表达方向）。
-  const canSubmit = Boolean(writeLedgerId.trim()) && (isTransfer
+  const canSubmit = Boolean(writeLedgerId.trim()) && Number.isFinite(Number(form.amount)) && Number(form.amount) > 0 && (isTransfer
     ? Boolean(form.from_account_name.trim()) && Boolean(form.to_account_name.trim())
-    : true)
+    : Boolean(form.category_name.trim()))
   const selectedTags = form.tags
   const categoryValue = form.category_name.trim()
 
@@ -426,7 +427,7 @@ export function TransactionsPanel({
             <DialogTitle>{form.editingId ? t('transactions.button.update') : t('transactions.button.create')}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-            <fieldset disabled={saving} className="grid gap-3 md:grid-cols-2">
+            <fieldset disabled={saving || selectingImages} className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
               <Label>{t('shell.ledger')}</Label>
               <Select value={writeLedgerId || undefined} onValueChange={onWriteLedgerIdChange} disabled={Boolean(form.editingId) || saving}>
@@ -726,7 +727,8 @@ export function TransactionsPanel({
               key={`${writeLedgerId}:${form.editingId || 'new'}`}
               ref={attachmentEditor}
               attachments={form.attachments}
-              disabled={!canWrite || saving || !writeLedgerId}
+              disabled={!canWrite || saving || selectingImages || !writeLedgerId}
+              onSelectingChange={setSelectingImages}
               upload={onUploadAttachment}
               resolvePreview={resolveAttachmentPreviewUrl}
             /> : null}
@@ -744,7 +746,7 @@ export function TransactionsPanel({
               {t('dialog.cancel')}
             </Button>
             <Button
-              disabled={!canWrite || !canSubmit || saving}
+              disabled={!canWrite || !canSubmit || saving || selectingImages}
               onClick={() =>
                 guard(async () => {
                   const refs = await attachmentEditor.current?.prepare()

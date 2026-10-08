@@ -12,11 +12,12 @@ const draftId = () => `attachment-${++nextDraftId}`
 type Props = {
   attachments: AttachmentRef[]
   disabled: boolean
+  onSelectingChange: (selecting: boolean) => void
   upload: (file: File) => Promise<AttachmentRef>
   resolvePreview: (ref: AttachmentRef) => Promise<string | null>
 }
 
-export const TransactionAttachmentEditor = forwardRef<TransactionAttachmentEditorHandle, Props>(function TransactionAttachmentEditor({ attachments, disabled, upload, resolvePreview }, handle) {
+export const TransactionAttachmentEditor = forwardRef<TransactionAttachmentEditorHandle, Props>(function TransactionAttachmentEditor({ attachments, disabled, upload, resolvePreview, onSelectingChange }, handle) {
   const t = useT()
   const [drafts, setDrafts] = useState<AttachmentDraft[]>(() => attachments.map((ref) => ({ id: draftId(), ref })))
   const [error, setError] = useState('')
@@ -31,6 +32,7 @@ export const TransactionAttachmentEditor = forwardRef<TransactionAttachmentEdito
     mounted.current = true
     return () => {
       mounted.current = false
+      onSelectingChange(false)
       for (const url of ownedUrls.current) URL.revokeObjectURL(url)
     }
   }, [])
@@ -66,6 +68,8 @@ export const TransactionAttachmentEditor = forwardRef<TransactionAttachmentEdito
     if (input.current) { input.current.multiple = id === null; input.current.click() }
   }
   const select = async (files: File[]) => {
+    onSelectingChange(true)
+    try {
     const replaceId = replacement.current
     setError('')
     const additions: AttachmentDraft[] = []
@@ -83,11 +87,14 @@ export const TransactionAttachmentEditor = forwardRef<TransactionAttachmentEdito
         image.src = url
       })
       if (!mounted.current) return
-      if (!loaded) { setError(t('transactions.attachment.invalidImage')); continue }
+      if (!loaded) { URL.revokeObjectURL(url); ownedUrls.current.delete(url); setError(t('transactions.attachment.invalidImage')); continue }
       additions.push({ id: draftId(), file, previewUrl: url, width: image.naturalWidth, height: image.naturalHeight })
     }
     if (!mounted.current || !additions.length) return
     setDrafts((prev) => replaceId ? prev.flatMap((item) => item.id === replaceId ? [additions[0]] : [item]) : [...prev, ...additions])
+    } finally {
+      if (mounted.current) onSelectingChange(false)
+    }
   }
 
   return <section className="space-y-3 md:col-span-2" aria-label={t('detail.transaction.attachments')}>
