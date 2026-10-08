@@ -6,10 +6,10 @@
 
 ## 是什么
 
-MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 18 个 tool:
+MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 19 个 tool:
 
 - **11 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
-- **7 个 write tool**:`create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
+- **8 个 write tool**:`upload_attachment` / `create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
 
 跟 LLM 聊天时可以这样说:
 
@@ -192,15 +192,72 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp`**,所有其�
 
 | Tool | 用途 | 关键参数 |
 |---|---|---|
-| `create_transaction` | 新建交易 | amount, tx_type, category, account, happened_at, note, tags |
+| `upload_attachment` | 上传小票/附件，返回 file_id | file_name, content_base64, ledger_id, mime_type |
+| `create_transaction` | 新建交易，可附小票 | amount, tx_type, category, account, happened_at, note, tags, attachments |
 | `create_transactions` | **批量**新建交易(导入正解,一次提交多笔) | transactions(list), ledger_id |
-| `update_transaction` | 改交易 | sync_id + 待改字段 |
+| `update_transaction` | 改交易/附件 | sync_id + 待改字段，attachments |
 | `delete_transaction` | 删交易(**二次确认**) | sync_id, confirm |
 | `create_category` | 新建分类 | name, kind, parent_name |
 | `update_budget` | 改预算金额 | budget_id, amount |
 | `parse_and_create_from_text` | 自然语言记账 | text |
 
 ---
+
+## 小票与交易附件
+
+先调用 `upload_attachment`，再把返回的 `file_id` 列表传给交易工具。附件和交易必须属于同一账本：
+
+```json
+{"name":"upload_attachment","arguments":{"ledger_id":"你的账本ID","file_name":"receipt.png","mime_type":"image/png","content_base64":"客户端读取图片后生成的标准Base64"}}
+```
+
+```json
+{"name":"create_transaction","arguments":{"ledger_id":"你的账本ID","amount":788,"note":"便利店小票","attachments":["上传返回的file_id"]}}
+```
+
+`attachments` 是按展示顺序排列的文件 ID 列表。服务端从上传记录生成名称、大小、SHA256 和顺序，App 同步后与 Web 都能查看原图。相同账本内重复上传相同内容会复用文件 ID；不能引用其他账本的文件，列表不能包含重复 ID。
+
+编辑语义：
+
+- 不传 `attachments` 或传 `null`：保留原有附件。
+- 传完整 ID 列表：替换原有附件，可调整顺序。
+- 传 `[]`：移除全部附件。
+- 追加：先 `get_transaction` 读取已有附件的 `cloudFileId`，把新 ID 加在后面再提交。
+
+上传需要 `mcp:write`，使用现有附件大小限制（默认 64 MiB）。保留原始小票，不要为了工具参数长度而缩图、转码或分段搬运 Base64。HTTP 直连时 Base64 不带 `data:image/...;base64,` 前缀。上传工具不会创建交易；后续交易提交失败时，已上传 ID 可用于重试。上传内容和文件名不写入 MCP 调用历史摘要。此功能不执行 OCR，也不自动提取消费税。
+
+### 客户端本地文件
+
+需要让模型直接传文件路径时，使用仓库的 **本地 stdio MCP 适配器** `scripts/mcp_local_files.py`。它在客户端电脑运行，保留全部 Cloud 工具，将同名 `upload_attachment` 的输入改为 `file_path`；程序读取并上传原始字节，模型不接触 Base64。远程 Cloud 仍执行 PAT 鉴权、账本权限、大小校验和去重。
+
+Claude Code 示例（需要 Python 和本项目的 `mcp>=1.27,<2` 依赖）：
+
+```sh
+claude mcp add --transport stdio --scope user \
+  --env BEECOUNT_MCP_PAT=bcmcp_xxx beecount -- \
+  /absolute/path/to/python /absolute/path/to/BeeCount-Cloud/scripts/mcp_local_files.py \
+  --endpoint https://your-domain.com/api/v1/mcp \
+  --allow-dir /absolute/path/to/receipts
+```
+
+重启客户端后，直接调用：
+
+```json
+{"name":"upload_attachment","arguments":{"ledger_id":"你的账本ID","file_path":"/absolute/path/to/receipts/receipt.png"}}
+```
+
+返回的 `file_id` 继续传给 `create_transaction` / `update_transaction`。`--allow-dir` 可重复配置，适配器拒绝目录外文件、符号链接越界、空文件和特殊文件。路径属于客户端电脑；Docker 中的 Cloud 不需要挂载用户的小票目录。HTTP 直连工具继续接受 `content_base64`，不会读取服务器任意路径。仅把 `/Users/.../receipt.png` 或下载 URL 传给 Cloud 不会上传文件。
+
+需要脚本批量上传时，也可以使用独立客户端上传脚本：
+
+```sh
+# BEECOUNT_MCP_PAT 通过环境提供，不放在命令参数中。
+python scripts/mcp_upload_receipt.py \
+  --endpoint https://your-domain.com/api/v1/mcp \
+  --ledger-id your-ledger-id ./receipt.png ./receipt-2.jpg
+```
+
+脚本通过实际 MCP 协议上传本地图片，输出可直接用于交易工具的 `attachments` 列表。执行脚本后仍需创建或编辑交易；已有客户端能处理文件时也可直接使用上传工具。`create_transactions` 批量工具暂不支持附件。
 
 ## 交易时间与 CSV 时区
 

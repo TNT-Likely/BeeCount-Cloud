@@ -15,7 +15,11 @@ router endpoint,而不是直接动 DB。原因:
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import logging
+import mimetypes
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -34,6 +38,7 @@ from ...models import (
     UserTagProjection,
 )
 from ...security import SCOPE_APP_WRITE, _create_token
+from ..attachments import resolve_transaction_attachments
 from ..datetime_utils import parse_transaction_datetime
 from ..schemas import BatchTransactionItem, positive_amount
 from .read_tools import _resolve_ledger, live_ledgers
@@ -141,6 +146,39 @@ def _resolve_write_ledger(
 # ---------- tools -----------------------------------------------------------
 
 
+async def upload_attachment(
+    user: User, *, file_name: str, content_base64: str,
+    ledger_id: str | None = None, mime_type: str | None = None,
+) -> dict[str, Any]:
+    """通过现有 multipart 上传路径保存客户端传来的文件，不读取服务端路径。"""
+    if not file_name.strip():
+        raise ValueError("file_name must not be empty")
+    settings = get_settings()
+    max_bytes = settings.attachment_max_upload_bytes
+    if len(content_base64) > 4 * ((max_bytes + 2) // 3):
+        raise ValueError("Attachment upload too large")
+    try:
+        data = await asyncio.to_thread(base64.b64decode, content_base64, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("content_base64 must be valid standard Base64, without a data URL prefix") from exc
+    if not data:
+        raise ValueError("Attachment file is empty")
+    if len(data) > max_bytes:
+        raise ValueError("Attachment upload too large")
+    with SessionLocal() as db:
+        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
+        if ledger_status is not None:
+            return ledger_status
+        assert led is not None
+        ledger_external_id = led.external_id
+    content_type = mime_type or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    return await _self_call(
+        "POST", f"{settings.api_prefix}/attachments/upload", user,
+        data={"ledger_id": ledger_external_id},
+        files={"file": (file_name, data, content_type)},
+    )
+
+
 async def create_transaction(
     user: User,
     *,
@@ -154,6 +192,7 @@ async def create_transaction(
     ledger_id: str | None = None,
     currency: str | None = None,
     time_zone: str | None = None,
+    attachments: list[str] | None = None,
 ) -> dict[str, Any]:
     """新建一笔交易。category / account 用名字。happened_at 不传 = 当前时间。
 
@@ -180,6 +219,9 @@ async def create_transaction(
         led_internal_id = led.id  # 出 with 块后 led 会 detach,提前取值
         ledger_base_ccy = (led.currency or "CNY").strip().upper()  # v30 折算基准
         acc_ccy = _account_currency(db, user.id, account) if account else None
+        attachment_payload = (resolve_transaction_attachments(
+            db, ledger_id=led_internal_id, file_ids=attachments,
+        ) if attachments is not None else None)
         mcp_tag_missing = _is_tag_missing_in_ledger(
             db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
         )
@@ -209,6 +251,8 @@ async def create_transaction(
         else:
             body["account_id"] = account_id
             body["account_name"] = account
+    if attachment_payload is not None:
+        body["attachments"] = attachment_payload
     # 始终注入 MCP 默认标签;跟 LLM 传的 tags 并集去重,顺序保持 LLM 给的在前
     final_tags = _merge_default_tag(tags)
     body["tags"] = final_tags
@@ -239,6 +283,7 @@ async def create_transaction(
         "happened_at": happened.isoformat(),
         "category": category,
         "account": account,
+        **({"attachments": attachment_payload} if attachment_payload is not None else {}),
         "_meta": result,
     }
 
@@ -255,6 +300,7 @@ async def update_transaction(
     note: str | None = None,
     tags: list[str] | None = None,
     time_zone: str | None = None,
+    attachments: list[str] | None = None,
 ) -> dict[str, Any]:
     """更新现有交易。只更新传入的字段。"""
     happened = (
@@ -277,8 +323,13 @@ async def update_transaction(
         effective_tx_type = tx_type or existing.tx_type
         category_id = _lookup_category_sync_id(db, user.id, category, effective_tx_type)
         account_id = _lookup_account_sync_id(db, user.id, account)
+        attachment_payload = (resolve_transaction_attachments(
+            db, ledger_id=led.id, file_ids=attachments,
+        ) if attachments is not None else None)
 
     patch: dict[str, Any] = {"base_change_id": 0}
+    if attachment_payload is not None:
+        patch["attachments"] = attachment_payload
     if amount is not None:
         patch["amount"] = positive_amount(amount)
     if tx_type is not None:
@@ -309,6 +360,7 @@ async def update_transaction(
     return {
         "sync_id": sync_id,
         "updated": [k for k in patch.keys() if k != "base_change_id"],
+        **({"attachments": attachment_payload} if attachment_payload is not None else {}),
         "_meta": result,
     }
 

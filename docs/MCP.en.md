@@ -6,10 +6,10 @@ Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your Bee
 
 ## What it is
 
-MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 17 tools:
+MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 19 tools:
 
 - **11 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
-- **6 write tools** — `create_transaction` / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
+- **8 write tools** — `upload_attachment` / `create_transaction` / `create_transactions` (batch) / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
 
 Inside your favourite LLM client you can just say:
 
@@ -194,14 +194,50 @@ PAT and access tokens are strictly partitioned: **PATs only work against `/api/v
 
 | Tool | Purpose | Key args |
 |---|---|---|
-| `create_transaction` | New transaction | amount, tx_type, category, account, happened_at, note, tags |
-| `update_transaction` | Edit a transaction | sync_id + fields to change |
+| `upload_attachment` | Upload a receipt/file and return file_id | file_name, content_base64, ledger_id, mime_type |
+| `create_transaction` | New transaction with optional receipts | amount, tx_type, category, account, happened_at, note, tags, attachments |
+| `update_transaction` | Edit transaction/files | sync_id + fields, attachments |
 | `delete_transaction` | Delete (**two-step confirm**) | sync_id, confirm |
 | `create_category` | New category | name, kind, parent_name |
 | `update_budget` | Change budget amount | budget_id, amount |
 | `parse_and_create_from_text` | Natural language → transaction | text |
 
 ---
+
+## Receipts and transaction attachments
+
+Call `upload_attachment` with a filename and standard Base64 bytes (no data URL prefix), then pass the returned IDs to `create_transaction(attachments=[file_id, ...])`. Use the same ledger for uploading and creating. The server supplies authoritative filename, size, SHA256 and display order; Web and App use the existing attachment and sync paths. Duplicate uploads of identical bytes in one ledger reuse the file ID. Other-ledger files and duplicate IDs in a transaction are rejected.
+
+For `update_transaction`, omitted/null `attachments` preserves existing files; an ordered list replaces them; `[]` removes all. To append, read current `cloudFileId` values with `get_transaction`, then submit the full list with new IDs. Uploading alone does not create a transaction, and successfully uploaded IDs can be reused if transaction submission fails. The upload tool requires `mcp:write` and applies the configured attachment size limit (64 MiB by default). Keep original receipt bytes: do not resize, transcode or split Base64 just to fit model arguments. File contents and filenames are excluded from MCP call-history summaries. No OCR/tax extraction or batch attachment support is added.
+
+For direct file-path tool calls, use the local stdio MCP adapter `scripts/mcp_local_files.py` on the client computer. It forwards all Cloud tools and changes the same `upload_attachment` tool to accept `file_path`. The program reads and sends unchanged bytes; the model handles only the path and returned metadata. Requires Python and `mcp>=1.27,<2`:
+
+```sh
+claude mcp add --transport stdio --scope user \
+  --env BEECOUNT_MCP_PAT=bcmcp_xxx beecount -- \
+  /absolute/path/to/python /absolute/path/to/BeeCount-Cloud/scripts/mcp_local_files.py \
+  --endpoint https://your-domain.com/api/v1/mcp \
+  --allow-dir /absolute/path/to/receipts
+```
+
+Restart the client, then call:
+
+```json
+{"name":"upload_attachment","arguments":{"ledger_id":"your-ledger-id","file_path":"/absolute/path/to/receipts/receipt.png"}}
+```
+
+Pass the returned `file_id` to the transaction tools. Repeat `--allow-dir` for additional directories. Outside paths, symlink escapes, empty and special files are rejected. Cloud enforces the existing PAT/ledger rules and deduplication. Paths belong to the client; a Docker Cloud does not need a mount of the receipt folder. The direct HTTP tool retains `content_base64` and never reads arbitrary server paths.
+
+For command-line batch uploading, the standalone client-side helper is also available:
+
+```sh
+# Provide the PAT through BEECOUNT_MCP_PAT, never as a command argument.
+python scripts/mcp_upload_receipt.py \
+  --endpoint https://your-domain.com/api/v1/mcp \
+  --ledger-id your-ledger-id ./receipt.png ./receipt-2.jpg
+```
+
+The helper uploads via real Streamable HTTP MCP and returns an `attachments` list for the transaction tools. You still need to create/edit the transaction afterward. Local paths and download URLs cannot be used as file IDs.
 
 ## Troubleshooting
 
