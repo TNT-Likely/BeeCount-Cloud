@@ -120,6 +120,12 @@ As long as you have the `.zip` file + passphrase, any system, any standard archi
 |:---:|:---:|
 | ![English UI](./docs/screenshot-en.png) | ![Simplified Chinese UI](./docs/screenshot-zh.png) |
 
+### Receipt attachments on the Web
+
+![Add and preview a receipt](docs/demos/en/transaction-attachments.gif)
+
+Captured from Cloud 1.7.0 with fictional data. The paired App is 3.8.6. Waiting times are shortened in the demo.
+
 ---
 
 ## 🚀 Docker Compose Deployment
