@@ -9,6 +9,7 @@ import {
   updateCategory,
   updateTransaction,
   uploadAttachment,
+  type AttachmentRef,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -20,6 +21,7 @@ import {
   CategoriesPanel,
   categoryDefaults,
   TransactionsPanel,
+  uploadTransactionImage,
   txDefaults,
   type CategoryForm,
   type TxForm,
@@ -52,7 +54,7 @@ export function GlobalEditDialogs() {
   const toast = useToast()
   const { token } = useAuth()
   const { ledgers, currency, activeLedgerId } = useLedgers()
-  const { previewMap: iconPreviewByFileId } = useAttachmentCache()
+  const { previewMap: iconPreviewByFileId, resolvePreview } = useAttachmentCache()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
   const [editTxOpen, setEditTxOpen] = useState(false)
@@ -201,7 +203,7 @@ export function GlobalEditDialogs() {
     [loadRefsForLedger],
   )
 
-  const handleSaveTx = useCallback(async (): Promise<boolean> => {
+  const handleSaveTx = useCallback(async (attachments: AttachmentRef[] = editTxForm.attachments): Promise<boolean> => {
     const ledgerId = editTxLedgerId.trim()
     if (!ledgerId) {
       notifyError(new Error(t('transactions.error.ledgerRequired')))
@@ -291,7 +293,7 @@ export function GlobalEditDialogs() {
           ? editTxForm.to_account_name.trim()
           : null,
       tags: editTxForm.tags.filter((s) => s.length > 0),
-      attachments: editTxForm.attachments,
+      attachments,
       // §三 标记按 type 条件落库:转账两者都置 false;收入只允许 stats;支出两者都允许。
       exclude_from_stats:
         editTxForm.tx_type === 'transfer' ? false : editTxForm.exclude_from_stats,
@@ -442,10 +444,11 @@ export function GlobalEditDialogs() {
       dialogOpen={editTxOpen}
       onDialogOpenChange={setEditTxOpen}
       onSave={handleSaveTx}
+      onUploadAttachment={(file) => uploadTransactionImage(token, editTxLedgerId, file)}
       onReset={() => setEditTxForm(txDefaults())}
       onReload={() => undefined}
       onPreviewAttachment={async () => undefined}
-      resolveAttachmentPreviewUrl={async () => null}
+      resolveAttachmentPreviewUrl={(ref) => resolvePreview(ref.cloudFileId || '')}
       iconPreviewUrlByFileId={iconPreviewByFileId}
       onEdit={() => undefined}
       onDelete={() => undefined}

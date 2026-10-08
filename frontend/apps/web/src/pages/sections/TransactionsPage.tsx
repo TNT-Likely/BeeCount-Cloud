@@ -48,10 +48,8 @@ import {
 
 import {
   ApiError,
-  batchAttachmentExists,
   batchDeleteTransactions,
   downloadAttachment,
-  uploadAttachment,
   type AttachmentRef,
   type ReadAccount,
   type ReadCategory,
@@ -87,6 +85,7 @@ import {
   ConfirmDialog,
   TagPickerDialog,
   TransactionsPanel,
+  uploadTransactionImage,
   canManageLedger,
   canWriteTransactions,
   txDefaults,
@@ -245,11 +244,6 @@ function normalizeAttachmentRefs(raw: unknown): AttachmentRef[] {
     .filter((item): item is AttachmentRef => Boolean(item))
     .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
     .map((item, index) => ({ ...item, sortOrder: index }))
-}
-
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic'])
@@ -1286,63 +1280,6 @@ export function TransactionsPage() {
     }
   }
 
-  const onUploadTxAttachments = async (files: File[]): Promise<AttachmentRef[]> => {
-    const ledgerId = txWriteLedgerId.trim()
-    if (!ledgerId) {
-      setErrorNotice(t('transactions.error.ledgerRequired'))
-      return []
-    }
-    if (files.length === 0) return []
-
-    try {
-      const fileWithDigest = await Promise.all(
-        files.map(async (file) => {
-          const digest = await sha256Hex(await file.arrayBuffer())
-          return { file, digest }
-        })
-      )
-
-      const exists = await batchAttachmentExists(token, {
-        ledger_id: ledgerId,
-        sha256_list: fileWithDigest.map((row) => row.digest)
-      })
-      const existsBySha = new Map(exists.items.map((row) => [row.sha256, row]))
-      const out: AttachmentRef[] = []
-
-      for (const row of fileWithDigest) {
-        const existed = existsBySha.get(row.digest)
-        let fileId = existed?.file_id || null
-        let fileName = row.file.name
-        let size = row.file.size
-        if (!fileId) {
-          const uploaded = await uploadAttachment(token, {
-            ledger_id: ledgerId,
-            file: row.file,
-            mime_type: row.file.type || null
-          })
-          fileId = uploaded.file_id
-          fileName = uploaded.file_name || row.file.name
-          size = uploaded.size || row.file.size
-        }
-
-        const localFileName = fileId ? `${fileId}_${fileName}` : fileName
-
-        out.push({
-          fileName: localFileName,
-          originalName: row.file.name,
-          fileSize: size,
-          sortOrder: out.length,
-          cloudFileId: fileId,
-          cloudSha256: row.digest
-        })
-      }
-      return out
-    } catch (err) {
-      setErrorNotice(renderError(err))
-      return []
-    }
-  }
-
   // ensureCategoryIconPreview 已合并到全局 AttachmentCache.ensureLoadedMany 里,
   // 不再每个页面手动维护 inflight 去重。下面这个 noop 只是为了向下兼容
   // 保留旧调用点签名(其中一个 attachment 预览 fallback 还会调到)。
@@ -1370,7 +1307,7 @@ export function TransactionsPage() {
     }
   }
 
-  const onSaveTransaction = async (): Promise<boolean> => {
+  const onSaveTransaction = async (attachments = txForm.attachments): Promise<boolean> => {
     const ledgerId = txWriteLedgerId.trim()
     if (!ledgerId) {
       setErrorNotice(t('transactions.error.ledgerRequired'))
@@ -1469,7 +1406,7 @@ export function TransactionsPage() {
         to_account_id: isTransfer ? accountByName.get(toAccountName.toLowerCase()) || null : null,
         tags: txForm.tags.length > 0 ? txForm.tags : null,
         tag_ids: txTagIds.length > 0 ? txTagIds : null,
-        attachments: txForm.attachments.length > 0 ? txForm.attachments : null,
+        attachments,
         // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
         exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
         exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false,
@@ -1954,6 +1891,7 @@ export function TransactionsPage() {
                 dialogOpen={txDialogOpen}
                 onDialogOpenChange={setTxDialogOpen}
                 onSave={onSaveTransaction}
+                onUploadAttachment={(file) => uploadTransactionImage(token, txWriteLedgerId, file)}
                 onReset={() => {
                   setTxForm(txDefaults())
                   if (
