@@ -6,7 +6,7 @@
 
 > **English**: This repository does **not vendor** any third-party source code. All dependencies are fetched at build/deploy time by pip / pnpm under their own licenses, independent of this project's dual-license model (see [LICENSE_EN](LICENSE_EN)). The tables below list **direct dependencies** with their upstream-declared licenses (as of 2026-07; upstream prevails). Note on **psycopg (LGPL-3.0)**: it is pip-installed, unmodified and used dynamically as a library, which does not affect the licensing of this project's own code (including closed-source commercial deployments); only redistributing psycopg itself triggers LGPL obligations.
 
-## 后端（Python，见 requirements.txt）
+## 后端（Python，见 pyproject.toml）
 
 | 组件 | 协议 |
 |---|---|

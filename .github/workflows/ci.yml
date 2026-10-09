@@ -17,7 +17,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install .
       - name: Ruff
         run: ruff check src tests alembic
       - name: Mypy
@@ -51,7 +51,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install .
       - name: Migrate
         run: alembic upgrade head
       - name: Ruff
