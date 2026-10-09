@@ -262,6 +262,71 @@ def test_expense_is_negative_option():
     assert txs[0].amount == Decimal("35.00")
 
 
+def test_ignored_tx_type_silently_skipped():
+    """「不计收支」(支付宝)与「/」(微信中性交易占位符)行纯忽略:
+    静默跳过,不产生错误也不产生 warning。"""
+    csv = (
+        "类型,金额,时间,分类\n"
+        "支出,35.00,2024-05-01 12:30,餐饮\n"
+        "不计收支,100.00,2024-05-02 09:00,零钱通\n"
+        "收入,8000.00,2024-05-05 18:00,工资\n"
+        "/,50.00,2024-05-06 10:00,零钱通\n"
+    )
+    data = parse_csv_text(raw_text=csv)
+    txs, errors, warnings = apply_mapping(
+        rows=data.rows, mapping=data.suggested_mapping
+    )
+    assert errors == [], errors
+    assert warnings == [], warnings
+    assert len(txs) == 2
+    assert txs[0].tx_type == "expense"
+    assert txs[1].tx_type == "income"
+
+
+def test_wechat_style_header_after_metadata_rows():
+    """微信 xlsx 顶部十几行元数据(每行列数被补齐成一致)不应被误认成表头;
+    列数一致性比较去掉行尾空单元格后,应找到真正的表头行,且必填字段映射齐全。"""
+    rows_2d = []
+    # 模拟微信 xlsx:元数据行 + 全部补齐成 11 列(空字符串填充)
+    for text in [
+        "微信支付账单明细",
+        "微信昵称：[测试]",
+        "起始时间：[2026-01-21 00:00:00] 终止时间：[2026-10-08 20:36:41]",
+        "导出类型：[全部账单]",
+        "共213笔记录",
+        "----------------------微信支付账单明细列表--------------------",
+    ]:
+        rows_2d.append([text] + [""] * 10)
+    rows_2d.append(
+        ["交易时间", "交易类型", "交易对方", "商品", "收/支", "金额(元)",
+         "支付方式", "当前状态", "交易单号", "商户单号", "备注"]
+    )
+    rows_2d.append(
+        ["2026-10-07 21:02:09", "商户消费", "便利店", "晚餐", "支出", "25",
+         "零钱", "支付成功", "单号1", "商户单号1", "/"]
+    )
+    rows_2d.append(
+        ["2026-10-07 20:06:37", "微信红包", "朋友", "红包", "收入", "88",
+         "零钱", "已存入零钱", "单号2", "商户单号2", "/"]
+    )
+
+    from src.services.import_data.parser import _build_import_data
+    data = _build_import_data(rows_2d=rows_2d, forced_source=None)
+    # 表头不是第 0 行(元数据标题),而是列数一致性(去行尾空列)命中的那一行
+    assert data.headers[0] == "交易时间"
+    m = data.suggested_mapping
+    assert m.tx_type == "收/支"
+    assert m.amount == "金额(元)"
+    assert m.happened_at == "交易时间"
+    assert m.category_name == "交易类型"
+    assert m.account_name == "支付方式"
+    txs, errors, _ = apply_mapping(rows=data.rows, mapping=m)
+    assert errors == [], errors
+    assert len(txs) == 2
+    assert txs[0].tx_type == "expense"
+    assert txs[1].tx_type == "income"
+
+
 def test_xlsx_parse():
     """openpyxl 解析 .xlsx → 跟 CSV 走同一条路径,headers + rows 等价。"""
     from openpyxl import Workbook
@@ -512,6 +577,11 @@ def test_execute_creates_transactions_and_atomic_rollback_on_error(monkeypatch):
         try:
             txs = db.scalars(select(ReadTxProjection)).all()
             assert len(txs) == 3, [t.note for t in txs]
+            # 分类 name → categoryId 解析:不落 id 的话投影 category_sync_id
+            # 全 NULL,分类页/按分类统计永远 0 笔
+            assert all(t.category_sync_id for t in txs), [
+                (t.category_name, t.category_sync_id) for t in txs
+            ]
         finally:
             db.close()
     finally:
