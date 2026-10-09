@@ -124,8 +124,6 @@
 
 ![添加并预览小票附件](docs/demos/zh/transaction-attachments.gif)
 
-素材来自 Cloud 1.7.0 的独立演示环境，搭配 App 3.8.6，全部为虚构数据；动图剪短了等待时间。
-
 ---
 
 ## 🚀 Docker Compose 部署

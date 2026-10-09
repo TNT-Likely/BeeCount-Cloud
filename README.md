@@ -124,8 +124,6 @@ As long as you have the `.zip` file + passphrase, any system, any standard archi
 
 ![Add and preview a receipt](docs/demos/en/transaction-attachments.gif)
 
-Captured from Cloud 1.7.0 with fictional data. The paired App is 3.8.6. Waiting times are shortened in the demo.
-
 ---
 
 ## 🚀 Docker Compose Deployment
