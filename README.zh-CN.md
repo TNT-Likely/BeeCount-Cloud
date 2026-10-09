@@ -120,6 +120,10 @@
 |---------|------------|
 | ![ZH](./docs/screenshot-zh.png) | ![EN](./docs/screenshot-en.png) |
 
+### Web 小票附件
+
+![添加并预览小票附件](docs/demos/zh/transaction-attachments.gif)
+
 ---
 
 ## 🚀 Docker Compose 部署
