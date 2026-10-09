@@ -641,7 +641,7 @@ const en = {
   'accounts.bankcard.income': 'Income',
   'accounts.bankcard.expense': 'Expense',
   'accounts.bankcard.creditUsed': 'Used',
-  'accounts.bankcard.creditAvailable': 'Available',
+  'accounts.bankcard.creditAvailable': 'Est. available',
   'accounts.bankcard.balanceLabel': 'Balance',
   'accounts.bankcard.owedLabel': 'Owed',
 
@@ -1773,6 +1773,12 @@ const en = {
   'accounts.needBaseCurrency.title': 'Set a primary currency to see your asset summary',
   'accounts.needBaseCurrency.desc': 'Your accounts span multiple currencies. Set a primary currency to convert them into one summary.',
   'accounts.needBaseCurrency.action': 'Set primary currency',
+  "accounts.credit.overpayment": "Overpayment",
+  "accounts.credit.estimateHint": "Estimated from recorded transactions; check your bank for the actual amount.",
+  "accounts.credit.editBalanceHint": "Use Adjust balance on the account card to change the current amount.",
+  "accounts.positiveAssets": "Positive asset balances",
+  "accounts.negativeAssets": "Negative account balances {value} are deducted from total assets.",
+  'accounts.error.currencyLocked': "An account with transactions cannot change currency.",
 } as const
 
 export default en

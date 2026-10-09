@@ -33,6 +33,7 @@ export type AccountForm = {
   account_type: string
   currency: string
   initial_balance: string
+  credit_balance_state: 'debt' | 'overpayment'
   /** 备注,所有类型可填。 */
   note: string
   /** 信用额度,仅 credit_card 类型有意义。空字符串 = 未填。 */
@@ -120,6 +121,7 @@ export const accountDefaults = (): AccountForm => ({
   account_type: 'cash',
   currency: 'CNY',
   initial_balance: '0',
+  credit_balance_state: 'debt',
   note: '',
   credit_limit: '',
   billing_day: '',

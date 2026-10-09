@@ -178,7 +178,7 @@ const zhCN = {
   'accounts.bankcard.income': '收入',
   'accounts.bankcard.expense': '支出',
   'accounts.bankcard.creditUsed': '已用',
-  'accounts.bankcard.creditAvailable': '可用',
+  'accounts.bankcard.creditAvailable': '估算可用',
   'accounts.bankcard.balanceLabel': '余额',
   'accounts.bankcard.owedLabel': '欠款',
 
@@ -1811,6 +1811,12 @@ const zhCN = {
   'accounts.needBaseCurrency.title': '设置主币种以查看资产汇总',
   'accounts.needBaseCurrency.desc': '账户涉及多种币种,需先设置主币种,才能把各币种折算成同一口径汇总。',
   'accounts.needBaseCurrency.action': '去设置主币种',
+  "accounts.credit.overpayment": "溢缴款",
+  "accounts.credit.estimateHint": "按已记流水估算，实际可用金额以银行为准。",
+  "accounts.credit.editBalanceHint": "调整当前金额请使用账户卡片上的“调整余额”。",
+  "accounts.positiveAssets": "正余额资产",
+  "accounts.negativeAssets": "账户负余额 {value} 已从总资产扣减。",
+  'accounts.error.currencyLocked': "已有交易的账户无法修改币种。",
 } as const
 
 export default zhCN

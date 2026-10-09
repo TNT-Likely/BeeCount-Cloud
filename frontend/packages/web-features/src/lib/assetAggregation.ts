@@ -11,7 +11,7 @@ import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@
 
 export type AssetSummary = {
   assetTotal: number
-  /** 带符号:欠款为负、溢缴为正。展示"总负债"时取 Math.abs,绝不在聚合层提前 abs。 */
+  /** Signed debt; credit-card positive balances are counted in assets. */
   liabilityTotal: number
   netWorth: number
 }
@@ -28,6 +28,8 @@ export type AssetGroup = {
   isLiability: boolean
   rows: ReadAccount[]
   subtotals: { currency: string; value: number }[]
+  positiveAssetTotal?: number
+  negativeAssetTotal?: number
 }
 
 /** 负债类账户类型:余额带符号计入净值(欠款为负扣减、溢缴为正增加),展示欠款时才取 abs。 */
@@ -71,10 +73,37 @@ export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
   let liabilityTotal = 0
   for (const row of rows) {
     const raw = accountBalance(row)
-    if (LIABILITY_TYPES.has(row.account_type || '')) liabilityTotal += raw
+    if (LIABILITY_TYPES.has(row.account_type || '') && !(row.account_type === 'credit_card' && raw > 0)) liabilityTotal += raw
     else assetTotal += raw
   }
   return { assetTotal, liabilityTotal, netWorth: assetTotal + liabilityTotal }
+}
+
+/** UI credit amounts derived from the unchanged signed balance protocol. */
+export function creditCardAmounts(balance: number, limit?: number | null) {
+  return {
+    debt: Math.max(-balance, 0),
+    overpayment: Math.max(balance, 0),
+    estimatedAvailable: limit != null && limit > 0 ? Math.max(limit + balance, 0) : null,
+  }
+}
+
+/** Positive asset positions for charts; negative ordinary assets stay in summaries. */
+export function convertPositiveAssetTotalsToBase(
+  rows: ReadAccount[], base: string, auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+) {
+  const positive = rows.filter((r) => accountBalance(r) > 0 &&
+    (!LIABILITY_TYPES.has(r.account_type || '') || r.account_type === 'credit_card'))
+    .map((r) => r.account_type === 'credit_card'
+      ? { ...r, account_type: 'credit_card_overpayment' } : r)
+  const negative = rows.filter((r) => accountBalance(r) < 0 &&
+    !LIABILITY_TYPES.has(r.account_type || ''))
+  const result = convertTypeTotalsToBase(positive, base, auto, overrides)
+  const negativeResult = convertTypeTotalsToBase(negative, base, auto, overrides)
+  return { ...result,
+    missing: [...new Set([...result.missing, ...negativeResult.missing])].sort(),
+    negativeAssets: [...negativeResult.totals.values()].reduce((a, b) => a + b, 0) }
 }
 
 /** 有效汇率:override(1 quote = x base)优先;否则代理自动值(1 base = x quote)取倒数。缺失返回 null,绝不回落 1。 */
@@ -119,10 +148,14 @@ export function mergeGroupsToBase(
     if (!eff) continue // 缺失汇率:整币种剔除,绝不按 1 折入
     for (const group of bucket.groups) {
       const sub = group.subtotals.reduce((s, x) => s + x.value, 0) * eff.rate
+      const positive = (group.positiveAssetTotal ?? (!group.isLiability ? Math.max(sub / eff.rate, 0) : 0)) * eff.rate
+      const negative = (group.negativeAssetTotal ?? (!group.isLiability ? Math.min(sub / eff.rate, 0) : 0)) * eff.rate
       const existing = merged.get(group.type)
       if (existing) {
         existing.subtotals[0].value += sub
         existing.rows = existing.rows.concat(group.rows)
+        existing.positiveAssetTotal = (existing.positiveAssetTotal ?? 0) + positive
+        existing.negativeAssetTotal = (existing.negativeAssetTotal ?? 0) + negative
       } else {
         merged.set(group.type, {
           type: group.type,
@@ -131,6 +164,8 @@ export function mergeGroupsToBase(
           isLiability: group.isLiability,
           rows: [...group.rows],
           subtotals: [{ currency: base, value: sub }],
+          positiveAssetTotal: positive,
+          negativeAssetTotal: negative,
         })
       }
     }

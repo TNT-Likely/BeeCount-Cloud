@@ -1,6 +1,8 @@
 import type { ExchangeRateOverride, ExchangeRatesResponse, ReadAccount } from '@beecount/api-client'
 import {
   accountBalance,
+  creditCardAmounts,
+  convertPositiveAssetTotalsToBase,
   type AssetGroup,
   computeCurrencySummary,
   computeTypeGroups,
@@ -71,17 +73,19 @@ describe('asset aggregation — 绝不跨币种相加', () => {
       acc({ account_type: 'cash', balance: 1_000_000 }),
       acc({ account_type: 'credit_card', balance: 761_779.84 }) // 溢缴/正余额负债
     ])
-    expect(s.liabilityTotal).toBe(761_779.84)
+    expect(s.assetTotal).toBeCloseTo(1_761_779.84, 2)
+    expect(s.liabilityTotal).toBe(0)
     expect(s.netWorth).toBeCloseTo(1_761_779.84, 2) // 加上,而不是 1_000_000 − 761_779.84
   })
 
-  it('负债内部正负互抵:+10w 信用卡 + −20w 贷款 → 合计 −10w(展示欠 10w,而非逐账户 abs 的 30w)', () => {
+  it('口径调整:信用卡溢缴计资产，不抵减贷款；仍保留原净值不变式', () => {
     const s = computeCurrencySummary([
       acc({ account_type: 'credit_card', balance: 100_000 }),
       acc({ account_type: 'loan', balance: -200_000 })
     ])
-    expect(s.liabilityTotal).toBe(-100_000)
-    expect(Math.abs(s.liabilityTotal)).toBe(100_000) // 展示层口径
+    expect(s.assetTotal).toBe(100_000)
+    expect(s.liabilityTotal).toBe(-200_000)
+    expect(Math.abs(s.liabilityTotal)).toBe(200_000) // 展示层口径
     expect(s.netWorth).toBe(-100_000)
   })
 
@@ -292,5 +296,41 @@ describe('convertTypeTotalsToBase — donut 跨币种折算', () => {
     const { totals, missing } = convertTypeTotalsToBase([], 'CNY', auto({ USD: '0.25' }), [])
     expect(totals.size).toBe(0)
     expect(missing).toEqual([])
+  })
+})
+
+describe('credit-card state and positive asset composition', () => {
+  it('credit-card group debt does not offset another card overpayment', () => {
+    const group = computeTypeGroups([
+      acc({ name: 'Debt', account_type: 'credit_card', currency: 'CNY', balance: -1000 }),
+      acc({ name: 'Overpayment', account_type: 'credit_card', currency: 'CNY', balance: 200 }),
+    ], (key) => key)[0]
+    expect(group.subtotals).toEqual([{ currency: 'CNY', value: -1000 }])
+    expect(group.positiveAssetTotal).toBe(200)
+  })
+  it('a negative asset with missing exchange rate is explicitly reported', () => {
+    const result = convertPositiveAssetTotalsToBase([
+      acc({ account_type: 'bank_card', currency: 'CNY', balance: 100 }),
+      acc({ account_type: 'bank_card', currency: 'USD', balance: -20 }),
+    ], 'CNY', null, [])
+    expect(result.missing).toEqual(['USD'])
+    expect(result.totals.get('bank_card')).toBe(100)
+  })
+  it('debt, overpayment, unknown and over-limit amounts share one rule', () => {
+    expect(creditCardAmounts(-1000, 20000)).toEqual({ debt: 1000, overpayment: 0, estimatedAvailable: 19000 })
+    expect(creditCardAmounts(200, 20000).estimatedAvailable).toBe(20200)
+    expect(creditCardAmounts(-21000, 20000).estimatedAvailable).toBe(0)
+    expect(creditCardAmounts(200).estimatedAvailable).toBeNull()
+  })
+  it('positive positions are not netted within a type or made positive using abs', () => {
+    const result = convertPositiveAssetTotalsToBase([
+      acc({ name: 'A', account_type: 'bank_card', currency: 'CNY', balance: 8000 }),
+      acc({ name: 'B', account_type: 'bank_card', currency: 'CNY', balance: -200 }),
+      acc({ name: 'C', account_type: 'credit_card', currency: 'CNY', balance: 200 }),
+      acc({ name: 'D', account_type: 'credit_card', currency: 'CNY', balance: -1000 }),
+    ], 'CNY', null, [])
+    expect(result.totals.get('bank_card')).toBe(8000)
+    expect(result.totals.get('credit_card_overpayment')).toBe(200)
+    expect(result.negativeAssets).toBe(-200)
   })
 })

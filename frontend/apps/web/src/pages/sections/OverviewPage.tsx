@@ -97,11 +97,16 @@ export function OverviewPage() {
   const loadAccountsAndTags = useCallback(async () => {
     if (!activeLedgerId) return
     try {
-      const [a, tg] = await Promise.all([
+      const [a, globalAccounts, tg] = await Promise.all([
         fetchWorkspaceAccounts(token, { ledgerId: activeLedgerId, limit: 500 }),
+        fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { ledgerId: activeLedgerId, limit: 500 }),
       ])
-      setAccounts(a)
+      const balances = new Map(globalAccounts.map((row) => [row.id, row]))
+      setAccounts(a.flatMap((row) => {
+        const full = balances.get(row.id)
+        return full ? [{ ...row, balance: full.balance, currency: full.currency }] : []
+      }))
       setTags(tg)
     } catch {
       // dashboard 静默降级

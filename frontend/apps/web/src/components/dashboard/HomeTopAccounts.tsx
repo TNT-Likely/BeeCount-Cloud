@@ -123,7 +123,8 @@ export function HomeTopAccounts({ accounts, currency = 'CNY', onSelectAccount }:
                       </div>
                       <Amount
                         value={a.balance}
-                        currency={currency}
+                        currency={a.raw.currency || currency}
+                        showCurrency
                         size="xs"
                         tone={a.balance < 0 ? 'negative' : 'muted'}
                         className="shrink-0"

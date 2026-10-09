@@ -26,6 +26,7 @@ import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
 import {
   accountBalance,
+  creditCardAmounts,
   type AssetGroup,
   type AssetSummary,
   computeCurrencySummary,
@@ -454,19 +455,13 @@ export function AssetsCompositionMini({
   approx?: boolean
 }) {
   const t = useT()
-  // 「资产构成」只含资产类：负债（信用卡/贷款）不进饼图，也不计入中心合计/百分比 ——
-  // 它们体现在「负债」汇总里，不属于资产构成。groups 含负债类型，按 isLiability 过滤掉。
-  // 资产小计带符号（透支资产为负），饼图分段要的是体量 —— 对资产组合计取 abs。
-  const data = groups
-    .filter((g) => !g.isLiability)
-    .map((g) => ({
-      type: g.type,
-      label: g.label,
-      color: g.color,
-      value: Math.abs(g.subtotals.reduce((s, x) => s + x.value, 0))
-    }))
-  // 中心合计 / 扇区 / 百分比分母都用「资产合计」（资产组之和）—— 绝不把 |负债|
-  // 算进来，否则信用卡等负债会被计入资产构成（这正是之前的 bug）。
+  const data = groups.map((g) => ({
+    type: g.type,
+    label: g.type === 'credit_card' ? t('accounts.credit.overpayment') : g.label,
+    color: g.color,
+    value: g.positiveAssetTotal ?? (!g.isLiability ? Math.max(g.subtotals.reduce((s, x) => s + x.value, 0), 0) : 0)
+  })).filter((g) => g.value > 0)
+  const negativeAssets = groups.reduce((sum, g) => sum + (g.negativeAssetTotal ?? 0), 0)
   const assetTotal = data.reduce((s, d) => s + d.value, 0)
   const total = assetTotal > 0 ? assetTotal : 1
   // conic-gradient 分段
@@ -493,6 +488,8 @@ export function AssetsCompositionMini({
       <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
         {title ?? t('accounts.composition')}
       </div>
+      {negativeAssets < 0 ? <p className="mb-2 text-[11px] text-muted-foreground">
+        {t('accounts.negativeAssets', { value: negativeAssets.toFixed(2) })}</p> : null}
       {data.length === 0 ? (
         <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
           {t('accounts.empty.noData')}
@@ -510,7 +507,7 @@ export function AssetsCompositionMini({
             <div className="absolute inset-[18%] rounded-full bg-card" aria-hidden />
             <div className="absolute inset-0 flex flex-col items-center justify-center">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                {t('common.total')}
+                {t('accounts.positiveAssets')}
               </div>
               <div className="mt-0.5 flex items-baseline gap-0.5">
                 {approx ? (
@@ -608,8 +605,10 @@ function BankCardTile({
   // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
   const isCreditCard = accountType === 'credit_card'
   const ccLimit = typeof row.credit_limit === 'number' ? row.credit_limit : null
-  const ccOwed = Math.max(0, -displayBalance)
-  const ccAvailable = ccLimit !== null ? Math.max(0, ccLimit - ccOwed) : null
+  const ccAmounts = creditCardAmounts(displayBalance, ccLimit)
+  const ccDisplay = ccAmounts.overpayment > 0 ? ccAmounts.overpayment : ccAmounts.debt
+  const ccLabel = ccAmounts.overpayment > 0 ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed'
+  const ccAvailable = ccAmounts.estimatedAvailable
 
   return (
     <div
@@ -712,8 +711,8 @@ function BankCardTile({
                 currency={currency}
               />
               <StatCell
-                label={t('accounts.bankcard.creditUsed')}
-                value={ccOwed}
+                label={t(ccLabel)}
+                value={ccDisplay}
                 currency={currency}
               />
               <StatCell
@@ -725,10 +724,10 @@ function BankCardTile({
           ) : (
             <div className="mt-auto">
               <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-                {t('accounts.bankcard.currentOwed')}
+                {t(ccLabel)}
               </div>
               <Amount
-                value={ccOwed}
+                value={ccDisplay}
                 currency={currency}
                 showCurrency
                 bold
@@ -953,13 +952,12 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
   return ACCOUNT_ORDER.filter((type) => (buckets[type] || []).length > 0).map((type) => {
     const groupRows = (buckets[type] || []).slice().sort((a, b) => a.name.localeCompare(b.name))
     const isLiability = LIABILITY_TYPES.has(type)
-    // 小计带符号累加(与 computeCurrencySummary 同口径)——溢缴的卡会抵销欠款。
-    // 展示"共欠"时由渲染处对组合计取 abs,绝不逐账户 abs(否则 +10w 卡 + −20w 贷
-    // 会显示成欠 30w)。
+    // 信用卡“共欠”只汇总欠款；另一张卡的溢缴属于资产，不抵销这里的欠款。
     const byCur = new Map<string, number>()
     for (const r of groupRows) {
       const cur = (r.currency || 'CNY').toUpperCase()
-      byCur.set(cur, (byCur.get(cur) ?? 0) + accountBalance(r))
+      const balance = accountBalance(r)
+      byCur.set(cur, (byCur.get(cur) ?? 0) + (type === 'credit_card' ? Math.min(balance, 0) : balance))
     }
     return {
       type,
@@ -967,6 +965,8 @@ export function computeTypeGroups(rows: ReadAccount[], t: (k: string) => string)
       color: TYPE_COLORS[type] || '#94a3b8',
       isLiability,
       rows: groupRows,
+      positiveAssetTotal: byCur.size > 1 ? undefined : type === 'loan' ? 0 : groupRows.reduce((sum, r) => sum + Math.max(accountBalance(r), 0), 0),
+      negativeAssetTotal: byCur.size > 1 ? undefined : isLiability ? 0 : groupRows.reduce((sum, r) => sum + Math.min(accountBalance(r), 0), 0),
       subtotals: [...byCur.entries()].map(([currency, value]) => ({ currency, value }))
     }
   })
@@ -1240,14 +1240,29 @@ export function AccountsPanel({
               </div>
             </div>
             <div className="space-y-1">
-              <Label>{t('accounts.table.init')}</Label>
+              <Label>{form.account_type === 'credit_card'
+                ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
+                : t(form.editingId ? 'detail.stats.currentBalance' : 'accounts.table.init')}</Label>
+              {form.account_type === 'credit_card' && !form.editingId ? (
+                <Select value={form.credit_balance_state}
+                  onValueChange={(value) => onFormChange({ ...form, credit_balance_state: value as 'debt' | 'overpayment' })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="debt">{t('accounts.bankcard.currentOwed')}</SelectItem>
+                    <SelectItem value="overpayment">{t('accounts.credit.overpayment')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : null}
               <Input
                 placeholder={t('accounts.placeholder.initialBalance')}
                 value={form.initial_balance}
+                readOnly={Boolean(form.editingId) && !VALUATION_TYPES_SET.has(form.account_type)}
                 onChange={(e) => onFormChange({ ...form, initial_balance: e.target.value })}
               />
             </div>
 
+            {form.editingId ? <p className="text-xs text-muted-foreground">{t('accounts.credit.editBalanceHint')}</p> : null}
+            {form.account_type === 'credit_card' ? <p className="text-xs text-muted-foreground">{t('accounts.credit.estimateHint')}</p> : null}
             {/* 信用卡专属:信用额度 + 账单日 + 还款日(对齐 mobile credit_card
                 section)。还款提醒是 mobile 本地 SharedPreferences 不走 server,
                 web 暂不支持。 */}

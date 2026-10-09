@@ -10,7 +10,7 @@ import {
   DialogTitle,
   useT
 } from '@beecount/ui'
-import { TransactionList } from '@beecount/web-features'
+import { TransactionList, creditCardAmounts } from '@beecount/web-features'
 import { Banknote, Calendar as CalendarIcon, CreditCard } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -118,14 +118,14 @@ function AccountStatsHeader({
   // 累计收入/支出(信用卡入账是还款/退款,非收入);额度/可用/账单在下方
   // AccountCardInfo。对齐 mobile account_detail_page。
   if ((account.account_type || '') === 'credit_card') {
-    const owed = Math.max(0, -balance)
+    const amounts = creditCardAmounts(balance)
     return (
       <div className="border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          {t('accounts.bankcard.currentOwed')}
+          {t(amounts.overpayment > 0 ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')}
         </div>
         <div className="mt-0.5 font-mono text-lg font-bold tabular-nums text-expense">
-          {fmt(owed)}
+          {fmt(amounts.overpayment > 0 ? amounts.overpayment : amounts.debt)} {account.currency}
         </div>
       </div>
     )
@@ -207,12 +207,7 @@ function AccountCardInfo({
   // `getCreditCardUsedAmount` (balance < 0 ? -balance : 0) 完全一致。
   // 修复 issue #26:储蓄卡转账到信用卡额度没恢复。
   const balance = account.balance ?? account.initial_balance ?? 0
-  const used =
-    typeof creditLimit === 'number' ? Math.max(0, -balance) : null
-  const remaining =
-    typeof creditLimit === 'number' && used !== null
-      ? Math.max(0, creditLimit - used)
-      : null
+  const remaining = creditCardAmounts(balance, creditLimit).estimatedAvailable
 
   // 没有任何要展示的就直接不渲染(用户没填这些字段时)
   if (
@@ -256,7 +251,7 @@ function AccountCardInfo({
               value={fmt(creditLimit)}
               hint={
                 remaining !== null
-                  ? t('detail.account.remaining', { value: fmt(remaining) })
+                  ? t('accounts.credit.estimateHint') + ' ' + t('detail.account.remaining', { value: fmt(remaining) })
                   : undefined
               }
             />

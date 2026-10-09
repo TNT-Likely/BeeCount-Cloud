@@ -202,3 +202,24 @@ def test_net_worth_history_converts_to_base():
         assert body["multi_currency"] is True
     finally:
         app.dependency_overrides.clear()
+
+
+def test_credit_overpayment_is_asset_without_changing_historical_net():
+    client, _ = _make_client()
+    try:
+        app_token, web_token = _two_tokens(client, "nwh-credit@t.com")
+        ha = {"Authorization": f"Bearer {app_token}"}
+        hw = {"Authorization": f"Bearer {web_token}"}
+        _push(client, ha, "lg-credit", "ledger", "lg-credit",
+              {"syncId": "lg-credit", "ledgerName": "合成信用账本", "currency": "CNY"})
+        for sid, kind, balance in [("bank", "bank_card", 10000), ("owed", "credit_card", -1000), ("overpaid", "credit_card", 200)]:
+            _push(client, ha, "lg-credit", "account", sid,
+                  {"syncId": sid, "name": sid, "type": kind, "initialBalance": balance, "currency": "CNY"})
+        response = client.get("/api/v1/read/workspace/net-worth-history", headers=hw)
+        assert response.status_code == 200
+        point = response.json()["series"][-1]
+        assert point["assets"] == 10200
+        assert point["liabilities"] == -1000
+        assert point["net_worth"] == 9200
+    finally:
+        app.dependency_overrides.clear()

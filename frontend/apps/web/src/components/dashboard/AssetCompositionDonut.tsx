@@ -1,7 +1,7 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { WorkspaceAccount } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useLocale, useT } from '@beecount/ui'
-import { convertTypeTotalsToBase } from '@beecount/web-features'
+import { convertPositiveAssetTotalsToBase } from '@beecount/web-features'
 import { useMemo } from 'react'
 
 import { usePrimaryCurrencyRates } from '../../hooks/usePrimaryCurrencyRates'
@@ -15,6 +15,7 @@ interface Props {
 const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }> = {
   cash: { color: '#10b981', group: 'asset' },
   bank_card: { color: '#3b82f6', group: 'asset' },
+  credit_card_overpayment: { color: '#ef4444', group: 'asset' },
   credit_card: { color: '#ef4444', group: 'liability' },
   alipay: { color: '#06b6d4', group: 'asset' },
   wechat: { color: '#22c55e', group: 'asset' },
@@ -35,11 +36,10 @@ export function AssetCompositionDonut({ accounts }: Props) {
   // 各账户 balance 按 1:1 裸加($1000 当 ¥1000,issue #104 的 11,500 就是这么来的)。
   // 现在统一走 assetAggregation 铁律:按币种切分 → 每币种类型小计 × 汇率折进
   // 主币种 → 缺失汇率的整币种剔除(missing 出脚注),绝不按 1 折入。
-  // 单币种用户折算率恒 1,数字与旧实现完全一致,零视觉变化。
   const { effectiveBase, singleCurrency, needsBase, rates, rateOverrides, loading } =
     usePrimaryCurrencyRates(accounts)
-  const { totals, missing } = useMemo(
-    () => convertTypeTotalsToBase(accounts, effectiveBase, rates, rateOverrides),
+  const { totals, missing, negativeAssets } = useMemo(
+    () => convertPositiveAssetTotalsToBase(accounts, effectiveBase, rates, rateOverrides),
     [accounts, effectiveBase, rates, rateOverrides],
   )
   const allRows = Array.from(totals.entries())
@@ -47,12 +47,11 @@ export function AssetCompositionDonut({ accounts }: Props) {
       type,
       signed,
       value: Math.abs(signed),
-      label: TYPE_META[type] ? t(`accountType.${type}` as never) : type,
+      label: type === 'credit_card_overpayment' ? t('accounts.credit.overpayment') : TYPE_META[type] ? t(`accountType.${type}` as never) : type,
       color: TYPE_META[type]?.color || '#94a3b8',
       group: TYPE_META[type]?.group || 'asset'
     }))
-  // 「资产构成」扇区/图例只含资产类:负债(信用卡/贷款)不进饼图,只在中心脚注体现。
-  // 与 App 端 asset_composition_chart 一致(资产构成 = 纯资产,不含负债)。
+  // 扇区与分母都只包含正余额资产头寸，包括信用卡溢缴款。
   const data = allRows
     // 只含「正余额」资产:负债(信用卡/贷款)与透支为负的资产都不进扇区/图例。
     .filter((d) => d.signed > 0 && d.group === 'asset')
@@ -60,12 +59,6 @@ export function AssetCompositionDonut({ accounts }: Props) {
   // 百分比分母用「展示项之和」而非带符号的 totalAsset —— 否则有透支资产(signed<0)时
   // totalAsset 被负值压低,会让单项百分比虚高甚至 >100%。
   const shownAssetTotal = data.reduce((s, d) => s + d.value, 0)
-
-  // 中心数字与 App 口径一致:总资产 = 资产类带符号合计;负债脚注 = |负债类带符号合计|。
-  const totalAsset = allRows.filter((d) => d.group === 'asset').reduce((s, d) => s + d.signed, 0)
-  const totalLiability = Math.abs(
-    allRows.filter((d) => d.group === 'liability').reduce((s, d) => s + d.signed, 0)
-  )
 
   const fmt = (v: number) =>
     v.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
@@ -127,20 +120,19 @@ export function AssetCompositionDonut({ accounts }: Props) {
                 </PieChart>
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('home.assetComp.totalAsset')}</div>
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('accounts.positiveAssets')}</div>
                 {/* 多币种折算视图:与资产页汇总卡同款 ≈ 前缀 + 目标币种码。 */}
                 <div className="flex items-baseline gap-0.5">
                   {!singleCurrency ? (
                     <span className="font-mono text-[10px] text-muted-foreground">≈</span>
                   ) : null}
-                  <div className="text-sm font-bold">{fmt(totalAsset)}</div>
+                  <div className="text-sm font-bold">{fmt(shownAssetTotal)}</div>
                   {!singleCurrency ? (
                     <span className="text-[10px] text-muted-foreground">{effectiveBase}</span>
                   ) : null}
                 </div>
-                {totalLiability > 0 ? (
-                  <div className="mt-0.5 text-[10px] text-rose-500">{t('home.assetComp.liability').replace('{value}', fmt(totalLiability))}</div>
-                ) : null}
+                {negativeAssets < 0 ? <div className="mt-0.5 text-[10px] text-muted-foreground">
+                  {t('accounts.negativeAssets', { value: fmt(negativeAssets) })}</div> : null}
               </div>
             </div>
             <ul className="space-y-1.5">

@@ -1254,6 +1254,7 @@ def workspace_net_worth_history(
         ).where(UserAccountProjection.user_id == current_user.id)
     ).all()
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
+    is_credit = {a.sync_id: a.account_type == "credit_card" for a in accts}
     is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
     acc_currency = {a.sync_id: (a.currency or "CNY").upper() for a in accts}
     currencies = {(a.currency or "CNY").upper() for a in accts if a.sync_id in init_by_acc}
@@ -1346,7 +1347,7 @@ def workspace_net_worth_history(
             if rate is None:
                 continue
             vb = v * rate
-            if is_liab.get(k, False):
+            if is_liab.get(k, False) and not (is_credit.get(k, False) and vb > 0):
                 liab += vb
             else:
                 assets += vb
