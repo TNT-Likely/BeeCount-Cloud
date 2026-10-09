@@ -565,12 +565,12 @@ export function AccountsPage() {
           <CardContent className="space-y-3 p-5">
             <div className="min-w-0 space-y-1">
               <p className="text-xs text-muted-foreground">
-                {converted.rateDate
+                {!converted.singleCurrency
                   ? t('accounts.converted.netWorth', { currency: converted.base })
                   : t('accounts.netWorth')}
               </p>
               <div className="flex items-baseline gap-1">
-                {converted.rateDate ? (
+                {!converted.singleCurrency ? (
                   <span className="font-mono text-sm text-muted-foreground">≈</span>
                 ) : null}
                 <Amount
@@ -592,7 +592,7 @@ export function AccountsPage() {
                   {t('accounts.assets')}
                 </div>
                 <div className="mt-0.5 flex items-baseline gap-1">
-                  {converted.rateDate ? (
+                  {!converted.singleCurrency ? (
                     <span className="font-mono text-xs text-muted-foreground">≈</span>
                   ) : null}
                   <Amount
@@ -610,7 +610,7 @@ export function AccountsPage() {
                   {t('accounts.liabilities')}
                 </div>
                 <div className="mt-0.5 flex items-baseline gap-1">
-                  {converted.rateDate ? (
+                  {!converted.singleCurrency ? (
                     <span className="font-mono text-xs text-muted-foreground">≈</span>
                   ) : null}
                   <Amount
@@ -654,19 +654,19 @@ export function AccountsPage() {
                   currency={converted.base}
                   showCurrency
                   embedded
-                  approx={Boolean(converted.rateDate)}
+                  approx={!converted.singleCurrency}
                 />
               ) : null}
             </div>
 
             {/* 脚注 + 详情:仅多币种折算态出现(单币种 rateDate 为空,
                 既无汇率脚注也无分币种明细可看)。 */}
-            {converted.rateDate ? (
+            {!converted.singleCurrency ? (
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                  <span className="text-[11px] text-muted-foreground">
+                  {converted.rateDate ? <span className="text-[11px] text-muted-foreground">
                     {t('accounts.converted.footnote', { date: converted.rateDate })}
-                  </span>
+                  </span> : null}
                   {converted.missing.length > 0 ? (
                     <span className="text-[11px] text-amber-600 dark:text-amber-500">
                       {t('accounts.converted.missing', {

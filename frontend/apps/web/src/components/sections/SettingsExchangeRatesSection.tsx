@@ -59,7 +59,7 @@ export function SettingsExchangeRatesSection() {
     setLoading(true)
     try {
       const [rates, ovrs, accounts] = await Promise.all([
-        fetchExchangeRates(token, base),
+        fetchExchangeRates(token, base).catch(() => null),
         fetchExchangeRateOverrides(token),
         fetchWorkspaceAccounts(token, { limit: 500 }),
       ])
@@ -189,6 +189,9 @@ export function SettingsExchangeRatesSection() {
         ) : null}
       </CardHeader>
       <CardContent className="space-y-3">
+        {!loading && !auto ? <p className="text-xs text-amber-600 dark:text-amber-500">
+          {t('rates.unavailableHint')}
+        </p> : null}
         {!base ? (
           <p className="rounded-lg border border-dashed border-border/60 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
             {t('rates.emptyHint')}

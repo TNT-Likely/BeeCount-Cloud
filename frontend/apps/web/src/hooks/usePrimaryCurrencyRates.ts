@@ -3,7 +3,7 @@ import {
   fetchExchangeRateOverrides,
   fetchExchangeRates,
 } from '@beecount/api-client'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useAuth } from '../context/AuthContext'
 import { usePageCache } from '../context/PageDataCacheContext'
@@ -76,6 +76,9 @@ export function usePrimaryCurrencyRates(
     [],
   )
 
+  const requestKey = `${base}:${currencySig}`
+  const [loadedKey, setLoadedKey] = useState('')
+
   useEffect(() => {
     // 单币种 / 未设主币种:不需要汇率,清掉本组件态(不动其它 base 的缓存)。
     if (!base || distinct.size < 2) {
@@ -84,6 +87,7 @@ export function usePrimaryCurrencyRates(
       return
     }
     let cancelled = false
+    setLoadedKey('')
     void Promise.all([
       fetchExchangeRates(token, base).catch(() => null),
       fetchExchangeRateOverrides(token).catch(
@@ -93,6 +97,7 @@ export function usePrimaryCurrencyRates(
       if (cancelled) return
       setRates(r)
       setRateOverrides(o)
+      setLoadedKey(requestKey)
     })
     return () => {
       cancelled = true
@@ -102,6 +107,6 @@ export function usePrimaryCurrencyRates(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, base, currencySig])
 
-  const loading = !singleCurrency && !needsBase && rates === null
+  const loading = !singleCurrency && !needsBase && rates === null && loadedKey !== requestKey
   return { base, effectiveBase, singleCurrency, needsBase, rates, rateOverrides, loading }
 }

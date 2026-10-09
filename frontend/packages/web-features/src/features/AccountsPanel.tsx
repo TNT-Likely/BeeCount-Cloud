@@ -1254,7 +1254,12 @@ export function AccountsPanel({
                 </Select>
               ) : null}
               <Input
-                placeholder={t('accounts.placeholder.initialBalance')}
+                aria-label={form.account_type === 'credit_card'
+                  ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
+                  : t(form.editingId ? 'detail.stats.currentBalance' : 'accounts.table.init')}
+                placeholder={form.account_type === 'credit_card'
+                  ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
+                  : t('accounts.placeholder.initialBalance')}
                 value={form.initial_balance}
                 readOnly={Boolean(form.editingId) && !VALUATION_TYPES_SET.has(form.account_type)}
                 onChange={(e) => onFormChange({ ...form, initial_balance: e.target.value })}

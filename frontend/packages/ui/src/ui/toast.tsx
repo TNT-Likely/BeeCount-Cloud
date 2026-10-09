@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { cn } from '../lib/cn'
@@ -69,7 +69,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const helpers: ToastContextValue = {
+  const helpers = useMemo<ToastContextValue>(() => ({
     show,
     dismiss,
     success: (description, title) =>
@@ -80,7 +80,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       show({ description, title, variant: 'warning', durationMs: DEFAULT_DURATION.warning }),
     info: (description, title) =>
       show({ description, title, variant: 'info', durationMs: DEFAULT_DURATION.info })
-  }
+  }), [show, dismiss])
 
   return (
     <ToastContext.Provider value={helpers}>

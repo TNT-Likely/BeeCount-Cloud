@@ -1797,6 +1797,7 @@ const zhCN = {
   'rates.sourceManual': '手动',
   'rates.updatedAt': '{date} 更新',
   'rates.notFetched': '未获取',
+  'rates.unavailableHint': '自动汇率暂不可用，可手动设置；未取得汇率的币种不会计入折算汇总。',
   'rates.edit': '编辑汇率',
   'rates.resetToAuto': '恢复自动',
   'rates.inverseHint': '反向参考:1 {base} ≈ {rate} {quote}',

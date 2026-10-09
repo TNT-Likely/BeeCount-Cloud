@@ -1759,6 +1759,7 @@ const en = {
   'rates.sourceManual': 'Manual',
   'rates.updatedAt': 'Updated {date}',
   'rates.notFetched': 'Not available',
+  'rates.unavailableHint': 'Automatic rates are unavailable. You can set rates manually; currencies without rates are excluded from converted totals.',
   'rates.edit': 'Edit rate',
   'rates.resetToAuto': 'Reset to auto',
   'rates.inverseHint': 'Inverse: 1 {base} ≈ {rate} {quote}',
