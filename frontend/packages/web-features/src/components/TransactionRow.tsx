@@ -52,6 +52,8 @@ type CommonProps = {
   showLedger?: boolean
   /** 备注显示方式:'note' = 备注优先(有备注显示备注);默认 'category' = 分类 + 备注括号。 */
   noteDisplayMode?: NoteDisplayMode
+  /** 账户详情中的转账金额按该账户显示正负方向；不传时显示交易金额。 */
+  currentAccountId?: string
 }
 
 /**
@@ -82,7 +84,8 @@ export function TransactionRow({
   selected = false,
   onToggleSelect,
   showLedger = false,
-  noteDisplayMode = 'category'
+  noteDisplayMode = 'category',
+  currentAccountId
 }: CommonProps) {
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
@@ -90,7 +93,10 @@ export function TransactionRow({
   const editableOnEdit = onEdit
   const amountTone =
     row.tx_type === 'expense' ? 'negative' : row.tx_type === 'income' ? 'positive' : 'default'
-  const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+' : ''
+  const transferOut = Boolean(currentAccountId && row.from_account_id === currentAccountId)
+  const transferIn = Boolean(currentAccountId && row.to_account_id === currentAccountId)
+  const sign = row.tx_type === 'expense' ? '-' : row.tx_type === 'income' ? '+'
+    : transferOut !== transferIn ? (transferOut ? '-' : '+') : ''
   // 交易级多币种:折算快照存在且 ≠ 原币值 → 外币交易,金额旁标币种 + ≈ 折算行。
   // 同币种交易 native === amount 恒成立,自然不显示;无需引入账本本位币 prop。
   const isForeignCurrency =
