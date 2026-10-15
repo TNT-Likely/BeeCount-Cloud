@@ -24,8 +24,20 @@ export function AttachmentPreviewProvider({ children }: { children: ReactNode })
   const [retry, setRetry] = useState(0)
   const [loading, setLoading] = useState(false)
   const [openingTx, setOpeningTx] = useState(false)
-  const canvas = useRef<HTMLDivElement>(null)
+  const canvasObserver = useRef<ResizeObserver | null>(null)
   const [viewport, setViewport] = useState({ width: 500, height: 430 })
+  // Dialog content mounts in a portal after opening, so observe the node when
+  // its ref is attached rather than assuming it exists in the open effect.
+  const observeCanvas = useCallback((node: HTMLDivElement | null) => {
+    canvasObserver.current?.disconnect()
+    canvasObserver.current = null
+    if (!node) return
+    const measure = () => setViewport({ width: node.clientWidth, height: node.clientHeight })
+    measure()
+    const observer = new ResizeObserver(measure)
+    canvasObserver.current = observer
+    observer.observe(node)
+  }, [])
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
   const current = selection?.refs[selection.index]
   const item = selection?.items?.[selection.index]
@@ -37,14 +49,6 @@ export function AttachmentPreviewProvider({ children }: { children: ReactNode })
 
   useEffect(() => { setSelection(null) }, [activeLedgerId, token])
   useSyncEvent('member_change', () => setSelection(null))
-  useEffect(() => {
-    if (!selection || !canvas.current) return
-    const node = canvas.current
-    const observer = new ResizeObserver(() => setViewport({ width: node.clientWidth, height: node.clientHeight }))
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [Boolean(selection)])
-
   useEffect(() => {
     setImage(null); setError(''); setNotice(''); setZoom(1); setRotation(0)
     if (!current) return
@@ -107,7 +111,7 @@ export function AttachmentPreviewProvider({ children }: { children: ReactNode })
         </div>
         <div className={`grid min-w-0 gap-5 ${item ? 'lg:grid-cols-[minmax(0,1fr)_280px]' : ''}`}>
           <div className="min-w-0">
-            <div ref={canvas} data-testid="attachment-preview-canvas" className="h-[52dvh] min-h-[260px] overflow-auto rounded-xl border border-border/60 bg-muted/40 touch-pan-x touch-pan-y" onPointerDown={event => {
+            <div ref={observeCanvas} data-testid="attachment-preview-canvas" className="h-[52dvh] min-h-[260px] overflow-auto rounded-xl border border-border/60 bg-muted/40 touch-pan-x touch-pan-y" onPointerDown={event => {
               if (event.pointerType === 'touch' || !image || zoom <= 1) return
               const node = event.currentTarget
               drag.current = { x: event.clientX, y: event.clientY, left: node.scrollLeft, top: node.scrollTop }
