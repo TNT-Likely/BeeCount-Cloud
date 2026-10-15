@@ -1,3 +1,4 @@
+import type { AttachmentRef } from '@beecount/api-client'
 import type {
   ReadAccount,
   WorkspaceTag,
@@ -35,8 +36,8 @@ interface Props {
   tags: WorkspaceTag[]
   onClose: () => void
   onLoadMore: (accountName: string, offset: number) => void
-  onPreviewAttachment?: (ctx: unknown) => void
-  resolveAttachmentPreviewUrl?: (att: unknown) => string | null
+  onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
+  resolveAttachmentPreviewUrl?: (att: AttachmentRef) => Promise<string | null>
 }
 
 /** 点账户卡片弹出的详情:顶部账户名 + 当前余额/累计收入/累计支出 + 交易列表(无限滚动加载)。 */

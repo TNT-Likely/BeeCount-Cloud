@@ -15,6 +15,7 @@ type CategoryPickerDialogProps = {
   open: boolean
   onClose: () => void
   kind: 'expense' | 'income'
+  onKindChange?: (kind: 'expense' | 'income') => void
   /** 候选行(已经按 use case 预过滤,例如父级选取时只传 level=1 + tx_count=0)。 */
   rows: readonly WorkspaceCategory[]
   iconPreviewUrlByFileId?: Record<string, string>
@@ -51,6 +52,7 @@ export function CategoryPickerDialog({
   open,
   onClose,
   kind,
+  onKindChange,
   rows,
   iconPreviewUrlByFileId,
   selectedId,
@@ -68,6 +70,7 @@ export function CategoryPickerDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
+        {onKindChange ? <div className="flex gap-2">{(['expense', 'income'] as const).map(value => <Button key={value} size="sm" variant={kind === value ? 'default' : 'outline'} onClick={() => onKindChange(value)}>{t(`enum.txType.${value}`)}</Button>)}</div> : null}
         {/* `px-1 py-2` 给 CategorySelector 留出 ring 溢出空间 —— 选中态用
             `ring-2`(2px 外扩),还有 hasChildren 父级右下角徽章 `-bottom-1
             -right-1`(4px 外扩),裸 overflow 容器会把第一行 ring 顶部裁掉

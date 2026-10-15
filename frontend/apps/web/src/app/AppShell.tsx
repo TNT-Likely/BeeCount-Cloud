@@ -23,6 +23,7 @@ import { GlobalSharedLedgerDialogs } from '../components/GlobalSharedLedgerDialo
 import { GlobalEntityDialogs } from '../components/GlobalEntityDialogs'
 import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
+import { AttachmentPreviewProvider } from '../context/AttachmentPreviewContext'
 import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
 import { AuthProvider } from '../context/AuthContext'
 import { LedgersProvider } from '../context/LedgersContext'
@@ -205,6 +206,7 @@ export function AppShell({ token, onLogout }: Props) {
         <SyncSocketProvider>
         <PageDataCacheProvider>
         <AttachmentCacheProvider>
+        <AttachmentPreviewProvider>
         <SharedLedgerResourcesProvider>
         <CategoryIconPrefetcher token={token} />
         <AppShellSyncReactor
@@ -238,6 +240,7 @@ export function AppShell({ token, onLogout }: Props) {
           <GlobalParseTxDialog />
           <GlobalSharedLedgerDialogs />
         </SharedLedgerResourcesProvider>
+        </AttachmentPreviewProvider>
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
         </SyncSocketProvider>

@@ -1,6 +1,57 @@
 import { extractApiError } from './errors'
 import { API_BASE } from './http'
-import type { AttachmentBatchExistsResponse, AttachmentUploadOut } from './types'
+import type { AttachmentBatchExistsResponse, AttachmentUploadOut, AttachmentRef } from './types'
+import { authedGet } from './http'
+
+export type AttachmentTransaction = {
+  id: string
+  ledger_id: string
+  note: string | null
+  category_name: string | null
+  category_id: string | null
+  amount: number
+  tx_type: string
+  currency_code: string | null
+  native_amount: number | null
+  happened_at: string
+}
+
+export type GalleryAttachment = {
+  key: string
+  attachment: AttachmentRef
+  happened_at: string
+  mime_type: string | null
+  status: 'ready' | 'pending' | 'missing'
+  transactions: AttachmentTransaction[]
+}
+
+export type GalleryAttachmentPage = {
+  items: GalleryAttachment[]
+  total: number
+  transaction_total: number
+  limit: number
+  offset: number
+}
+
+export function fetchGalleryAttachments(token: string, options: {
+  ledgerId: string; q?: string; categorySyncId?: string; dateFrom?: string; dateTo?: string
+  limit?: number; offset?: number
+}): Promise<GalleryAttachmentPage> {
+  const query = new URLSearchParams({ ledger_id: options.ledgerId })
+  for (const [key, value] of Object.entries({ q: options.q, category_sync_id: options.categorySyncId,
+    date_from: options.dateFrom, date_to: options.dateTo, limit: options.limit, offset: options.offset })) {
+    if (value !== undefined && value !== '') query.set(key, String(value))
+  }
+  return authedGet(`/read/workspace/attachments?${query}`, token)
+}
+
+export async function downloadAttachmentThumbnail(token: string, fileId: string, signal: AbortSignal): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/attachments/${encodeURIComponent(fileId)}/thumbnail`, {
+    headers: { Authorization: `Bearer ${token}` }, signal,
+  })
+  if (!response.ok) throw await extractApiError(response)
+  return response.blob()
+}
 
 export async function batchAttachmentExists(
   token: string,
@@ -46,9 +97,11 @@ export async function uploadAttachment(
 
 export async function downloadAttachment(
   token: string,
-  fileId: string
+  fileId: string,
+  signal?: AbortSignal,
 ): Promise<{ blob: Blob; fileName: string | null; mimeType: string | null }> {
   const res = await fetch(`${API_BASE}/attachments/${encodeURIComponent(fileId)}`, {
+    signal,
     headers: {
       Authorization: `Bearer ${token}`
     }

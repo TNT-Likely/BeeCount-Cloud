@@ -10,6 +10,7 @@ import {
   type WorkspaceTransaction,
 } from '@beecount/api-client'
 
+import { useAttachmentPreview } from '../context/AttachmentPreviewContext'
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
@@ -51,7 +52,8 @@ export function GlobalEntityDialogs() {
   const navigate = useNavigate()
   const { token } = useAuth()
   const { activeLedgerId, currentLedger, currency: activeCurrency } = useLedgers()
-  const { previewMap: iconPreviewByFileId } = useAttachmentCache()
+  const { previewMap: iconPreviewByFileId, resolvePreview } = useAttachmentCache()
+  const previewAttachment = useAttachmentPreview()
 
   // 4 个独立 state — 互不影响,可同时打开(不太可能但理论支持)
   const [tx, setTx] = useState<WorkspaceTransaction | null>(null)
@@ -329,10 +331,13 @@ export function GlobalEntityDialogs() {
         offset={accountOffset}
         loading={accountLoading}
         tags={tagsDict}
+        onPreviewAttachment={previewAttachment}
+        resolveAttachmentPreviewUrl={ref => resolvePreview(ref.cloudFileId || '')}
         onClose={() => setAccount(null)}
         onLoadMore={(name, off) => void loadAccountTxs(name, accountScope, off)}
       />
       <CategoryDetailDialog
+        onPreviewAttachment={previewAttachment}
         category={category}
         scope={categoryScope}
         onScopeChange={handleCategoryScopeChange}
@@ -362,6 +367,8 @@ export function GlobalEntityDialogs() {
         loading={tagLoading}
         tags={tagsDict}
         tagStatsById={{}}
+        onPreviewAttachment={previewAttachment}
+        resolveAttachmentPreviewUrl={ref => resolvePreview(ref.cloudFileId || '')}
         onClose={() => setTag(null)}
         onLoadMore={(syncId, off) => void loadTagTxs(syncId, tagScope, off)}
       />

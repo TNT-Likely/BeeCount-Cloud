@@ -635,6 +635,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
           <Group heading={t('cmdk.group.navigation')}>
             <Item icon={<LayoutDashboard className="h-4 w-4" />} label={t('nav.overview')} onSelect={() => goto('overview')} />
             <Item icon={<Receipt className="h-4 w-4" />} label={t('nav.transactions')} onSelect={() => goto('transactions')} />
+            <Item icon={<Receipt className="h-4 w-4" />} label={t('attachments.title')} onSelect={() => goto('attachments')} />
             <Item icon={<CalendarDays className="h-4 w-4" />} label={t('nav.calendar')} onSelect={() => goto('calendar')} />
             <Item icon={<Wallet className="h-4 w-4" />} label={t('nav.accounts')} onSelect={() => goto('accounts')} />
             <Item icon={<FolderTree className="h-4 w-4" />} label={t('nav.categories')} onSelect={() => goto('categories')} />

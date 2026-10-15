@@ -92,6 +92,7 @@ import {
   type TxForm
 } from '@beecount/web-features'
 
+import { useAttachmentPreview } from '../../context/AttachmentPreviewContext'
 import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
 import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
@@ -115,17 +116,6 @@ type PendingDelete =
   | { kind: 'ledger'; id: string; ledgerId: string }
   | null
 
-type AttachmentPreviewState = {
-  open: boolean
-  /** 整组可预览附件。单附件时数组长度为 1；多附件时允许 prev/next 切换。 */
-  attachments: AttachmentRef[]
-  /** 当前显示的附件下标。 */
-  currentIndex: number
-  /** 当前附件的 blob URL（解码完成才设）。 */
-  objectUrl: string
-  /** 当前附件的文件名，用于 Dialog 标题。 */
-  fileName: string
-}
 
 // TransactionsPage 是 /app/transactions 的独立 Page,不再接 legacy 桥 props。
 // token / activeLedgerId / onLogout 全走 Auth/Ledgers context,route.section
@@ -296,7 +286,6 @@ export function TransactionsPage() {
     refreshLedgers,
   } = useLedgers()
 
-  const previewRequestSeqRef = useRef(0)
   const txFilterRestoreInProgressRef = useRef(false)
   const txAttachmentPreviewUrlByFileIdRef = useRef<Record<string, string>>({})
 
@@ -423,13 +412,7 @@ export function TransactionsPage() {
   // 是因为本地 state 每次进页面都从 {} 起步,所有图标都要再跑一次 fetch。
   const { previewMap: categoryIconPreviewByFileId, ensureLoadedMany: ensureIconsLoaded } =
     useAttachmentCache()
-  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewState>({
-    open: false,
-    attachments: [],
-    currentIndex: 0,
-    fileName: '',
-    objectUrl: ''
-  })
+  const onPreviewTxAttachment = useAttachmentPreview()
 
   // Web 不再支持新建账本 —— 账本是 user-global 跨端同步的核心实体,
   // 建账本走 mobile app 更自然(首次 welcome 页就会引导建),避免 web/mobile
@@ -1184,101 +1167,6 @@ export function TransactionsPage() {
     },
     [token]
   )
-
-  /** 加载指定 index 的附件 blob，复用 txAttachmentPreviewUrlByFileIdRef 缓存，
-   *  返回 (fileName, objectUrl) 或 null（下载失败 / 非图片格式）。 */
-  const loadAttachmentBlob = async (
-    attachment: AttachmentRef
-  ): Promise<{ fileName: string; objectUrl: string } | null> => {
-    const fileId = attachment.cloudFileId?.trim()
-    if (!fileId) return null
-    const cached = txAttachmentPreviewUrlByFileIdRef.current[fileId]
-    if (cached) {
-      return {
-        fileName:
-          attachment.originalName ||
-          attachment.fileName ||
-          `attachment-${fileId}`,
-        objectUrl: cached
-      }
-    }
-    const response = await downloadAttachment(token, fileId)
-    const fileName =
-      response.fileName ||
-      attachment.originalName ||
-      attachment.fileName ||
-      `attachment-${fileId}`
-    if (!isPreviewableImage(response.mimeType, fileName)) {
-      return null
-    }
-    const blobUrl = URL.createObjectURL(response.blob)
-    txAttachmentPreviewUrlByFileIdRef.current[fileId] = blobUrl
-    return { fileName, objectUrl: blobUrl }
-  }
-
-  /** 切换当前预览索引：异步下载目标附件 blob，更新 state。 */
-  const switchPreviewIndex = async (nextIndex: number) => {
-    const requestSeq = ++previewRequestSeqRef.current
-    const list = attachmentPreview.attachments
-    if (list.length === 0) return
-    const clamped = ((nextIndex % list.length) + list.length) % list.length
-    const target = list[clamped]
-    try {
-      const loaded = await loadAttachmentBlob(target)
-      if (requestSeq !== previewRequestSeqRef.current) return
-      if (!loaded) {
-        setErrorNotice(t('transactions.attachment.notPreviewable'))
-        return
-      }
-      setAttachmentPreview((prev) => ({
-        ...prev,
-        currentIndex: clamped,
-        fileName: loaded.fileName,
-        objectUrl: loaded.objectUrl
-      }))
-    } catch (err) {
-      if (requestSeq !== previewRequestSeqRef.current) return
-      setErrorNotice(renderError(err))
-    }
-  }
-
-  const onPreviewTxAttachment = async (
-    attachments: AttachmentRef[],
-    startIndex: number
-  ) => {
-    const requestSeq = ++previewRequestSeqRef.current
-    // 只预览有 cloudFileId 的附件（没上传的没法查 blob），index 对齐后的新数组。
-    const ready = attachments.filter(
-      (a) => typeof a.cloudFileId === 'string' && a.cloudFileId.trim().length > 0
-    )
-    if (ready.length === 0) {
-      setErrorNotice(t('transactions.attachment.metadataOnly'))
-      return
-    }
-    const safeIndex = Math.min(
-      Math.max(0, startIndex),
-      ready.length - 1
-    )
-    const target = ready[safeIndex]
-    try {
-      const loaded = await loadAttachmentBlob(target)
-      if (requestSeq !== previewRequestSeqRef.current) return
-      if (!loaded) {
-        setErrorNotice(t('transactions.attachment.notPreviewable'))
-        return
-      }
-      setAttachmentPreview({
-        open: true,
-        attachments: ready,
-        currentIndex: safeIndex,
-        fileName: loaded.fileName,
-        objectUrl: loaded.objectUrl
-      })
-    } catch (err) {
-      if (requestSeq !== previewRequestSeqRef.current) return
-      setErrorNotice(renderError(err))
-    }
-  }
 
   // ensureCategoryIconPreview 已合并到全局 AttachmentCache.ensureLoadedMany 里,
   // 不再每个页面手动维护 inflight 去重。下面这个 noop 只是为了向下兼容
@@ -2234,74 +2122,6 @@ export function TransactionsPage() {
           setTxFilterDraft((prev) => ({ ...prev, tagSyncId: '', tagName: '' }))
         }
       />
-
-      <Dialog
-        open={attachmentPreview.open}
-        onOpenChange={(open) => {
-          if (!open) {
-            // 关闭时不在这里 revokeObjectURL —— blob URL 存在
-            // txAttachmentPreviewUrlByFileIdRef 里，组件 unmount 时统一清理；
-            // 否则下次预览同一附件会拿到 revoked 的 URL 加载失败。
-            setAttachmentPreview({
-              open: false,
-              attachments: [],
-              currentIndex: 0,
-              fileName: '',
-              objectUrl: ''
-            })
-            return
-          }
-          setAttachmentPreview((prev) => ({ ...prev, open }))
-        }}
-      >
-        <DialogContent className="max-h-[88vh] max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>
-              {attachmentPreview.fileName || t('transactions.attachment.preview')}
-              {attachmentPreview.attachments.length > 1 ? (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {attachmentPreview.currentIndex + 1} / {attachmentPreview.attachments.length}
-                </span>
-              ) : null}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="relative overflow-hidden rounded-md border border-border/70 bg-muted/30 p-2">
-            {attachmentPreview.objectUrl ? (
-              <img
-                alt={attachmentPreview.fileName || 'attachment-preview'}
-                className="max-h-[70vh] w-full rounded-md object-contain"
-                src={attachmentPreview.objectUrl}
-              />
-            ) : (
-              <div className="py-12 text-center text-sm text-muted-foreground">{t('table.empty')}</div>
-            )}
-            {attachmentPreview.attachments.length > 1 ? (
-              <>
-                <button
-                  type="button"
-                  aria-label={t('transactions.attachment.prev')}
-                  className="absolute left-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full border border-border bg-background/90 text-lg shadow hover:bg-background"
-                  onClick={() =>
-                    void switchPreviewIndex(attachmentPreview.currentIndex - 1)
-                  }
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  aria-label={t('transactions.attachment.next')}
-                  className="absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full border border-border bg-background/90 text-lg shadow hover:bg-background"
-                  onClick={() =>
-                    void switchPreviewIndex(attachmentPreview.currentIndex + 1)
-                  }
-                >
-                  ›
-                </button>
-              </>
-            ) : null}
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <ConfirmDialog
         open={Boolean(pendingDelete)}

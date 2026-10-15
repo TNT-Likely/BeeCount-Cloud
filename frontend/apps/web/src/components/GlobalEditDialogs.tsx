@@ -28,6 +28,7 @@ import {
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../app/useLedgerWrite'
+import { useAttachmentPreview } from '../context/AttachmentPreviewContext'
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import { useAuth } from '../context/AuthContext'
 import { useLedgers } from '../context/LedgersContext'
@@ -55,6 +56,7 @@ export function GlobalEditDialogs() {
   const { token } = useAuth()
   const { ledgers, currency, activeLedgerId } = useLedgers()
   const { previewMap: iconPreviewByFileId, resolvePreview } = useAttachmentCache()
+  const previewAttachment = useAttachmentPreview()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
   const [editTxOpen, setEditTxOpen] = useState(false)
@@ -447,7 +449,7 @@ export function GlobalEditDialogs() {
       onUploadAttachment={(file) => uploadTransactionImage(token, editTxLedgerId, file)}
       onReset={() => setEditTxForm(txDefaults())}
       onReload={() => undefined}
-      onPreviewAttachment={async () => undefined}
+      onPreviewAttachment={previewAttachment}
       resolveAttachmentPreviewUrl={(ref) => resolvePreview(ref.cloudFileId || '')}
       iconPreviewUrlByFileId={iconPreviewByFileId}
       onEdit={() => undefined}

@@ -9,6 +9,7 @@ email-validator>=2.2.0
 passlib>=1.7.4
 PyJWT>=2.9.0
 python-multipart>=0.0.9
+Pillow>=10.4.0
 # APScheduler: in-process 定时任务调度器,backup 模块用 BackgroundScheduler
 # 跑每日备份。BackgroundScheduler 用线程池,避免 rclone subprocess 长任务
 # 阻塞 FastAPI 事件循环。

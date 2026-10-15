@@ -1,3 +1,4 @@
+import type { AttachmentRef } from '@beecount/api-client'
 import type { ReadTag, WorkspaceTag, WorkspaceTransaction } from '@beecount/api-client'
 import {
   Dialog,
@@ -30,8 +31,8 @@ interface Props {
   tagStatsById: Record<string, TagStats>
   onClose: () => void
   onLoadMore: (tagSyncId: string, offset: number) => void
-  onPreviewAttachment?: (ctx: unknown) => void
-  resolveAttachmentPreviewUrl?: (att: unknown) => string | null
+  onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
+  resolveAttachmentPreviewUrl?: (att: AttachmentRef) => Promise<string | null>
 }
 
 /** 点标签卡片弹出的详情:顶部标签色块 + 统计摘要 + 该标签下交易列表(无限加载)。 */

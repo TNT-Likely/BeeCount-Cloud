@@ -2,6 +2,7 @@ export type AppSection =
   | 'overview'
   | 'transactions'
   | 'calendar'
+  | 'attachments'
   | 'accounts'
   | 'categories'
   | 'tags'

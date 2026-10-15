@@ -1,5 +1,6 @@
 import {
   Activity,
+  Images,
   Archive,
   BookOpen,
   Bot,
@@ -142,6 +143,7 @@ export function AvatarDropdown({
           >
             {t('nav.ledgers')}
           </MenuButton>
+          <MenuButton icon={Images} active={currentSection === 'attachments'} onClick={() => onNavigate('attachments')}>{t('attachments.title')}</MenuButton>
           <MenuButton icon={Sparkles} onClick={onOpenAnnualReport}>
             {t('nav.annualReport')}
           </MenuButton>

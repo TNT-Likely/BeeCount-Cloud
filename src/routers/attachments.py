@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -276,9 +279,11 @@ def download_attachment(
     #    04-server-details.md §3.5)
     # 4) row.ledger_id 非 NULL(tx 附件)→ 走 LedgerMember accessible
     if not current_user.is_admin:
+        from sqlalchemy import and_
+        from sqlalchemy import exists as sa_exists
+
         from ..ledger_access import get_accessible_ledger_ids
         from ..models import LedgerMember
-        from sqlalchemy import and_, exists as sa_exists
 
         if row.user_id == current_user.id:
             pass  # 自己上传的,允许
@@ -331,3 +336,36 @@ def download_attachment(
         media_type=row.mime_type or "application/octet-stream",
         filename=row.file_name or path.name,
     )
+
+
+@router.get("/{file_id}/thumbnail")
+def attachment_thumbnail(
+    file_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    # 缓存命中也先检查原件与访问权限，不能用缩略图绕过授权。
+    original = download_attachment(file_id, _scopes, current_user, db)
+    row = db.get(AttachmentFile, file_id)
+    assert row is not None
+    cache = _attachment_root() / ".thumbnails"
+    cache.mkdir(exist_ok=True)
+    name = hashlib.sha256(f"v1:{row.id}:{row.sha256}".encode()).hexdigest() + ".jpg"
+    target = cache / name
+    if not target.is_file():
+        temp_path: str | None = None
+        try:
+            with Image.open(original.path) as source:
+                source.thumbnail((640, 640))
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                with tempfile.NamedTemporaryFile(dir=cache, suffix=".jpg", delete=False) as temp:
+                    temp_path = temp.name
+                    image.save(temp, format="JPEG", quality=78, optimize=True)
+                os.replace(temp_path, target)
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise HTTPException(status_code=415, detail="Attachment format cannot be previewed") from exc
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+    return FileResponse(target, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
