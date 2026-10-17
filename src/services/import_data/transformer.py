@@ -1,7 +1,8 @@
 """apply_mapping —— 拿 ParsedRow + ImportFieldMapping → ImportTransaction list。
 
 每行错误**单独收集**,不抛 — 让 caller 决定怎么展示。execute 阶段如果有错
-则触发整体 rollback。
+则触发整体 rollback。可忽略行(如支付宝「不计收支」/微信「/」中性交易)
+静默跳过,不算错误也不产生 warning。
 """
 from __future__ import annotations
 
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 _TYPE_EXPENSE = {"expense", "支出", "消费", "出", "-", "支"}
 _TYPE_INCOME = {"income", "收入", "收", "+", "入"}
 _TYPE_TRANSFER = {"transfer", "转账", "转出转入", "转"}
+
+# 可忽略的收支类型 —— 支付宝账单里的「不计收支」行(充值提现、退款、余额
+# 变动等);微信账单的中性交易行收/支列填的是占位符「/」。两者都既不是
+# 收入也不是支出,直接跳过该行并记 warning,不产生错误、不阻塞导入。
+_TYPE_IGNORED = {"不计收支", "/"}
 
 # 候选时间格式 —— auto 模式按顺序 try
 _DATETIME_CANDIDATES = (
@@ -106,6 +112,10 @@ def _transform_row(row: ParsedRow, mapping: ImportFieldMapping) -> ImportTransac
 
     # 1. tx_type
     raw_type = (cells.get(mapping.tx_type or "", "") or "").strip()
+    if raw_type.lower() in _TYPE_IGNORED:
+        # 「不计收支」(支付宝)/「/」(微信中性交易)行:纯忽略,静默跳过,
+        # 不产生错误也不产生 warning
+        return None
     tx_type = _parse_tx_type(raw_type, mapping.expense_is_negative, cells, mapping)
     if tx_type is None:
         raise _RowError("PARSE_INVALID_FIELD", "tx_type",
