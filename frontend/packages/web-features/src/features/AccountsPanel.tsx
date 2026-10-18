@@ -561,8 +561,7 @@ const VALUATION_TYPES_SET = new Set([
   'vehicle',
   'investment',
   'insurance',
-  'social_fund',
-  'loan'
+  'social_fund'
 ])
 
 type AccountStats = {
@@ -593,7 +592,7 @@ function BankCardTile({
   const t = useT()
   const currency = row.currency || 'CNY'
   const accountType = row.account_type || 'other'
-  const isValuation = VALUATION_TYPES_SET.has(accountType)
+  const isValuation = VALUATION_TYPES_SET.has(accountType) || accountType === 'loan'
   const hasStats =
     row.balance !== null &&
     row.balance !== undefined &&
@@ -849,6 +848,7 @@ const TRADABLE_TYPES: { value: string }[] = [
   { value: 'cash' },
   { value: 'bank_card' },
   { value: 'credit_card' },
+  { value: 'loan' },
   { value: 'alipay' },
   { value: 'wechat' },
   { value: 'other' }
@@ -859,7 +859,6 @@ const VALUATION_TYPES: { value: string }[] = [
   { value: 'investment' },
   { value: 'insurance' },
   { value: 'social_fund' },
-  { value: 'loan' }
 ]
 
 // 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
@@ -1186,7 +1185,7 @@ export function AccountsPanel({
                     if (form.editingId) {
                       const wasTradable = TRADABLE_TYPES.some((x) => x.value === form.account_type)
                       const isValuation = VALUATION_TYPES.some((x) => x.value === value)
-                      if (wasTradable && isValuation) return
+                      if ((wasTradable && isValuation) || ((value === 'loan' || form.account_type === 'loan') && value !== form.account_type)) return
                     }
                     // 离开 credit_card → 清空信用卡专属字段
                     const next: AccountForm = { ...form, account_type: value }
@@ -1212,7 +1211,7 @@ export function AccountsPanel({
                     <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                       {t('accounts.group.tradable')}
                     </div>
-                    {TRADABLE_TYPES.map((ty) => (
+                    {TRADABLE_TYPES.filter((ty) => !['credit_card', 'loan'].includes(ty.value)).map((ty) => (
                       <SelectItem key={ty.value} value={ty.value}>
                         {accountTypeLabel(t, ty.value)}
                       </SelectItem>
@@ -1225,6 +1224,8 @@ export function AccountsPanel({
                         {accountTypeLabel(t, ty.value)}
                       </SelectItem>
                     ))}
+                    <div className="px-2 py-1 text-[10px] font-medium text-muted-foreground">{t('accounts.loan.liabilities')}</div>
+                    {['credit_card', 'loan'].map((value) => <SelectItem key={value} value={value}>{accountTypeLabel(t, value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -1240,7 +1241,7 @@ export function AccountsPanel({
               </div>
             </div>
             <div className="space-y-1">
-              <Label>{form.account_type === 'credit_card'
+              <Label>{form.account_type === 'loan' ? t('accounts.loan.currentDebt') : form.account_type === 'credit_card'
                 ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
                 : t(form.editingId ? 'detail.stats.currentBalance' : 'accounts.table.init')}</Label>
               {form.account_type === 'credit_card' && !form.editingId ? (

@@ -67,7 +67,7 @@ from ...schemas import (
     WriteTransactionUpdateRequest,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
-from ... import projection, snapshot_builder, snapshot_cache
+from ... import projection, snapshot_builder, snapshot_cache, loan_accounting
 from ...sync_applier import USER_GLOBAL_ENTITY_TYPES
 from ...snapshot_mutator import (
     create_account,
@@ -136,21 +136,21 @@ def _utcnow() -> datetime:
 # user-global entity 在 SyncChange / projection 两层都不依附 ledger,详见
 # .docs/user-global-refactor/plan.md。
 _USER_PROJECTION_UPSERTERS: dict[str, Any] = {
-    "account": projection.upsert_account,
+    "account": loan_accounting.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
 }
 _USER_PROJECTION_DELETERS: dict[str, Any] = {
-    "account": projection.delete_account,
+    "account": loan_accounting.delete_account,
     "category": projection.delete_category,
     "tag": projection.delete_tag,
 }
 _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
-    "transaction": projection.upsert_tx,
+    "transaction": loan_accounting.upsert_tx,
     "budget": projection.upsert_budget,
 }
 _LEDGER_PROJECTION_DELETERS: dict[str, Any] = {
-    "transaction": projection.delete_tx,
+    "transaction": loan_accounting.delete_tx,
     "budget": projection.delete_budget,
 }
 
@@ -546,7 +546,7 @@ async def _commit_create_tx_fast(
 
     create 不需要 diff 全表 —— 新行就是唯一变更。snapshot_mutator.create_transaction
     不依赖现有 items / tx_index,所以用空的最小 snapshot 跑它产出规范化 item,直接
-    emit 一条 transaction SyncChange + projection.upsert_tx。语义跟 _commit_write
+    emit 一条 transaction SyncChange + loan_accounting.upsert_tx。语义跟 _commit_write
     (build→mutate→_emit_entity_diffs)对单笔 create 的结果完全一致,但把成本从
     O(账本交易数) 降到 O(1)。
 
@@ -576,7 +576,7 @@ async def _commit_create_tx_fast(
         )
         db.add(change_row)
         db.flush()
-        projection.upsert_tx(
+        loan_accounting.upsert_tx(
             db,
             ledger_id=ledger.id,
             user_id=ledger.user_id,
@@ -726,7 +726,7 @@ async def _commit_write_fast_tx(
             )
             db.add(change_row)
             db.flush()
-            projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
+            loan_accounting.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
             projection.gc_orphan_attachments(
                 db, user_id=ledger.user_id, file_ids=tx_file_ids,
             )
@@ -751,7 +751,7 @@ async def _commit_write_fast_tx(
             )
             db.add(change_row)
             db.flush()
-            projection.upsert_tx(
+            loan_accounting.upsert_tx(
                 db,
                 ledger_id=ledger.id,
                 user_id=ledger.user_id,

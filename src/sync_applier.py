@@ -15,8 +15,8 @@
 Push 路径跟 projection 的交互按 scope 分两条:
 
     /sync/push (router)
-        ├─ scope='ledger' → apply_change_to_projection(change)      → projection.upsert_tx/budget
-        └─ scope='user'   → apply_user_change_to_projection(change) → projection.upsert_account/category/tag
+        ├─ scope='ledger' → apply_change_to_projection(change)      → loan_accounting.upsert_tx/budget
+        └─ scope='user'   → apply_user_change_to_projection(change) → loan_accounting.upsert_account/category/tag
 
 每条路径都有自己的三张"表"驱动 dispatch:
 
@@ -44,7 +44,7 @@ from typing import Any, Callable, Optional
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
-from . import projection
+from . import projection, loan_accounting
 from .models import (
     Ledger,
     ReadBudgetProjection,
@@ -122,6 +122,8 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("type", "account_type"),
         ("currency", "currency"),
         ("initialBalance", "initial_balance"),
+        ("loanBalanceVersion", "loan_balance_version"),
+        ("loanBalanceSince", "loan_balance_since", lambda value: value.isoformat() if value else None),
         # 扩展字段:跟 mobile lib/data/db.dart Account 表对齐,sync_engine 已经
         # 在 push 这些字段(driftCamel),server 现在落库 + round-trip。
         ("note", "note"),
@@ -200,7 +202,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # last_edited_by。snapshot_mutator._mark_entity_actor 写入。
         ("updatedByUserId", "last_edited_by_user_id"),
         # 账单标记(.docs/transaction-flags)。merge 时缺键保留既有行值,
-        # 布尔强转在 projection.upsert_tx(default=False)做。
+        # 布尔强转在 loan_accounting.upsert_tx(default=False)做。
         ("excludeFromStats", "exclude_from_stats"),
         ("excludeFromBudget", "exclude_from_budget"),
         # 交易级多币种(0018):缺键保留既有折算快照(旧 App 改备注不丢折算);
@@ -214,7 +216,7 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
 
 # user-scope upsert dispatch:apply_user_change_to_projection 用。
 _USER_UPSERT_DISPATCH: dict[str, Callable] = {
-    "account": projection.upsert_account,
+    "account": loan_accounting.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
     "exchange_rate_override": projection.upsert_exchange_rate_override,
@@ -224,7 +226,7 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
 # ledger-scope upsert dispatch:apply_change_to_projection 用。
 _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "budget": projection.upsert_budget,
-    "transaction": projection.upsert_tx,
+    "transaction": loan_accounting.upsert_synced_tx,
 }
 
 
@@ -279,7 +281,7 @@ def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     tx_file_ids = projection.collect_tx_attachment_fileids(
         db, ledger_id=ledger_id, sync_id=sync_id,
     )
-    projection.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
+    loan_accounting.delete_tx(db, ledger_id=ledger_id, sync_id=sync_id)
     # 共享账本场景:attachment.user_id 可能是 Editor 而 SyncChange.user_id 是
     # ledger owner,GC 必须按 ledger_id scope 而不是 user_id —— 否则 Editor 上传
     # 的附件永远被静默跳过留作孤儿。详见 projection.gc_orphan_attachments_for_ledger
@@ -317,7 +319,7 @@ def _delete_budget(db: Session, ledger_id: str, sync_id: str, user_id: str) -> N
 
 
 def _delete_user_account(db: Session, user_id: str, sync_id: str) -> None:
-    projection.delete_account(db, user_id=user_id, sync_id=sync_id)
+    loan_accounting.delete_account(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
         db, user_id=user_id, entity_type="account", entity_sync_id=sync_id,
     )
@@ -615,7 +617,7 @@ def apply_change_to_projection(
     # 从 SyncChange.updated_by_user_id(推送方真实身份)兜底注入。
     #
     # **不**兜底 createdByUserId — 那会让"B 编辑 A 创建的 tx"路径误把 created
-    # 写成 B。createdByUserId 由 projection.upsert_tx 内部 COALESCE 保留旧值
+    # 写成 B。createdByUserId 由 loan_accounting.upsert_tx 内部 COALESCE 保留旧值
     # (见 upsert_tx 注释)。
     actor = change.updated_by_user_id
     if actor:

@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import json
+from ...loan_accounting import account_movement
+
 from datetime import datetime, timezone
 from typing import Any
 
@@ -259,6 +261,11 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
                 "account_type": r.account_type,
                 "currency": r.currency,
                 "initial_balance": float(r.initial_balance or 0),
+                **({"loan_balance_version": r.loan_balance_version,
+                    "loan_balance_since": r.loan_balance_since.isoformat() if r.loan_balance_since else None,
+                    "balance": float(r.initial_balance or 0) + (
+                        account_movement(db, user.id, r.sync_id, since=r.loan_balance_since)
+                        if r.loan_balance_version == 1 else 0)} if r.account_type == 'loan' else {}),
                 "bank_name": r.bank_name,
                 "card_last_four": r.card_last_four,
                 "credit_limit": float(r.credit_limit) if r.credit_limit is not None else None,

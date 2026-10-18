@@ -110,7 +110,8 @@ function currentDeviceId(): string | null {
 
 function authHeaders(token: string, idempotencyKey?: string): Record<string, string> {
   const out: Record<string, string> = {
-    Authorization: `Bearer ${token}`
+    Authorization: `Bearer ${token}`,
+    'X-BeeCount-Capabilities': 'loan-flow-v1'
   }
   if (idempotencyKey) out['Idempotency-Key'] = idempotencyKey
   const deviceId = currentDeviceId()

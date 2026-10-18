@@ -453,7 +453,7 @@ export function TransactionsPage() {
   // 对应 mobile 端 account_picker 里的同一套过滤条件。
   const VALUATION_ACCOUNT_TYPES = useMemo(
     () =>
-      new Set<string>(['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund', 'loan']),
+      new Set<string>(['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund']),
     []
   )
   const txWriteLedgerCurrency = useMemo(() => {
@@ -503,11 +503,13 @@ export function TransactionsPage() {
       const currency = (row.currency || 'CNY').trim().toUpperCase()
       if (currency !== txFormCurrency) return false
       if (VALUATION_ACCOUNT_TYPES.has(row.account_type || '')) return false
+      if (row.account_type === 'loan' && (txForm.tx_type !== 'transfer' || row.loan_balance_version !== 1)) return false
       return true
     })
   }, [
     txDictionaryAccounts,
     txFormCurrency,
+    txForm.tx_type,
     VALUATION_ACCOUNT_TYPES,
     txIsSharedEditor,
     sharedBundle,

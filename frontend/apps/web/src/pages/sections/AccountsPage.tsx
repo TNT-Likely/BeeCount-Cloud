@@ -64,7 +64,7 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
 import { useLedgerWrite } from '../../app/useLedgerWrite'
 
-const VALUATION_ACCOUNT_TYPES = new Set(['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund', 'loan'])
+const VALUATION_ACCOUNT_TYPES = new Set(['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund'])
 const ACCOUNT_DETAIL_PAGE_SIZE = 20
 const BALANCE_SETTLEMENT_CATEGORY_NAME = '平账'
 
@@ -233,7 +233,7 @@ export function AccountsPage() {
       return false
     }
     const initialBalanceNum = Number(form.initial_balance || 0)
-    if (!Number.isFinite(initialBalanceNum) || (form.account_type === 'credit_card' && initialBalanceNum < 0)) {
+    if (!Number.isFinite(initialBalanceNum) || (['credit_card', 'loan'].includes(form.account_type) && initialBalanceNum < 0)) {
       toast.error(t('accounts.error.balanceInvalid'), t('notice.error'))
       return false
     }
@@ -274,7 +274,9 @@ export function AccountsPage() {
         name: trimmedName,
         account_type: form.account_type || null,
         currency: form.currency || null,
-        ...(!form.editingId || VALUATION_ACCOUNT_TYPES.has(form.account_type) ? { initial_balance: form.account_type === 'credit_card' && form.credit_balance_state === 'debt' ? -initialBalanceNum : initialBalanceNum } : {}),
+        ...(!form.editingId || VALUATION_ACCOUNT_TYPES.has(form.account_type) ? { initial_balance: form.account_type === 'loan' || (form.account_type === 'credit_card' && form.credit_balance_state === 'debt') ? -initialBalanceNum : initialBalanceNum } : {}),
+        ...(!form.editingId && form.account_type === 'loan' ? {loan_balance_version: 1,
+          loan_balance_since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString()} : {}),
         // 扩展字段:non-credit_card 类型显式传 null 清空 server 上残留的值;
         // bank_card / credit_card 才有 bank_name / card_last_four。
         note: form.note.trim() || null,
@@ -698,7 +700,7 @@ export function AccountsPage() {
             name: row.name,
             account_type: row.account_type || '',
             currency: row.currency || '',
-            initial_balance: String(row.account_type === 'credit_card'
+            initial_balance: String(['credit_card', 'loan'].includes(row.account_type || '')
               ? Math.abs(rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0)
               : rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0),
             credit_balance_state: (rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0) > 0 ? 'overpayment' : 'debt',
@@ -718,7 +720,7 @@ export function AccountsPage() {
           })
         }}
         onRestore={(row) => void onRestore(row)}
-        onAdjustBalance={(row) => openBalanceAdjustment(row)}
+        onAdjustBalance={(row) => row.account_type === 'loan' ? dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' }) : openBalanceAdjustment(row)}
         onClickAccount={(row) =>
           dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' })
         }

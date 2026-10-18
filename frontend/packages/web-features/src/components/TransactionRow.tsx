@@ -54,6 +54,7 @@ type CommonProps = {
   noteDisplayMode?: NoteDisplayMode
   /** 账户详情中的转账金额按该账户显示正负方向；不传时显示交易金额。 */
   currentAccountId?: string
+  currentAccountType?: string
 }
 
 /**
@@ -85,7 +86,8 @@ export function TransactionRow({
   onToggleSelect,
   showLedger = false,
   noteDisplayMode = 'category',
-  currentAccountId
+  currentAccountId,
+  currentAccountType
 }: CommonProps) {
   const t = useT()
   const attachments = Array.isArray(row.attachments) ? row.attachments : []
@@ -103,10 +105,12 @@ export function TransactionRow({
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
-  const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  const loanPrincipalLabel = currentAccountType === 'loan' && row.tx_type === 'transfer'
+    ? t(transferIn ? 'accounts.loan.principalDecrease' : 'accounts.loan.principalIncrease') : undefined
+  const categoryText = loanPrincipalLabel || row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
-    categoryName: row.category_name,
+    categoryName: loanPrincipalLabel || row.category_name,
     categoryText,
     note: row.note,
   })

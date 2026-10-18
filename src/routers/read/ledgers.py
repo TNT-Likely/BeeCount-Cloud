@@ -394,6 +394,8 @@ def list_accounts(
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
             hidden=row.hidden,
+            loan_balance_version=row.loan_balance_version,
+            loan_balance_since=row.loan_balance_since,
         )
         for row in rows
     ]

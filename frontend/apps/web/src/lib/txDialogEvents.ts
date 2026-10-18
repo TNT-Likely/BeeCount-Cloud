@@ -37,6 +37,10 @@ let editCategoryHandlerCount = 0
  * - ledgerId:目标账本(留空 = 用 active ledger)
  */
 export type NewTxPrefill = {
+  txType?: 'expense' | 'income' | 'transfer'
+  fromAccountName?: string
+  toAccountName?: string
+  currencyCode?: string
   happenedAt?: string
   ledgerId?: string
 }
