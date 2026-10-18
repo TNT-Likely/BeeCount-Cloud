@@ -48,6 +48,7 @@ type MobileStyleAssetsProps = {
   onEdit: (row: ReadAccount) => void
   onDelete?: (row: ReadAccount) => void
   onAdjustBalance?: (row: ReadAccount) => void
+  onRepayLoan?: (row: ReadAccount) => void
   /** 点卡片（非编辑/删除按钮）：外层用来打开"账户详情+交易列表"弹窗。 */
   onClickAccount?: (row: ReadAccount) => void
   /** "新建账户"按钮回调 — 渲染在 stats 卡片下方,跟分组列表之间。 */
@@ -74,6 +75,7 @@ function MobileStyleAssets({
   onEdit,
   onDelete,
   onAdjustBalance,
+  onRepayLoan,
   onClickAccount,
   onCreate,
   hideCurrencyCards = false,
@@ -208,6 +210,7 @@ function MobileStyleAssets({
                           ? () => onAdjustBalance(row)
                           : undefined
                       }
+                      onRepay={row.account_type === 'loan' && row.loan_balance_version === 1 && onRepayLoan ? () => onRepayLoan(row) : undefined}
                       onClick={onClickAccount ? () => onClickAccount(row) : undefined}
                     />
                   ))}
@@ -242,6 +245,7 @@ function HiddenAccountsSection({
   canManage,
   onEdit,
   onAdjustBalance,
+  onRepayLoan,
   onRestore,
   onClickAccount
 }: {
@@ -249,6 +253,7 @@ function HiddenAccountsSection({
   canManage: boolean
   onEdit: (row: ReadAccount) => void
   onAdjustBalance?: (row: ReadAccount) => void
+  onRepayLoan?: (row: ReadAccount) => void
   onRestore?: (row: ReadAccount) => void
   onClickAccount?: (row: ReadAccount) => void
 }) {
@@ -578,7 +583,8 @@ function BankCardTile({
   onEdit,
   onAdjustBalance,
   onDelete,
-  onClick
+  onClick,
+  onRepay
 }: {
   row: ReadAccount & AccountStats
   color: string
@@ -588,6 +594,7 @@ function BankCardTile({
   onAdjustBalance?: () => void
   onDelete?: () => void
   onClick?: () => void
+  onRepay?: () => void
 }) {
   const t = useT()
   const currency = row.currency || 'CNY'
@@ -691,7 +698,7 @@ function BankCardTile({
         {isValuation ? (
           <div className="mt-auto">
             <div className="text-[9px] uppercase tracking-[0.15em] text-white/75">
-              {isLiability ? t('accounts.bankcard.currentOwed') : t('accounts.bankcard.currentValue')}
+              {accountType === 'loan' ? t('accounts.loan.currentDebt') : isLiability ? t('accounts.bankcard.currentOwed') : t('accounts.bankcard.currentValue')}
             </div>
             <Amount
               value={valuationValue}
@@ -700,6 +707,8 @@ function BankCardTile({
               bold
               className="mt-0.5 block text-[18px] leading-tight drop-shadow text-white"
             />
+            {onRepay && canManage ? <Button size="sm" variant="ghost" className="mt-1 h-7 bg-white/15 px-2 text-xs text-white hover:bg-white/25 hover:text-white"
+              onClick={(event) => { event.stopPropagation(); onRepay() }}>{t('accounts.loan.repay')}</Button> : null}
           </div>
         ) : isCreditCard ? (
           ccLimit !== null ? (
@@ -1050,6 +1059,7 @@ type AccountsPanelProps = {
   onEdit: (row: ReadAccount) => void
   onDelete?: (row: ReadAccount) => void
   onAdjustBalance?: (row: ReadAccount) => void
+  onRepayLoan?: (row: ReadAccount) => void
   onClickAccount?: (row: ReadAccount) => void
   /** true 时跳过多币种「每币种一张卡」网格区(用于折算汇总视图);缺省 false,
    *  其它调用方零影响。详见 MobileStyleAssets。 */
@@ -1070,6 +1080,7 @@ export function AccountsPanel({
   onEdit,
   onDelete,
   onAdjustBalance,
+  onRepayLoan,
   onClickAccount,
   hideCurrencyCards = false,
   onRestore
@@ -1153,6 +1164,7 @@ export function AccountsPanel({
           }}
           onDelete={onDelete}
           onAdjustBalance={onAdjustBalance}
+          onRepayLoan={onRepayLoan}
           onClickAccount={onClickAccount}
           onCreate={handleOpenCreate}
           hideCurrencyCards={hideCurrencyCards}

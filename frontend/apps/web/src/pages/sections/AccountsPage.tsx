@@ -56,7 +56,7 @@ import {
 import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
 import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { routePath } from '../../state/router'
-import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
+import { dispatchOpenNewTx, dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
@@ -720,6 +720,12 @@ export function AccountsPage() {
           })
         }}
         onRestore={(row) => void onRestore(row)}
+        onRepayLoan={(row) => {
+          const ledger = ledgers.find((l) => l.ledger_id === activeLedgerId && l.role === 'owner' && !l.is_shared)
+            || ledgers.find((l) => l.role === 'owner' && !l.is_shared)
+          if (!ledger) { notifyError(new Error(t('error.LOAN_PERSONAL_LEDGER_ONLY'))); return }
+          dispatchOpenNewTx({ ledgerId: ledger.ledger_id, txType: 'transfer', toAccountName: row.name, currencyCode: row.currency || 'CNY' })
+        }}
         onAdjustBalance={(row) => row.account_type === 'loan' ? dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' }) : openBalanceAdjustment(row)}
         onClickAccount={(row) =>
           dispatchOpenDetailAccount(row as WorkspaceAccount, { defaultScope: 'all' })
