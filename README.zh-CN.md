@@ -116,9 +116,36 @@
 
 ## 📸 截图
 
-| 中文 UI | English UI |
-|---------|------------|
-| ![ZH](./docs/screenshot-zh.png) | ![EN](./docs/screenshot-en.png) |
+完整页面截图保留图表、列表底部与分页；点击图片可查看原图。使用独立演示账本与合成小票。
+
+![中文仪表盘完整页面](./docs/screenshot-zh.png)
+
+<details>
+<summary>更多 Web 界面：交易、资产、小票、设备与暗黑模式</summary>
+
+### 交易与分页
+
+![交易列表与完整分页](docs/screenshots/zh-02-transactions.png)
+
+### 资产与账户
+
+![资产与账户完整页面](docs/screenshots/zh-05-assets.png)
+
+### 小票原图与关联流水
+
+![小票预览与完整工具栏](docs/screenshots/zh-04-attachments.png)
+
+### 设备与会话
+
+![设备管理](docs/screenshots/zh-03-devices.png)
+
+### 暗黑模式
+
+![暗黑仪表盘完整页面](docs/screenshots/zh-01-home-dark.png)
+
+</details>
+
+[English 截图与说明](README.md#-screenshots)
 
 ### Web 小票附件
 

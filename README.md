@@ -116,9 +116,36 @@ As long as you have the `.zip` file + passphrase, any system, any standard archi
 
 ## 📸 Screenshots
 
-| English UI | Simplified Chinese UI |
-|:---:|:---:|
-| ![English UI](./docs/screenshot-en.png) | ![Simplified Chinese UI](./docs/screenshot-zh.png) |
+Full-page captures include complete charts, list footers and pagination. Click an image to view the original. All data and receipts come from isolated demo fixtures.
+
+![Complete English dashboard](./docs/screenshot-en.png)
+
+<details>
+<summary>More Web screens: transactions, assets, receipts, devices and dark mode</summary>
+
+### Transactions and pagination
+
+![Transactions with complete pagination](docs/screenshots/en-02-transactions.png)
+
+### Assets and accounts
+
+![Complete assets and accounts page](docs/screenshots/en-05-assets.png)
+
+### Receipt and related transaction
+
+![Receipt preview with complete controls](docs/screenshots/en-04-attachments.png)
+
+### Devices and sessions
+
+![Device management](docs/screenshots/en-03-devices.png)
+
+### Dark mode
+
+![Complete dashboard in dark mode](docs/screenshots/en-01-home-dark.png)
+
+</details>
+
+[简体中文截图与说明](README.zh-CN.md#-截图)
 
 ### Receipt attachments on the Web
 
