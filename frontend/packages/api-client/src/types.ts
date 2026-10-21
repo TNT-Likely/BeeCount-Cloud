@@ -238,6 +238,8 @@ export type ReadAccount = {
   /** 账户隐藏(issue #240):true = 已隐藏 —— 记账/转账选择器不再出现,主列表
    *  退场收进「已隐藏」分区;但仍计入净资产/资产/收支(D1,服务端不做统计过滤)。
    *  缺省 false(旧接口未提供该字段时视为未隐藏)。 */
+  loan_balance_version?: number
+  loan_balance_since?: string | null
   hidden?: boolean
 }
 
@@ -616,6 +618,9 @@ export type AccountPayload = {
   account_type?: string | null
   currency?: string | null
   initial_balance?: number | null
+  loan_balance_version?: number
+  loan_balance_since?: string | null
+  loan_confirmed_debt?: number
   note?: string | null
   credit_limit?: number | null
   billing_day?: number | null

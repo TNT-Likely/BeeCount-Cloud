@@ -73,13 +73,23 @@ app = FastAPI(
 # 状态下(登录页)也可能想告诉用户 server 版本。
 @app.get(f"{settings.api_prefix}/version")
 def public_version() -> dict:
-    return {"name": _beecount_cloud_name, "version": _beecount_cloud_version}
+    return {"name": _beecount_cloud_name, "version": _beecount_cloud_version, "loan_accounting_version": 1}
 
 
 @app.get(f"{settings.api_prefix}/web-config")
 def public_web_config() -> dict:
     """仅公开 Web 展示开关，不暴露实例密钥或其它配置。"""
     return {"project_partnerships_enabled": get_settings().project_partnerships_enabled}
+
+from .loan_accounting import loan_capable
+
+@app.middleware("http")
+async def loan_capability_context(request, call_next):
+    token = loan_capable.set("loan-flow-v1" in request.headers.get("X-BeeCount-Capabilities", "").split(","))
+    try:
+        return await call_next(request)
+    finally:
+        loan_capable.reset(token)
 
 app.state.ws_manager = WSConnectionManager()
 install_request_middleware(app)

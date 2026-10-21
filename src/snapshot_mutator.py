@@ -504,6 +504,8 @@ def create_account(snapshot: dict, payload: dict) -> tuple[dict, str]:
         "type": str(payload.get("account_type") or "") or None,
         "currency": str(payload.get("currency") or "") or None,
         "initialBalance": _to_float(payload.get("initial_balance")),
+        "loanBalanceVersion": int(payload.get("loan_balance_version") or 0),
+        "loanBalanceSince": payload.get("loan_balance_since"),
     }
     # 扩展字段:跟 mobile lib/data/db.dart Account 表 schema 对齐(driftCamel:
     # creditLimit / billingDay / paymentDueDay / bankName / cardLastFour /
@@ -536,6 +538,10 @@ def update_account(snapshot: dict, account_id: str, payload: dict) -> dict:
     if "currency" in payload:
         value = payload.get("currency")
         account["currency"] = str(value) if value else None
+    if "loan_balance_version" in payload and payload["loan_balance_version"] is not None:
+        account["loanBalanceVersion"] = int(payload["loan_balance_version"])
+    if "loan_balance_since" in payload and payload["loan_balance_since"] is not None:
+        account["loanBalanceSince"] = payload["loan_balance_since"]
     if "initial_balance" in payload:
         account["initialBalance"] = _to_float(payload.get("initial_balance"))
     _apply_account_optional_fields(account, payload)

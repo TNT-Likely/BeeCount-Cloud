@@ -158,6 +158,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
         UserAccountProjection.hidden,
+        UserAccountProjection.loan_balance_version,
+        UserAccountProjection.loan_balance_since,
     ).where(UserAccountProjection.user_id == user_id)
     for (
         sid,
@@ -172,6 +174,8 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         bank_name,
         card_last_four,
         hidden,
+        loan_version,
+        loan_since,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
@@ -196,6 +200,10 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         # key"),与 App serializeAccount 无条件发 hidden 对齐,保 /sync/full
         # 重装 / 新设备首次同步时隐藏标记不丢(03-tech-design-cloud.md §二 (B))。
         acc["hidden"] = bool(hidden)
+        if acc_type == "loan":
+            acc["loanBalanceVersion"] = loan_version or 0
+            if loan_since:
+                acc["loanBalanceSince"] = _to_iso_utc(loan_since)
         accounts.append(acc)
 
     # Categories —— 同 accounts,user-global per-user。

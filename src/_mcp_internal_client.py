@@ -36,6 +36,7 @@ def get_internal_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://mcp-internal.invalid",
+            headers={"X-BeeCount-Capabilities": "loan-flow-v1"},
             timeout=httpx.Timeout(30.0, read=120.0),
         )
         logger.info("mcp: internal ASGI client initialized")

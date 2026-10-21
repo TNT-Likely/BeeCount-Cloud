@@ -427,6 +427,9 @@ export function TransactionsPanel({
             <DialogTitle>{form.editingId ? t('transactions.button.update') : t('transactions.button.create')}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            {form.tx_type === 'transfer' && accounts.some((row) => row.account_type === 'loan' &&
+              [form.from_account_name, form.to_account_name].includes(row.name))
+              ? <p className="mb-3 text-sm text-muted-foreground">{t('accounts.loan.principalHint')}</p> : null}
             <fieldset disabled={saving || selectingImages} className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
               <Label>{t('shell.ledger')}</Label>

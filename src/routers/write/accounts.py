@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from ...loan_accounting import account_movement, loan_capable
+from ...models import UserAccountProjection
+from datetime import datetime, timezone
+
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 
 router = APIRouter()
@@ -42,7 +46,13 @@ async def create_acc(
     )
     if replay:
         return replay
-    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    mutate_payload = dict(payload)
+    if mutate_payload.get('account_type') == 'loan' and loan_capable.get() and mutate_payload.get('loan_balance_version') is None:
+        mutate_payload['loan_balance_version'] = 1
+    if mutate_payload.get('account_type') == 'loan' and mutate_payload.get('loan_balance_version') == 1:
+        mutate_payload['initial_balance'] = -abs(float(mutate_payload.get('initial_balance') or 0))
+        mutate_payload['loan_balance_since'] = mutate_payload.get('loan_balance_since') or datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    mutate_payload = _payload_with_actor(mutate_payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,
@@ -87,7 +97,15 @@ async def update_acc(
     )
     if replay:
         return replay
-    mutate_payload = _payload_with_actor(payload, current_user, ledger=ledger)
+    mutate_payload = dict(payload)
+    if mutate_payload.get('loan_confirmed_debt') is not None:
+        account = db.get(UserAccountProjection, (ledger.user_id, account_id))
+        if account is None or account.account_type != 'loan':
+            raise HTTPException(status_code=400, detail='LOAN_ACCOUNT_REQUIRED')
+        mutate_payload['initial_balance'] = -mutate_payload['loan_confirmed_debt']
+        mutate_payload['loan_balance_version'] = 1
+        mutate_payload['loan_balance_since'] = datetime.now(timezone.utc).isoformat()
+    mutate_payload = _payload_with_actor(mutate_payload, current_user, ledger=ledger)
     return await _commit_write(
         request=request,
         db=db,

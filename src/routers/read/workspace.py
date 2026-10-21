@@ -6,6 +6,8 @@ projection 做聚合(tx 计数 / balance / category 排行等)。
 去重 / 跨账本 dedup / owner 信息回填的逻辑也在这里。"""
 from __future__ import annotations
 
+from ...loan_accounting import account_movement as loan_account_movement
+
 import statistics as _stats
 
 from pydantic import BaseModel
@@ -676,10 +678,13 @@ def list_workspace_accounts(
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
                 hidden=acct.hidden,
+            loan_balance_version=acct.loan_balance_version,
+            loan_balance_since=acct.loan_balance_since,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,
-                balance=init_bal + movement,
+                balance=(init_bal + (loan_account_movement(db, target_user_id, sync_id, since=acct.loan_balance_since)
+                           if acct.loan_balance_version == 1 else 0.0)) if acct.account_type == 'loan' else init_bal + movement,
             )
         )
 
@@ -1251,6 +1256,8 @@ def workspace_net_worth_history(
             UserAccountProjection.account_type,
             UserAccountProjection.currency,
             UserAccountProjection.initial_balance,
+            UserAccountProjection.loan_balance_version,
+            UserAccountProjection.loan_balance_since,
         ).where(UserAccountProjection.user_id == current_user.id)
     ).all()
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
@@ -1323,18 +1330,24 @@ def workspace_net_worth_history(
         .order_by(ReadTxProjection.happened_at.asc())
     ).all()
 
+    snapshot_ids = {a.sync_id for a in accts if a.account_type in ('real_estate', 'vehicle', 'investment', 'insurance', 'social_fund') or
+                    (a.account_type == 'loan' and a.loan_balance_version != 1)}
+    loan_coverage = max((a.loan_balance_since for a in accts if a.account_type == 'loan' and a.loan_balance_since), default=None)
+    loan_since = {a.sync_id: _to_utc(a.loan_balance_since) for a in accts if a.account_type == 'loan' and a.loan_balance_since}
     bal = dict(init_by_acc)
 
-    def _apply(tx_type, amt, acc, from_acc, to_acc):
-        if tx_type == "income" and acc in bal:
+    def _apply(tx_type, amt, acc, from_acc, to_acc, happened_at):
+        def eligible(key):
+            return key in bal and key not in snapshot_ids and (key not in loan_since or _to_utc(happened_at) >= loan_since[key])
+        if tx_type == "income" and eligible(acc):
             bal[acc] += amt
-        elif tx_type == "expense" and acc in bal:
+        elif tx_type == "expense" and eligible(acc):
             bal[acc] -= amt
         elif tx_type == "transfer":
             fa, ta = from_acc or acc, to_acc
-            if fa in bal:
+            if eligible(fa):
                 bal[fa] -= amt
-            if ta in bal:
+            if eligible(ta):
                 bal[ta] += amt
 
     def _net():
@@ -1367,7 +1380,7 @@ def workspace_net_worth_history(
             ))
         _apply(
             tx.tx_type, float(tx.amount or 0.0),
-            tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id,
+            tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id, tx.happened_at,
         )
         last_bucket = bucket
     if last_bucket is not None:
@@ -1411,4 +1424,7 @@ def workspace_net_worth_history(
                     assets=prev.assets, liabilities=prev.liabilities))
         series = filled
 
+    if loan_coverage:
+        first_covered = (_to_utc(loan_coverage) + timedelta(minutes=tz_offset_minutes)).strftime('%Y-%m')
+        series = [point for point in series if point.bucket >= first_covered]
     return NetWorthHistoryOut(series=series, multi_currency=multi_currency)

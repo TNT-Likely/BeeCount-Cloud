@@ -190,6 +190,10 @@ export function GlobalEditDialogs() {
       setEditTxForm({
         ...defaults,
         happened_at: prefill?.happenedAt || defaults.happened_at,
+        tx_type: prefill?.txType || defaults.tx_type,
+        from_account_name: prefill?.fromAccountName || '',
+        to_account_name: prefill?.toAccountName || '',
+        currency: prefill?.currencyCode || defaults.currency,
       })
       await loadRefsForLedger(ledgerId)
       setEditTxOpen(true)
@@ -428,6 +432,8 @@ export function GlobalEditDialogs() {
       page={1}
       pageSize={20}
       accounts={editTxAccounts.filter((a) => {
+        if (['real_estate', 'vehicle', 'investment', 'insurance', 'social_fund'].includes(a.account_type || '')) return false
+        if (a.account_type === 'loan' && (editTxForm.tx_type !== 'transfer' || a.loan_balance_version !== 1)) return false
         // 币种优先联动:账户下拉只显示「表单所选币种(默认=账本主币种)」的
         // 账户,防止选出币种与账户不一致的组合(与 TransactionsPage 同规则)
         const wanted = (editTxForm.currency || editTxBase).toUpperCase()

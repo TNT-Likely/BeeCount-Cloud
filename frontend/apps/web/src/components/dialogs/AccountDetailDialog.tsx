@@ -12,6 +12,7 @@ import {
   useT
 } from '@beecount/ui'
 import { TransactionList, creditCardAmounts } from '@beecount/web-features'
+import { LoanAccountActions } from './LoanAccountActions'
 import { Banknote, Calendar as CalendarIcon, CreditCard } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -35,6 +36,7 @@ interface Props {
   loading: boolean
   tags: WorkspaceTag[]
   onClose: () => void
+  onAccountChange?: (account: AccountWithStats) => void
   onLoadMore: (accountName: string, offset: number) => void
   onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
   resolveAttachmentPreviewUrl?: (att: AttachmentRef) => Promise<string | null>
@@ -52,6 +54,7 @@ export function AccountDetailDialog({
   tags,
   onClose,
   onLoadMore,
+  onAccountChange,
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
 }: Props) {
@@ -78,6 +81,7 @@ export function AccountDetailDialog({
             {/* 信用卡 / 银行卡专属信息:bank_name / 卡号末 4 / 信用额度 /
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
             <AccountCardInfo account={account} t={t} />
+            {account.account_type === 'loan' ? <LoanAccountActions account={account} onClose={onClose} onAccountChange={onAccountChange} /> : null}
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TransactionList
@@ -95,6 +99,7 @@ export function AccountDetailDialog({
                 showLedger={scope === 'all'}
                 noteDisplayMode={noteDisplayMode}
                 currentAccountId={account.id}
+                currentAccountType={account.account_type ?? undefined}
               />
             </div>
           </div>
@@ -115,6 +120,19 @@ function AccountStatsHeader({
   const balance = hasServerStats ? account.balance! : account.initial_balance ?? 0
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  if (account.account_type === 'loan') {
+    return (
+      <div className="border-b border-border/60 bg-muted/20 px-6 py-4 text-center">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {t('accounts.loan.currentDebt')}
+        </div>
+        <div className="mt-0.5 font-mono text-lg font-bold tabular-nums text-expense">
+          {fmt(Math.max(0, -balance))} {account.currency}
+        </div>
+      </div>
+    )
+  }
 
   // 信用卡按负债展示:只显当前欠款(= -balance,余额为负=欠款),不显示
   // 累计收入/支出(信用卡入账是还款/退款,非收入);额度/可用/账单在下方

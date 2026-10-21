@@ -564,6 +564,8 @@ class ReadAccountOut(BaseModel):
     # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
     # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
     hidden: bool = False
+    loan_balance_version: int = 0
+    loan_balance_since: datetime | None = None
 
 
 class ReadCategoryOut(BaseModel):
@@ -861,6 +863,10 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
     # (mutator / write handler)是 Task 4,本字段暂不生效。
     hidden: bool = False
+    loan_balance_version: int | None = Field(default=None, ge=0, le=1)
+    loan_balance_since: datetime | None = None
+    loan_confirmed_debt: float | None = Field(default=None, ge=0)
+
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -876,6 +882,10 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     card_last_four: str | None = Field(default=None, max_length=8)
     # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
     hidden: bool | None = None
+    loan_balance_version: int | None = Field(default=None, ge=0, le=1)
+    loan_balance_since: datetime | None = None
+    loan_confirmed_debt: float | None = Field(default=None, ge=0)
+
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

@@ -59,6 +59,7 @@ interface Props {
   noteDisplayMode?: 'category' | 'note'
   /** 账户详情透传账户身份，转账显示该账户的资金方向。 */
   currentAccountId?: string
+  currentAccountType?: string
 }
 
 /**
@@ -94,7 +95,8 @@ export function TransactionList({
   currentUserId,
   showLedger = false,
   noteDisplayMode = 'category',
-  currentAccountId
+  currentAccountId,
+  currentAccountType
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -166,6 +168,7 @@ export function TransactionList({
                 showLedger={showLedger}
                 noteDisplayMode={noteDisplayMode}
                 currentAccountId={currentAccountId}
+                currentAccountType={currentAccountType}
               />
             </li>
           ))}

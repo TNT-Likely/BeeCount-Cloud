@@ -324,6 +324,7 @@ export function GlobalEntityDialogs() {
       />
       <AccountDetailDialog
         account={account}
+        onAccountChange={(next) => setAccount(next as WorkspaceAccount)}
         scope={accountScope}
         onScopeChange={handleAccountScopeChange}
         transactions={accountTxs}
