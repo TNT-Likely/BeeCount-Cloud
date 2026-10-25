@@ -190,13 +190,12 @@ def _load_ledger_context(
     """
     fallback_currency = "CNY"
     if ledger_id:
-        ledger = db.scalar(
-            select(Ledger).where(
-                Ledger.external_id == ledger_id, Ledger.user_id == user_id,
-            )
-        )
-        if ledger is None:
+        from ...ledger_access import get_accessible_ledger_by_external_id
+        accessible = get_accessible_ledger_by_external_id(db, user_id=user_id, ledger_external_id=ledger_id)
+        if accessible is None:
             return [], [], fallback_currency
+        ledger, _ = accessible
+        user_id = ledger.user_id
         ledger_int_ids = [ledger.id]
         ledger_currency = (ledger.currency or fallback_currency).strip().upper()
     else:

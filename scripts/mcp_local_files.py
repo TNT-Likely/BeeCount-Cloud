@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import mcp.types as types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
 
 from mcp import ClientSession
@@ -126,6 +127,29 @@ def make_server(upstream: ClientSession, allowed_dirs: list[Path]) -> Server:
             return types.CallToolResult(isError=True, content=[types.TextContent(
                 type="text", text="Cloud request failed; check the endpoint, PAT and server availability",
             )])
+
+    @server.list_resources()
+    async def list_resources(request: types.ListResourcesRequest) -> types.ListResourcesResult:
+        return await upstream.list_resources(cursor=request.params.cursor if request.params else None)
+
+    @server.list_resource_templates()
+    async def list_resource_templates() -> list[types.ResourceTemplate]:
+        return (await upstream.list_resource_templates()).resourceTemplates
+
+    @server.read_resource()
+    async def read_resource(uri):
+        result = await upstream.read_resource(uri)
+        return [ReadResourceContents(content=(entry.text if isinstance(entry, types.TextResourceContents)
+                    else base64.b64decode(entry.blob)), mime_type=entry.mimeType)
+                for entry in result.contents]
+
+    @server.list_prompts()
+    async def list_prompts(request: types.ListPromptsRequest) -> types.ListPromptsResult:
+        return await upstream.list_prompts(cursor=request.params.cursor if request.params else None)
+
+    @server.get_prompt()
+    async def get_prompt(name: str, arguments: dict[str, str] | None):
+        return await upstream.get_prompt(name, arguments=arguments)
 
     return server
 

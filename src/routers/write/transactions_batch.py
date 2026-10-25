@@ -76,6 +76,10 @@ class BatchTransactionItem(BaseModel):
     # v30 交易级多币种:调用方(MCP)按账户/主币种定好并折算后传入
     currency_code: str | None = None
     native_amount: float | None = None
+    tag_ids: list[str] | None = None
+    attachments: list[dict[str, Any]] | None = None
+    exclude_from_stats: bool = False
+    exclude_from_budget: bool = False
 
 
 class BatchCreateTxRequest(BaseModel):
@@ -241,6 +245,12 @@ async def create_tx_batch(
                     actor_user=current_user,
                     tag_name_to_sync_id=tag_name_to_sync_id,
                 )
+                tx_payload["exclude_from_stats"] = item.exclude_from_stats
+                tx_payload["exclude_from_budget"] = item.exclude_from_budget
+                if item.attachments is not None:
+                    from ...mcp.attachments import resolve_transaction_attachments
+                    file_ids = [entry.get("cloudFileId", "") for entry in item.attachments]
+                    tx_payload["attachments"] = resolve_transaction_attachments(db, ledger_id=ledger.id, file_ids=file_ids)
                 snapshot, sync_id = create_transaction(snapshot, tx_payload)
                 if sync_id:
                     created_sync_ids.append(sync_id)
@@ -302,7 +312,7 @@ async def create_tx_batch(
                     request_hash=request_hash,
                     response_json=response.model_dump(mode="json"),
                     created_at=now,
-                    expires_at=now + timedelta(hours=24),
+                    expires_at=now + (timedelta(days=36500) if device_id == "mcp-internal" and (idempotency_key or "").startswith("mcp:") else timedelta(hours=24)),
                 )
             )
 

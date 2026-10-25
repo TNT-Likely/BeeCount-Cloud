@@ -15,7 +15,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
@@ -29,6 +29,7 @@ from ...models import (
     UserTagProjection,
 )
 from ...routers.read._shared import _is_ledger_deleted
+from ..query_context import date_boundary, decode_cursor, encode_cursor, fingerprint, revision, visible_ledgers
 
 # 复用 read 端的唯一权威"软删除"判定 —— 保证 MCP 与 web/mobile 账本可见性口径
 # 一致(issue #31)。read._shared 不依赖 mcp,无循环 import。
@@ -44,12 +45,7 @@ def live_ledgers(db: Session, user_id: str) -> list[Ledger]:
     web 与 mobile 都看不见的"幽灵账本"(尤其多设备各自上传的默认账本)。这里
     统一复用 read 端的 `_is_ledger_deleted` 权威判定,跟账本列表口径对齐。
     """
-    rows = db.scalars(
-        select(Ledger)
-        .where(Ledger.user_id == user_id)
-        .order_by(Ledger.created_at.asc())
-    ).all()
-    return [led for led in rows if not _is_ledger_deleted(db, ledger_id=led.id)]
+    return visible_ledgers(db, user_id)
 
 
 def _resolve_ledger(
@@ -61,15 +57,10 @@ def _resolve_ledger(
       - 空 → 第一个**未软删**账本(按 created_at 升序)
     """
     if ledger_id:
-        led = db.scalar(
-            select(Ledger).where(
-                Ledger.user_id == user_id,
-                Ledger.external_id == ledger_id,
-            )
-        )
-        if led is None or _is_ledger_deleted(db, ledger_id=led.id):
-            return None
-        return led
+        matches = [led for led in live_ledgers(db, user_id) if led.external_id == ledger_id]
+        if len(matches) > 1:
+            raise ValueError("Ambiguous ledger identifier")
+        return matches[0] if matches else None
     live = live_ledgers(db, user_id)
     return live[0] if live else None
 
@@ -84,6 +75,7 @@ def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str,
         )
     return {
         "sync_id": row.sync_id,
+        "revision": row.source_change_id,
         "tx_type": row.tx_type,
         "amount": float(row.amount or 0),
         "happened_at": happened.isoformat() if happened else None,
@@ -97,6 +89,13 @@ def _serialize_tx(row: ReadTxProjection, category_name: str | None) -> dict[str,
         "to_account_name": row.to_account_name,
         "to_account_id": row.to_account_sync_id,
         "tags": row.tags_csv or "",
+        "tag_ids": json.loads(row.tag_sync_ids_json or "[]"),
+        "currency_code": row.currency_code,
+        "native_amount": row.native_amount,
+        "exclude_from_stats": bool(row.exclude_from_stats),
+        "exclude_from_budget": bool(row.exclude_from_budget),
+        "created_by_user_id": row.created_by_user_id,
+        "last_edited_by_user_id": row.last_edited_by_user_id,
     }
 
 
@@ -114,6 +113,9 @@ def list_ledgers(user: User) -> list[dict[str, Any]]:
                 "id": r.external_id,
                 "name": r.name,
                 "currency": r.currency,
+                "month_start_day": r.month_start_day,
+                "owner_user_id": r.user_id,
+                "shared": r.user_id != user.id,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in live_ledgers(db, user.id)
@@ -147,6 +149,12 @@ def list_transactions(
     max_amount: float | None = None,
     q: str | None = None,
     limit: int = 50,
+    cursor: str | None = None,
+    tx_type: str | None = None,
+    category_id: str | None = None,
+    account_id: str | None = None,
+    tag_id: str | None = None,
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """查询交易,支持多维筛选。
 
@@ -160,11 +168,34 @@ def list_transactions(
         if led is None:
             return {"items": [], "total": 0}
 
+        filters = dict(ledger=led.id, user=user.id, date_from=date_from, date_to=date_to,
+                       category=category, account=account, min_amount=min_amount,
+                       max_amount=max_amount, q=q, tx_type=tx_type, category_id=category_id,
+                       account_id=account_id, tag_id=tag_id, time_zone=time_zone)
+        signature = fingerprint(filters)
+        current_revision = revision(db, [led.id], led.user_id)
+        continuation = decode_cursor(cursor) if cursor else None
+        if continuation and (continuation.get("filter") != signature
+                             or continuation.get("revision") != current_revision):
+            raise ValueError("CURSOR_INVALIDATED: filters, permissions or data changed; restart the query")
         query = select(ReadTxProjection).where(ReadTxProjection.ledger_id == led.id)
+        if tx_type:
+            if tx_type not in {"income", "expense", "transfer"}:
+                raise ValueError("Invalid tx_type")
+            query = query.where(ReadTxProjection.tx_type == tx_type)
+        if category_id:
+            query = query.where(ReadTxProjection.category_sync_id == category_id)
+        if account_id:
+            query = query.where(or_(ReadTxProjection.account_sync_id == account_id,
+                                   ReadTxProjection.from_account_sync_id == account_id,
+                                   ReadTxProjection.to_account_sync_id == account_id))
+        if tag_id:
+            query = query.where(ReadTxProjection.tag_sync_ids_json.like(
+                '%"' + tag_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + '"%', escape="\\"))
         if date_from:
-            query = query.where(ReadTxProjection.happened_at >= _parse_dt(date_from))
+            query = query.where(ReadTxProjection.happened_at >= date_boundary(date_from, time_zone=time_zone))
         if date_to:
-            query = query.where(ReadTxProjection.happened_at <= _parse_dt(date_to, end_of_day=True))
+            query = query.where(ReadTxProjection.happened_at < date_boundary(date_to, end=True, time_zone=time_zone))
         if category:
             query = query.where(ReadTxProjection.category_name == category)
         if account:
@@ -186,39 +217,62 @@ def list_transactions(
         total_q = select(func.count()).select_from(query.subquery())
         total = int(db.scalar(total_q) or 0)
 
-        rows = db.scalars(
-            query.order_by(ReadTxProjection.happened_at.desc()).limit(max(1, min(limit, 200)))
-        ).all()
+        if continuation:
+            stamp = datetime.fromisoformat(continuation["time"])
+            query = query.where(or_(ReadTxProjection.happened_at < stamp,
+                                   and_(ReadTxProjection.happened_at == stamp,
+                                        ReadTxProjection.sync_id < continuation["id"])))
+        page_size = max(1, min(limit, 200))
+        rows = db.scalars(query.order_by(ReadTxProjection.happened_at.desc(),
+                                         ReadTxProjection.sync_id.desc()).limit(page_size + 1)).all()
+        more = len(rows) > page_size
+        rows = rows[:page_size]
+        # Check again after fetching: never hand out an apparently valid page across a concurrent write.
+        if revision(db, [led.id], led.user_id) != current_revision:
+            raise ValueError("CURSOR_INVALIDATED: data changed during query; restart")
 
         return {
             "ledger": led.name,
+            "ledger_id": led.external_id,
+            "currency": led.currency,
+            "revision": current_revision,
             "total": total,
-            "items": [_serialize_tx(r, r.category_name) for r in rows],
+            "has_more": more,
+            "next_cursor": encode_cursor(dict(filter=signature, revision=current_revision,
+                                               time=rows[-1].happened_at.isoformat(), id=rows[-1].sync_id)) if more else None,
+            "items": [{**_serialize_tx(r, r.category_name), "ledger_id": led.external_id,
+                       "currency_code": r.currency_code or led.currency} for r in rows],
         }
 
 
-def get_transaction(user: User, sync_id: str) -> dict[str, Any] | None:
+def get_transaction(user: User, sync_id: str, ledger_id: str | None = None) -> dict[str, Any] | None:
     """单条交易详情(按 sync_id,跨账本)。"""
     with SessionLocal() as db:
-        row = db.scalar(
+        ledgers = [led for led in live_ledgers(db, user.id) if not ledger_id or led.external_id == ledger_id]
+        matches = db.scalars(
             select(ReadTxProjection).where(
-                ReadTxProjection.user_id == user.id,
+                ReadTxProjection.ledger_id.in_([led.id for led in ledgers]),
                 ReadTxProjection.sync_id == sync_id,
-            )
-        )
-        if row is None:
+            ).limit(2)
+        ).all()
+        if len(matches) > 1:
+            raise ValueError('Ambiguous sync_id; specify ledger_id')
+        if not matches:
             return None
+        row = matches[0]
         led = db.scalar(select(Ledger).where(Ledger.id == row.ledger_id))
         out = _serialize_tx(row, row.category_name)
         out["ledger"] = led.name if led else None
+        out["ledger_id"] = led.external_id if led else None
+        out["currency_code"] = row.currency_code or (led.currency if led else None)
         out["attachments"] = json.loads(row.attachments_json or "[]") if row.attachments_json else []
         return out
 
 
-def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, Any]]:
+def list_categories(user: User, *, kind: str | None = None, ledger_id: str | None = None) -> list[dict[str, Any]]:
     """列分类。kind 可选 'expense' / 'income' / 'transfer'。"""
     with SessionLocal() as db:
-        query = select(UserCategoryProjection).where(UserCategoryProjection.user_id == user.id)
+        query = select(UserCategoryProjection).where(UserCategoryProjection.user_id == _dictionary_owner(db, user, ledger_id))
         if kind:
             query = query.where(UserCategoryProjection.kind == kind)
         rows = db.scalars(query).all()
@@ -229,10 +283,12 @@ def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, An
                 seen[r.sync_id] = r
         return [
             {
+                "id": r.sync_id,
                 "name": r.name,
                 "kind": r.kind,
                 "level": r.level,
                 "parent_name": r.parent_name,
+                "parent_id": r.parent_sync_id,
                 "icon": r.icon,
             }
             for r in sorted(
@@ -242,10 +298,10 @@ def list_categories(user: User, *, kind: str | None = None) -> list[dict[str, An
         ]
 
 
-def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[str, Any]]:
+def list_accounts(user: User, *, account_type: str | None = None, ledger_id: str | None = None) -> list[dict[str, Any]]:
     """列账户。account_type 可选 'bank_card' / 'credit_card' / 'cash' / 等。"""
     with SessionLocal() as db:
-        query = select(UserAccountProjection).where(UserAccountProjection.user_id == user.id)
+        query = select(UserAccountProjection).where(UserAccountProjection.user_id == _dictionary_owner(db, user, ledger_id))
         if account_type:
             query = query.where(UserAccountProjection.account_type == account_type)
         rows = db.scalars(query).all()
@@ -255,10 +311,12 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
                 seen[r.sync_id] = r
         return [
             {
+                "id": r.sync_id,
                 "name": r.name,
                 "account_type": r.account_type,
                 "currency": r.currency,
                 "initial_balance": float(r.initial_balance or 0),
+                "hidden": bool(r.hidden),
                 "bank_name": r.bank_name,
                 "card_last_four": r.card_last_four,
                 "credit_limit": float(r.credit_limit) if r.credit_limit is not None else None,
@@ -269,64 +327,39 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
         ]
 
 
-def list_tags(user: User) -> list[dict[str, Any]]:
+def list_tags(user: User, *, ledger_id: str | None = None) -> list[dict[str, Any]]:
     """列标签。"""
     with SessionLocal() as db:
         rows = db.scalars(
-            select(UserTagProjection).where(UserTagProjection.user_id == user.id)
+            select(UserTagProjection).where(UserTagProjection.user_id == _dictionary_owner(db, user, ledger_id))
         ).all()
         seen: dict[str, UserTagProjection] = {}
         for r in rows:
             if r.sync_id not in seen:
                 seen[r.sync_id] = r
-        return [{"name": r.name, "color": r.color} for r in sorted(seen.values(), key=lambda r: (r.name or "").lower())]
+        return [{"id": r.sync_id, "name": r.name, "color": r.color} for r in sorted(seen.values(), key=lambda r: (r.name or "").lower())]
 
 
 def list_budgets(user: User, *, ledger_id: str | None = None) -> list[dict[str, Any]]:
-    """列预算 + 当月已用进度。"""
+    """Use the production budget usage calculation, including parent categories and flags."""
+    from ...routers.read.ledgers import list_budgets as budgets, list_budgets_usage
     with SessionLocal() as db:
         led = _resolve_ledger(db, user.id, ledger_id)
-        if led is None:
+        if not led:
             return []
-        rows = db.scalars(
-            select(ReadBudgetProjection).where(ReadBudgetProjection.ledger_id == led.id)
-        ).all()
-        # 取当月支出聚合(用于计算进度)
-        from datetime import datetime as _dt
-        now = _dt.now()
-        month_start = _dt(now.year, now.month, 1, tzinfo=timezone.utc)
-        spent_by_cat: dict[str | None, float] = {}
-        total_expense = 0.0
-        tx_rows = db.execute(
-            # 账本维度折本位币口径(0018):native_amount ?? amount,与 /read 预算用量一致
-            select(ReadTxProjection.category_sync_id, func.sum(
-                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)))
-            .where(
-                ReadTxProjection.ledger_id == led.id,
-                ReadTxProjection.tx_type == "expense",
-                ReadTxProjection.happened_at >= month_start,
-            )
-            .group_by(ReadTxProjection.category_sync_id)
-        ).all()
-        for cat_id, amt in tx_rows:
-            v = float(amt or 0)
-            spent_by_cat[cat_id] = v
-            total_expense += v
-
-        out: list[dict[str, Any]] = []
-        for b in rows:
-            spent = spent_by_cat.get(b.category_sync_id) if b.budget_type == "category" else total_expense
-            amount = float(b.amount or 0)
-            pct = (spent or 0) / amount * 100 if amount else 0
-            out.append({
-                "id": b.sync_id,
-                "type": b.budget_type or "total",
-                "amount": amount,
-                "spent": spent or 0,
-                "remaining": max(0, amount - (spent or 0)),
-                "percent_used": round(pct, 1),
-                "exceeded": pct > 100,
-            })
+        values = budgets(ledger_external_id=led.external_id, _scopes=set(), current_user=user, db=db)
+        usage = list_budgets_usage(ledger_external_id=led.external_id, _scopes=set(), current_user=user, db=db)
+        used = {row.budget_id: row.used for row in usage.items}
+        out = []
+        for value in values:
+            data = value.model_dump(mode="json")
+            identifier = data.get("id") or data.get("sync_id")
+            amount = float(data["amount"])
+            spent = used.get(identifier, 0.0)
+            out.append({**data, "id": identifier, "ledger_id": led.external_id, "currency": led.currency,
+                        "spent": spent, "remaining": max(0, amount - spent),
+                        "percent_used": round(spent / amount * 100, 1) if amount else 0,
+                        "exceeded": spent > amount})
         return out
 
 
@@ -342,15 +375,15 @@ def get_ledger_stats(user: User, *, ledger_id: str | None = None) -> dict[str, A
         ) or 0)
         category_count = int(db.scalar(
             select(func.count(func.distinct(UserCategoryProjection.sync_id)))
-            .where(UserCategoryProjection.user_id == user.id)
+            .where(UserCategoryProjection.user_id == led.user_id)
         ) or 0)
         account_count = int(db.scalar(
             select(func.count(func.distinct(UserAccountProjection.sync_id)))
-            .where(UserAccountProjection.user_id == user.id)
+            .where(UserAccountProjection.user_id == led.user_id)
         ) or 0)
         tag_count = int(db.scalar(
             select(func.count(func.distinct(UserTagProjection.sync_id)))
-            .where(UserTagProjection.user_id == user.id)
+            .where(UserTagProjection.user_id == led.user_id)
         ) or 0)
         budget_count = int(db.scalar(
             select(func.count()).select_from(ReadBudgetProjection)
@@ -367,77 +400,35 @@ def get_ledger_stats(user: User, *, ledger_id: str | None = None) -> dict[str, A
 
 
 def get_analytics_summary(
-    user: User,
-    *,
-    scope: str = "month",
-    period: str | None = None,
-    ledger_id: str | None = None,
+    user: User, *, scope: str = "month", period: str | None = None,
+    ledger_id: str | None = None, tz_offset_minutes: int = 0,
 ) -> dict[str, Any]:
-    """分析数据。scope:'month' | 'year' | 'all'。
-
-    返回:总收入 / 总支出 / 净额 + 分类排名 top 10。
-    """
+    """Share the production analytics calculation and return explicit drill-down context."""
+    from ...routers.read.workspace import workspace_analytics
+    if scope not in {"month", "year", "all"}:
+        raise ValueError("scope must be month, year or all")
+    if not -720 <= tz_offset_minutes <= 840:
+        raise ValueError("Invalid timezone offset")
     with SessionLocal() as db:
         led = _resolve_ledger(db, user.id, ledger_id)
-        if led is None:
+        if not led:
             return {}
-
-        query = select(ReadTxProjection).where(ReadTxProjection.ledger_id == led.id)
-        now = datetime.now(timezone.utc)
-        if scope == "month":
-            year, month = now.year, now.month
-            if period:
-                try:
-                    year, month = [int(p) for p in period.split("-")[:2]]
-                except Exception:
-                    pass
-            start = datetime(year, month, 1, tzinfo=timezone.utc)
-            if month == 12:
-                end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-            else:
-                end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
-            query = query.where(ReadTxProjection.happened_at >= start, ReadTxProjection.happened_at < end)
-        elif scope == "year":
-            year = now.year
-            if period:
-                try:
-                    year = int(period[:4])
-                except Exception:
-                    pass
-            start = datetime(year, 1, 1, tzinfo=timezone.utc)
-            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-            query = query.where(ReadTxProjection.happened_at >= start, ReadTxProjection.happened_at < end)
-        # scope == "all" 不加时间过滤
-
-        rows = db.scalars(query).all()
-
-        # 账本维度折本位币口径(0018):native_amount ?? amount(多币种账本
-        # 裸加原币会错;单币种 native==amount 结果不变)。
-        def _native(r) -> float:
-            return float((r.native_amount if r.native_amount is not None else r.amount) or 0)
-
-        income = sum(_native(r) for r in rows if r.tx_type == "income")
-        expense = sum(_native(r) for r in rows if r.tx_type == "expense")
-
-        # 分类排名 — 按支出金额 top 10
-        cat_total: dict[str, float] = {}
-        for r in rows:
-            if r.tx_type != "expense":
-                continue
-            name = r.category_name or "(未分类)"
-            cat_total[name] = cat_total.get(name, 0) + _native(r)
-        ranks = sorted(cat_total.items(), key=lambda x: -x[1])[:10]
-
-        return {
-            "ledger": led.name,
-            "scope": scope,
-            "period": period,
-            "income": round(income, 2),
-            "expense": round(expense, 2),
-            "balance": round(income - expense, 2),
-            "transaction_count": len(rows),
-            "top_categories": [{"name": n, "total": round(v, 2)} for n, v in ranks],
-        }
+        result = workspace_analytics(scope=scope, metric="expense", period=period,
+                   ledger_id=led.external_id, user_id=led.user_id, tz_offset_minutes=tz_offset_minutes,
+                   natural_month=False, _scopes=set(), current_user=user, db=db)
+        summary = result.summary
+        return dict(ledger=led.name, ledger_id=led.external_id, currency=led.currency,
+                    scope=scope, period=result.range.period,
+                    income=summary.income_total, expense=summary.expense_total, balance=summary.balance,
+                    transaction_count=summary.transaction_count,
+                    top_categories=[dict(name=row.category_name, total=row.total) for row in result.category_ranks[:10]],
+                    series=[row.model_dump(mode="json") for row in result.series],
+                    anomaly_months=[row.model_dump(mode="json") for row in result.anomaly_months],
+                    range=result.range.model_dump(mode="json"),
+                    calculation=dict(currency="ledger base; native_amount falls back to amount",
+                                     exclude_from_stats=True, month_start_day=led.month_start_day,
+                                     tz_offset_minutes=tz_offset_minutes,
+                                     refund_policy="income and expense stay separate; no inferred refund pairing"))
 
 
 def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -448,7 +439,7 @@ def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
         query = (
             select(ReadTxProjection)
             .where(
-                ReadTxProjection.user_id == user.id,
+                ReadTxProjection.ledger_id.in_([led.id for led in live_ledgers(db, user.id)]),
                 _search_condition(db, user.id, q.strip()),
             )
             .order_by(ReadTxProjection.happened_at.desc())
@@ -459,6 +450,15 @@ def search(user: User, *, q: str, limit: int = 20) -> list[dict[str, Any]]:
 
 
 # ---------- internal helpers -------------------------------------------------
+
+
+def _dictionary_owner(db, user, ledger_id):
+    if ledger_id is None:
+        return user.id
+    ledger = _resolve_ledger(db, user.id, ledger_id)
+    if ledger is None:
+        raise ValueError('Ledger not found')
+    return ledger.user_id
 
 
 def _search_condition(db, user_id: str, text: str):

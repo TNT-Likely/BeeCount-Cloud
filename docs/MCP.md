@@ -6,10 +6,10 @@
 
 ## 是什么
 
-MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 19 个 tool:
+MCP 是 Anthropic 推出的 LLM-工具集成协议。BeeCount Cloud 内置一个 MCP server,把账本能力暴露成 55 个 tool:
 
-- **11 个 read tool**:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
-- **8 个 write tool**:`upload_attachment` / `create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
+- **26 个读权限工具**（原有查询工具及下文工作流工具）:`list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
+- **29 个写权限工具**（原有记账工具及下文工作流工具）:`upload_attachment` / `create_transaction` / `create_transactions`(批量导入,一次提交多笔)/ `update_transaction` / `delete_transaction`(需二次确认)/ `create_category` / `update_budget` / `parse_and_create_from_text`(让 BeeCount AI 解析自然语言)
 
 跟 LLM 聊天时可以这样说:
 
@@ -203,6 +203,64 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp`**,所有其�
 
 ---
 
+
+## 完整记账与 Agent 工作流
+
+当前共 **55 个工具：26 个读权限工具、29 个写权限工具**。原有工具保持可用，新增能力按以下场景组织：
+
+| 场景 | 工具 |
+|---|---|
+| 上下文与成员 | `get_bookkeeping_context`、`list_ledger_members` |
+| 账户、分类、标签、预算、账本管理 | `manage_account`、`manage_category`、`manage_tag`、`manage_budget`、`manage_ledger` |
+| 可靠执行与增量续接 | `get_operation`、`list_operations`、`retry_operation`、`list_changes` |
+| 资产与分析 | `get_account_balances`、`get_net_worth_history`、`analyze_transactions` |
+| 小票与草稿 | `list_attachments`、`read_attachment`、`parse_receipt`、`preview_text_transactions` |
+| 文件与导入 | `preview_import_file`、`preview_import`、`execute_import_plan`、`undo_import_plan`、`export_transactions` |
+| 来源与对账 | `link_transaction_source`、`unlink_transaction_source`、`list_transaction_sources`、`reconcile_account`、`save_reconciliation_checkpoint` |
+| 跨 Agent 协作 | `list_workflow_records`、`get_workflow_record`、`save_review_item`、`save_classification_rule`、`apply_classification_rule`、`execute_classification_preview` |
+| Cloud 周期记账 | `manage_recurring_rule`、`run_due_recurring_rules` |
+
+### 选择账本与完整转账
+
+先调用 `get_bookkeeping_context`：多账本时返回候选，不把最早创建的账本当作用户的当前选择。指定 `ledger_id` 后，返回该账本所有者的分类、账户和标签 ID、成员角色、币种、月份起始日、Cloud 时区及 PAT scope。`list_categories/accounts/tags` 也接受 `ledger_id`，用于读取共享账本字典。所有工具都重新检查当前成员权限；即使用户是管理员，MCP 也不因此获得其他用户账本的访问范围。
+
+完整转账在单笔、批量和编辑接口均支持 `from_account_id` / `to_account_id`（也可用 `from_account` / `to_account` 名称）。两账户必须不同且币种相同。普通交易支持 `category_id` / `account_id`；名称歧义时使用 ID，不擅自选同名项。`exclude_from_stats` 与 `exclude_from_budget` 独立传递。批量工具同样支持逐笔 `attachments`。
+
+```json
+{"name":"create_transaction","arguments":{"ledger_id":"账本ID","tx_type":"transfer","amount":2000,"from_account_id":"转出账户ID","to_account_id":"转入账户ID","idempotency_key":"statement:transfer:0001"}}
+```
+
+外币交易可传 `native_amount` 保存实际折账本本位币结算额。修改已有外币金额时，默认保留原结算比例；明确传 `native_amount` 或新币种时使用新值。净值按原币种提供历史；只有全部币种汇率齐备时才返回折算合计，并明确这是当前配置汇率的估值，不是历史汇率收益率。账户余额默认只统计自己的账本；显式选择共享账本或 `scope=visible` 时返回范围说明。历史期初余额无生效日期的既有账户会明确标注这一限制。
+
+### 分页、并发与安全重试
+
+`list_transactions` 返回 `has_more`、`next_cursor` 和 `revision`，以时间 + sync ID 稳定排序。游标绑定用户、账本和全部筛选条件；数据发生变更时返回 `CURSOR_INVALIDATED`，应重新开始读取。日期查询按所选 `time_zone` 的当地日历解释；`date_to` 是日期时包含整天，是时间戳时作为独占上界。`tx_type`、`category_id`、`account_id`、`tag_id` 支持精确筛选。
+
+创建交易时提供稳定 `idempotency_key`。同键同请求回放原结果，同键不同内容返回 `IDEMPOTENCY_CONFLICT`。服务端先保存包含时间和折算额的标准化计划，再执行写入；重试不重新生成这些值。单次批量最多 200 笔，每块最多 50 笔独立提交；失败不回滚已完成块。结果包含 `operation_id`、逐步结果、失败步骤及可重试标记。`get_operation` 查状态，`retry_operation` 续接，响应完全丢失时可用 `list_operations` 查找。内部幂等回执长期保留，支持进程重启后的恢复。
+
+编辑和删除交易可传读取结果中的 `expected_revision`；冲突返回 `REVISION_CONFLICT`，不会覆盖后续修改。`list_changes` 提供含删除标记的签名增量游标，用于下一次会话续接。
+
+### 原文件导入、来源与撤销
+
+1. 使用 `upload_attachment`（本地适配器可传文件路径）上传原 CSV / TSV / XLSX。
+2. `preview_import_file(file_id, mapping, source_system, source_id_column)` 使用现有解析器，返回字段映射、错误、来源文件 SHA / 行号和持久化导入计划。每份计划最多 200 行；大文件通过 `next_offset` 分段。文件最多 16 MiB / 50000 行，XLSX 解压内容最多 128 MiB。模型已整理成结构化交易时直接用 `preview_import`。
+3. 核对新增、已存在、疑似重复、错误及账户余额影响。已有来源编号用于精确识别；同日同金额只提示疑似重复，不自动合并。缺失分类或账户时先用管理工具创建，再重新预览。修改计划需要 `expected_revision`；执行后不能改写原计划。
+4. 用户确认后，`execute_import_plan(plan_id, expected_revision, confirm=true)` 执行保存的预览。来源身份在写入前由数据库唯一约束预留，避免两个计划重复导入。执行中断可继续同一计划或 operation。
+5. `undo_import_plan` 只撤销该计划新建且未被后续修改的交易；已存在的关联交易不会被删除。遇到修改冲突时报告，不覆盖用户数据。移除错误来源关联用 `unlink_transaction_source`，不会删除交易本身。
+6. `reconcile_account` 按指定时点列出期初、收支、转入转出、计算余额、实际余额及差额；不自动生成调账交易。用户确认后保存按账户和来源区分的检查点及覆盖范围。
+
+一笔交易可关联多个来源凭证。来源关系、导入计划、待核实项、检查点和规则均保存在 Cloud；换电脑或 Agent 后可通过工作流记录工具继续。`save_review_item` 保存问题与用户答复；分类规则区分推测与用户确认，并支持例外。先调用 `apply_classification_rule` 保存目标集和修改前后预览，用户确认后用 `execute_classification_preview` 执行；每个目标都有版本保护。
+
+### 小票、资源与周期规则
+
+`read_attachment` 返回原图或小文本；大文件和二进制返回 MCP Resource 链接。`parse_receipt` 使用用户已配置的视觉服务商，仅生成草稿；确认后创建交易时继续附上原 `file_id`。`preview_text_transactions` 同样仅生成草稿。未配置相应 AI 服务商时返回明确错误，客户端也可自行识别图片后调用普通交易工具。
+
+导出 CSV 返回 `beecount://exports/{id}`，原附件使用 `beecount://attachments/{file_id}`。每次 Resource 读取均验证 PAT scope 和当前账本权限。`export_transactions` 上限 50000 笔，保留原币、本位币金额、ID 和排除标记，并处理电子表格公式注入；不静默截断。本地 stdio 适配器同时转发工具、资源和 Prompt。内置 `monthly_review` 与 `import_statement` Prompt 提供只读月报及确认后导入流程。
+
+Cloud 周期规则支持日、周、月、年、间隔、结束时间、暂停和恢复。通过 `manage_recurring_rule` 预览接下来五次时间，确认后保存。月末 / 闰年按原始锚点夹取有效日期；夏令时缺失时刻跳过，重复时刻由 `dst_policy=skip|first|second` 明确决定。默认不补录历史，`allow_backfill=true` 才从过去补齐；每轮按到期规则推进，重启后继续，每次发生使用稳定幂等键。`MCP_RECURRING_ENABLED=false` 可关闭后台调度。规则执行身份固定为创建者，每次执行重查账号和角色权限。规则由 Cloud 独占执行，生成普通交易同步到 App；不要在 App 再建立同一业务的重复规则。
+
+数据库需升级至 Alembic `0021_mcp_workflows`。新增表保存 operation、版本化工作流和来源关联；不改变既有交易同步格式。工具行为标注区分只读、可能修改、幂等和外部 AI 调用；scope 与账本角色仍由服务端强制校验。
+
 ## 小票与交易附件
 
 先调用 `upload_attachment`，再把返回的 `file_id` 列表传给交易工具。附件和交易必须属于同一账本：
@@ -257,7 +315,7 @@ python scripts/mcp_upload_receipt.py \
   --ledger-id your-ledger-id ./receipt.png ./receipt-2.jpg
 ```
 
-脚本通过实际 MCP 协议上传本地图片，输出可直接用于交易工具的 `attachments` 列表。执行脚本后仍需创建或编辑交易；已有客户端能处理文件时也可直接使用上传工具。`create_transactions` 批量工具暂不支持附件。
+脚本通过实际 MCP 协议上传本地图片，输出可直接用于交易工具的 `attachments` 列表。执行脚本后仍需创建或编辑交易；已有客户端能处理文件时也可直接使用上传工具。`create_transactions` 批量工具也支持逐笔附件。
 
 ## 交易时间与 CSV 时区
 

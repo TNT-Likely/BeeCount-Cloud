@@ -617,7 +617,7 @@ async def _commit_create_tx_fast(
                     request_hash=request_hash,
                     response_json=response.model_dump(mode="json"),
                     created_at=now,
-                    expires_at=now + timedelta(hours=24),
+                    expires_at=now + (timedelta(days=36500) if device_id == "mcp-internal" and (idempotency_key or "").startswith("mcp:") else timedelta(hours=24)),
                 )
             )
 
@@ -697,6 +697,10 @@ async def _commit_write_fast_tx(
         )
         if tx_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+
+        expected = request_payload.get("expected_revision")
+        if expected is not None and tx_row.source_change_id != expected:
+            raise HTTPException(status_code=409, detail="REVISION_CONFLICT: transaction changed since it was read")
 
         # 2. 把 projection row → dict(mutator 认的 snapshot item 格式)
         prev_item = _projection_row_to_tx_dict(tx_row)
@@ -794,7 +798,7 @@ async def _commit_write_fast_tx(
                     request_hash=request_hash,
                     response_json=response.model_dump(mode="json"),
                     created_at=now,
-                    expires_at=now + timedelta(hours=24),
+                    expires_at=now + (timedelta(days=36500) if device_id == "mcp-internal" and (idempotency_key or "").startswith("mcp:") else timedelta(hours=24)),
                 )
             )
 
@@ -1006,7 +1010,7 @@ async def _commit_write(
                     request_hash=request_hash,
                     response_json=response.model_dump(mode="json"),
                     created_at=now,
-                    expires_at=now + timedelta(hours=24),
+                    expires_at=now + (timedelta(days=36500) if device_id == "mcp-internal" and (idempotency_key or "").startswith("mcp:") else timedelta(hours=24)),
                 )
             )
 

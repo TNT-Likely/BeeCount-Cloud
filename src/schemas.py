@@ -775,6 +775,7 @@ class WriteCommitMeta(BaseModel):
 class WriteBaseRequest(BaseModel):
     base_change_id: int = Field(ge=0)
     request_id: str | None = Field(default=None, max_length=128)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class WriteLedgerCreateRequest(BaseModel):

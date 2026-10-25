@@ -45,6 +45,13 @@ from .read_tools import _resolve_ledger, live_ledgers
 
 logger = logging.getLogger(__name__)
 
+
+class MCPRequestError(RuntimeError):
+    def __init__(self, status_code, message):
+        self.status_code = status_code
+        self.error_code = 'REVISION_CONFLICT' if 'REVISION_CONFLICT' in message else f'HTTP_{status_code}'
+        super().__init__(message)
+
 # self-call 内部 JWT — 仅当前进程当下用,60 秒有效。比给 PAT 永久 SCOPE_APP_
 # WRITE 安全 — PAT 只有 mcp:* scope,不能走 web/app 路径;但 self-call 的
 # 短期 JWT 模拟 'app' client,让 write router 收的就是普通 mobile 提交。
@@ -85,9 +92,13 @@ async def _self_call(method: str, path: str, user: User, **kwargs: Any) -> dict[
     client = get_internal_client()
     resp = await client.request(method, path, headers=headers, **kwargs)
     if resp.status_code >= 400:
-        raise RuntimeError(
-            f"self-call {method} {path} -> {resp.status_code} {resp.text[:300]}"
-        )
+        try:
+            detail = resp.json().get('detail')
+        except (ValueError, AttributeError):
+            detail = None
+        message = detail if isinstance(detail, str) else (
+            detail.get('error_code', 'Request rejected') if isinstance(detail, dict) else 'Request validation failed')
+        raise MCPRequestError(resp.status_code, str(message)[:300])
     if resp.status_code == 204 or not resp.content:
         return {}
     try:
@@ -180,228 +191,58 @@ async def upload_attachment(
 
 
 async def create_transaction(
-    user: User,
-    *,
-    amount: float,
-    tx_type: str = "expense",
-    category: str | None = None,
-    account: str | None = None,
-    happened_at: str | None = None,
-    note: str | None = None,
-    tags: list[str] | None = None,
-    ledger_id: str | None = None,
-    currency: str | None = None,
-    time_zone: str | None = None,
-    attachments: list[str] | None = None,
+    user: User, *, amount: float, tx_type: str = "expense", category: str | None = None,
+    account: str | None = None, happened_at: str | None = None, note: str | None = None,
+    tags: list[str] | None = None, ledger_id: str | None = None, currency: str | None = None,
+    time_zone: str | None = None, attachments: list[str] | None = None,
+    category_id: str | None = None, account_id: str | None = None,
+    from_account_id: str | None = None, to_account_id: str | None = None,
+    from_account: str | None = None, to_account: str | None = None,
+    native_amount: float | None = None, exclude_from_stats: bool = False,
+    exclude_from_budget: bool = False, idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """新建一笔交易。category / account 用名字。happened_at 不传 = 当前时间。
-
-    currency(v30 多币种):记外币时传 ISO code(如 USD/JPY)。不传则:有账户
-    随账户币种、无账户随账本主币种。外币会按当前汇率折算到账本主币种。"""
-    if tx_type not in {"expense", "income", "transfer"}:
-        raise ValueError(f"Invalid tx_type: {tx_type}")
-    amount = positive_amount(amount)
-    happened = (
-        parse_transaction_datetime(happened_at, time_zone=time_zone)
-        if happened_at is not None else datetime.now(timezone.utc)
-    )
-
-    with SessionLocal() as db:
-        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
-        if ledger_status is not None:
-            # 多账本未指定 / 账本不存在或已删 —— 交回 LLM 澄清,不写入。
-            return ledger_status
-        assert led is not None  # 契约:_resolve_write_ledger 的 status 为 None ⟺ led 命中
-        category_id = _lookup_category_sync_id(db, user.id, category, tx_type)
-        account_id = _lookup_account_sync_id(db, user.id, account)
-        ledger_external_id = led.external_id
-        ledger_name = led.name
-        led_internal_id = led.id  # 出 with 块后 led 会 detach,提前取值
-        ledger_base_ccy = (led.currency or "CNY").strip().upper()  # v30 折算基准
-        acc_ccy = _account_currency(db, user.id, account) if account else None
-        attachment_payload = (resolve_transaction_attachments(
-            db, ledger_id=led_internal_id, file_ids=attachments,
-        ) if attachments is not None else None)
-        mcp_tag_missing = _is_tag_missing_in_ledger(
-            db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
-        )
-
-    # 标签管理页是从 UserTagProjection 读的 —— 只往 tx.tags_csv 写 "MCP" 不够,
-    # 必须额外建一个独立 tag 实体行,Tags 页 / mobile / 同步才能识别。
-    # 幂等:如果已存在就跳过。
-    if mcp_tag_missing:
-        await _ensure_mcp_tag(user, ledger_external_id)
-
-    body: dict[str, Any] = {
-        "base_change_id": 0,
-        "tx_type": tx_type,
-        "amount": float(amount),
-        "happened_at": happened.isoformat(),
-    }
-    if note:
-        body["note"] = note
-    if category:
-        body["category_id"] = category_id
-        body["category_name"] = category
-        body["category_kind"] = tx_type
-    if account:
-        if tx_type == "transfer":
-            body["from_account_id"] = account_id
-            body["from_account_name"] = account
-        else:
-            body["account_id"] = account_id
-            body["account_name"] = account
-    if attachment_payload is not None:
-        body["attachments"] = attachment_payload
-    # 始终注入 MCP 默认标签;跟 LLM 传的 tags 并集去重,顺序保持 LLM 给的在前
-    final_tags = _merge_default_tag(tags)
-    body["tags"] = final_tags
-    # 同时把对应 sync_id 也喂给 server —— 两个字段一起填,Tags 详情弹窗
-    # (走 tag_sync_ids_json 精确过滤)才能找到这笔 tx。
-    with SessionLocal() as db:
-        tag_ids = _lookup_tag_sync_ids(
-            db, user_id=user.id, ledger_id=led_internal_id, names=final_tags,
-        )
-    if tag_ids:
-        body["tag_ids"] = tag_ids
-
-    # v30 多币种:非转账才折算(转账币种恒=账户币种,本阶段不支持跨币种转账)
-    if tx_type != "transfer":
-        body.update(await _build_currency_fields(
-            user, ledger_base=ledger_base_ccy, account_currency=acc_ccy,
-            currency_arg=currency, amount=float(amount),
-        ))
-
-    settings = get_settings()
-    path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions"
-    result = await _self_call("POST", path, user, json=body)
-    return {
-        "sync_id": result.get("entity_id"),
-        "ledger": ledger_name,
-        "tx_type": tx_type,
-        "amount": amount,
-        "happened_at": happened.isoformat(),
-        "category": category,
-        "account": account,
-        **({"attachments": attachment_payload} if attachment_payload is not None else {}),
-        "_meta": result,
-    }
+    from ..transaction_service import create_many
+    raw = {key: value for key, value in locals().copy().items()
+           if key not in {"user", "ledger_id", "time_zone", "idempotency_key", "create_many"}}
+    return await create_many(user, transactions=[raw], ledger_id=ledger_id,
+                             time_zone=time_zone, idempotency_key=idempotency_key, single=True)
 
 
 async def update_transaction(
-    user: User,
-    *,
-    sync_id: str,
-    amount: float | None = None,
-    tx_type: str | None = None,
-    category: str | None = None,
-    account: str | None = None,
-    happened_at: str | None = None,
-    note: str | None = None,
-    tags: list[str] | None = None,
-    time_zone: str | None = None,
-    attachments: list[str] | None = None,
+    user: User, *, sync_id: str, amount: float | None = None, tx_type: str | None = None,
+    category: str | None = None, account: str | None = None, happened_at: str | None = None,
+    note: str | None = None, tags: list[str] | None = None, time_zone: str | None = None,
+    attachments: list[str] | None = None, ledger_id: str | None = None,
+    category_id: str | None = None, account_id: str | None = None,
+    from_account_id: str | None = None, to_account_id: str | None = None,
+    from_account: str | None = None, to_account: str | None = None,
+    currency: str | None = None, native_amount: float | None = None,
+    exclude_from_stats: bool | None = None, exclude_from_budget: bool | None = None,
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """更新现有交易。只更新传入的字段。"""
-    happened = (
-        parse_transaction_datetime(happened_at, time_zone=time_zone)
-        if happened_at is not None else None
-    )
-    with SessionLocal() as db:
-        existing = db.scalar(
-            select(ReadTxProjection).where(
-                ReadTxProjection.user_id == user.id,
-                ReadTxProjection.sync_id == sync_id,
-            )
-        )
-        if existing is None:
-            raise ValueError(f"Transaction not found: {sync_id}")
-        led = db.scalar(select(Ledger).where(Ledger.id == existing.ledger_id))
-        if led is None:
-            raise ValueError("Ledger missing for this tx")
-        ledger_external_id = led.external_id
-        effective_tx_type = tx_type or existing.tx_type
-        category_id = _lookup_category_sync_id(db, user.id, category, effective_tx_type)
-        account_id = _lookup_account_sync_id(db, user.id, account)
-        attachment_payload = (resolve_transaction_attachments(
-            db, ledger_id=led.id, file_ids=attachments,
-        ) if attachments is not None else None)
-
-    patch: dict[str, Any] = {"base_change_id": 0}
-    if attachment_payload is not None:
-        patch["attachments"] = attachment_payload
-    if amount is not None:
-        patch["amount"] = positive_amount(amount)
-    if tx_type is not None:
-        if tx_type not in {"expense", "income", "transfer"}:
-            raise ValueError(f"Invalid tx_type: {tx_type}")
-        patch["tx_type"] = tx_type
-    if happened is not None:
-        patch["happened_at"] = happened.isoformat()
-    if note is not None:
-        patch["note"] = note
-    if category is not None:
-        patch["category_id"] = category_id
-        patch["category_name"] = category
-        patch["category_kind"] = effective_tx_type
-    if account is not None:
-        if effective_tx_type == "transfer":
-            patch["from_account_id"] = account_id
-            patch["from_account_name"] = account
-        else:
-            patch["account_id"] = account_id
-            patch["account_name"] = account
-    if tags is not None:
-        patch["tags"] = list(tags)
-
-    settings = get_settings()
-    path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions/{sync_id}"
-    result = await _self_call("PATCH", path, user, json=patch)
-    return {
-        "sync_id": sync_id,
-        "updated": [k for k in patch.keys() if k != "base_change_id"],
-        **({"attachments": attachment_payload} if attachment_payload is not None else {}),
-        "_meta": result,
-    }
+    from ..transaction_service import update_one
+    raw = {key: value for key, value in locals().copy().items()
+           if key not in {"user", "sync_id", "ledger_id", "update_one"}}
+    return await update_one(user, sync_id=sync_id, ledger_id=ledger_id, **raw)
 
 
 async def delete_transaction(
-    user: User,
-    *,
-    sync_id: str,
-    confirm: bool = False,
+    user: User, *, sync_id: str, confirm: bool = False,
+    ledger_id: str | None = None, expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """删除一笔交易。**危险操作** — confirm=False 时返"待确认"状态,LLM 必须
-    跟用户确认后带 confirm=True 再调一次。
-    """
     if not confirm:
-        return {
-            "status": "confirmation_required",
-            "message": (
-                "Delete transaction requires explicit confirmation. "
-                "Please confirm with the user, then call again with confirm=true."
-            ),
-            "sync_id": sync_id,
-        }
-
+        return {"status": "confirmation_required", "sync_id": sync_id,
+                "message": "Confirm deletion with the user, then call with confirm=true"}
+    from ..transaction_service import transaction_row
     with SessionLocal() as db:
-        existing = db.scalar(
-            select(ReadTxProjection).where(
-                ReadTxProjection.user_id == user.id,
-                ReadTxProjection.sync_id == sync_id,
-            )
-        )
-        if existing is None:
-            raise ValueError(f"Transaction not found: {sync_id}")
-        led = db.scalar(select(Ledger).where(Ledger.id == existing.ledger_id))
-        if led is None:
-            raise ValueError("Ledger missing for this tx")
-        ledger_external_id = led.external_id
-
-    settings = get_settings()
-    path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions/{sync_id}"
-    await _self_call("DELETE", path, user, json={"base_change_id": 0})
-    return {"status": "deleted", "sync_id": sync_id}
+        _, ledger = transaction_row(db, user, sync_id, ledger_id)
+        external_id = ledger.external_id
+    body = {"base_change_id": 0}
+    if expected_revision is not None:
+        body["expected_revision"] = expected_revision
+    await _self_call("DELETE", f"{get_settings().api_prefix}/write/ledgers/{external_id}/transactions/{sync_id}",
+                     user, json=body)
+    return {"status": "deleted", "sync_id": sync_id, "ledger_id": external_id}
 
 
 async def create_category(
@@ -418,9 +259,9 @@ async def create_category(
         raise ValueError(f"Invalid kind: {kind}")
 
     with SessionLocal() as db:
-        led = _resolve_ledger(db, user.id, ledger_id)
-        if led is None:
-            raise ValueError("No ledger found")
+        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
+        if ledger_status is not None:
+            return ledger_status
         ledger_external_id = led.external_id
 
     body: dict[str, Any] = {
@@ -488,174 +329,14 @@ _BULK_MAX_TOTAL = 200
 
 
 async def create_transactions(
-    user: User,
-    *,
-    transactions: list[dict[str, Any] | BatchTransactionItem],
-    ledger_id: str | None = None,
-    time_zone: str | None = None,
+    user: User, *, transactions: list[dict[str, Any] | BatchTransactionItem],
+    ledger_id: str | None = None, time_zone: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """批量新建交易(Excel / 对账单导入等)。
-
-    比循环调 `create_transaction` 高效得多:走 server 的 `/transactions/batch`
-    端点,每 ≤50 笔**一次 commit + 一次 WS 广播**,避免 N 次全量 snapshot 重建
-    (issue #31 A3 —— 报告里"批量 MCP 写入服务端短时无响应 / 部分失败"的正解)。
-
-    每个 item 字段(跟 create_transaction 一致):
-      amount(必填 >0)、tx_type(expense|income|transfer,默认 expense)、
-      category、account、happened_at(ISO,缺省=now)、note、tags(list)。
-    """
-    if not transactions:
-        raise ValueError("transactions must be a non-empty list")
-    if len(transactions) > _BULK_MAX_TOTAL:
-        raise ValueError(
-            f"Too many transactions in one call ({len(transactions)} > "
-            f"{_BULK_MAX_TOTAL}). Split into multiple calls."
-        )
-
-    # 1. 解析 + 校验目标账本(B5:多账本不瞎猜)
-    with SessionLocal() as db:
-        led, ledger_status = _resolve_write_ledger(db, user, ledger_id)
-        if ledger_status is not None:
-            return ledger_status
-        assert led is not None  # 契约:_resolve_write_ledger 的 status 为 None ⟺ led 命中
-        ledger_external_id = led.external_id
-        ledger_name = led.name
-        led_internal_id = led.id
-        batch_ledger_base = (led.currency or "CNY").strip().upper()  # v30 折算基准
-
-    # 2. 规范化每笔 + 基础校验;收集要校验的 category / account 名
-    norm_items: list[dict[str, Any]] = []
-    cat_needed: set[str] = set()
-    acc_needed: set[str] = set()
-    for i, raw in enumerate(transactions):
-        try:
-            raw = BatchTransactionItem.model_validate(raw).model_dump()
-        except ValueError as exc:
-            raise ValueError(f"transactions[{i}]: {exc}") from exc
-        amount = raw.get("amount")
-        tx_type = raw.get("tx_type") or "expense"
-        if tx_type not in {"expense", "income", "transfer"}:
-            raise ValueError(f"transactions[{i}]: invalid tx_type {tx_type!r}")
-        if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
-            raise ValueError(f"transactions[{i}]: amount must be a positive number")
-        happened_at = raw.get("happened_at")
-        try:
-            happened = (
-                parse_transaction_datetime(happened_at, time_zone=time_zone)
-                if happened_at is not None else datetime.now(timezone.utc)
-            )
-        except ValueError as exc:
-            raise ValueError(f"transactions[{i}]: {exc}") from exc
-        item: dict[str, Any] = {
-            "tx_type": tx_type,
-            "amount": float(amount),
-            "happened_at": happened.isoformat(),
-        }
-        if raw.get("note"):
-            item["note"] = str(raw["note"])
-        category = raw.get("category")
-        if category:
-            item["category_name"] = str(category)
-            item["category_kind"] = tx_type
-            cat_needed.add(str(category))
-        account = raw.get("account")
-        if account:
-            if tx_type == "transfer":
-                item["from_account_name"] = str(account)
-            else:
-                item["account_name"] = str(account)
-            acc_needed.add(str(account))
-        # 用户 tags ∪ MCP 默认标签;batch 端点按名建实体 / 反查 sync_id。
-        item["tags"] = _merge_default_tag(raw.get("tags"))
-        # v30 多币种:暂存本笔的显式币种 + 账户名,第 3.5 步统一折算
-        item["__ccy_arg"] = (str(raw["currency"]).strip().upper()
-                             if raw.get("currency") else None)
-        item["__acc_name"] = str(account) if account else None
-        norm_items.append(item)
-
-    # 3. 预校验 category / account 名是否存在(O(1) 查询,给 LLM 清晰报错,
-    #    跟单笔 create_transaction 的 _lookup_* 校验同口径)
-    with SessionLocal() as db:
-        _validate_names_exist(db, user.id, categories=cat_needed, accounts=acc_needed)
-        # 名称相同也需校验类型与唯一性；一次解析不同名称，避免逐笔重复查询。
-        category_ids = {
-            (item["category_name"], item["tx_type"]): _lookup_category_sync_id(
-                db, user.id, item["category_name"], item["tx_type"],
-            )
-            for item in norm_items if item.get("category_name")
-        }
-        account_ids = {name: _lookup_account_sync_id(db, user.id, name) for name in acc_needed}
-        for item in norm_items:
-            if item.get("category_name"):
-                item["category_id"] = category_ids[(item["category_name"], item["tx_type"])]
-            if item.get("account_name"):
-                item["account_id"] = account_ids[item["account_name"]]
-            if item.get("from_account_name"):
-                item["from_account_id"] = account_ids[item["from_account_name"]]
-        mcp_tag_missing = _is_tag_missing_in_ledger(
-            db, user_id=user.id, ledger_id=led_internal_id, tag_name=_MCP_DEFAULT_TAG,
-        )
-
-    # 3.5 v30 多币种折算:预取涉及账户的币种 map,逐笔定币种 + 折 native。
-    #     account_currency 走 map(不逐笔查库);_build_currency_fields 内部
-    #     只在外币时才拉汇率(fetcher 有 server 端缓存,同 base 复用)。
-    if acc_needed:
-        with SessionLocal() as db:
-            acc_ccy_map = {
-                name: (
-                    db.scalar(
-                        select(UserAccountProjection.currency).where(
-                            UserAccountProjection.user_id == user.id,
-                            UserAccountProjection.name == name,
-                        ).limit(1)
-                    ) or ""
-                ).strip().upper() or None
-                for name in acc_needed
-            }
-    else:
-        acc_ccy_map = {}
-    for item in norm_items:
-        ccy_arg = item.pop("__ccy_arg", None)
-        acc_name = item.pop("__acc_name", None)
-        if item["tx_type"] == "transfer":
-            continue  # 转账不折算(同币种守卫)
-        fields = await _build_currency_fields(
-            user,
-            ledger_base=batch_ledger_base,
-            account_currency=acc_ccy_map.get(acc_name),
-            currency_arg=ccy_arg,
-            amount=item["amount"],
-        )
-        item.update(fields)
-
-    # 4. 确保 MCP tag 实体存在(带专属颜色),batch 端点随后复用同名 tag。
-    if mcp_tag_missing:
-        await _ensure_mcp_tag(user, ledger_external_id)
-
-    # 5. 分块 self-call /transactions/batch
-    settings = get_settings()
-    path = f"{settings.api_prefix}/write/ledgers/{ledger_external_id}/transactions/batch"
-    created_ids: list[str] = []
-    for start in range(0, len(norm_items), _BATCH_CHUNK):
-        chunk = norm_items[start : start + _BATCH_CHUNK]
-        result = await _self_call(
-            "POST",
-            path,
-            user,
-            json={
-                "base_change_id": 0,
-                "transactions": chunk,
-                "auto_ai_tag": False,  # MCP 用自己的 MCP 标签,不要"AI 记账"标签
-            },
-        )
-        created_ids.extend(result.get("created_sync_ids") or [])
-
-    return {
-        "status": "created",
-        "ledger": ledger_name,
-        "created_count": len(created_ids),
-        "sync_ids": created_ids,
-    }
+    from ..transaction_service import create_many
+    items = [item.model_dump() if isinstance(item, BatchTransactionItem) else item for item in transactions]
+    return await create_many(user, transactions=items, ledger_id=ledger_id,
+                             time_zone=time_zone, idempotency_key=idempotency_key)
 
 
 async def parse_and_create_from_text(

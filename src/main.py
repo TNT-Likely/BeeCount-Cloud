@@ -82,6 +82,36 @@ def public_web_config() -> dict:
     return {"project_partnerships_enabled": get_settings().project_partnerships_enabled}
 
 app.state.ws_manager = WSConnectionManager()
+
+
+@app.on_event("startup")
+async def start_mcp_recurring_scheduler() -> None:
+    import asyncio
+    if not settings.mcp_recurring_enabled:
+        return
+    async def tick():
+        from .mcp.rule_tools import execute_due_rules
+        while True:
+            try:
+                await execute_due_rules()
+            except Exception:
+                logging.getLogger(__name__).exception("MCP recurring scheduler tick failed")
+            await asyncio.sleep(30)
+    app.state.mcp_recurring_task = asyncio.create_task(tick())
+
+
+@app.on_event("shutdown")
+async def stop_mcp_recurring_scheduler() -> None:
+    import asyncio
+    task = getattr(app.state, "mcp_recurring_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 install_request_middleware(app)
 register_exception_handlers(app)
 

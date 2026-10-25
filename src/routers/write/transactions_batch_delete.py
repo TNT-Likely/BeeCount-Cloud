@@ -207,7 +207,7 @@ async def delete_tx_batch(
                 request_hash=request_hash,
                 response_json=response.model_dump(mode="json"),
                 created_at=now,
-                expires_at=now + timedelta(hours=24),
+                expires_at=now + (timedelta(days=36500) if device_id == "mcp-internal" and (idempotency_key or "").startswith("mcp:") else timedelta(hours=24)),
             )
         )
 

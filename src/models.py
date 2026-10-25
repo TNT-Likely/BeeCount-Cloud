@@ -24,6 +24,54 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class MCPWriteOperation(Base):
+    """Durable normalized write plan; retries reuse the exact original payloads."""
+    __tablename__ = "mcp_write_operations"
+    __table_args__ = (UniqueConstraint("user_id", "request_key", name="uq_mcp_operation_key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    request_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    plan_json: Mapped[list] = mapped_column(JSON)
+    results_json: Mapped[list] = mapped_column(JSON, default=list)
+    error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    lease_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MCPStateRecord(Base):
+    """Versioned, ledger-scoped workflow data; never interpreted as executable code."""
+    __tablename__ = "mcp_state_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    data_json: Mapped[dict] = mapped_column(JSON)
+    next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MCPSourceReference(Base):
+    __tablename__ = "mcp_source_references"
+    __table_args__ = (UniqueConstraint("ledger_id", "source_system", "source_id", name="uq_mcp_source_identity"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    tx_sync_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_system: Mapped[str] = mapped_column(String(128))
+    source_id: Mapped[str] = mapped_column(String(255))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class User(Base):
     __tablename__ = "users"
 

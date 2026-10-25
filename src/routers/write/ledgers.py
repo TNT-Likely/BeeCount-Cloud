@@ -11,7 +11,8 @@ import os
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
-from ...models import AttachmentFile
+from ...models import AttachmentFile, SyncPushIdempotency
+from sqlalchemy.exc import IntegrityError
 from ...services.exchange_rate import fetcher as _rate_fetcher
 from ...snapshot_mutator import _to_float as _snap_to_float
 from ...services.data_cleanup.cleaner import _remove_empty_parents
@@ -23,10 +24,18 @@ router = APIRouter()
 async def create_ledger(
     req: WriteLedgerCreateRequest,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    device_id: str = Header(default="web-console", alias="X-Device-ID"),
     _scopes: set[str] = Depends(_WRITE_SCOPE_DEP),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
+    request_hash = _hash_request(request.method, request.url.path, req.model_dump(mode="json"))
+    if idempotency_key:
+        replay = _load_idempotent_response(db, user_id=current_user.id, device_id=device_id,
+                                           idempotency_key=idempotency_key, request_hash=request_hash)
+        if replay:
+            return replay
     external_id = (req.ledger_id or f"ledger_{uuid4().hex[:12]}").strip()
     if not external_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ledger id is required")
@@ -91,7 +100,24 @@ async def create_ledger(
             },
         )
     )
-    db.commit()
+    response = WriteCommitMeta(ledger_id=external_id, base_change_id=0,
+        new_change_id=row_change.change_id, server_timestamp=now,
+        idempotency_replayed=False, entity_id=external_id)
+    if idempotency_key:
+        db.add(SyncPushIdempotency(user_id=current_user.id, device_id=device_id,
+            idempotency_key=idempotency_key, request_hash=request_hash,
+            response_json=response.model_dump(mode="json"), created_at=now,
+            expires_at=now + timedelta(days=36500 if device_id == 'mcp-internal' else 1)))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if idempotency_key:
+            replay = _load_idempotent_response(db, user_id=current_user.id, device_id=device_id,
+                idempotency_key=idempotency_key, request_hash=request_hash)
+            if replay:
+                return replay
+        raise HTTPException(status_code=409, detail='Ledger or idempotency key already exists')
 
     await request.app.state.ws_manager.broadcast_to_user(
         current_user.id,

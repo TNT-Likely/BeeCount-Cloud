@@ -6,7 +6,7 @@ Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your Bee
 
 ## What it is
 
-MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 19 tools:
+MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 55 tools:
 
 - **11 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
 - **8 write tools** — `upload_attachment` / `create_transaction` / `create_transactions` (batch) / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
@@ -208,7 +208,7 @@ PAT and access tokens are strictly partitioned: **PATs only work against `/api/v
 
 Call `upload_attachment` with a filename and standard Base64 bytes (no data URL prefix), then pass the returned IDs to `create_transaction(attachments=[file_id, ...])`. Use the same ledger for uploading and creating. The server supplies authoritative filename, size, SHA256 and display order; Web and App use the existing attachment and sync paths. Duplicate uploads of identical bytes in one ledger reuse the file ID. Other-ledger files and duplicate IDs in a transaction are rejected.
 
-For `update_transaction`, omitted/null `attachments` preserves existing files; an ordered list replaces them; `[]` removes all. To append, read current `cloudFileId` values with `get_transaction`, then submit the full list with new IDs. Uploading alone does not create a transaction, and successfully uploaded IDs can be reused if transaction submission fails. The upload tool requires `mcp:write` and applies the configured attachment size limit (64 MiB by default). Keep original receipt bytes: do not resize, transcode or split Base64 just to fit model arguments. File contents and filenames are excluded from MCP call-history summaries. No OCR/tax extraction or batch attachment support is added.
+For `update_transaction`, omitted/null `attachments` preserves existing files; an ordered list replaces them; `[]` removes all. To append, read current `cloudFileId` values with `get_transaction`, then submit the full list with new IDs. Uploading alone does not create a transaction, and successfully uploaded IDs can be reused if transaction submission fails. The upload tool requires `mcp:write` and applies the configured attachment size limit (64 MiB by default). Keep original receipt bytes: do not resize, transcode or split Base64 just to fit model arguments. File contents and filenames are excluded from MCP call-history summaries. Receipt recognition is available through the separate draft-only tool; tax extraction is not inferred. Batch entries support attachment IDs.
 
 For direct file-path tool calls, use the local stdio MCP adapter `scripts/mcp_local_files.py` on the client computer. It forwards all Cloud tools and changes the same `upload_attachment` tool to accept `file_path`. The program reads and sends unchanged bytes; the model handles only the path and returned metadata. Requires Python and `mcp>=1.27,<2`:
 
@@ -238,6 +238,57 @@ python scripts/mcp_upload_receipt.py \
 ```
 
 The helper uploads via real Streamable HTTP MCP and returns an `attachments` list for the transaction tools. You still need to create/edit the transaction afterward. Local paths and download URLs cannot be used as file IDs.
+
+
+## Complete bookkeeping and Agent workflows
+
+The server exposes **55 tools: 26 requiring read scope and 29 requiring write scope**. Existing tools remain available. Additional capabilities:
+
+| Workflow | Tools |
+|---|---|
+| Context and membership | `get_bookkeeping_context`, `list_ledger_members` |
+| Dictionary, budget and ledger management | `manage_account`, `manage_category`, `manage_tag`, `manage_budget`, `manage_ledger` |
+| Durable execution and incremental reads | `get_operation`, `list_operations`, `retry_operation`, `list_changes` |
+| Assets and analysis | `get_account_balances`, `get_net_worth_history`, `analyze_transactions` |
+| Receipts and drafts | `list_attachments`, `read_attachment`, `parse_receipt`, `preview_text_transactions` |
+| File import/export | `preview_import_file`, `preview_import`, `execute_import_plan`, `undo_import_plan`, `export_transactions` |
+| Provenance and reconciliation | `link_transaction_source`, `unlink_transaction_source`, `list_transaction_sources`, `reconcile_account`, `save_reconciliation_checkpoint` |
+| Agent handoff | `list_workflow_records`, `get_workflow_record`, `save_review_item`, `save_classification_rule`, `apply_classification_rule`, `execute_classification_preview` |
+| Cloud schedules | `manage_recurring_rule`, `run_due_recurring_rules` |
+
+### Ledger context and complete transactions
+
+Start with `get_bookkeeping_context`. Multiple ledgers require explicit selection; no current selection is inferred from creation order. Selecting a ledger returns its owner's dictionary IDs, the caller's role, currency, billing-cycle start day, timezone and PAT scopes. `list_categories/accounts/tags` also accept `ledger_id` for shared dictionaries. Current membership is checked on every call, including resource reads; administrator status does not widen the MCP ledger scope.
+
+Single, batch and update tools accept `from_account_id` / `to_account_id` (or `from_account` / `to_account` names). Transfers require two distinct accounts in the same currency. Prefer `category_id` / `account_id` when names are ambiguous. Independent statistics/budget exclusion flags and ordered uploaded attachment IDs work in batch writes too.
+
+Foreign-currency transactions accept an explicit `native_amount` settlement snapshot in ledger currency. Amount corrections preserve the recorded settlement ratio unless a new settlement or currency is supplied. Net-worth history keeps currencies separate and publishes a converted total only if all rates exist; any valuation uses current configured/cached rates, not historical FX returns. Account balances default to personal ledgers; an explicit shared ledger or `scope=visible` includes scope information. Legacy opening balances without an effective date are labeled accordingly.
+
+### Pagination, revisions and retries
+
+`list_transactions` returns `has_more`, `next_cursor` and `revision`, ordered by timestamp and sync ID. A signed cursor binds the user, ledger and filters; changes invalidate it with `CURSOR_INVALIDATED`. Date-only filters use the chosen IANA `time_zone`; date-only `date_to` includes that entire local day, while timestamp upper bounds are exclusive. Exact type/category/account/tag filters are available.
+
+Supply a stable `idempotency_key` for transaction creation. Same key/content replays the original result; different content conflicts. Normalized timestamps, conversion snapshots and write steps are persisted before execution. Batches contain at most 200 transactions; each group of up to 50 commits independently. Partial failures retain completed groups and return an operation ID, per-step results, failed step and retryability. Use `get_operation`, `retry_operation` and `list_operations` after timeouts or response loss. Internal replay receipts are retained for durable restart recovery.
+
+Updates/deletes accept `expected_revision`; stale edits return `REVISION_CONFLICT`. `list_changes` provides signed incremental cursors including deletion tombstones.
+
+### Durable import and reconciliation
+
+Upload original CSV/TSV/XLSX bytes, then call `preview_import_file` with the file ID, field mapping and source-ID column; structured inputs can use `preview_import` directly. Files are limited to 16 MiB / 50000 rows, XLSX expansion to 128 MiB, and each saved plan to 200 source rows (continue using `next_offset`). Previews include normalized transactions, exact source matches, possible duplicates, errors and balance effects. Create missing dictionaries before refreshing the preview. Same-day/same-amount entries remain review candidates, never automatic deduplication.
+
+After user approval, execute the saved plan ID/version with `confirm=true`. Unique database source reservations prevent competing plans from importing the same external identity. Interrupted execution resumes the same operation. Executed plans cannot be rewritten. Undo removes only newly created entries whose revisions still match; linked existing entries and later user edits are protected. Unlinking an incorrect source preserves the transaction itself.
+
+Reconciliation compares opening balance, income/expense/transfers and calculated versus actual statement balances at an explicit cutoff, without silently adjusting entries. Confirmed checkpoints store account/source coverage and data revision. Provenance, plans, review questions/answers, checkpoints and confirmed classification rules persist across devices and Agents. Rule application first saves a frozen before/after preview; execute its preview ID after approval, with per-transaction revision protection.
+
+### Receipts, resources and recurring schedules
+
+`read_attachment` returns original images/small text or an authenticated resource link. `parse_receipt` uses the configured vision provider and returns drafts only; attach the original file ID when recording approved drafts. `preview_text_transactions` is also draft-only. Missing AI configuration returns a clear error; a client may recognize the receipt itself and use ordinary transaction tools.
+
+Exports use `beecount://exports/{id}`; original files use `beecount://attachments/{file_id}`. Every read rechecks scope and membership. CSV exports preserve IDs, original/settlement amounts and exclusion flags, prevent spreadsheet formula injection and reject rather than silently truncate over 50000 rows. The local stdio adapter forwards resources and prompts as well as tools. Built-in `monthly_review` and `import_statement` prompts describe read-only review and approval-based import.
+
+Cloud schedules support daily/weekly/monthly/yearly intervals, end times, pause/resume and a five-occurrence preview. Month/year ends clamp from the original anchor without drift. Nonexistent DST times are skipped; ambiguous times use explicit `dst_policy=skip|first|second`. Historical backfill is opt-in. Occurrences use durable idempotency keys, resume after restarts and revalidate their creator's enabled state and ledger role. Set `MCP_RECURRING_ENABLED=false` to disable background scheduling. These rules are Cloud-owned and create ordinary synced transactions; do not create a duplicate App-owned rule for the same bill.
+
+Upgrade Alembic to `0021_mcp_workflows` before starting this version. New tables store operations, versioned workflow data and provenance while existing transaction synchronization stays compatible. Tool annotations describe read/write/destructive/idempotent/external-AI behavior; actual scope and role enforcement remains server-side.
 
 ## Troubleshooting
 

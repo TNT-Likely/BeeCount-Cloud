@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # 没装 tzdata 时 tzlocal 会静默 fallback UTC,"0 4 * * *" 就在 UTC 4 点
     # 跑(不是用户期望的本地 4 点)。
     scheduler_timezone: str = Field(default="", alias="SCHEDULER_TIMEZONE")
+    mcp_recurring_enabled: bool = Field(default=True, alias="MCP_RECURRING_ENABLED")
     device_online_window_minutes: int = 10
     allow_app_rw_scopes: bool = True
 
