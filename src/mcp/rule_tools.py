@@ -11,7 +11,7 @@ from pydantic import Field
 from sqlalchemy import select, update
 
 from ..config import get_settings
-from ..models import Ledger, MCPStateRecord, ReadTxProjection, User
+from ..models import Ledger, MCPStateRecord, MCPWriteOperation, ReadTxProjection, User
 from .capability_tools import Fields, require_ledger, run_write
 from .query_context import date_boundary
 from .schemas import BatchTransactionItem
@@ -312,6 +312,25 @@ async def manage_recurring_rule(
             if row.revision != expected_revision:
                 raise ValueError("REVISION_CONFLICT: recurring rule changed")
             previous = row.data_json
+            if action == "update" and row.next_due_at is not None:
+                occurrence_key = (
+                    "recurring:"
+                    + row.id
+                    + ":"
+                    + row.next_due_at.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                )
+                pending = db.scalar(
+                    select(MCPWriteOperation).where(
+                        MCPWriteOperation.user_id == row.user_id,
+                        MCPWriteOperation.request_key == occurrence_key,
+                    )
+                )
+                if pending:
+                    return dict(
+                        status="operation_pending",
+                        operation_id=pending.id,
+                        message="Resume the original occurrence with run_due_recurring_rules before changing its schedule payload; pause/delete remain available",
+                    )
         elif action != "create":
             raise ValueError("record_id and expected_revision are required")
         db.expunge(ledger)

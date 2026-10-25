@@ -7,6 +7,7 @@ WRITE 响应表。Endpoint 自身只管参数校验 + mutate lambda 的构造。
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from ...schemas import WriteTransactionDeleteRequest
 
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 
@@ -126,7 +127,7 @@ async def update_tx(
 async def delete_tx(
     ledger_id: str,
     tx_id: str,
-    req: WriteEntityDeleteRequest,
+    req: WriteTransactionDeleteRequest,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     device_id: str = Header(default="web-console", alias="X-Device-ID"),
@@ -134,7 +135,7 @@ async def delete_tx(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
-    payload = req.model_dump(mode="json")
+    payload = req.model_dump(mode="json", exclude={"expected_revision"} if req.expected_revision is None else set())
     ledger, replay = _prepare_write(
         db=db,
         current_user=current_user,

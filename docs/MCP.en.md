@@ -6,10 +6,10 @@ Let LLM clients (Claude Desktop / Cursor / Cline / etc.) read and write your Bee
 
 ## What it is
 
-MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 55 tools:
+MCP is Anthropic's open standard for LLM tool integration. BeeCount Cloud ships a built-in MCP server exposing 55 tools. The original core tools below are extended by the workflow tools documented later:
 
-- **11 read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
-- **8 write tools** — `upload_attachment` / `create_transaction` / `create_transactions` (batch) / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
+- **11 core read tools** — `list_ledgers` / `list_transactions` / `list_categories` / `list_accounts` / `list_tags` / `list_budgets` / `get_ledger_stats` / `get_analytics_summary` / `search` / `get_transaction` / `get_active_ledger`
+- **8 core write tools** — `upload_attachment` / `create_transaction` / `create_transactions` (batch) / `update_transaction` / `delete_transaction` (two-step confirm) / `create_category` / `update_budget` / `parse_and_create_from_text` (let BeeCount's own AI parse free-form text)
 
 Inside your favourite LLM client you can just say:
 

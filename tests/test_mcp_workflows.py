@@ -423,3 +423,69 @@ def test_shared_dictionary_reads_and_ai_context_use_ledger_owner(ledger):
     shared_history = capabilities.get_net_worth_history(member, ledger_id=ledger.ledger_id)
     assert shared_history["series"][-1]["net_worth"] == 1000
     assert shared_history["coverage"]["partial"] is True
+
+
+def test_foreign_transfer_amounts_are_never_added_as_base_currency(ledger):
+    source = account(ledger, "USD source", currency="USD")
+    destination = account(ledger, "USD destination", currency="USD")
+    result = run(
+        wt.create_transaction(
+            ledger.user,
+            ledger_id=ledger.ledger_id,
+            amount=5,
+            tx_type="transfer",
+            from_account_id=source,
+            to_account_id=destination,
+        )
+    )
+    assert result["status"] == "created"
+    report = analysis.analyze_transactions(ledger.user, ledger.ledger_id)
+    assert report["totals"]["transfer_by_currency"] == {"USD": 5}
+    assert report["totals"]["transfer"] == 0
+    assert report["totals"]["expense"] == 0
+
+
+def test_recurring_lost_response_cannot_be_overwritten_by_rule_edit(ledger, monkeypatch):
+    schedule = rules.RecurringRule(
+        name="Lost response rule",
+        transaction=BatchTransactionItem(amount=7),
+        frequency="daily",
+        starts_at="2026-01-01T00:00:00Z",
+        time_zone="UTC",
+        allow_backfill=True,
+    )
+    saved = run(
+        rules.manage_recurring_rule(
+            ledger.user, action="create", ledger_id=ledger.ledger_id, data=schedule, confirm=True
+        )
+    )
+    original = wt._self_call
+
+    async def lose_response(method, path, user, **kwargs):
+        result = await original(method, path, user, **kwargs)
+        if path.endswith("/transactions/batch"):
+            raise RuntimeError("synthetic lost response after commit")
+        return result
+
+    monkeypatch.setattr(wt, "_self_call", lose_response)
+    now = datetime(2026, 1, 1, 1, tzinfo=timezone.utc)
+    failed = run(rules.execute_due_rules(now=now))
+    assert failed[0]["operation"]["status"] == "failed"
+    edited = schedule.model_copy(update={"transaction": BatchTransactionItem(amount=9)})
+    blocked = run(
+        rules.manage_recurring_rule(
+            ledger.user,
+            action="update",
+            ledger_id=ledger.ledger_id,
+            record_id=saved["id"],
+            expected_revision=saved["revision"],
+            data=edited,
+            confirm=True,
+        )
+    )
+    assert blocked["status"] == "operation_pending"
+    monkeypatch.setattr(wt, "_self_call", original)
+    resumed = run(rules.execute_due_rules(now=now))
+    assert resumed[0]["operation"]["status"] == "created"
+    assert rt.list_transactions(ledger.user)["total"] == 1
+    assert rt.list_transactions(ledger.user)["items"][0]["amount"] == 7

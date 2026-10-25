@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import Field
 from sqlalchemy import or_, select
 
-from ..models import ReadTxProjection, User
+from ..models import ReadTxProjection, User, UserAccountProjection
 from .capability_tools import Fields, require_ledger
 from .query_context import date_boundary, revision, zone
 from .tools import read_tools as rt
@@ -91,6 +91,13 @@ def analyze_transactions(
     with rt.SessionLocal() as db:
         ledger = require_ledger(db, user, ledger_id)
         baseline = revision(db, [ledger.id], ledger.user_id)
+        account_currencies = dict(
+            db.execute(
+                select(UserAccountProjection.sync_id, UserAccountProjection.currency).where(
+                    UserAccountProjection.user_id == ledger.user_id
+                )
+            ).all()
+        )
 
         def collect(criteria):
             query = filtered_query(ledger, criteria, str(tz))
@@ -105,13 +112,30 @@ def analyze_transactions(
                         set(json.loads(row.tag_sync_ids_json or "[]"))
                     )
                 ]
-            totals = dict(income=0.0, expense=0.0, transfer=0.0, transaction_count=len(rows))
+            totals = dict(
+                income=0.0,
+                expense=0.0,
+                transfer=0.0,
+                transaction_count=len(rows),
+                transfer_by_currency={},
+            )
             groups = {}
             first, last = None, None
             for row in rows:
                 amount = float(
                     row.native_amount if row.native_amount is not None else row.amount or 0
                 )
+                transfer_currency = (
+                    row.currency_code
+                    or account_currencies.get(row.from_account_sync_id)
+                    or ledger.currency
+                )
+                if row.tx_type == "transfer":
+                    totals["transfer_by_currency"][transfer_currency] = totals[
+                        "transfer_by_currency"
+                    ].get(transfer_currency, 0) + float(row.amount or 0)
+                    if transfer_currency != ledger.currency and row.native_amount is None:
+                        amount = 0.0
                 if row.tx_type in totals:
                     totals[row.tx_type] += amount
                 local = row.happened_at.replace(tzinfo=timezone.utc).astimezone(tz)
@@ -142,12 +166,17 @@ def analyze_transactions(
                             income=0.0,
                             expense=0.0,
                             transfer=0.0,
+                            transfer_by_currency={},
                             transaction_count=0,
                             sample_sync_ids=[],
                             category_name=row.category_name if group_by == "category" else None,
                         ),
                     )
                     slot["transaction_count"] += 1
+                    if row.tx_type == "transfer":
+                        slot["transfer_by_currency"][transfer_currency] = slot[
+                            "transfer_by_currency"
+                        ].get(transfer_currency, 0) + float(row.amount or 0)
                     if row.tx_type in {"income", "expense", "transfer"}:
                         slot[row.tx_type] += amount
                     if len(slot["sample_sync_ids"]) < 10:
@@ -190,7 +219,7 @@ def analyze_transactions(
             "group_by": group_by,
             "calculation": dict(
                 amount="native_amount or amount in ledger base currency",
-                transfer="reported separately; excluded from income/expense",
+                transfer="excluded from income/expense; transfer numeric subtotal includes known base-currency amounts only, transfer_by_currency preserves every original amount",
                 refunds="no automatic pairing or netting across months",
                 tag_groups="overlap when a transaction has several tags",
                 date_to="local dates inclusive; timestamp boundaries exclusive",

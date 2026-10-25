@@ -775,7 +775,6 @@ class WriteCommitMeta(BaseModel):
 class WriteBaseRequest(BaseModel):
     base_change_id: int = Field(ge=0)
     request_id: str | None = Field(default=None, max_length=128)
-    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class WriteLedgerCreateRequest(BaseModel):
@@ -818,6 +817,7 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
+    expected_revision: int | None = Field(default=None, ge=0)
     tx_type: Literal["expense", "income", "transfer"] | None = None
     amount: float | None = None
     happened_at: datetime | None = None
@@ -845,6 +845,10 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
 
 class WriteEntityDeleteRequest(WriteBaseRequest):
     pass
+
+
+class WriteTransactionDeleteRequest(WriteEntityDeleteRequest):
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class WriteAccountCreateRequest(WriteBaseRequest):
