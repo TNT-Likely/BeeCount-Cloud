@@ -70,6 +70,23 @@ def build(args):
 """.replace("ENDPOINT", json.dumps(endpoint))
         value = value.replace(original, replacement)
         value = value.replace(
+            "import 'dart:convert';",
+            "import 'dart:convert';\nimport 'package:beecount_ui/beecount_ui.dart';",
+        )
+        value = value.replace(
+            "find.byIcon(Icons.image_outlined, skipOffstage: false)",
+            "find.byWidgetPredicate((w) => w is BeeLineIcon && w.name == 'ImagePlus', skipOffstage: false)",
+        )
+        value = value.replace(
+            "find.byIcon(Icons.delete_outline).last",
+            "find.byWidgetPredicate((w) => w is BeeLineIcon && w.name == 'Trash2').last",
+        )
+        value = value.replace("find.text('确定')", "find.text('删除')")
+        value = value.replace(
+            "expect(find.byIcon(Icons.broken_image), findsNothing);",
+            "expect(find.byIcon(Icons.broken_image), findsNothing);\n      expect(find.byWidgetPredicate((w) => w is BeeLineIcon && w.name == 'ImageOff'), findsNothing);",
+        )
+        value = value.replace(
             "    final imageC = await receipt('Replacement C', const Color(0xffbee9d3));\n", ""
         )
         anchor = "    expect((await verify()).single['sha256'], c['sha256']);"
