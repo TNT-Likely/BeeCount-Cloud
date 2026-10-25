@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -416,55 +417,64 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
             db.expunge(row)
     results = []
     for row in rules:
-        with wt.SessionLocal() as db:
-            user = db.get(User, row.user_id)
-            ledger = db.get(Ledger, row.ledger_id)
-            if not user or not user.is_enabled or not ledger:
+        try:
+            with wt.SessionLocal() as db:
+                user = db.get(User, row.user_id)
+                ledger = db.get(Ledger, row.ledger_id)
+                if not user or not user.is_enabled or not ledger:
+                    continue
+                try:
+                    require_ledger(db, user, ledger.external_id, write=True)
+                except ValueError:
+                    results.append(dict(rule_id=row.id, status="permission_denied"))
+                    continue
+                db.expunge(user)
+                db.expunge(ledger)
+            data = dict(row.data_json)
+            index, due = next_occurrence(data, data["next_index"])
+            if due is None or due > now:
                 continue
-            try:
-                require_ledger(db, user, ledger.external_id, write=True)
-            except ValueError:
-                results.append(dict(rule_id=row.id, status="permission_denied"))
-                continue
-            db.expunge(user)
-            db.expunge(ledger)
-        data = dict(row.data_json)
-        index, due = next_occurrence(data, data["next_index"])
-        if due is None or due > now:
-            continue
-        raw = {**data["rule"]["transaction"], "happened_at": due.isoformat()}
-        key = "recurring:" + row.id + ":" + due.strftime("%Y%m%dT%H%M%SZ")
-        outcome = await wt.create_transactions(
-            user, ledger_id=ledger.external_id, transactions=[raw], idempotency_key=key
-        )
-        results.append(dict(rule_id=row.id, due=due.isoformat(), operation=outcome))
-        if outcome.get("status") != "created":
-            continue
-        next_index, next_due = next_occurrence(data, index + 1)
-        data.update(
-            next_index=next_index,
-            executed_count=data.get("executed_count", 0) + 1,
-            last_operation_id=outcome["operation_id"],
-            last_due_at=due.isoformat(),
-        )
-        with wt.SessionLocal() as db:
-            db.execute(
-                update(MCPStateRecord)
-                .where(
-                    MCPStateRecord.id == row.id,
-                    MCPStateRecord.revision == row.revision,
-                    MCPStateRecord.status == "active",
-                    MCPStateRecord.next_due_at == due,
-                )
-                .values(
-                    data_json=data,
-                    next_due_at=next_due,
-                    revision=row.revision + 1,
-                    status="active" if next_due else "completed",
-                    updated_at=datetime.now(timezone.utc),
-                )
+            raw = {**data["rule"]["transaction"], "happened_at": due.isoformat()}
+            key = "recurring:" + row.id + ":" + due.strftime("%Y%m%dT%H%M%SZ")
+            outcome = await wt.create_transactions(
+                user, ledger_id=ledger.external_id, transactions=[raw], idempotency_key=key
             )
-            db.commit()
+            results.append(dict(rule_id=row.id, due=due.isoformat(), operation=outcome))
+            if outcome.get("status") != "created":
+                continue
+            next_index, next_due = next_occurrence(data, index + 1)
+            data.update(
+                next_index=next_index,
+                executed_count=data.get("executed_count", 0) + 1,
+                last_operation_id=outcome["operation_id"],
+                last_due_at=due.isoformat(),
+            )
+            with wt.SessionLocal() as db:
+                db.execute(
+                    update(MCPStateRecord)
+                    .where(
+                        MCPStateRecord.id == row.id,
+                        MCPStateRecord.revision == row.revision,
+                        MCPStateRecord.status == "active",
+                        MCPStateRecord.next_due_at == due,
+                    )
+                    .values(
+                        data_json=data,
+                        next_due_at=next_due,
+                        revision=row.revision + 1,
+                        status="active" if next_due else "completed",
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+                db.commit()
+        except Exception as exc:
+            # A stale account/category must not starve unrelated users' schedules.
+            # Report a safe code; transaction/provider exception text may contain source data.
+            code = type(exc).__name__
+            logging.getLogger(__name__).warning(
+                "MCP recurring rule %s failed (%s)", row.id, code
+            )
+            results.append(dict(rule_id=row.id, status="failed", error_code=code))
     return results
 
 

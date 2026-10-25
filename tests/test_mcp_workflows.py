@@ -285,6 +285,50 @@ def test_month_end_recurrence_catchup_pause_and_retry_are_idempotent(ledger):
     assert run(rules.execute_due_rules(now=datetime(2026, 4, 1, tzinfo=timezone.utc))) == []
 
 
+def test_invalid_recurring_rule_does_not_block_later_rules(ledger):
+    deleted_account = account(ledger, "Account removed after scheduling")
+    saved = []
+    for day, transaction in [
+        (1, BatchTransactionItem(amount=7, account_id=deleted_account)),
+        (2, BatchTransactionItem(amount=9)),
+    ]:
+        saved.append(
+            run(
+                rules.manage_recurring_rule(
+                    ledger.user,
+                    action="create",
+                    ledger_id=ledger.ledger_id,
+                    data=rules.RecurringRule(
+                        name=f"Independent schedule {day}",
+                        transaction=transaction,
+                        frequency="daily",
+                        starts_at=f"2026-01-0{day}T00:00:00Z",
+                        time_zone="UTC",
+                        allow_backfill=True,
+                    ),
+                    confirm=True,
+                )
+            )
+        )
+    removed = run(
+        capabilities.manage_account(
+            ledger.user,
+            action="delete",
+            ledger_id=ledger.ledger_id,
+            account_id=deleted_account,
+            confirm=True,
+        )
+    )
+    assert removed["status"] == "completed"
+    outcomes = run(rules.execute_due_rules(now=datetime(2026, 1, 2, 1, tzinfo=timezone.utc)))
+    by_rule = {item["rule_id"]: item for item in outcomes}
+    assert by_rule[saved[0]["id"]]["status"] == "failed"
+    assert by_rule[saved[0]["id"]]["error_code"] == "ValueError"
+    assert by_rule[saved[1]["id"]]["operation"]["status"] == "created"
+    assert rt.list_transactions(ledger.user)["total"] == 1
+    assert rt.list_transactions(ledger.user)["items"][0]["amount"] == 9
+
+
 def test_recurring_dst_gap_is_skipped_and_ambiguous_policy_is_explicit():
     data = dict(
         anchor_local="2026-03-07T02:30:00-05:00",
