@@ -195,7 +195,13 @@ async def create_many(
     key = idempotency_key or str(uuid4())
     if not isinstance(key, str) or not key.strip() or len(key) > 128:
         raise ValueError("idempotency_key must be a non-empty string of at most 128 characters")
-    prior = find_operation(wt.SessionLocal, user.id, key, raw_request)
+    prior = find_operation(
+        wt.SessionLocal,
+        user.id,
+        key,
+        raw_request,
+        kind="create_transaction" if single else "create_transactions",
+    )
     with wt.SessionLocal() as db:
         led, status = wt._resolve_write_ledger(db, user, ledger_id)
         if status:

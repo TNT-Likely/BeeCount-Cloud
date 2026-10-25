@@ -414,6 +414,8 @@ async def execute_import_plan(
             user.id,
             "import:" + plan_id,
             dict(plan_id=plan_id, plan_revision=expected_revision),
+            kind="import",
+            ledger_id=ledger.id,
         )
         if not operation and revision(db, [ledger.id], ledger.user_id) != data["base_revision"]:
             raise ValueError("REVISION_CONFLICT: ledger changed after preview; refresh the plan")

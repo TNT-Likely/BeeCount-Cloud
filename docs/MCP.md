@@ -177,7 +177,7 @@ PAT 跟 access token 严格分流:**PAT 只能用在 `/api/v1/mcp`**,所有其�
 | Tool | 用途 | 关键参数 |
 |---|---|---|
 | `list_ledgers` | 列所有账本 | — |
-| `get_active_ledger` | 当前默认账本 | — |
+| `get_active_ledger` | 兼容默认账本查询；多账本先通过上下文选择 | — |
 | `list_transactions` | 查交易,多维筛选 | date_from/to, category, account, q, limit |
 | `get_transaction` | 单条交易详情 | sync_id |
 | `list_categories` | 列分类 | kind |
@@ -369,5 +369,5 @@ Agent 若已经错误添加 `Z`，服务端无法识别原始时间是否来自�
 
 **问:多账本时 MCP 调哪个**
 
-- 没传 `ledger_id` → 默认用**最早创建**的账本
-- 建议每次会话先让 LLM `list_ledgers` 列出选项,然后后续调用都带 `ledger_id`
+- 每次会话先用 `get_bookkeeping_context` 获取候选，让用户选择后显式传 `ledger_id`。
+- 多账本写请求省略 `ledger_id` 会返回 `ledger_required`，不会自动选择。`get_active_ledger` 仅保留兼容查询行为，不代表 App 当前选中的账本。

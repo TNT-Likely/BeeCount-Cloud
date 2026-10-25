@@ -35,14 +35,18 @@ def operation_out(row):
     )
 
 
-def find_operation(sessions, user_id, key, request):
+def find_operation(sessions, user_id, key, request, *, kind=None, ledger_id=None):
     with sessions() as db:
         row = db.scalar(
             select(MCPWriteOperation).where(
                 MCPWriteOperation.user_id == user_id, MCPWriteOperation.request_key == key
             )
         )
-        if row and row.request_hash != fingerprint(request):
+        if row and (
+            row.request_hash != fingerprint(request)
+            or (kind is not None and row.kind != kind)
+            or (ledger_id is not None and row.ledger_id != ledger_id)
+        ):
             raise ValueError("IDEMPOTENCY_CONFLICT: key was already used with different arguments")
         if row:
             db.expunge(row)
@@ -50,7 +54,9 @@ def find_operation(sessions, user_id, key, request):
 
 
 def save_operation(sessions, *, user_id, ledger_id, key, kind, request, steps):
-    existing = find_operation(sessions, user_id, key, request)
+    existing = find_operation(
+        sessions, user_id, key, request, kind=kind, ledger_id=ledger_id
+    )
     if existing:
         return existing
     with sessions() as db:
@@ -70,7 +76,9 @@ def save_operation(sessions, *, user_id, ledger_id, key, kind, request, steps):
             db.commit()
         except IntegrityError:
             db.rollback()
-            return find_operation(sessions, user_id, key, request)
+            return find_operation(
+                sessions, user_id, key, request, kind=kind, ledger_id=ledger_id
+            )
         db.refresh(row)
         db.expunge(row)
         return row

@@ -28,6 +28,31 @@ def account(context, name, currency="CNY"):
     return result["sync_ids"][0]
 
 
+def test_management_idempotency_key_cannot_replay_another_tool(ledger):
+    args = dict(
+        action="create", ledger_id=ledger.ledger_id, idempotency_key="same-management-request"
+    )
+    created = run(
+        capabilities.manage_account(
+            ledger.user, data=capabilities.AccountFields(name="Same name"), **args
+        )
+    )
+    replayed = run(
+        capabilities.manage_account(
+            ledger.user, data=capabilities.AccountFields(name="Same name"), **args
+        )
+    )
+    assert created["status"] == "completed"
+    assert replayed["operation_id"] == created["operation_id"]
+    with pytest.raises(ValueError, match="IDEMPOTENCY_CONFLICT"):
+        run(
+            capabilities.manage_tag(
+                ledger.user, data=capabilities.TagFields(name="Same name"), **args
+            )
+        )
+    assert not any(item["name"] == "Same name" for item in rt.list_tags(ledger.user))
+
+
 def test_same_timestamp_pages_are_complete_and_revision_bound(ledger):
     for size in [200, 60]:
         result = run(

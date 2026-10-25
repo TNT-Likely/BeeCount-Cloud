@@ -320,5 +320,6 @@ Upgrade Alembic to `0021_mcp_workflows` before starting this version. New tables
 
 **Q: Which ledger does MCP use when I have multiple?**
 
-- If `ledger_id` isn't passed → defaults to the **earliest-created** ledger.
+- Start with `get_bookkeeping_context`, let the user choose a ledger, and pass its `ledger_id` explicitly.
+- Writes without `ledger_id` return `ledger_required` when multiple ledgers exist. `get_active_ledger` retains a legacy lookup and does not identify the ledger currently selected in the App.
 - Recommended flow: have the LLM call `list_ledgers` at session start and pass `ledger_id` explicitly on subsequent calls.
