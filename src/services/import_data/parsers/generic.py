@@ -32,9 +32,10 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
         re.I,
     ),
     "subcategory_name": re.compile(r"(二级分类|子分类|子类目|subcategory|sub.?cat)", re.I),
-    # 账户:含 alipay 的"收/付款方式"/ wechat 的"支付方式"
+    # 账户:含 alipay 的"收/付款方式"/ wechat 的"支付方式"。排除"对方账号"
+    # (交易对手的账号,不是用户自己的资产账户,误映射会创建大量垃圾账户)
     "account_name": re.compile(
-        r"(账户|账号|account|支付方式|付款方式|收[/／]?付款方式|来源|出处)",
+        r"(?<!对方)(账户|账号|account|支付方式|付款方式|收[/／]?付款方式|来源|出处)",
         re.I,
     ),
     "from_account_name": re.compile(r"(转出|from.?account|source.?account|出账)", re.I),
@@ -46,6 +47,14 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "tags": re.compile(r"(标签|tag|label)", re.I),
 }
+
+
+def _effective_cols(row: list[str]) -> int:
+    """去掉行尾空单元格后的列数。"""
+    n = len(row)
+    while n > 0 and not (row[n - 1] or "").strip():
+        n -= 1
+    return n
 
 
 def _match(headers: list[str], pattern: re.Pattern[str], taken: set[str] | None = None) -> str | None:
@@ -66,19 +75,31 @@ class GenericParser:
         return False
 
     def find_header_row(self, rows: list[list[str]]) -> int:
-        """列数一致性启发:在前 30 行里找到 >=3 列且后续 ≥ 5 行列数一致的行。"""
+        """列数一致性启发:在前 30 行里找到 >=3 列且后续 ≥ 5 行列数一致的行。
+
+        列数按"去掉行尾空单元格"计算:微信/支付宝 xlsx 顶部的元数据行会被
+        补齐成和数据行相同的列数(尾部全是空串),按原始列数比较会把标题行
+        误判成表头,导致全部必填字段映射不到(PARSE_MAPPING_INCOMPLETE)。
+        """
         if not rows:
             return -1
         max_check = min(30, len(rows))
         for i in range(max_check):
-            cand_cols = len(rows[i])
+            cand = rows[i]
+            cand_cols = _effective_cols(cand)
             if cand_cols < 3:
                 continue
             check_end = min(i + 10, len(rows))
+            following = range(i + 1, check_end)
             consistent = sum(
-                1 for j in range(i + 1, check_end) if len(rows[j]) == cand_cols
+                1
+                for j in following
+                if _effective_cols(rows[j]) == cand_cols
+                or len(rows[j]) == len(cand)
             )
-            if consistent >= 5:
+            # 后续数据行不足 5 行时按"全部一致"判定,避免短账单漏判表头
+            required = min(5, check_end - (i + 1))
+            if required > 0 and consistent >= required:
                 return i
         return 0  # 兜底从第 0 行
 
