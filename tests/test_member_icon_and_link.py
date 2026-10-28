@@ -302,3 +302,72 @@ def test_member_share_stats_keeps_unlinked_bookkeeper():
         assert abs(user_rows[0]["expense_total"] - 30.0) < 0.01, user_rows[0]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_member_share_stats_counts_income_shares():
+    """收入带 member_shares → 按分摊金额计入该成员的 income_total(而非 expense_total);
+    且 income 的 member_shares 不会被归一化清掉(回归:原本仅 expense 有意义)。"""
+    client, TS = _make_client()
+    try:
+        app_tok = _login(client, "mb5@t.com", device_id="d-app", client_type="app")
+        web_tok = _login(client, "mb5@t.com", device_id="d-web", client_type="web")
+        hdr_app = {"Authorization": f"Bearer {app_tok}"}
+        hdr_web = {"Authorization": f"Bearer {web_tok}", "X-Device-ID": "d-web"}
+
+        _push(client, hdr_app, "lgm5", "ledger", "lgm5",
+              {"syncId": "lgm5", "ledgerName": "家", "currency": "CNY"}, device_id="d-app")
+
+        r = client.post(
+            "/api/v1/write/ledgers/lgm5/members",
+            headers=hdr_web,
+            json={"base_change_id": 0, "name": "爸爸", "icon": "man"},
+        )
+        assert r.status_code == 200, r.text
+        member_id = r.json()["entity_id"]
+
+        acc = client.post(
+            "/api/v1/write/ledgers/lgm5/accounts",
+            headers=hdr_web,
+            json={"base_change_id": 0, "name": "现金", "account_type": "cash"},
+        )
+        assert acc.status_code == 200, acc.text
+        account_id = acc.json()["entity_id"]
+
+        tx = client.post(
+            "/api/v1/write/ledgers/lgm5/transactions",
+            headers=hdr_web,
+            json={
+                "base_change_id": 0,
+                "tx_type": "income",
+                "amount": 100.0,
+                "happened_at": _iso(),
+                "account_id": account_id,
+                "account_name": "现金",
+                "member_shares": [
+                    {"memberId": member_id, "memberName": "爸爸", "amount": 100.0}
+                ],
+            },
+        )
+        assert tx.status_code == 200, tx.text
+
+        # 读回确认 income 的 member_shares 没被归一化清成 None
+        txs = client.get("/api/v1/read/ledgers/lgm5/transactions", headers=hdr_web)
+        assert txs.status_code == 200, txs.text
+        income_tx = next(x for x in txs.json() if x.get("tx_type") == "income")
+        assert income_tx.get("member_shares") == [
+            {"memberId": member_id, "memberName": "爸爸", "amount": 100.0}
+        ], income_tx
+
+        stats = client.get(
+            "/api/v1/ledgers/lgm5/member-share-stats?scope=all", headers=hdr_web
+        )
+        assert stats.status_code == 200, stats.text
+        items = stats.json()["items"]
+        member_rows = [x for x in items if x["kind"] == "member"]
+        assert len(member_rows) == 1, items
+        assert member_rows[0]["id"] == member_id
+        assert member_rows[0]["name"] == "爸爸"
+        assert abs(member_rows[0]["income_total"] - 100.0) < 0.01, member_rows[0]
+        assert abs(member_rows[0]["expense_total"] - 0.0) < 0.01, member_rows[0]
+    finally:
+        app.dependency_overrides.clear()

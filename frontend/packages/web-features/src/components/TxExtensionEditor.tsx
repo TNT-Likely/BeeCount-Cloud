@@ -30,7 +30,7 @@ import { evenShares, sharesTotal } from '../lib/members'
  *
  * 每个区块是否渲染一律由 {@link resolveTxExtensionSections} 纯函数裁决:
  * - expense → 折扣 + 合并付款 + 成员分摊(有成员时)+ 归物(有物品时)
- * - income  → 归物(有物品时)+ **关联定期存款**(有存款时,利息收入挂靠)
+ * - income  → 成员分摊(有成员时)+ 归物(有物品时)+ **关联定期存款**(有存款时,利息收入挂靠)
  * - transfer → 手续费
  *
  * 0030 修复:这里原本有 `if (!isExpense && !isTransfer) return null` 的早退,

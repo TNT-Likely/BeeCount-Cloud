@@ -7,7 +7,8 @@ GET /api/v1/ledgers/{ledger_external_id}/member-stats
 GET /api/v1/ledgers/{ledger_external_id}/member-share-stats
   ?scope=month|year|all  &period=&tz_offset_minutes=
   → 0024 自定义成员维度(账本内的人名,如 爸爸/妈妈/我)。口径:
-      * 支出带 member_shares → 按各成员的分摊金额计入该成员
+      * 支出 / 收入带 member_shares → 按各成员的分摊金额计入该成员
+        (支出计入 expense_total,收入计入 income_total)
       * 没有分摊的交易     → 按 created_by 记账人归属(兼容旧数据)
 
 口径说明:**谁记的就算谁花的 / 挣的**,编辑只改字段不改归属。
@@ -297,7 +298,8 @@ def get_member_share_stats(
     """0024 自定义成员维度统计。
 
     口径(用户确认):
-      - **有分摊**的支出:按 member_shares 里各成员的金额计入该成员;
+      - **有分摊**的支出 / 收入:按 member_shares 里各成员的金额计入该成员
+        (支出计入 expense_total,收入计入 income_total);
       - **没有分摊**的交易:按 created_by(记账人)归属,兼容历史数据。
     income 同样处理(收入也可以分摊);transfer 跳过。
 
@@ -369,7 +371,7 @@ def get_member_share_stats(
                 1.0, max(0.0, refund_totals.get(sync_id, 0.0) / raw_amount)
             )
         shares = None
-        if tx_type == "expense" and shares_json:
+        if shares_json:
             try:
                 parsed = json.loads(shares_json)
                 if isinstance(parsed, list) and parsed:
@@ -391,7 +393,11 @@ def get_member_share_stats(
                 if snapshot_name and member_id not in fallback_name_by_member:
                     fallback_name_by_member[member_id] = snapshot_name
                 b = bucket("member", member_id)
-                b[1] += share_amount * factor * (1.0 - refund_ratio)   # 分摊只可能是支出
+                # 支出分摊计入支出,收入分摊计入收入(tx_type 决定落哪个桶)。
+                if tx_type == "income":
+                    b[0] += share_amount * factor * (1.0 - refund_ratio)
+                else:  # expense
+                    b[1] += share_amount * factor * (1.0 - refund_ratio)
                 b[2] += 1
             continue
 

@@ -334,7 +334,7 @@ export type TxExtensionSections = {
   discount: boolean
   /** 0021 多账户合并付款 —— 仅 expense */
   legs: boolean
-  /** 0024 成员分摊 —— 仅 expense(且账本内有成员) */
+  /** 0024 成员分摊 —— expense / income(且账本内有成员) */
   members: boolean
   /** 0021 转账手续费 —— 仅 transfer */
   fee: boolean
@@ -381,7 +381,7 @@ export function resolveTxExtensionSections(
     case TX_TYPE.EXPENSE:
       return { ...none, discount: true, legs: true, members: hasMembers, linkedItem: hasItems }
     case TX_TYPE.INCOME:
-      return { ...none, linkedItem: hasItems, linkedDeposit: hasDeposits }
+      return { ...none, members: hasMembers, linkedItem: hasItems, linkedDeposit: hasDeposits }
     case TX_TYPE.TRANSFER:
       return { ...none, fee: true }
     default:

@@ -22,7 +22,7 @@ type AnalyticsPanelProps = {
   data: WorkspaceAnalytics | null
   /**
    * 0024 成员维度统计(可选)。
-   * 口径:有 member_shares 的支出按成员分摊金额计入,没有分摊的按记账人归属。
+   * 口径:有 member_shares 的支出 / 收入按成员分摊金额计入对应维度,没有分摊的按记账人归属。
    * 没传(null)表示还没加载;空数组 = 本期没有成员维度的账。
    */
   memberStats?: MemberShareStat[] | null

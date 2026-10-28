@@ -1418,8 +1418,8 @@ export function TransactionsPage() {
         payment_legs: txForm.tx_type === 'expense' && txForm.payment_merge_enabled
           ? legsToWire(txForm.payment_legs, submitAmount, accountByName)
           : null,
-        // 0024 成员分摊:仅 expense + 开启分摊时提交;未开启/不合法 → null
-        member_shares: txForm.tx_type === 'expense' && txForm.member_split_enabled
+        // 0024 成员分摊:expense / income + 开启分摊时提交;未开启/不合法 → null
+        member_shares: txForm.member_split_enabled
           ? sharesToWire(txForm.member_shares, submitAmount)
           : null,
         // 0029 归物:仅 expense 可挂物品(金额计入该物品累计成本);

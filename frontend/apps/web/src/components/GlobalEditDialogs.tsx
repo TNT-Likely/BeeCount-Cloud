@@ -201,7 +201,7 @@ export function GlobalEditDialogs() {
         payment_merge_enabled:
           Array.isArray(tx.payment_legs) && tx.payment_legs.length > 0,
         payment_legs: legsFromWire(tx.payment_legs),
-        // 0024 成员分摊回填(仅 expense)
+        // 0024 成员分摊回填(expense / income)
         member_split_enabled:
           Array.isArray(tx.member_shares) && tx.member_shares.length > 0,
         member_shares: sharesFromWire(tx.member_shares),
@@ -371,9 +371,9 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type === 'expense' && editTxForm.payment_merge_enabled
           ? legsToWire(editTxForm.payment_legs, amountNum, accountByName)
           : null,
-      // 0024 成员分摊:仅 expense + 开启时提交;未开启/不合法 → null
+      // 0024 成员分摊:expense / income + 开启时提交;未开启/不合法 → null
       member_shares:
-        editTxForm.tx_type === 'expense' && editTxForm.member_split_enabled
+        editTxForm.member_split_enabled
           ? sharesToWire(editTxForm.member_shares, amountNum)
           : null,
       // 0029 归物:仅 expense 可挂物品;不关联 → 显式 null(解除关联)

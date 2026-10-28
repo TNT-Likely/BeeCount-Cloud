@@ -304,8 +304,8 @@ export function TransactionDetailDialog({
                   value={<PaymentLegsValue legs={tx.payment_legs} />}
                 />
               ) : null}
-              {/* 0024 成员分摊:仅支出。按人拆账,不动账户余额。 */}
-              {tx.tx_type === 'expense' && tx.member_shares && tx.member_shares.length > 0 ? (
+              {/* 0024 成员分摊:支出 / 收入。按人拆账,不动账户余额。 */}
+              {tx.member_shares && tx.member_shares.length > 0 ? (
                 <DetailRow
                   icon={<Users className="h-4 w-4" />}
                   label={t('detail.transaction.memberShares')}

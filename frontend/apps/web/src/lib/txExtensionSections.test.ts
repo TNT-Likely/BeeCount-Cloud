@@ -25,7 +25,7 @@ describe('resolveTxExtensionSections', () => {
     expect(s.linkedDeposit).toBe(false)
   })
 
-  it('income: 可关联定期存款(利息收入)+ 归物;无折扣/手续费/成员分摊', () => {
+  it('income: 可关联成员分摊 + 定期存款(利息收入)+ 归物;无折扣/手续费', () => {
     const s = resolveTxExtensionSections('income', {
       hasItems: true,
       hasMembers: true,
@@ -34,9 +34,10 @@ describe('resolveTxExtensionSections', () => {
     // 本次修复的核心:利息收入要能挂到定期存款上
     expect(s.linkedDeposit).toBe(true)
     expect(s.linkedItem).toBe(true)
+    // 收入同样支持成员分摊(谁的收入算到谁头上)
+    expect(s.members).toBe(true)
     expect(s.discount).toBe(false)
     expect(s.legs).toBe(false)
-    expect(s.members).toBe(false)
     expect(s.fee).toBe(false)
   })
 
