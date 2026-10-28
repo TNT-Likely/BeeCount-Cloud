@@ -103,6 +103,15 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     ("payment_due_day", "paymentDueDay", "int"),
     ("bank_name", "bankName", "str"),
     ("card_last_four", "cardLastFour", "str"),
+    # 完整卡号 + 图标 key(0026)。cardNumber 可由用户录入;cardLastFour 缺省时
+    # 投影端从 cardNumber 后四位派生(见 projection.upsert_account)。
+    ("card_number", "cardNumber", "str"),
+    ("icon", "icon", "str"),
+    # 别名 + 出账日计入当期(0027)。alias 是展示用短名,空串 → null(退回
+    # 显示 name);billingDayInCurrent 是 NOT NULL 布尔,语义同 hidden:
+    # 显式带 key 但 value 是 None 时按 False 处理(即"计入下一期")。
+    ("alias", "alias", "str"),
+    ("billing_day_in_current", "billingDayInCurrent", "bool"),
     # 账户隐藏(issue #240):Web create/update 请求体带 hidden(bool)时才写;
     # 不带 key → 保留原值(不冲掉已有隐藏标记,契约对齐 mobile push 的 merge
     # 缺键保留语义)。
@@ -274,6 +283,100 @@ def _normalize_tx_tags(raw: object) -> str | None:
     return None
 
 
+def _validate_payment_legs(legs: object, amount: float) -> None:
+    """合并付款 legs 校验(0021):每条腿必须有账户 + 正金额,且各腿金额之和
+    必须等于实付 amount(容差 0.01,吸收浮点误差)。不合法 → ValueError,
+    上层 write 路径转 400。"""
+    if not isinstance(legs, list) or not legs:
+        raise ValueError("write validation failed: paymentLegs must be a non-empty list")
+    total = 0.0
+    for leg in legs:
+        if not isinstance(leg, dict):
+            raise ValueError("write validation failed: each payment leg must be an object")
+        leg_amount = _to_float(leg.get("amount"))
+        if leg_amount <= 0:
+            raise ValueError("write validation failed: payment leg amount must be positive")
+        account_id = leg.get("accountId") or leg.get("account_id")
+        account_name = leg.get("accountName") or leg.get("account_name")
+        if not account_id and not account_name:
+            raise ValueError("write validation failed: payment leg requires an account")
+        total += leg_amount
+    if abs(total - amount) > 0.011:
+        raise ValueError(
+            "write validation failed: payment legs total "
+            f"{total:.2f} does not match amount {amount:.2f}"
+        )
+
+
+def _validate_transfer_fee(fee: object, amount: float) -> None:
+    """转账手续费/优惠校验(0021 + 0026 优惠模式)。
+
+    - amount 必须 > 0;
+    - mode ∈ {deduct_from_source, deduct_from_target, separate_account, discount};
+    - separate_account 必须带 feeAccountId;
+    - discount 的优惠额必须 < 转账金额(实扣 = amount - 优惠,不能 ≤ 0)。
+
+    不合法 → ValueError,上层 write 路径转 400。
+    """
+    if not isinstance(fee, dict) or not fee:
+        return
+    fee_amount = _to_float(fee.get("amount"))
+    if fee_amount <= 0:
+        raise ValueError("write validation failed: transfer fee amount must be positive")
+    mode = fee.get("mode") or "deduct_from_source"
+    known = {
+        "deduct_from_source",
+        "deduct_from_target",
+        "separate_account",
+        "discount",
+    }
+    if mode not in known:
+        raise ValueError(f"write validation failed: unknown transfer fee mode '{mode}'")
+    if mode == "separate_account" and not (
+        fee.get("feeAccountId") or fee.get("fee_account_id")
+    ):
+        raise ValueError(
+            "write validation failed: separate_account fee requires feeAccountId"
+        )
+    if mode == "discount" and fee_amount >= amount > 0:
+        raise ValueError(
+            "write validation failed: discount must be smaller than the transfer amount"
+        )
+
+
+def _validate_member_shares(shares: object, amount: float) -> None:
+    """成员分摊 shares 校验(0024):每条份额必须有成员 + 非负金额,且各份额
+    金额之和必须等于实付 amount(容差 0.011)。不合法 → ValueError,上层 write
+    路径转 400。
+
+    跟 _validate_payment_legs 的关键差别:
+      - legs 是「按账户」拆,动账户余额,所以要求每条腿金额 > 0;
+      - shares 是「按人」拆,不动余额,允许某成员分摊 0(记 0 只是显式排除),
+        只要合计等于账单金额即可。
+      - ratio(比例)是派生展示值,不强制 sum==1,避免浮点校验噪音;以 amount
+        为权威(跟 legs 同思路)。
+    """
+    if not isinstance(shares, list) or not shares:
+        raise ValueError("write validation failed: memberShares must be a non-empty list")
+    total = 0.0
+    for share in shares:
+        if not isinstance(share, dict):
+            raise ValueError("write validation failed: each member share must be an object")
+        share_amount = _to_float(share.get("amount"))
+        if share_amount < 0:
+            raise ValueError("write validation failed: member share amount must not be negative")
+        member_id = share.get("memberId") or share.get("member_id")
+        member_name = share.get("memberName") or share.get("member_name")
+        if not member_id and not member_name:
+            raise ValueError("write validation failed: member share requires a member")
+        total += share_amount
+    if abs(total - amount) > 0.011:
+        raise ValueError(
+            "write validation failed: member shares total "
+            f"{total:.2f} does not match amount {amount:.2f}"
+        )
+
+
 def _sort_transactions(snapshot: dict) -> None:
     items = _ensure_list(snapshot, "items")
     items.sort(key=lambda item: _to_iso8601(item.get("happenedAt")), reverse=True)
@@ -333,6 +436,33 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     attachments = payload.get("attachments")
     if isinstance(attachments, list):
         item["attachments"] = attachments
+    # 0021 结构化扩展字段(优惠/转账手续费/合并付款):dict/list 形态透传,
+    # None / 空容器不产生 key(旧行为)。类型归属(expense 才能有 discount 等)
+    # 由下方 normalize_transaction_accounts 统一治理。
+    discount = payload.get("discount")
+    if isinstance(discount, dict) and discount:
+        item["discount"] = discount
+    transfer_fee = payload.get("transfer_fee")
+    if isinstance(transfer_fee, dict) and transfer_fee:
+        _validate_transfer_fee(transfer_fee, _to_float(payload.get("amount")))
+        item["transferFee"] = transfer_fee
+    payment_legs = payload.get("payment_legs")
+    if isinstance(payment_legs, list) and payment_legs:
+        _validate_payment_legs(payment_legs, _to_float(payload.get("amount")))
+        item["paymentLegs"] = payment_legs
+    # 成员分摊(0024):仅 expense 有意义(下方 normalize 会清掉其它类型)。
+    member_shares = payload.get("member_shares")
+    if isinstance(member_shares, list) and member_shares:
+        _validate_member_shares(member_shares, _to_float(payload.get("amount")))
+        item["memberShares"] = member_shares
+    # 归物(0029):关联物品 sync_id;空串 / None 不产生 key(不关联)。
+    item_id = payload.get("item_id")
+    if isinstance(item_id, str) and item_id.strip():
+        item["itemId"] = item_id.strip()
+    # 定期存款利息(0030):关联交易 sync_id;空串 / None 不产生 key(不关联)。
+    td_id = payload.get("time_deposit_id")
+    if isinstance(td_id, str) and td_id.strip():
+        item["timeDepositId"] = td_id.strip()
     # 账单标记(.docs/transaction-flags):snapshot 用 camelCase,跟 mobile
     # serializer + projection.upsert_tx(读 excludeFromStats)对齐。create 默认 False。
     item["excludeFromStats"] = bool(payload.get("exclude_from_stats"))
@@ -393,6 +523,43 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             if new_amount != old_amount:
                 item["nativeAmount"] = rescale_native_amount(
                     old_amount, old_native, new_amount)
+        # 合并付款(0021):amount 变而 legs 没显式重发时,按同比例缩放各腿
+        # 金额,保持 sum(legs) == amount 不变式(规则同 nativeAmount 联动)。
+        # old_amount == 0 无法推比例 → 清空 legs(退化成单账户,前端可重选)。
+        if (
+            "paymentLegs" in item
+            and "payment_legs" not in payload
+            and new_amount != _to_float(item.get("amount"))
+        ):
+            old_amount_for_legs = _to_float(item.get("amount"))
+            legs_raw = item.get("paymentLegs")
+            if isinstance(legs_raw, list) and old_amount_for_legs > 0:
+                ratio = new_amount / old_amount_for_legs
+                item["paymentLegs"] = [
+                    {**leg, "amount": round(_to_float(leg.get("amount")) * ratio, 2)}
+                    if isinstance(leg, dict) else leg
+                    for leg in legs_raw
+                ]
+            else:
+                item.pop("paymentLegs", None)
+        # 成员分摊(0024):同 legs 的联动语义 —— amount 变而 shares 没显式重发
+        # 时按同比例缩放,保持 sum(shares) == amount 不变式。
+        if (
+            "memberShares" in item
+            and "member_shares" not in payload
+            and new_amount != _to_float(item.get("amount"))
+        ):
+            old_amount_for_shares = _to_float(item.get("amount"))
+            shares_raw = item.get("memberShares")
+            if isinstance(shares_raw, list) and old_amount_for_shares > 0:
+                share_ratio = new_amount / old_amount_for_shares
+                item["memberShares"] = [
+                    {**s, "amount": round(_to_float(s.get("amount")) * share_ratio, 2)}
+                    if isinstance(s, dict) else s
+                    for s in shares_raw
+                ]
+            else:
+                item.pop("memberShares", None)
         item["amount"] = new_amount
     if payload.get("native_amount") is not None:
         # 显式传入优先(Web 折算录入);None = 不变。
@@ -454,6 +621,65 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item["attachments"] = attachments
         elif attachments is None:
             item.pop("attachments", None)
+    # 0021 结构化扩展字段(优惠/转账手续费/合并付款):显式 None = 清除;
+    # dict/list = 覆盖。缺键 = 不动(partial update 语义,同 tags)。
+    # 合并付款变更时重新校验 legs 合计 == amount(amount 可能同批变更,
+    # 用 payload 里的新值,缺省用 item 现值)。
+    if "discount" in payload:
+        value = payload.get("discount")
+        if isinstance(value, dict) and value:
+            item["discount"] = value
+        else:
+            item.pop("discount", None)
+    if "transfer_fee" in payload:
+        value = payload.get("transfer_fee")
+        if isinstance(value, dict) and value:
+            effective_amount = (
+                _to_float(payload["amount"]) if "amount" in payload
+                else _to_float(item.get("amount"))
+            )
+            _validate_transfer_fee(value, effective_amount)
+            item["transferFee"] = value
+        else:
+            item.pop("transferFee", None)
+    if "payment_legs" in payload:
+        value = payload.get("payment_legs")
+        if isinstance(value, list) and value:
+            effective_amount = (
+                _to_float(payload["amount"]) if "amount" in payload
+                else _to_float(item.get("amount"))
+            )
+            _validate_payment_legs(value, effective_amount)
+            item["paymentLegs"] = value
+        else:
+            item.pop("paymentLegs", None)
+    if "member_shares" in payload:
+        value = payload.get("member_shares")
+        if isinstance(value, list) and value:
+            effective_amount = (
+                _to_float(payload["amount"]) if "amount" in payload
+                else _to_float(item.get("amount"))
+            )
+            _validate_member_shares(value, effective_amount)
+            item["memberShares"] = value
+        else:
+            item.pop("memberShares", None)
+    # 归物(0029):关联物品。显式 null / 空串 = 解除关联(pop);
+    # 不传该 key 则保持不变(item 里已有 itemId 就留着)。
+    if "item_id" in payload:
+        value = payload.get("item_id")
+        if isinstance(value, str) and value.strip():
+            item["itemId"] = value.strip()
+        else:
+            item.pop("itemId", None)
+    # 定期存款利息(0030):关联交易。显式 null / 空串 = 解除关联(pop);
+    # 不传该 key 则保持不变(item 里已有 timeDepositId 就留着)。
+    if "time_deposit_id" in payload:
+        value = payload.get("time_deposit_id")
+        if isinstance(value, str) and value.strip():
+            item["timeDepositId"] = value.strip()
+        else:
+            item.pop("timeDepositId", None)
     # 账单标记(.docs/transaction-flags):web update 请求里 None = 不变(由
     # exclude_unset 的 payload 控制:不传该 key 就不进 payload)。带显式布尔
     # 才写。snapshot 用 camelCase。

@@ -13,6 +13,10 @@
 export type TransactionLite = {
   id: string
   txType: 'expense' | 'income' | 'transfer'
+  /**
+   * expense: **净支出额**(已扣有效退款合计,见 fetch.toLite)—— 年度报告是
+   * 支出统计,「不含已退款的支出金额」;income / transfer: 原额(永无退款)。
+   */
   amount: number
   happenedAt: string // ISO 8601
   note: string | null

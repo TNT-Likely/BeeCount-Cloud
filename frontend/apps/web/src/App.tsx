@@ -66,8 +66,26 @@ const TagsPage = lazy(() =>
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
+const ItemReturnsPage = lazy(() =>
+  import('./pages/sections/ItemReturnsPage').then((m) => ({ default: m.ItemReturnsPage })),
+)
+const RefundsPage = lazy(() =>
+  import('./pages/sections/RefundsPage').then((m) => ({ default: m.RefundsPage })),
+)
+const LoansPage = lazy(() =>
+  import('./pages/sections/LoansPage').then((m) => ({ default: m.LoansPage })),
+)
+const ReimbursementsPage = lazy(() =>
+  import('./pages/sections/ReimbursementsPage').then((m) => ({ default: m.ReimbursementsPage })),
+)
+const MembersPage = lazy(() =>
+  import('./pages/sections/MembersPage').then((m) => ({ default: m.MembersPage })),
+)
 const ShareIncomingPage = lazy(() =>
   import('./pages/sections/ShareIncomingPage').then((m) => ({ default: m.ShareIncomingPage })),
+)
+const TimeDepositsPage = lazy(() =>
+  import('./pages/sections/TimeDepositsPage').then((m) => ({ default: m.TimeDepositsPage })),
 )
 
 /** 路由切换时的 Suspense fallback。section 切换通常 < 200ms,加个轻量
@@ -227,6 +245,54 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <BudgetsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="time-deposits"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <TimeDepositsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="item-returns"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ItemReturnsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="refunds"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <RefundsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="loans"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <LoansPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="reimbursements"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ReimbursementsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="members"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <MembersPage />
             </Suspense>
           }
         />

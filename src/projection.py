@@ -17,13 +17,18 @@ from typing import Any, Iterable
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .models import (
     AttachmentFile,
-    Ledger,
     ReadBudgetProjection,
+    ReadItemReturnProjection,
+    ReadItemProjection,
+    ReadLoanProjection,
+    ReadMemberProjection,
+    ReadReimbursementProjection,
+    ReadRefundProjection,
+    ReadTimeDepositProjection,
     ReadTxProjection,
     UserAccountProjection,
     UserCategoryProjection,
@@ -108,6 +113,92 @@ def _parse_happened_at(raw: Any):
         except ValueError:
             return datetime.now(timezone.utc)
     return datetime.now(timezone.utc)
+
+
+def _parse_date(raw: Any):
+    """定期存款/归物的日期列:吃 'YYYY-MM-DD' / ISO datetime / date / datetime。
+
+    只取年月日(存款起息、到期、归还都是"日"粒度业务),存成当天 00:00 UTC,
+    跟 happened_at 的 timezone-aware datetime 列型一致。
+    """
+    from datetime import date, datetime, timezone
+
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        dt = raw if raw.tzinfo is not None else raw.replace(tzinfo=timezone.utc)
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        except ValueError:
+            # 退化:截前 10 字符 'YYYY-MM-DD' 再解析一次
+            try:
+                d = date.fromisoformat(s[:10])
+            except ValueError:
+                return None
+            return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    return None
+
+
+def _parse_datetime(raw: Any):
+    """退款日期时间:与 _parse_date 同吃多种格式,但**保留时分秒**(不归零)。
+
+    退款需要精确到分钟,所以这里不把时间抹成 00:00。date-only 入参时间补 00:00。
+    """
+    from datetime import date, datetime, timezone
+
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                d = date.fromisoformat(s[:10])
+                return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+            except ValueError:
+                return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
+
+
+def _json_text_or_none(v: Any) -> str | None:
+    """把 dict/list 形态的结构化 payload 归一成 JSON 文本列;空值归一成 None。
+
+    折扣 / 手续费 / 合并付款 legs(0021)在 snapshot payload 里是 dict/list,
+    在 projection 里是 Text。入参兼容已序列化的 str(移动端 merge 回填路径
+    _json_loads_safe 反序列化后又交回来)。空 dict / 空 list → NULL(无优惠 /
+    无手续费 / 单账户),不存 '{}' / '[]' 噪音。
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        text = v.strip()
+        if not text or text in {"{}", "[]", "null"}:
+            return None
+        return text
+    if isinstance(v, (dict, list)):
+        if not v:
+            return None
+        return json.dumps(v, ensure_ascii=False)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -270,6 +361,22 @@ def upsert_tx(
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),
         "native_amount": _as_float_or_none(payload.get("nativeAmount")),
+        # 优惠/折扣(0021):仅 expense 有意义的 dict;空 → NULL。
+        # normalize_transaction_accounts 已按 tx_type 把跨类型字段清成 None。
+        "discount_json": _json_text_or_none(payload.get("discount")),
+        # 转账手续费(0021):仅 transfer 有意义的 dict;空 → NULL。
+        "transfer_fee_json": _json_text_or_none(payload.get("transferFee")),
+        # 多账户合并付款(0021):仅 expense 有意义的 leg 数组;空 → NULL。
+        "payment_legs_json": _json_text_or_none(payload.get("paymentLegs")),
+        # 成员分摊(0024):仅 expense 有意义的 share 数组;空 → NULL。
+        # 按人拆分,**不影响账户余额**,只服务于成员维度统计。
+        "member_shares_json": _json_text_or_none(payload.get("memberShares")),
+        # 归物(0029):关联物品 sync_id;空 → NULL(不关联)。弱引用,
+        # 物品被删不阻塞交易,只是从物品成本里消失。
+        "item_sync_id": _as_str(payload.get("itemId")),
+        # 定期存款利息(0030):关联交易 sync_id;空 → NULL(不关联)。弱引用,
+        # 存款被删不阻塞交易,只是从「已收利息」聚合里消失。
+        "time_deposit_sync_id": _as_str(payload.get("timeDepositId")),
         "source_change_id": source_change_id,
     }
 
@@ -338,12 +445,29 @@ def upsert_account(
         "payment_due_day": _opt_int(payload.get("paymentDueDay")),
         "bank_name": _as_str(payload.get("bankName")),
         "card_last_four": _as_str(payload.get("cardLastFour")),
+        # 完整卡号 + 图标 key(0026)。nullable,老 snapshot 没这些 key 时落 None。
+        "card_number": _as_str(payload.get("cardNumber")),
+        "icon": _as_str(payload.get("icon")),
+        # 别名(0027):展示用短名,老 snapshot 没这个 key 时落 None。
+        "alias": _as_str(payload.get("alias")),
+        # 出账日计入当期(0027)。NOT NULL 布尔:merge_with_existing_user 已把
+        # 缺键的 billingDayInCurrent 从旧行补齐;全新 insert 首次缺失时给 True
+        # (主流口径:账单日当天入本期)。
+        "billing_day_in_current": _as_bool(
+            payload.get("billingDayInCurrent"), default=True
+        ),
         # 账户隐藏(issue #240)。merge_with_existing_user 已把缺键的 hidden
         # 从旧行补齐,这里直接取 merged payload 的值;全新 insert 首次缺失时给
         # False(未隐藏)。
         "hidden": _as_bool(payload.get("hidden"), default=False),
         "source_change_id": source_change_id,
     }
+    # card_last_four 缺省时从完整卡号后四位派生(0026)。用户录了全卡号就不用
+    # 再手填末四位;显式带 cardLastFour 时以用户为准(兼容 mobile 只传末四位)。
+    if not values["card_last_four"] and values["card_number"]:
+        digits = "".join(ch for ch in values["card_number"] if ch.isdigit())
+        if len(digits) >= 4:
+            values["card_last_four"] = digits[-4:]
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)
 
 
@@ -521,6 +645,417 @@ def delete_tag(db: Session, *, user_id: str, sync_id: str) -> None:
 
 def delete_budget(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadBudgetProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+# --------------------------------------------------------------------------- #
+# 定期存款 / 归物(0021)                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def upsert_time_deposit(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 定期存款 upsert。PK=(ledger_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    start_date = _parse_date(payload.get("startDate"))
+    maturity_date = _parse_date(payload.get("maturityDate"))
+    if start_date is None or maturity_date is None:
+        # 起息日/到期日是 NOT NULL 列;缺列无法表达一笔有效存款 → 拒绝写入。
+        # 调用方(sync push / write)会因 500 / 事务回滚暴露,不会静默丢数据。
+        logger.warning(
+            "upsert_time_deposit: missing start/maturity date ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    status = (_as_str(payload.get("status")) or "holding").lower()
+    if status not in {"holding", "matured", "withdrawn"}:
+        status = "holding"
+    interest_mode = (_as_str(payload.get("interestMode")) or "simple").lower()
+    if interest_mode not in {"simple", "compound"}:
+        interest_mode = "simple"
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "principal": _as_float(payload.get("principal")),
+        "currency": (_as_str(payload.get("currency")) or "CNY")[:16],
+        "annual_rate": _as_float(payload.get("annualRate")),
+        "term_months": _as_int(payload.get("termMonths"), default=12) or 12,
+        "start_date": start_date,
+        "maturity_date": maturity_date,
+        "status": status,
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "auto_renew": _as_bool(payload.get("autoRenew"), default=False),
+        "interest_mode": interest_mode,
+        "note": _as_str(payload.get("note")),
+        "withdrawn_at": _parse_date(payload.get("withdrawnAt")),
+        "actual_interest": _as_float_or_none(payload.get("actualInterest")),
+        "source_change_id": source_change_id,
+    }
+    # 到息计划(0028,多笔):只在 payload 显式带 payoutPlans 键时覆盖 —— 缺键
+    # (update 未传)时不进 values,列保持现值(merge_with_existing 已补齐)。
+    if "payoutPlans" in payload:
+        plans = payload.get("payoutPlans")
+        values["payout_plans_json"] = json.dumps(plans) if plans else None
+    _upsert(db, ReadTimeDepositProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_time_deposit(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadTimeDepositProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_item_return(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 归物 upsert。PK=(ledger_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    happened_at = _parse_date(payload.get("happenedAt"))
+    if happened_at is None:
+        logger.warning(
+            "upsert_item_return: missing happenedAt ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    status = (_as_str(payload.get("status")) or "pending").lower()
+    if status not in {"pending", "returned", "refunded", "cancelled"}:
+        status = "pending"
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "name": _as_str(payload.get("name")) or "",
+        "original_tx_id": _as_str(payload.get("originalTxId")),
+        "original_amount": _as_float_or_none(payload.get("originalAmount")),
+        "refund_amount": _as_float(payload.get("refundAmount")),
+        "happened_at": happened_at,
+        "reason": _as_str(payload.get("reason")),
+        "status": status,
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "category_name": _as_str(payload.get("categoryName")),
+        "note": _as_str(payload.get("note")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadItemReturnProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_item_return(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadItemReturnProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_item(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 归物(0029 物品持有)upsert。PK=(ledger_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    purchase_date = _parse_date(payload.get("purchaseDate"))
+    if purchase_date is None:
+        # 购买日期是 NOT NULL 列(没它算不出持有天数/日均成本)→ 拒绝写入。
+        logger.warning(
+            "upsert_item: missing purchaseDate ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    status = (_as_str(payload.get("status")) or "in_use").lower()
+    if status not in {"in_use", "disposed"}:
+        status = "in_use"
+    dtype_raw = _as_str(payload.get("disposalType"))
+    disposal_type = dtype_raw.lower() if dtype_raw else None
+    if disposal_type not in {"sold", "scrapped"}:
+        disposal_type = None
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "name": _as_str(payload.get("name")) or "",
+        "purchase_date": purchase_date,
+        "purchase_amount": _as_float(payload.get("purchaseAmount")),
+        "warranty_until": _parse_date(payload.get("warrantyUntil")),
+        "status": status,
+        "disposal_type": disposal_type,
+        "disposal_date": _parse_date(payload.get("disposalDate")),
+        # 只有二手卖出才认回收款;报废一律不记(validate_item 已归零)。
+        "disposal_amount": (
+            _as_float_or_none(payload.get("disposalAmount"))
+            if disposal_type == "sold"
+            else None
+        ),
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "category_name": _as_str(payload.get("categoryName")),
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "note": _as_str(payload.get("note")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadItemProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_item(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadItemProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+# --------------------------------------------------------------------------- #
+# 交易退款(0022)                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def upsert_refund(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 交易退款 upsert。PK=(ledger_id, sync_id)。
+
+    累计不超原单的校验在 web write 路径(routers/write/refunds.py 的
+    _make_refund_validator)做 —— sync push 路径信任 mobile 本地已算好的数据,
+    跟 payment_legs 的校验分层一致。
+    """
+    sync_id = _as_str(payload.get("syncId"))
+    original_tx_id = _as_str(payload.get("originalTxId"))
+    happened_at = _parse_datetime(payload.get("happenedAt"))
+    if sync_id is None or original_tx_id is None or happened_at is None:
+        # syncId / originalTxId / happenedAt 缺一就无法表达一笔有效退款
+        # (original_tx_id / happened_at 是 NOT NULL 列)→ 拒绝写入,
+        # 调用方会因 500 / 事务回滚暴露,不会静默丢数据。
+        logger.warning(
+            "upsert_refund: missing syncId/originalTxId/happenedAt ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    status = (_as_str(payload.get("status")) or "pending").lower()
+    if status not in {"pending", "received", "cancelled"}:
+        status = "pending"
+    refund_mode = (_as_str(payload.get("refundMode")) or "unified").lower()
+    if refund_mode not in {"unified", "split"}:
+        refund_mode = "unified"
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "original_tx_id": original_tx_id,
+        "original_amount": _as_float_or_none(payload.get("originalAmount")),
+        "amount": _as_float(payload.get("amount")),
+        "currency": (_as_str(payload.get("currency")) or "CNY")[:16],
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "happened_at": happened_at,
+        "reason": _as_str(payload.get("reason")),
+        "status": status,
+        "note": _as_str(payload.get("note")),
+        # 退款分摊(0025):统一退/分别退。split 时 refund_legs_json 承载各腿,
+        # 顶层 account_sync_id 可为空(unified 时腿为 NULL)。
+        "refund_mode": refund_mode,
+        "refund_legs_json": _json_text_or_none(payload.get("refundLegs")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadRefundProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_refund(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadRefundProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+# --------------------------------------------------------------------------- #
+# 账本内自定义成员(0024)                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def upsert_member(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 自定义成员 upsert。PK=(ledger_id, sync_id)。
+
+    名字必填(validate_member 已保证);sort_order 缺省 0,UI 按它 + sync_id 排序。
+    """
+    sync_id = _as_str(payload.get("syncId"))
+    name = _as_str(payload.get("name"))
+    if sync_id is None or not name:
+        # 缺 syncId / name 无法表达一个有效成员(name 是 NOT NULL 列)→ 拒绝写入。
+        logger.warning(
+            "upsert_member: missing syncId/name ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    # 图标 / 关联记账人:**每次都显式写**(不适用的写 None)。
+    # 投影是整行 upsert,漏键会保留上一版值 —— 清空时必须显式写 None,
+    # 否则 UI 上"清除图标"永远清不掉(同 linked_transactions 账户字段的坑)。
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "name": name[:64],
+        "note": _as_str(payload.get("note")),
+        "icon": _as_str(payload.get("icon")),
+        # web write 走 member_to_camel → linkedUserId;sync push 原生也是
+        # camelCase。两种写法都认,避免哪条链路漏掉。
+        "linked_user_id": _as_str(
+            payload.get("linkedUserId") or payload.get("linked_user_id")
+        ),
+        "sort_order": _as_int(payload.get("sortOrder")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadMemberProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_member(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadMemberProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+# --------------------------------------------------------------------------- #
+# 借款 / 报销(0023)                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def upsert_loan(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 借款 upsert。PK=(ledger_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    started_at = _parse_date(payload.get("startedAt"))
+    if sync_id is None or started_at is None:
+        logger.warning(
+            "upsert_loan: missing syncId/startedAt ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    direction = (_as_str(payload.get("direction")) or "borrowed").lower()
+    if direction not in {"borrowed", "lent"}:
+        direction = "borrowed"
+    status = (_as_str(payload.get("status")) or "active").lower()
+    if status not in {"active", "repaid", "cancelled"}:
+        status = "active"
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "direction": direction,
+        "counterparty": _as_str(payload.get("counterparty")) or "",
+        "principal": _as_float(payload.get("principal")),
+        "currency": (_as_str(payload.get("currency")) or "CNY")[:16],
+        "interest_rate": _as_float(payload.get("interestRate")),
+        "started_at": started_at,
+        "due_at": _parse_date(payload.get("dueAt")),
+        "repaid_amount": _as_float(payload.get("repaidAmount")),
+        "status": status,
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "note": _as_str(payload.get("note")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadLoanProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_loan(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(db, ReadLoanProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def upsert_reimbursement(
+    db: Session,
+    *,
+    ledger_id: str,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """ledger-scope 报销 upsert。PK=(ledger_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    happened_at = _parse_date(payload.get("happenedAt"))
+    if sync_id is None or happened_at is None:
+        logger.warning(
+            "upsert_reimbursement: missing syncId/happenedAt ledger=%s sync_id=%s",
+            ledger_id, sync_id,
+        )
+        return
+    status = (_as_str(payload.get("status")) or "pending").lower()
+    if status not in {"pending", "reimbursed", "cancelled"}:
+        status = "pending"
+    values = {
+        "ledger_id": ledger_id,
+        "sync_id": sync_id,
+        "user_id": user_id,
+        "title": _as_str(payload.get("title")) or "",
+        "payer": _as_str(payload.get("payer")),
+        "reimburser": _as_str(payload.get("reimburser")),
+        "amount": _as_float(payload.get("amount")),
+        "currency": (_as_str(payload.get("currency")) or "CNY")[:16],
+        "category_sync_id": _as_str(payload.get("categoryId")),
+        "category_name": _as_str(payload.get("categoryName")),
+        "happened_at": happened_at,
+        "status": status,
+        "account_sync_id": _as_str(payload.get("accountId")),
+        "account_name": _as_str(payload.get("accountName")),
+        "related_tx_id": _as_str(payload.get("relatedTxId")),
+        "note": _as_str(payload.get("note")),
+        "source_change_id": source_change_id,
+    }
+    _upsert(db, ReadReimbursementProjection, ("ledger_id", "sync_id"), values)
+
+
+def delete_reimbursement(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    delete_entity(
+        db, ReadReimbursementProjection, ledger_id=ledger_id, sync_id=sync_id
+    )
+
+
+def sum_refunds_for_tx(
+    db: Session,
+    *,
+    ledger_id: str,
+    original_tx_id: str,
+    exclude_sync_id: str | None = None,
+) -> float:
+    """同一原单的「有效退款」合计(status != 'cancelled')。
+
+    写入路径用它做累计不超原单校验(exclude_sync_id 排除正在编辑的那笔自身);
+    读路径用它给每笔退款算 refunded_total / remaining_refundable。
+    """
+    stmt = (
+        select(func.coalesce(func.sum(ReadRefundProjection.amount), 0.0))
+        .where(
+            ReadRefundProjection.ledger_id == ledger_id,
+            ReadRefundProjection.original_tx_id == original_tx_id,
+            ReadRefundProjection.status != "cancelled",
+        )
+    )
+    if exclude_sync_id:
+        stmt = stmt.where(ReadRefundProjection.sync_id != exclude_sync_id)
+    return float(db.scalar(stmt) or 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -737,7 +1272,6 @@ def rebuild_all(db: Session) -> int:
     """遍历所有 ledger,按各自 latest snapshot 重建 projection。
     返回处理的 ledger 个数。救急脚本 `scripts/rebuild_all_projections.py` 用。
     """
-    from sqlalchemy import func
 
     from .models import Ledger, SyncChange
 

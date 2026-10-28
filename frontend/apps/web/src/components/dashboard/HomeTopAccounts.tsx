@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, useT } from '@beecount/ui'
 
 import type { WorkspaceAccount } from '@beecount/api-client'
-import { Amount } from '@beecount/web-features'
+import { Amount, accountDisplayName } from '@beecount/web-features'
 
 interface Props {
   accounts: WorkspaceAccount[]
@@ -51,7 +51,8 @@ export function HomeTopAccounts({ accounts, currency = 'CNY', onSelectAccount }:
       .map((a) => ({
         raw: a,
         id: a.id,
-        name: a.name,
+        // 0027:有别名时展示别名(账户名仍保留在 raw 里,详情弹窗用)
+        name: accountDisplayName(a),
         type: a.account_type || 'other',
         count: a.tx_count ?? 0,
         balance: a.balance ?? a.initial_balance ?? 0,

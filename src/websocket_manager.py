@@ -55,15 +55,15 @@ async def broadcast_to_ledger(
     *,
     db,
     ws_manager: WSConnectionManager,
-    ledger_id: int,
+    ledger_id: str,
     payload: dict,
     exclude_user_id: str | None = None,
     extra_user_ids: list[str] | None = None,
 ) -> None:
     """共享账本 fan-out:把 payload 广播给该 ledger 所有 LedgerMember。
 
-    ``ledger_id`` 必须是 ``Ledger.id`` (INT 主键),不是 ``external_id`` UUID
-    字符串 — LedgerMember.ledger_id 是 INT 外键。传 external_id 会让查询匹
+    ``ledger_id`` 是 ``Ledger.id``(String(36) UUID 主键,与
+    ``LedgerMember.ledger_id`` 外键同型)—— 传 ``external_id`` 会让查询匹
     配不到任何成员,fan-out 静默失败。
 
     ``exclude_user_id`` 可用于跳过某个特定用户(如 push 调用方,避免回播给

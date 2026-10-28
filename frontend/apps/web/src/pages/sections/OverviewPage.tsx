@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
+  fetchCounterpartyStats,
+  fetchMemberShareStats,
   fetchWorkspaceAccounts,
   fetchWorkspaceAnalytics,
   fetchWorkspaceCategories,
   fetchWorkspaceLedgerCounts,
   fetchWorkspaceTags,
+  type CounterpartyStat,
+  type MemberShareStat,
   type ReadBudget,
   type WorkspaceAccount,
   type WorkspaceAnalytics,
@@ -93,6 +97,20 @@ export function OverviewPage() {
   const [budgetUsageById, setBudgetUsageById] = usePageCache<
     Record<string, BudgetUsage>
   >(`overview:${bucket}:budgetUsage`, {})
+  // 成员维度(0024):两个 scope 各存一份,切 本月/本年 时不用重新打接口。
+  // null = 还没拉到(卡片走空态),[] = 拉到了但确实没数据。
+  const [memberStatsByScope, setMemberStatsByScope] = usePageCache<
+    Record<'month' | 'year', MemberShareStat[] | null>
+  >(`overview:${bucket}:memberStats`, { month: null, year: null })
+  // 卡片内的 本月/本年 切换是纯 UI 状态,不进缓存(刷新回落到 year)。
+  const [memberScope, setMemberScope] = useState<'month' | 'year'>('year')
+  const memberStats = memberStatsByScope[memberScope]
+  // 交易对手维度(0023 借款聚合,平帐):三个 scope 各存一份。默认全部(平帐是累计口径)。
+  const [counterpartyStatsByScope, setCounterpartyStatsByScope] = usePageCache<
+    Record<'month' | 'year' | 'all', CounterpartyStat[] | null>
+  >(`overview:${bucket}:counterpartyStats`, { month: null, year: null, all: null })
+  const [counterpartyScope, setCounterpartyScope] = useState<'month' | 'year' | 'all'>('all')
+  const counterpartyStats = counterpartyStatsByScope[counterpartyScope]
 
   const loadAccountsAndTags = useCallback(async () => {
     if (!activeLedgerId) return
@@ -227,9 +245,82 @@ export function OverviewPage() {
     void loadAccountsAndTags()
   }, [loadAccountsAndTags])
 
+  // 成员维度统计(0024)—— 单独一个请求,失败时只让成员卡片空态,不拖累
+  // 其它卡片(后端没跑 0024 migration 的旧库会 404,这里必须静默降级)。
+  const loadMemberStats = useCallback(async () => {
+    if (!activeLedgerId) {
+      setMemberStatsByScope({ month: null, year: null })
+      return
+    }
+    const now = new Date()
+    const msd = Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
+    const currentPeriod = periodLabel(now, msd)
+    const tzOffsetMinutes = -now.getTimezoneOffset()
+    const results = await Promise.allSettled([
+      fetchMemberShareStats(token, activeLedgerId, {
+        scope: 'month',
+        period: currentPeriod,
+        tzOffsetMinutes,
+      }),
+      fetchMemberShareStats(token, activeLedgerId, {
+        scope: 'year',
+        tzOffsetMinutes,
+      }),
+    ])
+    setMemberStatsByScope({
+      month:
+        results[0].status === 'fulfilled' ? results[0].value.items || [] : null,
+      year: results[1].status === 'fulfilled' ? results[1].value.items || [] : null,
+    })
+    // setMemberStatsByScope 是 usePageCache 稳定 setter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeLedgerId, currentLedger])
+
+  // 交易对手维度(0023 借款聚合,平帐)—— 单独请求,失败只让卡片空态。
+  const loadCounterpartyStats = useCallback(async () => {
+    if (!activeLedgerId) {
+      setCounterpartyStatsByScope({ month: null, year: null, all: null })
+      return
+    }
+    const now = new Date()
+    const msd = Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
+    const currentPeriod = periodLabel(now, msd)
+    const tzOffsetMinutes = -now.getTimezoneOffset()
+    const results = await Promise.allSettled([
+      fetchCounterpartyStats(token, activeLedgerId, {
+        scope: 'month',
+        period: currentPeriod,
+        tzOffsetMinutes,
+      }),
+      fetchCounterpartyStats(token, activeLedgerId, {
+        scope: 'year',
+        tzOffsetMinutes,
+      }),
+      fetchCounterpartyStats(token, activeLedgerId, {
+        scope: 'all',
+        tzOffsetMinutes,
+      }),
+    ])
+    setCounterpartyStatsByScope({
+      month: results[0].status === 'fulfilled' ? results[0].value.items || [] : null,
+      year: results[1].status === 'fulfilled' ? results[1].value.items || [] : null,
+      all: results[2].status === 'fulfilled' ? results[2].value.items || [] : null,
+    })
+    // setCounterpartyStatsByScope 是 usePageCache 稳定 setter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeLedgerId, currentLedger])
+
   useEffect(() => {
     void loadAnalytics()
   }, [loadAnalytics])
+
+  useEffect(() => {
+    void loadMemberStats()
+  }, [loadMemberStats])
+
+  useEffect(() => {
+    void loadCounterpartyStats()
+  }, [loadCounterpartyStats])
 
   useEffect(() => {
     void loadBudgets()
@@ -246,6 +337,8 @@ export function OverviewPage() {
     void loadAccountsAndTags()
     void loadBudgets()
     void loadCategories()
+    void loadMemberStats()
+    void loadCounterpartyStats()
   })
 
   // 把 Top 卡片里只有 name 的点击事件反查成 WorkspaceCategory 后弹详情;
@@ -309,6 +402,14 @@ export function OverviewPage() {
       ledgerCounts={ledgerCounts}
       budgets={budgets}
       budgetUsageById={budgetUsageById}
+      memberStats={memberStats}
+      memberScope={memberScope}
+      onMemberScopeChange={setMemberScope}
+      onManageMembers={() => navigate('/app/members')}
+      counterpartyStats={counterpartyStats}
+      counterpartyScope={counterpartyScope}
+      onCounterpartyScopeChange={setCounterpartyScope}
+      onManageCounterparty={() => navigate('/app/loans')}
       onJumpToTransactionsWithQuery={(q) => {
         // 把关键词(通常是分类名)作为 URL query 传过去,TransactionsPage
         // 在 useState 初始化时会读取 `?q=` 填到 listQuery。

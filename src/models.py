@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -512,6 +513,41 @@ class ReadTxProjection(Base):
     # 统计端 COALESCE 回退 amount)。账本维度统计读 native_amount,账户维度仍 amount。
     currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     native_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 优惠/折扣(0021):JSON 文本列,形态
+    #   {"mode": "percent"|"amount", "value": 0.85|20.0,
+    #    "couponName": "满100减20", "originalAmount": 120.0,
+    #    "discountAmount": 20.0, "finalAmount": 100.0}
+    # mode=percent 时 value 为折扣率(0.85=85 折);mode=amount 时为减免额。
+    # originalAmount/discountAmount/finalAmount 是前端算好的快照,
+    # finalAmount 恒等于 amount(实付)。仅 expense 有意义;NULL=无优惠。
+    discount_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 转账手续费(0021):JSON 文本列,形态
+    #   {"amount": 5.0, "mode": "deduct_from_source"|"deduct_from_target"
+    #    |"separate_account"|"discount", "feeAccountId": "...", "feeAccountName": "..."}
+    # deduct_from_source=转出账户扣 amount+fee(到账 amount);
+    # deduct_from_target=转出扣 amount(到账 amount-fee);
+    # separate_account=手续费从 feeAccountId 另扣;
+    # discount=转出方少扣 fee(实扣 amount-fee,到账 amount)——银行/平台优惠。
+    # 仅 transfer 有意义。
+    transfer_fee_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 多账户合并付款(0021):JSON 文本列,形态
+    #   [{"accountId": "a1", "accountName": "支付宝", "amount": 60.0}, ...]
+    # sum(legs) 恒等于 amount(服务端容差 0.01)。仅 expense 有意义;
+    # 单账户付款不发该字段(旧行为),NULL 或空数组视作单账户。
+    payment_legs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 成员分摊(0024):JSON 文本列,形态
+    #   [{"memberId": "m1", "memberName": "爸爸", "ratio": 0.5, "amount": 50.0}, ...]
+    # 跟 payment_legs 的关键差别:这是「按人」拆分,不影响账户余额,只用于
+    # 成员维度统计;sum(shares.amount) 恒等于 amount(容差 0.011)。
+    # 仅 expense 有意义(支出才谈得上谁花的);NULL = 未分摊,统计时按记账人归属。
+    member_shares_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 归物(0029):关联物品的 sync_id,弱引用(不设 FK —— 物品被删不阻塞交易)。
+    # 记一笔支出时可选挂到某件物品,该笔金额计入物品累计成本(维护/配件/
+    # 延保)。跟 category_sync_id 同款只存 id,不冗余物品名。
+    item_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 定期存款利息收入:一笔收入交易可选挂到某个定期存款(利息按键生成),
+    # 该笔金额计入该存款「已收利息」。只存 id,弱引用(物品/存款被删不阻塞交易)。
+    time_deposit_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 Index(
@@ -529,6 +565,12 @@ Index(
     "ix_read_tx_ledger_account",
     ReadTxProjection.ledger_id,
     ReadTxProjection.account_sync_id,
+)
+# 归物(0029):物品维度捞关联交易(物品详情列出所有关联交易)
+Index(
+    "ix_read_tx_ledger_item",
+    ReadTxProjection.ledger_id,
+    ReadTxProjection.item_sync_id,
 )
 # workspace/transactions 跨账本查询 —— 只按 user_id 过滤
 Index(
@@ -589,11 +631,27 @@ class UserAccountProjection(Base):
     currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
     initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 账户别名(0027)。所有账户类型可用 —— 账户名是"招商银行信用卡(1234)"
+    # 这类正式名,别名是用户在列表/卡片上想看到的短名("招行卡")。为空 =
+    # 沿用 name。只影响展示,不参与任何统计口径。
+    alias: Mapped[str | None] = mapped_column(String(255), nullable=True)
     credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 出账日(账单日)当天消费计入哪一期账单(0027)。true = 计入当期账单
+    # (周期 = 上期出账日+1 ~ 本期出账日);false = 计入下一期(周期 = 本期
+    # 出账日 ~ 下期出账日-1)。非信用卡账户该字段无意义,但照样落库(避免
+    # 类型来回切换时丢值)。默认 true —— 主流银行账单日当天消费入本期。
+    billing_day_in_current: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=true(), default=True
+    )
     bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # 完整卡号(0026)。隐私敏感,仅用户手动录入;card_last_four 可由其派生。
+    card_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 账户图标 key(0026):内置银行/支付图标注册表的主键(如 'icbc');空 = 按
+    # account_type 回退默认图标。未识别银行时用户手动指定。
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
     # 账户隐藏(issue #240)。default false:既有行升级后不隐藏,旧 App 不发该
     # 字段时保持 false。只影响前端选择器/列表呈现,服务端不做任何统计过滤(D1)。
@@ -684,6 +742,398 @@ Index(
     "ix_read_budget_ledger_cat",
     ReadBudgetProjection.ledger_id,
     ReadBudgetProjection.category_sync_id,
+)
+
+
+# ============================================================================
+# 定期存款 / 归物(0021)— ledger-scoped 实体,跟 tx/budget 同一条同步链路:
+# mobile /sync/push → sync_changes 事件流 → 本投影表(web 读唯一权威源)。
+# 语义对齐 BeeCount 仓 issue #80(定期存款)/ #465(归物/退款)。
+# ============================================================================
+
+
+class ReadTimeDepositProjection(Base):
+    """定期存款投影。金额语义数据(native_amount 同类)不走 Float 的列用 String
+    存 rate 之外的金额;principal / actual_interest 仍用 Float 对齐其它金额列
+    (mobile Drift 同款 REAL 列),rate 是展示型数据。
+
+    派生字段(expected_interest / days_remaining / matured)不落库 —— 读端点
+    按今天日期现算,避免后台任务刷状态。
+    """
+
+    __tablename__ = "read_time_deposit_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    principal: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
+    # 年利率,小数(0.0325 = 3.25%)。展示型数据,不参与强一致金额计算。
+    annual_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    # 期限(月)。到期日 maturity_date 是权威列;term_months 变更时由 mutator
+    # 重算 maturity_date(保持两者一致)。
+    term_months: Mapped[int] = mapped_column(Integer, default=12, server_default="12")
+    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    maturity_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 'holding'(存期内) | 'matured'(已到期未支取) | 'withdrawn'(已支取)。
+    # holding→matured 由读端点按日期派生提示;withdrawn 是用户显式支取动作。
+    status: Mapped[str] = mapped_column(String(16), default="holding", server_default="holding")
+    # 资金来源账户(user-global account 的 sync_id;rename 不改 id,只刷 name)。
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 到期自动转存(本金+利息续存)。
+    auto_renew: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
+    # 计息方式:'simple'(单利,默认) | 'compound'(复利,按年)。
+    interest_mode: Mapped[str] = mapped_column(
+        String(16), default="simple", server_default="simple"
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 支取时间(status='withdrawn' 时必填;其它状态可空)。
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 实得利息(支取时用户填写;未支取为 NULL,读端点按利率现算预期利息)。
+    actual_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 到息计划(0028,多笔):JSON 数组文本
+    # [{"date":"YYYY-MM-DD","amount":123.0,"note":""}] —— date 到息日 /
+    # amount 该次金额(自由金额)/ note 可选。按到息日升序存。
+    # 计划仅作预期提醒:不生成交易、不进余额;是否已到息由读端点按今天派生。
+    payout_plans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_time_deposit_user_status",
+    ReadTimeDepositProjection.user_id,
+    ReadTimeDepositProjection.status,
+)
+
+
+class ReadItemReturnProjection(Base):
+    """归物(退货/退还物品)投影。对应 BeeCount 仓 issue #465 的「退款」诉求:
+    记录一笔购买的物品被归还,跟踪退款状态与金额。
+
+    status: 'pending'(待归还) | 'returned'(已归还待退款)
+          | 'refunded'(已退款入账) | 'cancelled'(已取消/不归了)。
+    original_tx_id 关联原始购买交易(read_tx_projection.sync_id),弱引用 ——
+    原始交易被删也不阻塞归物记录(不设 FK,只存 sync_id 字符串)。
+    """
+
+    __tablename__ = "read_item_return_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, default="")
+    # 关联原始购买交易 sync_id(弱引用,可空)。
+    original_tx_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    original_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 退款金额(实收;可能与原金额不同,比如扣了损耗)。
+    refund_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # 归还/退款日期(归物记录的业务日期)。
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    # 退款入账账户(user-global account sync_id;可空,待定状态允许不选)。
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 退款对应分类(可选,用于统计退回原分类)。
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_item_return_user_status",
+    ReadItemReturnProjection.user_id,
+    ReadItemReturnProjection.status,
+)
+
+
+class ReadItemProjection(Base):
+    """归物(物品持有管理)投影(0029)。
+
+    把「归物」重新定义为**物品持有**:记录一件物品的购买日期与金额,按存活
+    时间摊出日均成本,跟踪保修,直到二手卖出或报废才停止记录。
+
+    - purchase_date / purchase_amount:购买日期与金额(账本本位币口径;关联
+      交易也取 native_amount 累计,多币种账本下才自洽)。
+    - warranty_until:保修到期日。到期只是**过保**,物品仍存活 —— 过保不改
+      status,由读端点按今天派生 warranty_status。
+    - status: 'in_use'(在用) | 'disposed'(已处置)。只有二手卖出
+      (disposal_type='sold')或报废('scrapped')才转 disposed;处置日期
+      disposal_date 之后的天数不再累计(持有天数定格)。
+    - disposal_amount:二手卖出收入,抵减累计成本(净成本口径);报废无收入。
+
+    派生字段(held_days / total_cost / daily_cost / warranty_status)不落库 ——
+    读端点按今天现算,跟定期存款 expected_interest 同款,避免后台任务刷状态。
+    """
+
+    __tablename__ = "read_item_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, default="")
+    purchase_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    purchase_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # 保修到期日(NULL = 未记录保修)。到期只过保,不结束持有。
+    warranty_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 'in_use'(在用,默认) | 'disposed'(已处置:二手卖出 or 报废)。
+    status: Mapped[str] = mapped_column(
+        String(16), default="in_use", server_default="in_use"
+    )
+    # 处置方式:'sold'(二手卖出,有收入) | 'scrapped'(报废,无收入)。
+    # status='disposed' 时有意义。
+    disposal_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    disposal_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 二手卖出收入(抵减成本);scrapped 时 NULL / 0。
+    disposal_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 物品分类 / 购买账户(可选,弱引用 + 名称冗余,改名只刷 *_name)。
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_item_user_status",
+    ReadItemProjection.user_id,
+    ReadItemProjection.status,
+)
+
+
+class ReadRefundProjection(Base):
+    """交易退款投影(0022)。对应 BeeCount 仓 issue #465 的「退款功能」:
+    一笔支出被部分/全额退回时,挂在这笔原始交易上的退款记录。
+
+    与归物(read_item_return_projection)的分工:归物跟踪「物品归还」流程
+    (pending→returned→refunded),本表跟踪「钱」——任意原因的支出退款
+    (服务退订、多扣费冲销、价保差价……),不依赖物品寄回。
+
+    - 同一原始交易可有多条退款(部分退、多次退),累计(非 cancelled)
+      不得超过原始交易金额 —— 由 web write 路径校验(见
+      routers/write/refunds.py 的 _make_refund_validator)。
+    - status: 'pending'(待退款/处理中) | 'received'(已到账)
+      | 'cancelled'(已取消,不计入累计)。
+    - original_tx_id 关联原始支出交易(read_tx_projection.sync_id),弱引用
+      —— 原始交易被删也不阻塞退款记录(不设 FK,只存 sync_id 字符串),
+      original_amount 是写入时从原交易快照的 denorm。
+    """
+
+    __tablename__ = "read_refund_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # 关联原始支出交易 sync_id(弱引用;NOT NULL —— 退款必须挂靠原单)。
+    original_tx_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 原单金额快照(写入时从原交易带过来的 denorm,原交易删除后仍可展示)。
+    original_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 本笔退款金额(> 0;部分退时小于原单)。
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
+    # 退款去向账户(user-global account sync_id;可空,待退款状态允许不选)。
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 退款日期(业务日期,日粒度)。
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 退款分摊模式(0025):'unified'(默认,统一退至单一账户) |
+    # 'split'(分别退款,按原付款 legs 拆分到多张卡)。unified 时 refund_legs_json
+    # 为 NULL,退到 account_sync_id;split 时 account_sync_id 可空,退到各腿账户。
+    refund_mode: Mapped[str] = mapped_column(
+        String(16), default="unified", server_default="unified"
+    )
+    # 分别退款(0025)的退款腿:JSON 文本列,形态
+    #   [{"accountId": "a1", "accountName": "工行卡", "amount": 60.0}, ...]
+    # sum(legs) 恒等于 amount(容差 0.011)。仅 split 模式有意义;
+    # unified 模式为 NULL。每条腿把退款收入冲回对应卡余额。
+    refund_legs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+# user_id 单列索引由列的 index=True 自动生成(ix_read_refund_projection_user_id),
+# 跟 time_deposit / item_return 同款约定;这里只显式声明复合索引。
+Index(
+    "ix_read_refund_user_status",
+    ReadRefundProjection.user_id,
+    ReadRefundProjection.status,
+)
+# 累计退款查询(同一原单的非 cancelled 合计)按 (ledger, original_tx_id) 走。
+Index(
+    "ix_read_refund_ledger_original_tx",
+    ReadRefundProjection.ledger_id,
+    ReadRefundProjection.original_tx_id,
+)
+
+
+class ReadLoanProjection(Base):
+    """借款投影(0023)。个人记账里的借入 / 借出跟踪:
+
+    - direction: 'borrowed'(借入,我欠别人) | 'lent'(借出,别人欠我)。
+    - counterparty:对方名称(人 / 机构),NOT NULL。
+    - principal:本金(> 0)。
+    - interest_rate:年利率,小数(0.05 = 5%),展示型;默认 0。
+    - started_at:起借日;due_at:到期日(可空,无限期)。
+    - repaid_amount:已还本金累计(默认 0),前端按 principal 现算还款进度;
+      不额外建还款子实体,保持与 0021/0022 同款「单记录 + 状态」轻量模型。
+    - status: 'active'(在借/在贷) | 'repaid'(已结清) | 'cancelled'(作废)。
+
+    派生字段(is_overdue / days_to_due / repay_progress)不落库,读端点按今天
+    现算。
+    """
+
+    __tablename__ = "read_loan_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    direction: Mapped[str] = mapped_column(String(16), default="borrowed", server_default="borrowed")
+    counterparty: Mapped[str] = mapped_column(Text, default="")
+    principal: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
+    interest_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    repaid_amount: Mapped[float] = mapped_column(Float, default=0.0, server_default="0.0")
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_loan_user_status",
+    ReadLoanProjection.user_id,
+    ReadLoanProjection.status,
+)
+
+
+class ReadReimbursementProjection(Base):
+    """报销投影(0023)。个人记账里的「我先垫付、后找人 / 公司报销」跟踪:
+
+    与退款(read_refund_projection)的分工:退款是「买的东西退了,钱回来」,
+    报销是「我替公司 / 别人花了钱,对方把钱还我」—— 收款方不同、语义不同,
+    故独立成表(App 端也单独要这两个能力)。
+
+    - title:报销事由(必填)。
+    - payer:实际垫付方(通常是我,可空)。
+    - reimburser:报销给付方(公司 / 他人,可空)。
+    - amount:应收报销金额(> 0)。
+    - category_sync_id / category_name:对应支出分类(可选,用于归类)。
+    - happened_at:垫付日期(业务日期,日粒度,必填)。
+    - status: 'pending'(待报销) | 'reimbursed'(已报销到账)
+      | 'cancelled'(已取消)。
+    - account_sync_id / account_name:报销到账账户(可空,待报销允许不选)。
+    - related_tx_id:关联的垫付交易 sync_id(弱引用,可空)。
+    """
+
+    __tablename__ = "read_reimbursement_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(Text, default="")
+    payer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reimburser: Mapped[str | None] = mapped_column(Text, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY", server_default="CNY")
+    category_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    related_tx_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_reimbursement_user_status",
+    ReadReimbursementProjection.user_id,
+    ReadReimbursementProjection.status,
+)
+
+
+class ReadMemberProjection(Base):
+    """账本内自定义成员投影(0024)。
+
+    跟 `LedgerMember`(共享账本的**登录用户**成员)是两套东西:这里是账本自己
+    维护的「人」名单(爸爸 / 妈妈 / 我),不要求对方有账号,单人账本也能用。
+    用途是给支出账单做**人头分摊**(member_shares),让统计能回答「谁花了多少」。
+
+    member_id 是 sync_id(跟其它 ledger-scope 实体同款 PK 约定)。
+    """
+
+    __tablename__ = "read_member_projection"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # 成员名(必填),如「爸爸」「妈妈」「我」。同账本内建议唯一,服务端不强制
+    # (重名靠 sync_id 区分,UI 已可辨)。
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 备注(可空)。
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 成员图标 key:人物/家庭语义的 Material Symbols 图标名(见前端
+    # memberIcons.ts 的 MEMBER_ICONS 注册表);空 = 前端回退默认 'person'。
+    # 只影响展示,不参与任何统计口径。
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 关联的记账人(登录用户 id)。设了之后,统计口径里该用户记的、没有分摊的
+    # 交易并入本成员(kind='member'),不再单独出一条 kind='user' —— 避免同一
+    # 个人在「成员」和「记账人」两个维度里被算两遍。空 = 不关联。
+    linked_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 列表排序权重,小的在前;默认 0 时按 sync_id 兜底,保证顺序稳定。
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_read_member_ledger_name",
+    ReadMemberProjection.ledger_id,
+    ReadMemberProjection.name,
 )
 
 

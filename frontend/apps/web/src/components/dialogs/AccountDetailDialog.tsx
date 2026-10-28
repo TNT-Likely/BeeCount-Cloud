@@ -11,7 +11,7 @@ import {
   DialogTitle,
   useT
 } from '@beecount/ui'
-import { TransactionList, creditCardAmounts } from '@beecount/web-features'
+import { TransactionList, BankIconBadge, accountDisplayName, creditCardAmounts, formatMonthDay, hasAlias, statementPeriod } from '@beecount/web-features'
 import { Banknote, Calendar as CalendarIcon, CreditCard } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -35,7 +35,7 @@ interface Props {
   loading: boolean
   tags: WorkspaceTag[]
   onClose: () => void
-  onLoadMore: (accountName: string, offset: number) => void
+  onLoadMore: (accountSyncId: string, offset: number) => void
   onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
   resolveAttachmentPreviewUrl?: (att: AttachmentRef) => Promise<string | null>
 }
@@ -62,7 +62,17 @@ export function AccountDetailDialog({
     <Dialog open={Boolean(account)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="flex flex-row items-center justify-between gap-3 border-b border-border/60 px-6 py-4">
-          <DialogTitle className="truncate">{account?.name || ''}</DialogTitle>
+          <div className="min-w-0">
+            <DialogTitle className="truncate">
+              {account ? accountDisplayName(account) : ''}
+            </DialogTitle>
+            {/* 0027:设了别名时补一行原名,避免"这到底是哪张卡"的困惑 */}
+            {account && hasAlias(account) ? (
+              <p className="truncate text-xs text-muted-foreground" title={account.name}>
+                {account.name}
+              </p>
+            ) : null}
+          </div>
           <DetailScopeToggle value={scope} onChange={onScopeChange} className="shrink-0" />
         </DialogHeader>
         {account ? (
@@ -87,7 +97,7 @@ export function AccountDetailDialog({
                 loading={loading}
                 hasMore={transactions.length < total}
                 onLoadMore={() => {
-                  if (!loading) onLoadMore(account.name, offset)
+                  if (!loading) onLoadMore(account.id, offset)
                 }}
                 onPreviewAttachment={onPreviewAttachment as never}
                 resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl as never}
@@ -193,6 +203,18 @@ function AccountCardInfo({
 
   const bankName = account.bank_name?.trim() || ''
   const cardLastFour = account.card_last_four?.trim() || ''
+  const cardNumber = account.card_number?.trim() || ''
+  // 完整卡号脱敏展示:保留前 4 后 4,中间打码(16 位 → **** **** **** 1234)。
+  const maskedCard = cardNumber
+    ? (() => {
+        const digits = cardNumber.replace(/\D/g, '')
+        if (digits.length <= 8) return cardNumber
+        const head = digits.slice(0, 4)
+        const tail = digits.slice(-4)
+        const mid = '*'.repeat(Math.max(digits.length - 8, 0))
+        return `${head} ${mid} ${tail}`
+      })()
+    : ''
   const creditLimit = isCreditCard ? account.credit_limit : null
   const billingDay = isCreditCard ? account.billing_day : null
   const paymentDueDay = isCreditCard ? account.payment_due_day : null
@@ -215,6 +237,7 @@ function AccountCardInfo({
   if (
     !bankName &&
     !cardLastFour &&
+    !cardNumber &&
     creditLimit === null &&
     !billingDay &&
     !paymentDueDay
@@ -225,18 +248,32 @@ function AccountCardInfo({
   const fmt = (v: number) =>
     v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+  // 0027:本期账单区间 —— 账单日 + 「出账日计入当期」推导。账单日没填时为 null。
+  const period = isCreditCard
+    ? statementPeriod(billingDay, paymentDueDay, account.billing_day_in_current)
+    : null
+  const periodText = period
+    ? `${formatMonthDay(period.start)} ~ ${formatMonthDay(period.end)}`
+    : ''
+
   return (
     <div className="border-b border-border/60 bg-muted/10 px-6 py-3">
-      {/* 第一行:银行 + 卡号末 4 位 + 类型 icon */}
-      {(bankName || cardLastFour) ? (
-        <div className="flex items-center gap-2 text-sm">
-          {isCreditCard ? (
+      {/* 第一行:银行图标 + 银行 + 完整卡号(脱敏)/ 卡号末 4 位 */}
+      {(bankName || cardLastFour || cardNumber) ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {account.icon ? (
+            <BankIconBadge icon={account.icon} size={20} radius={6} />
+          ) : isCreditCard ? (
             <CreditCard className="h-4 w-4 text-muted-foreground" />
           ) : (
             <Banknote className="h-4 w-4 text-muted-foreground" />
           )}
           <span className="font-medium">{bankName || t('detail.account.bankUnknown')}</span>
-          {cardLastFour ? (
+          {maskedCard ? (
+            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+              {maskedCard}
+            </span>
+          ) : cardLastFour ? (
             <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
               •••• {cardLastFour}
             </span>
@@ -271,6 +308,22 @@ function AccountCardInfo({
               value={t('detail.account.dayOfMonth', { day: paymentDueDay })}
               hint={t('detail.account.daysUntil', { days: daysUntilDay(paymentDueDay) })}
               urgent={daysUntilDay(paymentDueDay) <= 3}
+            />
+          ) : null}
+          {/* 0027:本期账单区间(由账单日 + 出账日计入当期推导) */}
+          {period ? (
+            <CardInfoItem
+              label={t('detail.account.statementPeriod')}
+              value={periodText}
+              hint={
+                period.daysToDue !== null && paymentDueDay
+                  ? t('detail.account.daysUntil', { days: period.daysToDue })
+                  : t(
+                      account.billing_day_in_current === false
+                        ? 'accounts.credit.billingInNext'
+                        : 'accounts.credit.billingInCurrent'
+                    )
+              }
             />
           ) : null}
         </div>

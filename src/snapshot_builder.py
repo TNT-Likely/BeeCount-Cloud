@@ -73,6 +73,17 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadTxProjection.native_amount,
         ReadTxProjection.exclude_from_stats,
         ReadTxProjection.exclude_from_budget,
+        # 0021 扩展字段(优惠/转账手续费/合并付款):full pull 重建必须带上,
+        # 否则新 App 全量同步后这三项丢失(同 currencyCode 的理由)。JSON
+        # 文本列在这里反序列化成原生 dict/list,mobile apply 直接吃。
+        ReadTxProjection.discount_json,
+        ReadTxProjection.transfer_fee_json,
+        ReadTxProjection.payment_legs_json,
+        # 成员分摊(0024):同上,full pull 重建必须带上。
+        ReadTxProjection.member_shares_json,
+        # 归物(0029):关联物品 sync_id。full pull 重建必须带上,否则新 App
+        # 全量同步后「这笔支出挂在哪件物品上」丢失(同 currencyCode 的理由)。
+        ReadTxProjection.item_sync_id,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -85,7 +96,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          to_sid, to_name,
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
-         currency_code, native_amount, exclude_from_stats, exclude_from_budget) = row
+         currency_code, native_amount, exclude_from_stats, exclude_from_budget,
+         discount_json, transfer_fee_json, payment_legs_json,
+         member_shares_json, item_sync_id) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -139,6 +152,24 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["currencyCode"] = currency_code
         if native_amount is not None:
             item["nativeAmount"] = native_amount
+        # 0021 扩展字段:NULL / 空 JSON 不产生 key(语义同 currencyCode)。
+        for json_key, raw in (
+            ("discount", discount_json),
+            ("transferFee", transfer_fee_json),
+            ("paymentLegs", payment_legs_json),
+            # 成员分摊(0024)
+            ("memberShares", member_shares_json),
+        ):
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if parsed:
+                    item[json_key] = parsed
+        # 归物(0029):NULL(未关联)不产生 key,payload 保持干净。
+        if item_sync_id:
+            item["itemId"] = item_sync_id
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
@@ -157,6 +188,17 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.payment_due_day,
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
+        # 完整卡号 + 图标 key(0026)。缺了这两列,builder 产出的账户条目
+        # 不带 cardNumber/icon,后续任何一次写入口的 diff 会把它们当"变更"
+        # 重发,投影 upsert 收到缺键 payload 就把两列抹成 NULL(见
+        # tests/test_account_card_icon.py 的回归用例)。
+        UserAccountProjection.card_number,
+        UserAccountProjection.icon,
+        # 别名 + 出账日计入当期(0027)。同 card_number/icon:漏选会让每次
+        # 写入口把账户当"变更"全量重发,投影收到缺键 payload 就抹成 NULL
+        # (见 tests/test_account_card_icon.py 的回归用例)。
+        UserAccountProjection.alias,
+        UserAccountProjection.billing_day_in_current,
         UserAccountProjection.hidden,
     ).where(UserAccountProjection.user_id == user_id)
     for (
@@ -171,13 +213,21 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         payment_due_day,
         bank_name,
         card_last_four,
+        card_number,
+        icon,
+        alias,
+        billing_day_in_current,
         hidden,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
         if acc_type:
             acc["type"] = acc_type
-        if acc_ccy:
-            acc["currency"] = acc_ccy
+        # currency 无条件输出(含 None)—— 与 snapshot_mutator.create_account /
+        # ensure_snapshot_v2 的归一化形状对齐。早年按"有值才带 key"输出,
+        # ensure_snapshot_v2 又无条件补 currency=None,导致每次写入口所有
+        # 账户 dict 都"变了"被全量重发(既拖慢 diff 又是上面 cardNumber
+        # 抹零的放大器)。
+        acc["currency"] = acc_ccy
         if init_bal is not None:
             acc["initialBalance"] = init_bal
         if note:
@@ -192,6 +242,18 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["bankName"] = bank_name
         if card_last_four:
             acc["cardLastFour"] = card_last_four
+        # 0026:完整卡号 / 图标 key。有值才带 key(与 mobile 扩展字段条件
+        # 序列化一致);缺键时下游 merge 会从 existing 行补齐,不会抹零。
+        if card_number:
+            acc["cardNumber"] = card_number
+        if icon:
+            acc["icon"] = icon
+        # 0027:别名(展示短名)。有值才带 key,同其它字符串扩展字段。
+        if alias:
+            acc["alias"] = alias
+        # 0027:出账日计入当期。NOT NULL 布尔 —— 无条件输出(同 hidden),保
+        # /sync/full 重装 / 新设备首次同步时口径不丢。
+        acc["billingDayInCurrent"] = bool(billing_day_in_current)
         # 账户隐藏(issue #240):无条件输出(不像其它扩展字段那样"有值才带
         # key"),与 App serializeAccount 无条件发 hidden 对齐,保 /sync/full
         # 重装 / 新设备首次同步时隐藏标记不丢(03-tech-design-cloud.md §二 (B))。

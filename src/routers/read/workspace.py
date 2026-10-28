@@ -6,13 +6,27 @@ projection 做聚合(tx 计数 / balance / category 排行等)。
 去重 / 跨账本 dedup / owner 信息回填的逻辑也在这里。"""
 from __future__ import annotations
 
+import json
 import statistics as _stats
 
 from pydantic import BaseModel
 from sqlalchemy import false as sa_false
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from ...entity_extensions import (
+    time_deposit_derived,
+    time_deposit_payout_plans_derived,
+)
+from ...models import (
+    ExchangeRateCache,
+    ReadTimeDepositProjection,
+    ReadTxProjection,
+    UserAccountProjection,
+    UserExchangeRateProjection,
+)
+from ...schemas import ReadTimeDepositOut, TimeDepositPayoutPlanOut
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
-from ...models import ExchangeRateCache, UserExchangeRateProjection
 
 # ---------------------------------------------------------------------------
 # 净值历史 — 响应 schema
@@ -29,6 +43,346 @@ class NetWorthHistoryOut(BaseModel):
     series: list[NetWorthHistorySeriesItemOut]
     multi_currency: bool
 
+def _parse_transfer_fee(
+    fee_json: str | None,
+) -> tuple[float, str | None, str | None]:
+    """解析转账手续费/优惠 JSON → (amount, mode, fee_account_id)。
+
+    amount<=0 / 字段缺失 / 非法 JSON → (0.0, None, None)。
+    mode ∈ {deduct_from_source, deduct_from_target, separate_account, discount};
+    缺省视作 deduct_from_source(.docs / models.py 注释口径)。
+    """
+    fee = 0.0
+    mode = None
+    fee_account_id = None
+    if fee_json:
+        try:
+            d = json.loads(fee_json)
+        except (json.JSONDecodeError, TypeError):
+            d = None
+        if isinstance(d, dict):
+            fee = float(d.get("amount") or 0.0)
+            mode = d.get("mode")
+            fee_account_id = d.get("feeAccountId")
+    return fee, mode, fee_account_id
+
+
+def _transfer_account_deltas(
+    amount: float,
+    from_account_sync_id: str | None,
+    to_account_sync_id: str | None,
+    transfer_fee_json: str | None,
+) -> dict[str, float]:
+    """转账对涉及账户的完整余额增量 {account_sync_id: delta}。
+
+    手续费三模式 + 优惠模式(.docs / models.py):
+    - deduct_from_source: 转出方额外扣 fee(到账=amount)
+    - deduct_from_target: 到账方少到 fee(到账=amount-fee)
+    - separate_account: 手续费从 feeAccountId 另扣
+    - discount: 转出方少扣 fee(实扣=amount-fee,到账=amount)——银行/平台优惠
+    amount<=0 / 字段缺失 → 退化为普通转账(amount / +amount)。
+    """
+    deltas: dict[str, float] = {}
+    if from_account_sync_id:
+        deltas[from_account_sync_id] = -amount
+    if to_account_sync_id:
+        deltas[to_account_sync_id] = deltas.get(to_account_sync_id, 0.0) + amount
+
+    fee, mode, fee_account_id = _parse_transfer_fee(transfer_fee_json)
+    if fee <= 0:
+        return deltas
+    if mode == "deduct_from_target":
+        if to_account_sync_id:
+            deltas[to_account_sync_id] = deltas.get(to_account_sync_id, 0.0) - fee
+    elif mode == "separate_account":
+        if fee_account_id:
+            deltas[fee_account_id] = deltas.get(fee_account_id, 0.0) - fee
+    elif mode == "discount":
+        # 优惠:转出方少扣(实扣 amount-fee),到账方仍全收 amount
+        if from_account_sync_id:
+            deltas[from_account_sync_id] = deltas.get(from_account_sync_id, 0.0) + fee
+    else:  # deduct_from_source (default)
+        if from_account_sync_id:
+            deltas[from_account_sync_id] = deltas.get(from_account_sync_id, 0.0) - fee
+    return deltas
+
+
+def _transfer_fee_only_deltas(
+    transfer_fee_json: str | None,
+    from_account_sync_id: str | None,
+    to_account_sync_id: str | None,
+) -> dict[str, float]:
+    """仅手续费/优惠的余额增量(不含基础转账金额),供聚合余额在 SQL 基础额之上叠加。
+
+    返回 {被扣方 account_sync_id: -fee};discount 模式被"少扣"方是转出方,
+    返回 {转出方: +fee};无 amount / 被扣方缺失 → {}。
+    """
+    fee, mode, fee_account_id = _parse_transfer_fee(transfer_fee_json)
+    if fee <= 0:
+        return {}
+    if mode == "deduct_from_target":
+        return {to_account_sync_id: -fee} if to_account_sync_id else {}
+    if mode == "separate_account":
+        return {fee_account_id: -fee} if fee_account_id else {}
+    if mode == "discount":
+        return {from_account_sync_id: fee} if from_account_sync_id else {}
+    # deduct_from_source (default)
+    return {from_account_sync_id: -fee} if from_account_sync_id else {}
+
+
+def _to_float_or_zero(v: object) -> float:
+    """安全转 float,非法/None → 0.0。"""
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_name_to_id(db: Session, target_user_id: str) -> dict[str, str]:
+    """(账户名小写) → account_sync_id,供合并付款 legs 仅带 accountName 时反查。"""
+    rows = db.execute(
+        select(UserAccountProjection.sync_id, UserAccountProjection.name).where(
+            UserAccountProjection.user_id == target_user_id
+        )
+    ).all()
+    return {
+        (name or "").strip().lower(): sid
+        for sid, name in rows
+        if sid and name
+    }
+
+
+def _resolve_leg_account_id(
+    leg: dict, name_to_id: dict[str, str] | None
+) -> str | None:
+    """合并付款单腿的账户 syncId:优先 accountId,缺则按 accountName 反查。
+
+    前端 wire 自带 accountId;CSV/导入路径仅带 accountName,需 name_to_id 反查。
+    """
+    aid = leg.get("accountId") or leg.get("account_id")
+    if aid:
+        return aid
+    name = leg.get("accountName") or leg.get("account_name") or leg.get("name")
+    if name and name_to_id:
+        return name_to_id.get(name.strip().lower())
+    return None
+
+
+def _expense_leg_deltas(
+    payment_legs_json: str | None,
+    name_to_id: dict[str, str] | None,
+) -> dict[str, float]:
+    """支出合并付款:每条腿 account 扣 -leg.amount。返回 {account_sync_id: -amount}。
+
+    无 legs / 非法 JSON / 解析不到账户 → {}。同一账户出现多腿时累加(罕见但稳健)。
+    """
+    if not payment_legs_json:
+        return {}
+    try:
+        legs = json.loads(payment_legs_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(legs, list) or not legs:
+        return {}
+    out: dict[str, float] = {}
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        aid = _resolve_leg_account_id(leg, name_to_id)
+        if not aid:
+            continue
+        amt = _to_float_or_zero(leg.get("amount"))
+        if amt <= 0:
+            continue
+        out[aid] = out.get(aid, 0.0) - amt
+    return out
+
+
+def _tx_effect_on_account(
+    tx: ReadTxProjection,
+    account_sync_id: str,
+    name_to_id: dict[str, str] | None = None,
+) -> float:
+    """该交易对指定账户的余额影响(amount 口径,与 WorkspaceAccount.balance 一致)。
+
+    转账含手续费时按 mode 折算(转出额外扣 / 到账内扣 / 单独账户扣);
+    支出含合并付款(payment_legs)时按各腿账户分摊扣款,顶层 account_sync_id
+    若非某腿账户则不额外扣(避免重复扣全额)。
+    """
+    amount = float(tx.amount or 0.0)
+    if tx.tx_type == "income" and tx.account_sync_id == account_sync_id:
+        return amount
+    if tx.tx_type == "expense":
+        leg_deltas = _expense_leg_deltas(tx.payment_legs_json, name_to_id)
+        if leg_deltas:
+            return leg_deltas.get(account_sync_id, 0.0)
+        if tx.account_sync_id == account_sync_id:
+            return -amount
+        return 0.0
+    if tx.tx_type == "transfer":
+        return _transfer_account_deltas(
+            amount, tx.from_account_sync_id, tx.to_account_sync_id, tx.transfer_fee_json
+        ).get(account_sync_id, 0.0)
+    return 0.0
+
+
+def _balance_by_account_for(
+    row: ReadTxProjection,
+    running_by_target: dict[str, dict[str, float]],
+    name_to_id: dict[str, str] | None,
+) -> dict[str, float] | None:
+    """合并付款(0021)各腿账户在该笔交易完成后的余额,形如 {account_sync_id: balance}。
+
+    仅取本笔 payment_legs 里出现的腿账户;某腿账户没被追踪(如对账单模式、或
+    账户过多放弃计算)则跳过。没有任何腿账户余额可给时返回 None,前端回退到
+    单个 balance_after。
+    """
+    if not row.payment_legs_json:
+        return None
+    legs = _expense_leg_deltas(row.payment_legs_json, name_to_id)
+    if not legs:
+        return None
+    out: dict[str, float] = {}
+    for aid in legs:
+        bal = running_by_target.get(aid, {}).get(row.sync_id)
+        if bal is not None:
+            out[aid] = bal
+    return out or None
+
+
+def _compute_balance_after_map(
+    db: Session,
+    ledger_internal_ids: list[int],
+    rows: list[ReadTxProjection],
+    target_user_id: str,
+    statement_account_sync_id: str | None,
+    name_to_id: dict[str, str] | None = None,
+    max_targets: int = 50,
+) -> dict[str, dict[str, float]]:
+    """计算每笔交易完成后各账户余额,返回 {account_sync_id: {tx_sync_id: balance_after}}。
+
+    - statement_account_sync_id 给定时(账户筛选模式),所有行都追踪该账户,
+      转账双向都计入。
+    - 否则每行追踪自己的主账户(支出/收入=账户;转账=转出账户)。
+    - 非 statement 模式下,合并付款(0021)的每条腿账户也作为独立 target 追踪,
+      从而能分别给出每个腿账户的余额(交易流水中合并付款要分别显示各账户余额)。
+    余额口径与 WorkspaceAccount.balance 一致(initial + income - expense +
+    transfer_to - transfer_from,amount 口径),单账本/单账户视图精确。
+    超过 max_targets 个分散账户(无筛选大杂烩视图)时放弃计算,返回空 dict。
+    """
+    if not rows:
+        return {}
+
+    row_target: dict[str, str | None] = {}
+    # 合并付款的腿账户(非 statement 模式才纳入 target,避免改变对账单模式成本)
+    leg_accounts: set[str] = set()
+    for row in rows:
+        if statement_account_sync_id:
+            row_target[row.sync_id] = statement_account_sync_id
+        elif row.tx_type in ("income", "expense"):
+            row_target[row.sync_id] = row.account_sync_id
+            if row.tx_type == "expense" and row.payment_legs_json:
+                for leg_aid in _expense_leg_deltas(
+                    row.payment_legs_json, name_to_id
+                ):
+                    leg_accounts.add(leg_aid)
+        elif row.tx_type == "transfer":
+            row_target[row.sync_id] = row.from_account_sync_id
+        else:
+            row_target[row.sync_id] = None
+
+    distinct_targets = {t for t in row_target.values() if t}
+    if not statement_account_sync_id:
+        distinct_targets |= leg_accounts
+    if not distinct_targets or (
+        not statement_account_sync_id and len(distinct_targets) > max_targets
+    ):
+        return {}
+
+    init_rows = db.scalars(
+        select(UserAccountProjection).where(
+            UserAccountProjection.user_id == target_user_id,
+            UserAccountProjection.sync_id.in_(distinct_targets),
+        )
+    ).all()
+    init_map = {a.sync_id: float(a.initial_balance or 0.0) for a in init_rows}
+
+    # 两类「第三账户」的 running balance 无法靠 account/from/to 列直接查到,
+    # 必须显式聚合进对应 target 的流水:
+    # 1) separate_account 手续费从 feeAccountId 另扣;
+    # 2) 合并付款(0021) legs 从腿账户扣 —— 这里也是非 statement 模式下
+    #    让每个腿账户能正确算出「该笔完成后余额」的关键(否则腿账户查不到
+    #    自己名下的支出,balance_by_account 只会剩主账户一个)。
+    # statement 模式下 distinct_targets 只有被筛选账户,下面两个循环只会对
+    # 命中的第三账户生效,与原来行为一致。
+    extra_by_target: dict[str, list[ReadTxProjection]] = {}
+    fee_txs = db.scalars(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "transfer",
+            ReadTxProjection.transfer_fee_json.is_not(None),
+        )
+    ).all()
+    for tx in fee_txs:
+        _, mode, fee_account_id = _parse_transfer_fee(tx.transfer_fee_json)
+        if mode == "separate_account" and fee_account_id in distinct_targets:
+            extra_by_target.setdefault(fee_account_id, []).append(tx)
+    # 合并付款:每条腿账户若是 target,则把该支出归入其「对账单」。
+    leg_txs = db.scalars(
+        select(ReadTxProjection).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.payment_legs_json.is_not(None),
+        )
+    ).all()
+    for tx in leg_txs:
+        for leg_aid in _expense_leg_deltas(tx.payment_legs_json, name_to_id):
+            if leg_aid in distinct_targets:
+                extra_by_target.setdefault(leg_aid, []).append(tx)
+
+    running_by_target: dict[str, dict[str, float]] = {}
+    for target in distinct_targets:
+        txs = db.scalars(
+            select(ReadTxProjection)
+            .where(
+                ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+                or_(
+                    ReadTxProjection.account_sync_id == target,
+                    ReadTxProjection.from_account_sync_id == target,
+                    ReadTxProjection.to_account_sync_id == target,
+                ),
+            )
+            .order_by(
+                ReadTxProjection.happened_at.asc(),
+                ReadTxProjection.tx_index.asc(),
+            )
+        ).all()
+        # 合并 separate_account 手续费转账(按时间序)
+        _min_dt = datetime.min
+        extra = sorted(
+            extra_by_target.get(target, []),
+            key=lambda t: (t.happened_at or _min_dt, t.tx_index),
+        )
+        combined = sorted(
+            list(txs) + extra,
+            key=lambda t: (t.happened_at or _min_dt, t.tx_index),
+        )
+        # combined 去重(理论上 txs 与 extra 不重叠,稳妥起见)
+        seen: set[str] = set()
+        ordered: list[ReadTxProjection] = []
+        for t in combined:
+            if t.sync_id not in seen:
+                seen.add(t.sync_id)
+                ordered.append(t)
+        bal = init_map.get(target, 0.0)
+        per_tx: dict[str, float] = {}
+        for tx in ordered:
+            bal += _tx_effect_on_account(tx, target, name_to_id)
+            per_tx[tx.sync_id] = bal
+        running_by_target[target] = per_tx
+    return running_by_target
+
+
 @router.get("/workspace/transactions", response_model=WorkspaceTransactionPageOut)
 def list_workspace_transactions(
     ledger_id: str | None = Query(default=None),
@@ -44,6 +398,7 @@ def list_workspace_transactions(
     amount_max: float | None = Query(default=None, description="金额上限(含)"),
     date_from: datetime | None = Query(default=None, description="happened_at >= date_from"),
     date_to: datetime | None = Query(default=None, description="happened_at < date_to(独占,前端传当天 23:59:59 即可包含整天)"),
+    with_balance: bool = Query(default=False, description="为 true 时计算每笔交易完成后主账户余额(balance_after),开销随涉及账户数增加。"),
     limit: int = Query(default=20, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     _scopes: set[str] = Depends(_READ_SCOPE_DEP),
@@ -61,6 +416,28 @@ def list_workspace_transactions(
         return WorkspaceTransactionPageOut(items=[], total=0, limit=limit, offset=offset)
 
     ledger_internal_ids = [l.id for l in ledgers]
+    # 余额计算前置:目标用户(账户归属)与"账户流水"模式的目标账户 syncId。
+    target_user_id = user_id if (is_admin and user_id) else current_user.id
+    name_to_id = _build_name_to_id(db, target_user_id)
+    id_to_name = {sid: nm for nm, sid in name_to_id.items()}
+    statement_account_sync_id: str | None = account_sync_id
+    statement_account_name: str | None = None
+    if account_sync_id:
+        statement_account_name = id_to_name.get(account_sync_id)
+    if not statement_account_sync_id and account_name:
+        # 账户名精确(trim + 小写)匹配单个账户 → 视为"该账户流水"模式,转账双向计入;
+        # 否则(模糊/多匹配)退化为逐行主账户,避免错配。
+        name_norm = account_name.strip().lower()
+        matched = db.scalars(
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id == target_user_id,
+                UserAccountProjection.name.ilike(f"%{account_name.strip()}%"),
+            )
+        ).all()
+        exact = [a for a in matched if (a.name or "").strip().lower() == name_norm]
+        if len(exact) == 1:
+            statement_account_sync_id = exact[0].sync_id
+            statement_account_name = exact[0].name
     ledger_meta: dict[str, tuple[str, str]] = {
         l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers
     }
@@ -75,7 +452,9 @@ def list_workspace_transactions(
     query = select(ReadTxProjection).where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
     if tx_type:
         query = query.where(ReadTxProjection.tx_type == tx_type)
-    if account_name:
+    if account_name and not statement_account_sync_id:
+        # statement 模式(精确匹配到单个账户)下改由下方 account_sync_id 过滤接管,
+        # 否则会误排除"主账户非该账户、但合并付款 legs 含该账户"的支出。
         pattern = f"%{account_name}%"
         query = query.where(or_(
             ReadTxProjection.account_name.ilike(pattern),
@@ -94,11 +473,25 @@ def list_workspace_transactions(
     if category_sync_id:
         query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
     if account_sync_id:
-        query = query.where(or_(
+        # 精确账户过滤。statement 模式下需同时纳入:该账户作为"合并付款 legs 腿"
+        # 的支出(主账户是另一账户,普通 account_sync_id 过滤会漏)。前端 legs 带
+        # accountId、导入 legs 仅带 accountName,两种都覆盖。
+        acct_filter = [
             ReadTxProjection.account_sync_id == account_sync_id,
             ReadTxProjection.from_account_sync_id == account_sync_id,
             ReadTxProjection.to_account_sync_id == account_sync_id,
-        ))
+        ]
+        if statement_account_sync_id:
+            acct_filter.append(
+                ReadTxProjection.payment_legs_json.like(f'%"{account_sync_id}"%')
+            )
+            if statement_account_name:
+                acct_filter.append(
+                    ReadTxProjection.payment_legs_json.like(
+                        f'%accountName":"{statement_account_name}"%'
+                    )
+                )
+        query = query.where(or_(*acct_filter))
     if q:
         pattern = f"%{q}%"
         query = query.where(or_(
@@ -133,6 +526,36 @@ def list_workspace_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 0022 退款进度:按本页原单批量聚合两个口径(都不含 cancelled)——
+    # refunded_by_tx 按原单合计(退款维度),refunded_by_tx_account 按
+    # (原单, 去向卡)拆分(卡维度:流水删除线只认退回本卡的部分,跨卡退款
+    # 钱到了别的卡,本卡支出仍成立,与账户余额口径一致)。
+    refunded_by_tx, refunded_by_tx_account = _refund_totals_for_txs(
+        db,
+        ledger_ids=ledger_internal_ids,
+        tx_ids=[r.sync_id for r in rows],
+        received_only=True,
+    )
+
+    # 资产流水余额:每笔交易完成后各账户余额。仅 with_balance 时计算,开销随
+    # 涉及账户数增加;无筛选的大杂烩视图里分散账户过多时函数内部会放弃计算。
+    # running_by_target: {account_sync_id: {tx_sync_id: balance_after}}。
+    running_by_target: dict[str, dict[str, float]] = {}
+    if with_balance and ledger_internal_ids:
+        running_by_target = _compute_balance_after_map(
+            db, ledger_internal_ids, rows, target_user_id,
+            statement_account_sync_id, name_to_id,
+        )
+
+    def _primary_target(row: ReadTxProjection) -> str | None:
+        if statement_account_sync_id:
+            return statement_account_sync_id
+        if row.tx_type in ("income", "expense"):
+            return row.account_sync_id
+        if row.tx_type == "transfer":
+            return row.from_account_sync_id
+        return None
+
     # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
     # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
     # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
@@ -152,6 +575,14 @@ def list_workspace_transactions(
         if owner_uid:
             actor_user_ids.add(owner_uid)
     user_info_map = _user_info_map(db, actor_user_ids)
+    # 归物(0029):本页交易关联到的物品名(一次查完,避免逐行查)。
+    item_names = item_names_by_sync_id(db, rows, ledger_ids=set(ledger_meta))
+    # 定期存款(0031):本页交易关联到的定存展示名(同样一次查完)。
+    time_deposit_names = time_deposit_names_by_sync_id(db, rows, ledger_ids=set(ledger_meta))
+    # 退款到账(0032):本页退款关联交易 → 原账单摘要(一次查完,避免逐行查)。
+    refund_source_labels = refund_source_labels_by_tx_sync_id(
+        db, rows, ledger_ids=set(ledger_meta)
+    )
 
     out_items: list[WorkspaceTransactionOut] = []
     for row in rows:
@@ -206,8 +637,24 @@ def list_workspace_transactions(
                 attachments=attachments,
                 exclude_from_stats=bool(row.exclude_from_stats),
                 exclude_from_budget=bool(row.exclude_from_budget),
+                # 0022 退款进度:有效退款(不含 cancelled)累计。前端在
+                # refunded_total >= amount(容差 0.011)时给金额画删除线。
+                refunded_total=refunded_by_tx.get(row.sync_id, 0.0),
+                # 0022 退款进度(卡维度):其中实际退回本卡的部分。跨卡退款
+                # 不计入 —— 钱到了别的卡,本卡支出仍成立,删除线以此为准。
+                refunded_to_account=_refunded_to_account(
+                    row,
+                    totals=refunded_by_tx,
+                    by_account=refunded_by_tx_account,
+                ),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                **_tx_extension_fields(
+                    row,
+                    item_name=item_names.get(row.item_sync_id or ""),
+                    time_deposit_name=time_deposit_names.get(row.time_deposit_sync_id or ""),
+                    refund_source_label=refund_source_labels.get(row.sync_id or ""),
+                ),
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -227,6 +674,14 @@ def list_workspace_transactions(
                     if editor_uid and editor_info[2] else None
                 ),
                 last_edited_by_avatar_version=editor_info[3] if editor_info[2] else None,
+                balance_after=running_by_target.get(_primary_target(row), {}).get(row.sync_id),
+                # 合并付款(0021):把每条腿账户的余额单独给出,交易流水中分别展示。
+                # 非合并付款 / 对账单模式 / 余额不可算时均为 null(前端回退到 balance_after)。
+                balance_by_account=(
+                    _balance_by_account_for(row, running_by_target, name_to_id)
+                    if with_balance and row.payment_legs_json
+                    else None
+                ),
             )
         )
     return WorkspaceTransactionPageOut(
@@ -247,13 +702,14 @@ _CSV_HEADERS_BY_LANG: dict[str, list[str]] = {
     # 跟 mobile lib/pages/data/export_page.dart 的 12 列严格对齐(v30 加币种):
     # Type, Category, SubCategory, Amount, Currency, Account, FromAccount,
     # ToAccount, Note, Time, Tags, Attachments
+    # v0021 在末尾追加 3 列扩展字段:优惠 / 手续费 / 多账户(web-only, mobile 导入忽略未知列)
     "zh-CN": ["类型", "分类", "二级分类", "金额", "币种", "账户", "转出账户",
-              "转入账户", "备注", "时间", "标签", "附件"],
+              "转入账户", "备注", "时间", "标签", "附件", "优惠", "手续费", "多账户"],
     "zh-TW": ["類型", "分類", "二級分類", "金額", "幣種", "帳戶", "轉出帳戶",
-              "轉入帳戶", "備註", "時間", "標籤", "附件"],
+              "轉入帳戶", "備註", "時間", "標籤", "附件", "優惠", "手續費", "多賬戶"],
     "en":    ["Type", "Category", "Subcategory", "Amount", "Currency",
               "Account", "From Account", "To Account", "Note", "Time",
-              "Tags", "Attachments"],
+              "Tags", "Attachments", "Discount", "Fee", "Split Accounts"],
 }
 
 _TX_TYPE_LABELS_BY_LANG: dict[str, dict[str, str]] = {
@@ -321,8 +777,9 @@ def export_workspace_transactions_csv(
     - 文件名:`beecount-<ledger>-<date_from>_<date_to>.csv`,中文走 RFC 5987
     """
     from urllib.parse import quote
-    from sqlalchemy.orm import aliased
+
     from fastapi.responses import StreamingResponse
+    from sqlalchemy.orm import aliased
 
     is_admin = _is_admin(current_user)
     lang_key = _normalize_lang(lang)
@@ -468,6 +925,11 @@ def export_workspace_transactions_csv(
                 or "CNY"
             ).upper()
 
+            # v0021 扩展字段:优惠 / 手续费 / 多账户(无则空列,不影响基础 12 列)
+            discount_str = _fmt_discount(tx.discount_json)
+            fee_str = _fmt_transfer_fee(tx.transfer_fee_json)
+            legs_str = _fmt_payment_legs(tx.payment_legs_json)
+
             yield ",".join([
                 _csv_field(type_label),
                 _csv_field(category_col),
@@ -481,6 +943,9 @@ def export_workspace_transactions_csv(
                 _csv_field(time_str),
                 _csv_field(",".join(tags_list)),
                 _csv_field(",".join(attachment_names)),
+                _csv_field(discount_str),
+                _csv_field(fee_str),
+                _csv_field(legs_str),
             ]) + "\n"
 
     if date_from is None and date_to is None:
@@ -527,6 +992,76 @@ def _attachment_names(raw: str | None) -> list[str]:
     return out
 
 
+# ──────────── v0021 扩展字段 CSV 格式化 ────────────
+# 导出成"可读 + 可回导"的紧凑文本:优惠 / 手续费输出金额数字,多账户输出
+# "账户名:金额; 账户名:金额"。导入端(transformer)兼容 JSON 与这种简单文本。
+
+
+def _fmt_discount(raw: str | None) -> str:
+    """优惠列:导出 discount_json 的 discountAmount(优惠金额,正数);无则空。"""
+    if not raw:
+        return ""
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(d, dict):
+        return ""
+    amt = d.get("discountAmount")
+    if amt is None:
+        amt = d.get("value")
+    if amt is None:
+        return ""
+    try:
+        return f"{float(amt):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _fmt_transfer_fee(raw: str | None) -> str:
+    """手续费列:导出 transfer_fee_json 的 amount(手续费金额,正数);无则空。"""
+    if not raw:
+        return ""
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(d, dict):
+        return ""
+    amt = d.get("amount")
+    if amt is None:
+        return ""
+    try:
+        return f"{float(amt):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _fmt_payment_legs(raw: str | None) -> str:
+    """多账户列:导出 payment_legs_json 为 '账户名:金额; 账户名:金额';无则空。"""
+    if not raw:
+        return ""
+    try:
+        legs = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(legs, list) or not legs:
+        return ""
+    parts: list[str] = []
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        name = leg.get("accountName") or leg.get("account_name") or leg.get("name")
+        amt = leg.get("amount")
+        if not name or amt is None:
+            continue
+        try:
+            parts.append(f"{name}:{float(amt):.2f}")
+        except (TypeError, ValueError):
+            continue
+    return "; ".join(parts)
+
+
 def false_literal():
     """SQL FALSE 字面量(用于"用户无任何账本可读"时的强制空结果)。"""
     from sqlalchemy import literal
@@ -565,7 +1100,9 @@ def list_workspace_accounts(
     # 用户可见 ledger 范围靠 `ledger_id IN ledger_internal_ids` 限定。
     from sqlalchemy import case as sa_case
 
-    # Main account stats: income + expense,按 account_sync_id 聚合
+    # Main account stats: income + expense,按 account_sync_id 聚合。
+    # 合并付款(payment_legs)的支出不再主账户全额计,改由下方 legs 分摊逐腿计入,
+    # 故此处排除 legs 支出(income / 普通支出 legs 恒为 NULL,排除无副作用)。
     main_stats = db.execute(
         select(
             ReadTxProjection.account_sync_id,
@@ -580,6 +1117,7 @@ def list_workspace_accounts(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             ReadTxProjection.account_sync_id.is_not(None),
             ReadTxProjection.tx_type.in_(["income", "expense"]),
+            ReadTxProjection.payment_legs_json.is_(None),
         ).group_by(ReadTxProjection.account_sync_id)
     ).all()
 
@@ -623,9 +1161,94 @@ def list_workspace_accounts(
         bucket["count"] = int(bucket["count"]) + int(cnt)
         bucket["balance"] = float(bucket["balance"]) + float(amt)
 
+    # 转账手续费/优惠对余额的增量:SQL 已计入基础转账额,这里叠加 fee 部分
+    # (deduct_from_source→转出方再 -fee;deduct_from_target→到账方再 -fee;
+    #  separate_account→手续费账户 -fee;discount→转出方 +fee 少扣)。
+    #  无 fee 的转账不产生行。
+    fee_rows = db.execute(
+        select(
+            ReadTxProjection.from_account_sync_id,
+            ReadTxProjection.to_account_sync_id,
+            ReadTxProjection.transfer_fee_json,
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "transfer",
+            ReadTxProjection.transfer_fee_json.is_not(None),
+        )
+    ).all()
+    for fa, ta, fee_json in fee_rows:
+        for acc, delta in _transfer_fee_only_deltas(fee_json, fa, ta).items():
+            if not acc:
+                continue
+            bucket = stats.setdefault(
+                acc, {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
+            )
+            bucket["balance"] = float(bucket["balance"]) + delta
+
+    # 合并付款 legs:每条腿账户扣 -leg.amount(余额 + 支出额都按腿分摊),
+    # 主账户不再全额计(已在 main_stats 排除)。legs 可能仅带 accountName(导入),
+    # 故用 name_to_id 反查 syncId。
+    target_user_id = user_id if (is_admin and user_id) else current_user.id
+    _agg_name_to_id = _build_name_to_id(db, target_user_id)
+    leg_rows = db.execute(
+        select(
+            ReadTxProjection.payment_legs_json,
+        ).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.payment_legs_json.is_not(None),
+        )
+    ).all()
+    for (legs_json,) in leg_rows:
+        for acc, delta in _expense_leg_deltas(legs_json, _agg_name_to_id).items():
+            if not acc:
+                continue
+            bucket = stats.setdefault(
+                acc, {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0}
+            )
+            bucket["balance"] = float(bucket["balance"]) + delta
+            bucket["expense"] = float(bucket["expense"]) + (-delta)
+            bucket["count"] = int(bucket["count"]) + 1
+
+    # 「支出统计不含已退款」—— 卡维度口径(与流水列表删除线、交易详情同口径):
+    # 只扣**退回本卡**的部分。跨卡退款(统一退到别的卡 / split 退到其他卡)
+    # 钱没回这张卡,本卡支出仍然成立。账户维度读原币 amount,退款额与原单
+    # 同币种,直接减、不折本位币。合并付款按腿账户各扣各的;无账户原单
+    # (脏数据)不退任何卡。balance 不动 —— 余额是流水口径,退款不是交易。
+    refund_rows = _refunded_expense_tx_rows(
+        db, ledger_ids=ledger_internal_ids, received_only=True
+    )
+    if refund_rows:
+        _refund_totals, refund_by_account = _refund_totals_for_txs(
+            db,
+            ledger_ids=ledger_internal_ids,
+            tx_ids=[r.sync_id for r in refund_rows],
+            received_only=True,
+        )
+        for row in refund_rows:
+            if row.payment_legs_json:
+                # 合并付款:该单支出按腿计入各卡,退款也按腿退回各卡。
+                for acc, _delta in _expense_leg_deltas(
+                    row.payment_legs_json, _agg_name_to_id
+                ).items():
+                    back = refund_by_account.get((row.sync_id, acc), 0.0)
+                    if not acc or back <= 0:
+                        continue
+                    bucket = stats.get(acc)
+                    if bucket is not None:
+                        bucket["expense"] = max(
+                            0.0, float(bucket["expense"]) - back)
+            elif row.account_sync_id:
+                back = refund_by_account.get(
+                    (row.sync_id, str(row.account_sync_id)), 0.0)
+                if back > 0:
+                    bucket = stats.get(str(row.account_sync_id))
+                    if bucket is not None:
+                        bucket["expense"] = max(
+                            0.0, float(bucket["expense"]) - back)
+
     # user-global 重构:account 是 per-user 表,直接按 user_id 拉,不再 per-ledger
     # 重复存 + dedup。target_user 是 admin 模式下指定的 user_id,否则 caller。
-    target_user_id = user_id if (is_admin and user_id) else current_user.id
     target_email = db.scalar(select(User.email).where(User.id == target_user_id))
 
     # 用户级 last_change_id:该用户最近的 user-scope SyncChange.change_id(account)。
@@ -675,6 +1298,11 @@ def list_workspace_accounts(
                 payment_due_day=acct.payment_due_day,
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
+                card_number=acct.card_number,
+                icon=acct.icon,
+                # 别名 + 出账日计入当期(0027),同 ledgers 读端的兜底。
+                alias=acct.alias,
+                billing_day_in_current=bool(acct.billing_day_in_current),
                 hidden=acct.hidden,
                 tx_count=tx_count,
                 income_total=income_total,
@@ -686,6 +1314,135 @@ def list_workspace_accounts(
     # Sort by name, then paginate
     all_accounts.sort(key=lambda a: (a.name or "").lower())
     return all_accounts[offset : offset + limit]
+
+
+@router.get(
+    "/workspace/time-deposits",
+    response_model=list[ReadTimeDepositOut],
+)
+def list_workspace_time_deposits(
+    ledger_id: str | None = Query(default=None, description="按账本过滤;不传 = 全部可见账本"),
+    status: str | None = Query(default=None, description="holding / matured / withdrawn"),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadTimeDepositOut]:
+    """跨账本定期存款只读列表(0021,资产页净资产 / 资产构成并入定期存款用)。
+
+    资产页账户是 **工作区全局** 口径(`/read/workspace/accounts` 不传 ledger_id
+    即跨账本),定期存款必须同口径跨账本查询,否则存入定期后账户余额被扣、定期又
+    没算进资产,总资产凭空少了本金。派生字段(预期利息 / 剩余天数 / 是否到期 /
+    已收利息)按今天现算,与按账本端点 `list_time_deposits` 同口径。
+    """
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin, ledger_id=ledger_id
+    )
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta = {
+        l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers
+    }
+
+    query = select(ReadTimeDepositProjection).where(
+        ReadTimeDepositProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if status:
+        query = query.where(ReadTimeDepositProjection.status == status)
+    # 起息日倒序 + 新建在前;同日起息按 sync_id 稳定排序。
+    rows = db.scalars(
+        query.order_by(
+            ReadTimeDepositProjection.start_date.desc(),
+            ReadTimeDepositProjection.sync_id.asc(),
+        )
+    ).all()
+
+    # 已收利息(0030):关联交易中 tx_type='income'(利息)的金额合计与笔数,按
+    # (ledger_id, time_deposit_sync_id) 现算 —— 跨账本需带上 ledger_id 维度。
+    linked_rows = db.execute(
+        select(
+            ReadTxProjection.ledger_id,
+            ReadTxProjection.time_deposit_sync_id,
+            func.sum(
+                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+            ),
+            func.count(),
+        )
+        .where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.time_deposit_sync_id.is_not(None),
+            ReadTxProjection.tx_type == "income",
+        )
+        .group_by(
+            ReadTxProjection.ledger_id, ReadTxProjection.time_deposit_sync_id
+        )
+    ).all()
+    interest_received: dict[tuple[str, str], float] = {}
+    interest_tx_count: dict[tuple[str, str], int] = {}
+    for lid, sid, total, n in linked_rows:
+        interest_received[(lid, sid)] = float(total or 0.0)
+        interest_tx_count[(lid, sid)] = int(n or 0)
+
+    results: list[ReadTimeDepositOut] = []
+    for row in rows:
+        derived = time_deposit_derived(
+            principal=float(row.principal or 0.0),
+            annual_rate=float(row.annual_rate or 0.0),
+            start_date=row.start_date,
+            maturity_date=row.maturity_date,
+            status=row.status or "holding",
+            actual_interest=row.actual_interest,
+            interest_mode=row.interest_mode or "simple",
+        )
+        # 到息计划(0028,多笔):坏 JSON → 当无计划,不让脏数据炸列表。
+        payout_plans_raw: list[dict[str, Any]] | None = None
+        if row.payout_plans_json:
+            try:
+                parsed = json.loads(row.payout_plans_json)
+                if isinstance(parsed, list):
+                    payout_plans_raw = parsed
+            except (json.JSONDecodeError, TypeError):
+                payout_plans_raw = None
+        plans = time_deposit_payout_plans_derived(payout_plans_raw)
+        ext_id, ledger_name = ledger_meta[row.ledger_id]
+        results.append(
+            ReadTimeDepositOut(
+                id=row.sync_id,
+                principal=float(row.principal or 0.0),
+                currency=row.currency or "CNY",
+                annual_rate=float(row.annual_rate or 0.0),
+                term_months=int(row.term_months or 12),
+                start_date=_to_utc(row.start_date),
+                maturity_date=_to_utc(row.maturity_date),
+                status=row.status or "holding",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                auto_renew=bool(row.auto_renew),
+                interest_mode=row.interest_mode or "simple",
+                note=row.note,
+                withdrawn_at=_to_utc(row.withdrawn_at) if row.withdrawn_at else None,
+                actual_interest=row.actual_interest,
+                expected_interest=derived["expected_interest"],
+                days_remaining=derived["days_remaining"],
+                is_matured=derived["is_matured"],
+                payout_plans=[
+                    TimeDepositPayoutPlanOut(**plan) for plan in plans["plans"]
+                ],
+                payout_plans_total=plans["total"],
+                next_payout_date=plans["next_payout_date"],
+                interest_received=interest_received.get(
+                    (row.ledger_id, row.sync_id), 0.0
+                ),
+                interest_tx_count=interest_tx_count.get(
+                    (row.ledger_id, row.sync_id), 0
+                ),
+                last_change_id=_get_latest_change_id(db, ledger_id=row.ledger_id),
+                ledger_id=ext_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
 
 
 @router.get("/workspace/categories", response_model=list[WorkspaceCategoryOut])
@@ -863,6 +1620,26 @@ def list_workspace_tags(
     # 账本维度口径:折本位币(native ?? amount)+ 排除「不计收支」标记笔,
     # 与 analytics / _projection_totals / App getTagStats 一致(审查发现:
     # 此前此处两个口径都缺,多币种/标记场景下标签合计与分析页对不上)。
+
+    def _matched_tag_ids(tag_ids_json: Any, tags_csv: Any) -> set[str]:
+        matched: set[str] = set()
+        if tag_ids_json:
+            try:
+                raw_tag_ids = json.loads(tag_ids_json)
+                if isinstance(raw_tag_ids, list):
+                    for tid in raw_tag_ids:
+                        tid_s = str(tid).strip()
+                        if tid_s and tid_s in tag_id_to_stats:
+                            matched.add(tid_s)
+            except json.JSONDecodeError:
+                pass
+        if not matched and tags_csv:
+            for part in str(tags_csv).split(","):
+                key = part.strip().lower()
+                if key and key in tag_name_to_id:
+                    matched.add(tag_name_to_id[key])
+        return matched
+
     tx_rows = db.execute(
         select(
             ReadTxProjection.tx_type,
@@ -875,22 +1652,7 @@ def list_workspace_tags(
         )
     ).all()
     for tx_type_val, amount, tag_ids_json, tags_csv in tx_rows:
-        matched_ids: set[str] = set()
-        if tag_ids_json:
-            try:
-                raw_tag_ids = json.loads(tag_ids_json)
-                if isinstance(raw_tag_ids, list):
-                    for tid in raw_tag_ids:
-                        tid_s = str(tid).strip()
-                        if tid_s and tid_s in tag_id_to_stats:
-                            matched_ids.add(tid_s)
-            except json.JSONDecodeError:
-                pass
-        if not matched_ids and tags_csv:
-            for part in str(tags_csv).split(","):
-                key = part.strip().lower()
-                if key and key in tag_name_to_id:
-                    matched_ids.add(tag_name_to_id[key])
+        matched_ids = _matched_tag_ids(tag_ids_json, tags_csv)
         amt = float(amount or 0.0)
         for tid in matched_ids:
             slot = tag_id_to_stats[tid]
@@ -899,6 +1661,36 @@ def list_workspace_tags(
                 slot["expense"] += amt
             elif tx_type_val == "income":
                 slot["income"] += amt
+
+    # 「支出统计不含已退款」—— 标签是全局维度(不看卡),扣退款维度
+    # refunded_total(折本位币),与 analytics / 账本卡片同口径。只捞有退款的
+    # 原单行;tx_count 不变(笔数记真实交易)。
+    refund_rows = _refunded_expense_tx_rows(
+        db, ledger_ids=ledger_internal_ids, received_only=True
+    )
+    if refund_rows:
+        refund_totals, _refund_by_account = _refund_totals_for_txs(
+            db,
+            ledger_ids=ledger_internal_ids,
+            tx_ids=[r.sync_id for r in refund_rows],
+            received_only=True,
+        )
+        for row in refund_rows:
+            if row.exclude_from_stats:
+                continue
+            refunded = refund_totals.get(row.sync_id, 0.0)
+            if refunded <= 0:
+                continue
+            refunded_native = _refund_native(
+                refunded,
+                amount=float(row.amount or 0.0),
+                native_amount=row.native_amount,
+            )
+            if refunded_native <= 0:
+                continue
+            for tid in _matched_tag_ids(row.tag_sync_ids_json, row.tags_csv):
+                slot = tag_id_to_stats[tid]
+                slot["expense"] = max(0.0, slot["expense"] - refunded_native)
     for e in all_tags:
         if e.id and e.id in tag_id_to_stats:
             s = tag_id_to_stats[e.id]
@@ -1012,6 +1804,7 @@ def workspace_analytics(
 
     if ledger_internal_ids:
         tx_query = select(
+            ReadTxProjection.sync_id,
             ReadTxProjection.tx_type,
             # 账本维度折本位币口径(0018):native_amount ?? amount。
             func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
@@ -1023,6 +1816,8 @@ def workspace_analytics(
             # 数字(income/expense 汇总、series、分类排行、anomaly)都源自这一
             # 查询,故在此一处过滤即覆盖全部收支口径。余额/净值口径在
             # workspace_net_worth_history 端点,不受此过滤影响。
+            # 支出还要再扣「已退款」——见下方 refund_rows 段(用户需求:
+            # 支出统计不含已退款的支出金额)。
             ReadTxProjection.exclude_from_stats == sa_false(),
         )
         if start_at is not None:
@@ -1034,7 +1829,7 @@ def workspace_analytics(
         # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
         from datetime import timedelta as _td
 
-        for tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
+        for _sync_id, tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
@@ -1067,6 +1862,53 @@ def workspace_analytics(
                 # 同步累加 per-bucket category → anomaly 归因输入
                 bucket_cat = category_by_bucket.setdefault(bucket, {})
                 bucket_cat[category] = bucket_cat.get(category, 0.0) + amt
+
+        # 「支出统计不含已退款」(全局/账本维度 → 退款维度 refunded_total):
+        # 对**周期内**的支出原单扣有效退款(折本位币),汇总 / series / 分类
+        # 排行 / anomaly 归因四处口径一致。transaction_count / distinct_days
+        # 不变 —— 笔数与记账天数记录的是真实发生过的交易(D1 同款语义)。
+        # 只捞有退款的原单行,无退款的账本零额外查询。
+        refund_rows = _refunded_expense_tx_rows(
+            db, ledger_ids=ledger_internal_ids, received_only=True
+        )
+        if refund_rows:
+            refund_totals, _refund_by_account = _refund_totals_for_txs(
+                db,
+                ledger_ids=ledger_internal_ids,
+                tx_ids=[r.sync_id for r in refund_rows],
+                received_only=True,
+            )
+            for refund_row in refund_rows:
+                if refund_row.exclude_from_stats:
+                    continue
+                refund_happened_at = _to_utc(refund_row.happened_at) if refund_row.happened_at else None
+                if refund_happened_at is None:
+                    continue
+                if start_at is not None and refund_happened_at < start_at:
+                    continue
+                if end_at is not None and refund_happened_at >= end_at:
+                    continue
+                refunded = refund_totals.get(refund_row.sync_id, 0.0)
+                if refunded <= 0:
+                    continue
+                refunded_native = _refund_native(
+                    refunded,
+                    amount=float(refund_row.amount or 0.0),
+                    native_amount=refund_row.native_amount,
+                )
+                if refunded_native <= 0:
+                    continue
+                bucket = _bucket_key(
+                    scope, refund_happened_at, tz_offset_minutes, month_start_day)
+                category = (refund_row.category_name or "").strip() or "Uncategorized"
+                # 各 slot 必然已由上面的主循环创建(该原单被计入过),直接扣。
+                series_map[bucket]["expense"] = max(
+                    0.0, series_map[bucket]["expense"] - refunded_native)
+                category_map[category]["expense"] = max(
+                    0.0, category_map[category]["expense"] - refunded_native)
+                category_by_bucket[bucket][category] = max(
+                    0.0, category_by_bucket[bucket][category] - refunded_native)
+                expense_total = max(0.0, expense_total - refunded_native)
 
     series = [
         WorkspaceAnalyticsSeriesItemOut(
@@ -1251,9 +2093,14 @@ def workspace_net_worth_history(
             UserAccountProjection.account_type,
             UserAccountProjection.currency,
             UserAccountProjection.initial_balance,
+            UserAccountProjection.name,
         ).where(UserAccountProjection.user_id == current_user.id)
     ).all()
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
+    nw_name_to_id = {
+        (a.name or "").strip().lower(): a.sync_id
+        for a in accts if a.sync_id and a.name
+    }
     is_credit = {a.sync_id: a.account_type == "credit_card" for a in accts}
     is_liab = {a.sync_id: (a.account_type in ("credit_card", "loan")) for a in accts}
     acc_currency = {a.sync_id: (a.currency or "CNY").upper() for a in accts}
@@ -1318,6 +2165,8 @@ def workspace_net_worth_history(
             ReadTxProjection.account_sync_id,
             ReadTxProjection.from_account_sync_id,
             ReadTxProjection.to_account_sync_id,
+            ReadTxProjection.transfer_fee_json,
+            ReadTxProjection.payment_legs_json,
         )
         .where(ReadTxProjection.ledger_id.in_(ledger_internal_ids))
         .order_by(ReadTxProjection.happened_at.asc())
@@ -1325,17 +2174,25 @@ def workspace_net_worth_history(
 
     bal = dict(init_by_acc)
 
-    def _apply(tx_type, amt, acc, from_acc, to_acc):
+    def _apply(tx_type, amt, acc, from_acc, to_acc, fee_json=None, legs_json=None):
         if tx_type == "income" and acc in bal:
             bal[acc] += amt
-        elif tx_type == "expense" and acc in bal:
-            bal[acc] -= amt
+        elif tx_type == "expense":
+            # 合并付款:按各腿账户分摊扣;否则主账户扣全额。
+            leg_deltas = _expense_leg_deltas(legs_json, nw_name_to_id)
+            if leg_deltas:
+                for a, delta in leg_deltas.items():
+                    if a in bal:
+                        bal[a] += delta
+            elif acc in bal:
+                bal[acc] -= amt
         elif tx_type == "transfer":
-            fa, ta = from_acc or acc, to_acc
-            if fa in bal:
-                bal[fa] -= amt
-            if ta in bal:
-                bal[ta] += amt
+            # 含手续费:按 mode 折算转出/到账/手续费账户的余额增量。
+            for a, delta in _transfer_account_deltas(
+                amt, from_acc or acc, to_acc, fee_json
+            ).items():
+                if a in bal:
+                    bal[a] += delta
 
     def _net():
         # 折算到主币种:各账户余额 × 该币种汇率;缺汇率(或无 base)的账户整条剔除,
@@ -1368,6 +2225,7 @@ def workspace_net_worth_history(
         _apply(
             tx.tx_type, float(tx.amount or 0.0),
             tx.account_sync_id, tx.from_account_sync_id, tx.to_account_sync_id,
+            tx.transfer_fee_json, tx.payment_legs_json,
         )
         last_bucket = bucket
     if last_bucket is not None:

@@ -24,8 +24,47 @@ export type CategoryIconGroup = {
   icons: CategoryIconItem[]
 }
 
-/** 支出类目分组(8 组,每组 8-10 个图标) */
+/**
+ * 记账高频图标,置顶「常用」分组 —— 跟 app 端 `icon_picker_page.dart` 顶部
+ * 的常驻高频项一致,让用户不用翻分组就能点到最常用的图标。
+ * 注意:这里列的每个 key 必须已在 categoryIconMap.ts 的 KNOWN_NAMES / FLUTTER_RENAMES
+ * 里有定义(否则 web 渲染会 fallback 成 'category' 字面图标)。categoryIconGroups.test.ts
+ * 会静态校验这一点。
+ */
+const COMMON_EXPENSE_ICONS: CategoryIconItem[] = [
+  { key: 'restaurant', label: '餐厅' },
+  { key: 'local_dining', label: '用餐' },
+  { key: 'fastfood', label: '快餐' },
+  { key: 'local_cafe', label: '咖啡' },
+  { key: 'directions_car', label: '汽车' },
+  { key: 'local_taxi', label: '出租' },
+  { key: 'shopping_cart', label: '购物' },
+  { key: 'local_grocery_store', label: '超市' },
+  { key: 'home', label: '居家' },
+  { key: 'medical_services', label: '医疗' },
+  { key: 'movie', label: '电影' },
+  { key: 'wifi', label: '网络' },
+]
+
+const COMMON_INCOME_ICONS: CategoryIconItem[] = [
+  { key: 'work', label: '工资' },
+  { key: 'account_balance', label: '银行' },
+  { key: 'savings', label: '储蓄' },
+  { key: 'paid', label: '利息' },
+  { key: 'card_giftcard', label: '红包' },
+  { key: 'wallet', label: '钱包' },
+  { key: 'trending_up', label: '投资' },
+  { key: 'credit_card', label: '信用卡' },
+  { key: 'business_center', label: '商务' },
+  { key: 'restaurant_menu', label: '餐饮' },
+]
+
+/** 支出类目分组(常驻「常用」+ 7 个主题分组,每组 8-10 个图标) */
 export const EXPENSE_ICON_GROUPS: readonly CategoryIconGroup[] = [
+  {
+    labelKey: 'categories.iconGroup.common',
+    icons: COMMON_EXPENSE_ICONS,
+  },
   {
     labelKey: 'categories.iconGroup.dining',
     icons: [
@@ -37,6 +76,9 @@ export const EXPENSE_ICON_GROUPS: readonly CategoryIconGroup[] = [
       { key: 'cake', label: '蛋糕' },
       { key: 'local_pizza', label: '披萨' },
       { key: 'icecream', label: '冰淇淋' },
+      { key: 'bakery_dining', label: '面包' },
+      { key: 'coffee', label: '咖啡馆' },
+      { key: 'ramen_dining', label: '面馆' },
     ],
   },
   {
@@ -134,10 +176,53 @@ export const EXPENSE_ICON_GROUPS: readonly CategoryIconGroup[] = [
       { key: 'category', label: '其他' },
     ],
   },
+  {
+    labelKey: 'categories.iconGroup.digital',
+    icons: [
+      { key: 'smartphone', label: '手机' },
+      { key: 'laptop', label: '笔记本' },
+      { key: 'tablet', label: '平板' },
+      { key: 'computer', label: '电脑' },
+      { key: 'camera_alt', label: '相机' },
+      { key: 'headphones', label: '耳机' },
+      { key: 'watch', label: '手表' },
+      { key: 'videocam', label: '摄像' },
+    ],
+  },
+  {
+    labelKey: 'categories.iconGroup.travel',
+    icons: [
+      { key: 'flight', label: '飞机' },
+      { key: 'directions_subway', label: '地铁' },
+      { key: 'train', label: '火车' },
+      { key: 'local_taxi', label: '出租' },
+      { key: 'directions_boat', label: '轮渡' },
+      { key: 'map', label: '地图' },
+      { key: 'hiking', label: '徒步' },
+      { key: 'beach_access', label: '海滩' },
+    ],
+  },
+  {
+    labelKey: 'categories.iconGroup.sports',
+    icons: [
+      { key: 'fitness_center', label: '健身' },
+      { key: 'sports_soccer', label: '足球' },
+      { key: 'sports_basketball', label: '篮球' },
+      { key: 'sports_tennis', label: '网球' },
+      { key: 'pool', label: '游泳' },
+      { key: 'directions_bike', label: '骑行' },
+      { key: 'self_improvement', label: '身心' },
+      { key: 'spa', label: '养生' },
+    ],
+  },
 ] as const
 
-/** 收入类目分组(4 组) */
+/** 收入类目分组(常驻「常用」+ 3 个主题分组) */
 export const INCOME_ICON_GROUPS: readonly CategoryIconGroup[] = [
+  {
+    labelKey: 'categories.iconGroup.common',
+    icons: COMMON_INCOME_ICONS,
+  },
   {
     labelKey: 'categories.iconGroup.workIncome',
     icons: [
@@ -191,6 +276,45 @@ export const INCOME_ICON_GROUPS: readonly CategoryIconGroup[] = [
       { key: 'handshake', label: '合作' },
       { key: 'category', label: '其他' },
       { key: 'help', label: '未分类' },
+    ],
+  },
+  {
+    labelKey: 'categories.iconGroup.digital',
+    icons: [
+      { key: 'smartphone', label: '手机' },
+      { key: 'laptop', label: '笔记本' },
+      { key: 'tablet', label: '平板' },
+      { key: 'computer', label: '电脑' },
+      { key: 'camera_alt', label: '相机' },
+      { key: 'headphones', label: '耳机' },
+      { key: 'watch', label: '手表' },
+      { key: 'videocam', label: '摄像' },
+    ],
+  },
+  {
+    labelKey: 'categories.iconGroup.travel',
+    icons: [
+      { key: 'flight', label: '飞机' },
+      { key: 'directions_subway', label: '地铁' },
+      { key: 'train', label: '火车' },
+      { key: 'local_taxi', label: '出租' },
+      { key: 'directions_boat', label: '轮渡' },
+      { key: 'map', label: '地图' },
+      { key: 'hiking', label: '徒步' },
+      { key: 'beach_access', label: '海滩' },
+    ],
+  },
+  {
+    labelKey: 'categories.iconGroup.sports',
+    icons: [
+      { key: 'fitness_center', label: '健身' },
+      { key: 'sports_soccer', label: '足球' },
+      { key: 'sports_basketball', label: '篮球' },
+      { key: 'sports_tennis', label: '网球' },
+      { key: 'pool', label: '游泳' },
+      { key: 'directions_bike', label: '骑行' },
+      { key: 'self_improvement', label: '身心' },
+      { key: 'spa', label: '养生' },
     ],
   },
 ] as const

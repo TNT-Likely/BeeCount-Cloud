@@ -34,6 +34,29 @@ export function currentMonthRange(
   return { start, end }
 }
 
+/**
+ * 总预算「日均可用 / 剩余天数」派生。
+ *
+ * 关键修复(预算页"日均可用 0.00"):不再把 remaining 钳 0。
+ * 超支时 remaining 为负,调用方据此展示「已超支」而非误导性的 ¥0.00;
+ * 未超支时日均可用为正。周期跟随账本 month_start_day(设计 D5),与
+ * server budgets/usage 同口径;now 可注入便于单测。
+ */
+export function computeTotalBudgetDailySummary(
+  amount: number,
+  used: number,
+  monthStartDay: number,
+  now: Date = new Date(),
+): { daysRemaining: number; dailyAvailable: number; remaining: number; isOver: boolean } {
+  const day = Math.max(1, Math.min(28, Math.round(monthStartDay || 1)))
+  const { end } = currentMonthRange(day, now)
+  const msPerDay = 86_400_000
+  const daysRemaining = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / msPerDay))
+  const remaining = amount - used
+  const dailyAvailable = daysRemaining > 0 ? remaining / daysRemaining : 0
+  return { daysRemaining, dailyAvailable, remaining, isOver: remaining < 0 }
+}
+
 /** date 所属记账周期的标签 "YYYY-MM"(day >= startDay 归当月,否则上月)。 */
 export function periodLabel(date: Date, startDay: number): string {
   const day = Math.max(1, Math.min(28, Math.round(startDay || 1)))

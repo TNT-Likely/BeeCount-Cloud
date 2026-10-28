@@ -45,6 +45,10 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
         re.I,
     ),
     "tags": re.compile(r"(标签|tag|label)", re.I),
+    # v0021 扩展字段(优惠 / 手续费 / 多账户)
+    "discount": re.compile(r"(优惠|折扣|减免|discount|coupon)", re.I),
+    "transfer_fee": re.compile(r"(手续费|手續費|transfer.?fee|服务费|fee)", re.I),
+    "payment_legs": re.compile(r"(多账户|多賬戶|分摊|合并付款|split.?account|payment.?leg)", re.I),
 }
 
 
@@ -106,6 +110,9 @@ class GenericParser:
             to_account_name=grab("to_account_name"),
             note=grab("note"),
             tags=[t for t in [grab("tags")] if t],
+            discount=grab("discount"),
+            transfer_fee=grab("transfer_fee"),
+            payment_legs=grab("payment_legs"),
             datetime_format=None,
             strip_currency_symbols=True,
             expense_is_negative=False,

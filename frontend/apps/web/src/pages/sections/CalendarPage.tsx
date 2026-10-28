@@ -16,6 +16,19 @@ import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { dispatchOpenDetailTx, dispatchOpenNewTx } from '../../lib/txDialogEvents'
+import { getChinaHoliday, type ChinaHolidayInfo } from '../../lib/chinaHolidays'
+import { resolveAppearancePrefs } from '../../lib/appearancePrefs'
+import { solarToLunar } from '../../lib/lunar'
+import {
+  buildMonthGrid,
+  formatDateKey,
+  isSameMonth,
+  parseMonth,
+  sameDayInMonth,
+  shiftMonth,
+  thisMonthKey,
+  todayKey,
+} from '../../lib/calendarMonth'
 
 // ============================================================================
 // 日历视图 — 见 .docs/web-calendar-view-design.md
@@ -38,80 +51,6 @@ type DayBucket = {
 
 const ZH_WEEK = ['日', '一', '二', '三', '四', '五', '六']
 const EN_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-function todayKey(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function thisMonthKey(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
-function parseMonth(monthKey: string): { year: number; month: number } {
-  const [y, m] = monthKey.split('-').map(Number)
-  return { year: y, month: m }
-}
-
-function shiftMonth(monthKey: string, delta: number): string {
-  const { year, month } = parseMonth(monthKey)
-  const total = year * 12 + (month - 1) + delta
-  const nextYear = Math.floor(total / 12)
-  const nextMonth = (total % 12) + 1
-  return `${nextYear}-${String(nextMonth).padStart(2, '0')}`
-}
-
-/**
- * 给定 YYYY-MM 和 weekStartsOn(0=Sun, 1=Mon),返回 6 行 7 列共 42 格的 dateKey 数组。
- * 跨月日填充:第一周前面用上月末几天,最后一周后面用下月头几天。
- */
-function buildMonthGrid(
-  monthKey: string,
-  weekStartsOn: 0 | 1,
-): { dateKeys: string[]; firstOfMonth: string; lastOfMonth: string } {
-  const { year, month } = parseMonth(monthKey)
-  const firstDay = new Date(year, month - 1, 1)
-  const lastDay = new Date(year, month, 0)
-  const totalDays = lastDay.getDate()
-
-  // first day's weekday: 0=Sun..6=Sat. 我们要把它对齐到 weekStartsOn 列。
-  const firstWeekday = firstDay.getDay()
-  const leadingCount = (firstWeekday - weekStartsOn + 7) % 7
-
-  const dateKeys: string[] = []
-
-  // 前置月填充
-  for (let i = leadingCount; i > 0; i--) {
-    const d = new Date(year, month - 1, 1 - i)
-    dateKeys.push(formatDateKey(d))
-  }
-  // 当月
-  for (let i = 1; i <= totalDays; i++) {
-    dateKeys.push(`${year}-${String(month).padStart(2, '0')}-${String(i).padStart(2, '0')}`)
-  }
-  // 后置月填充至 6 行 (42 格,避免月历高度跳变)
-  while (dateKeys.length < 42) {
-    const last = dateKeys[dateKeys.length - 1]
-    const [y, m, d] = last.split('-').map(Number)
-    const next = new Date(y, m - 1, d + 1)
-    dateKeys.push(formatDateKey(next))
-  }
-
-  return {
-    dateKeys,
-    firstOfMonth: `${year}-${String(month).padStart(2, '0')}-01`,
-    lastOfMonth: `${year}-${String(month).padStart(2, '0')}-${String(totalDays).padStart(2, '0')}`,
-  }
-}
-
-function formatDateKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function isSameMonth(dateKey: string, monthKey: string): boolean {
-  return dateKey.startsWith(monthKey)
-}
 
 /**
  * 把 server 返回的 series(bucket=YYYY-MM-DD)折叠成 Map<dateKey, DayBucket>。
@@ -137,19 +76,30 @@ function aggregateByDay(series: WorkspaceAnalyticsSeriesItem[]): Map<string, Day
 
 export function CalendarPage() {
   const t = useT()
-  const { token } = useAuth()
+  const { token, profileMe } = useAuth()
   const { activeLedgerId, currency } = useLedgers()
+
+  // 日历外观偏好:节假日默认开(贴合既有行为),农历默认关(需主动开启)。
+  // 走 resolveAppearancePrefs 统一归一化,避免散落魔法布尔。
+  const { showHolidays, showLunar } = resolveAppearancePrefs(profileMe?.appearance ?? {})
   const [searchParams, setSearchParams] = useSearchParams()
 
   // ====== 状态:focusedMonth / selectedDate(URL state 同步)======
   const monthFromUrl = searchParams.get('m')
   const dateFromUrl = searchParams.get('d')
-  const [focusedMonth, setFocusedMonth] = useState<string>(
-    monthFromUrl && /^\d{4}-\d{2}$/.test(monthFromUrl) ? monthFromUrl : thisMonthKey(),
-  )
-  const [selectedDate, setSelectedDate] = useState<string>(
-    dateFromUrl && /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl) ? dateFromUrl : todayKey(),
-  )
+  const [focusedMonth, setFocusedMonth] = useState<string>(() => {
+    if (monthFromUrl && /^\d{4}-\d{2}$/.test(monthFromUrl)) return monthFromUrl
+    // 只给了 ?d=(分享某天)时,月份跟随该日,否则网格会停在本月而侧栏跳到别月
+    if (dateFromUrl && /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl)) return dateFromUrl.slice(0, 7)
+    return thisMonthKey()
+  })
+  // 选定日必须落在 focusedMonth 内:URL 只给了 ?m= 其它月份时,若仍默认今天,
+  // 侧栏日详情就会跟网格里的月份对不上(「翻到 9 月还显示今天」)。
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    if (dateFromUrl && /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl)) return dateFromUrl
+    const today = todayKey()
+    return isSameMonth(today, focusedMonth) ? today : sameDayInMonth(focusedMonth, today)
+  })
 
   // 周起始:locale 推断,中文一,其他日。可以未来通过设置切换。
   const weekStartsOn: 0 | 1 = useMemo(() => {
@@ -268,12 +218,18 @@ export function CalendarPage() {
   const selectedDayBucket = selectedDate ? dayBuckets.get(selectedDate) : undefined
 
   // ====== 切月 / 跳今天 ======
-  const goPrevMonth = useCallback(() => {
-    setFocusedMonth((cur) => shiftMonth(cur, -1))
-  }, [])
-  const goNextMonth = useCallback(() => {
-    setFocusedMonth((cur) => shiftMonth(cur, 1))
-  }, [])
+  // 翻月时选中日跟着搬到新月的同一天(小月/2 月无此日则取月末),否则侧栏
+  // 日详情会一直停在翻月前的那天 —— 表现就是「翻到 9 月还显示今天」。
+  const changeMonth = useCallback(
+    (delta: number) => {
+      const nextMonth = shiftMonth(focusedMonth, delta)
+      setFocusedMonth(nextMonth)
+      setSelectedDate((cur) => (cur ? sameDayInMonth(nextMonth, cur) : cur))
+    },
+    [focusedMonth],
+  )
+  const goPrevMonth = useCallback(() => changeMonth(-1), [changeMonth])
+  const goNextMonth = useCallback(() => changeMonth(1), [changeMonth])
   const goToday = useCallback(() => {
     const today = todayKey()
     setFocusedMonth(thisMonthKey())
@@ -446,6 +402,29 @@ export function CalendarPage() {
             />
             {t('calendar.legend.expense')}
           </span>
+          {/* 节假日图例:与日格角标同款「休 / 班」小标记 —— 仅在显示节假日时展示 */}
+          {showHolidays && (
+            <>
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className="shrink-0 rounded bg-rose-500/10 px-1 text-[9px] font-medium leading-[15px] text-rose-600 dark:text-rose-400"
+                  aria-hidden
+                >
+                  {t('calendar.holiday.shortRest')}
+                </span>
+                {t('calendar.legend.holiday')}
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className="shrink-0 rounded bg-muted px-1 text-[9px] font-medium leading-[15px] text-muted-foreground"
+                  aria-hidden
+                >
+                  {t('calendar.holiday.shortWork')}
+                </span>
+                {t('calendar.legend.makeupWork')}
+              </span>
+            </>
+          )}
         </div>
         <div className="hidden items-center gap-1 md:inline-flex">
           {t('calendar.legend.shortcuts')}
@@ -477,11 +456,12 @@ export function CalendarPage() {
                   key={dateKey}
                   dateKey={dateKey}
                   bucket={dayBuckets.get(dateKey)}
+                  holiday={showHolidays ? getChinaHoliday(dateKey) : null}
+                  showLunar={showLunar}
                   inFocusedMonth={isSameMonth(dateKey, focusedMonth)}
                   isToday={dateKey === todayKey()}
                   isSelected={dateKey === selectedDate}
                   monthMaxAbsNet={monthMaxAbsNet}
-                  currency={currency}
                   onSelect={() => {
                     setSelectedDate(dateKey)
                     if (!isSameMonth(dateKey, focusedMonth)) {
@@ -521,6 +501,8 @@ export function CalendarPage() {
             <DayDetailHeader
               dateKey={selectedDate}
               bucket={selectedDayBucket}
+              holiday={selectedDate && showHolidays ? getChinaHoliday(selectedDate) : null}
+              showLunar={showLunar}
               currency={currency}
               onAdd={handleAddTxOnSelectedDay}
             />
@@ -548,26 +530,33 @@ function Kbd({ children }: { children: React.ReactNode }) {
 type DayCellProps = {
   dateKey: string
   bucket: DayBucket | undefined
+  /** 法定节假日 / 调休补班日信息(非节假日为 null)。不显示节假日时恒为 null。 */
+  holiday: ChinaHolidayInfo | null
+  /** 是否渲染农历小字(由 appearance 偏好 show_lunar 控制)。 */
+  showLunar: boolean
   inFocusedMonth: boolean
   isToday: boolean
   isSelected: boolean
   monthMaxAbsNet: number
-  currency: string
   onSelect: () => void
 }
 
 function DayCell({
   dateKey,
   bucket,
+  holiday,
+  showLunar,
   inFocusedMonth,
   isToday,
   isSelected,
   monthMaxAbsNet,
   onSelect,
 }: DayCellProps) {
+  const t = useT()
   const { locale } = useLocale()
   const chinese = locale.startsWith('zh')
   const dayNum = Number(dateKey.slice(8))
+  const lunarText = showLunar ? safeSolarToLunarText(dateKey) : null
 
   // 周末判断:0=周日 / 6=周六 → 给一个非常微弱的灰底,跟工作日区分但不抢戏
   const weekday = useMemo(() => {
@@ -611,12 +600,14 @@ function DayCell({
         isToday && !isSelected ? 'ring-1 ring-primary/40' : '',
         // 周末柔和底色(仅对无交易日生效;有交易的格子优先 tint 色)
         !bucket && isWeekend && inFocusedMonth ? 'bg-muted/30' : '',
+        // 法定节假日(无交易):极淡的玫瑰底,跟周末灰底区分,假期一眼可辨
+        !bucket && holiday?.kind === 'holiday' && inFocusedMonth ? 'bg-rose-500/5' : '',
       ].join(' ')}
       aria-label={dateKey}
       aria-selected={isSelected}
     >
       {/* 日期数字 + 角标 */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-1">
         <span
           className={[
             'inline-flex h-6 min-w-[1.5rem] items-center justify-center text-xs font-semibold tabular-nums',
@@ -629,21 +620,44 @@ function DayCell({
         >
           {dayNum}
         </span>
-        {/* 角标:今日(无交易)用脉冲圆点 / 有交易用净值色圆点 */}
-        {bucket && !isToday && (
+        {/* 角标:节假日名 / 调休「班」优先于交易圆点 —— 节假日是结构性信息,
+            比"这天有交易"更该在第一眼被看到;有交易的节假日靠整格 tint + 净值表达。 */}
+        {holiday ? (
+          holiday.kind === 'holiday' ? (
+            <span
+              className="max-w-[3.4rem] truncate rounded bg-rose-500/10 px-1 text-[9px] font-medium leading-[15px] text-rose-600 dark:text-rose-400"
+              title={t(`calendar.holiday.${holiday.nameKey}`)}
+            >
+              {t(`calendar.holiday.${holiday.nameKey}`)}
+            </span>
+          ) : (
+            <span
+              className="shrink-0 rounded bg-muted px-1 text-[9px] font-medium leading-[15px] text-muted-foreground"
+              title={t('calendar.holiday.makeupWork')}
+            >
+              {t('calendar.holiday.shortWork')}
+            </span>
+          )
+        ) : bucket && !isToday ? (
           <span
             className="h-1.5 w-1.5 rounded-full"
             style={{ backgroundColor: `rgb(var(${colorVar}))` }}
             aria-hidden
           />
-        )}
-        {isToday && !bucket && (
+        ) : isToday && !bucket ? (
           <span
             className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary/60"
             aria-hidden
           />
-        )}
+        ) : null}
       </div>
+
+      {/* 农历小字 —— 仅在 showLunar 时渲染,弱化样式不与 date 数字抢戏 */}
+      {lunarText && (
+        <div className="mt-0.5 text-[9px] leading-[11px] text-muted-foreground/80">
+          {lunarText}
+        </div>
+      )}
 
       {/* 净值数字 — 弱化样式,主视觉是整格 tint */}
       {bucket && (
@@ -677,6 +691,16 @@ function compactNum(value: number, chinese: boolean): string {
   return `${(value / 1000).toFixed(1)}k`
 }
 
+// 公历 → 农历 文本(如「正月初一」)。solarToLunar 在 1900–2100 之外会抛错,
+// 这里兜底成 null,绝不因历法边界让整页崩。
+function safeSolarToLunarText(dateKey: string): string | null {
+  try {
+    return solarToLunar(dateKey).text
+  } catch {
+    return null
+  }
+}
+
 // ============================================================================
 // 选中日详情:Header + tx 列表
 // ============================================================================
@@ -684,12 +708,16 @@ function compactNum(value: number, chinese: boolean): string {
 type DayDetailHeaderProps = {
   dateKey: string
   bucket: DayBucket | undefined
+  holiday: ChinaHolidayInfo | null
+  /** 是否渲染农历(由 appearance 偏好 show_lunar 控制)。 */
+  showLunar: boolean
   currency: string
   onAdd: () => void
 }
 
-function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderProps) {
+function DayDetailHeader({ dateKey, bucket, holiday, showLunar, currency, onAdd }: DayDetailHeaderProps) {
   const t = useT()
+  const lunarText = showLunar ? safeSolarToLunarText(dateKey) : null
   const { dateBig, dateSub } = useMemo(() => {
     const [y, m, d] = dateKey.split('-').map(Number)
     const date = new Date(y, m - 1, d)
@@ -720,6 +748,27 @@ function DayDetailHeader({ dateKey, bucket, currency, onAdd }: DayDetailHeaderPr
               {dateBig}
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">{dateSub}</div>
+            {/* 节假日 / 调休补班日标记(侧栏详情同步展示,跟月历角标呼应) */}
+            {holiday ? (
+              <div
+                className={[
+                  'mt-1.5 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
+                  holiday.kind === 'holiday'
+                    ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                    : 'bg-muted text-muted-foreground',
+                ].join(' ')}
+              >
+                {holiday.kind === 'holiday'
+                  ? `${t(`calendar.holiday.${holiday.nameKey}`)} · ${t('calendar.holiday.rest')}`
+                  : t('calendar.holiday.makeupWork')}
+              </div>
+            ) : null}
+            {/* 农历标记(侧栏详情同步展示,跟日格小字呼应) */}
+            {lunarText ? (
+              <div className="mt-1.5 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                {lunarText}
+              </div>
+            ) : null}
           </div>
           <Button size="sm" onClick={onAdd} className="shrink-0">
             <Plus className="mr-1 h-3.5 w-3.5" />

@@ -1,4 +1,6 @@
 import type {
+  CounterpartyStat,
+  MemberShareStat,
   ReadBudget,
   WorkspaceAccount,
   WorkspaceAnalytics,
@@ -19,6 +21,11 @@ import { HomeHero } from '../dashboard/HomeHero'
 import { HomeHabitStats } from '../dashboard/HomeHabitStats'
 import { HomeYearHeatmap } from '../dashboard/HomeYearHeatmap'
 import { HomeMonthCategoryDonut } from '../dashboard/HomeMonthCategoryDonut'
+import { HomeMemberRanks, type MemberRankScope } from '../dashboard/HomeMemberRanks'
+import {
+  HomeCounterpartyRanks,
+  type CounterpartyRankScope,
+} from '../dashboard/HomeCounterpartyRanks'
 import { HomeTopTags } from '../dashboard/HomeTopTags'
 import { HomeTopAccounts } from '../dashboard/HomeTopAccounts'
 import { AssetCompositionDonut } from '../dashboard/AssetCompositionDonut'
@@ -41,6 +48,18 @@ interface Props {
   /** 当前账本预算 + 各 budget 当周期 used。空数组 → BudgetUsagePanel 不显示。 */
   budgets: ReadBudget[]
   budgetUsageById: Record<string, BudgetUsage>
+  /** 成员维度统计(0024)。null = 还没拉到,卡片走空态。 */
+  memberStats: MemberShareStat[] | null
+  memberScope: MemberRankScope
+  onMemberScopeChange: (scope: MemberRankScope) => void
+  /** 卡片里「管理成员」按钮 → 跳成员页。 */
+  onManageMembers: () => void
+  /** 交易对手维度统计(0023 借款聚合,平帐视角)。null = 还没拉到。 */
+  counterpartyStats: CounterpartyStat[] | null
+  counterpartyScope: CounterpartyRankScope
+  onCounterpartyScopeChange: (scope: CounterpartyRankScope) => void
+  /** 卡片里「记借款」按钮 → 跳借款页。 */
+  onManageCounterparty: () => void
   onJumpToTransactionsWithQuery: (query: string) => void
   /** Top 卡片点击分类名时的钩子 — page 端反查 WorkspaceCategory 后派发详情。
    *  没传则 Top 卡片回退到 onJumpToTransactionsWithQuery。 */
@@ -74,6 +93,14 @@ export function OverviewSection({
   ledgerCounts,
   budgets,
   budgetUsageById,
+  memberStats,
+  memberScope,
+  onMemberScopeChange,
+  onManageMembers,
+  counterpartyStats,
+  counterpartyScope,
+  onCounterpartyScopeChange,
+  onManageCounterparty,
   onJumpToTransactionsWithQuery,
   onCategoryClickFromTop,
 }: Props) {
@@ -124,7 +151,9 @@ export function OverviewSection({
         <HomeYearHeatmap yearSeries={currentYearSeries} currency={currency} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+      {/* 资产构成 + 月度收支走势:跟本页其他并排模块统一 1:1(此前 1.1fr/1fr
+          会让两张卡宽度不等);卡片高度由图表区统一 h-56 撑齐。 */}
+      <div className="grid gap-4 lg:grid-cols-2">
         <AssetCompositionDonut accounts={accounts} />
         <MonthlyTrendBars data={analyticsData?.series || []} />
       </div>
@@ -152,6 +181,26 @@ export function OverviewSection({
         />
       </div>
 
+      {/* 「人」维度两张卡并排:成员(0024) + 交易对手(平帐,0023 借款聚合)。
+          同一套视觉,只是口径换成"人"。 */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <HomeMemberRanks
+          items={memberStats}
+          currency={currency}
+          scope={memberScope}
+          onScopeChange={onMemberScopeChange}
+          onManage={onManageMembers}
+        />
+        <HomeCounterpartyRanks
+          items={counterpartyStats}
+          currency={currency}
+          scope={counterpartyScope}
+          onScopeChange={onCounterpartyScopeChange}
+          onManage={onManageCounterparty}
+        />
+      </div>
+
+      {/* 标签 + 账户两张"Top 排行"卡片并排 */}
       <div className="grid gap-4 md:grid-cols-2">
         <HomeTopTags
           tags={tags}

@@ -14,9 +14,12 @@ import {
   FileText,
   FolderTree,
   Hash,
+  Landmark,
   LayoutDashboard,
   LogOut,
   Moon,
+  PackageCheck,
+  PiggyBank,
   Plus,
   Receipt,
   Search,
@@ -24,6 +27,7 @@ import {
   Sparkles,
   Sun,
   Tag,
+  Undo2,
   UserPlus,
   Users,
   Wallet,
@@ -46,7 +50,7 @@ import {
   dispatchOpenSharedJoin,
   dispatchOpenSharedManage,
 } from '../lib/sharedLedgerEvents'
-import { currentMonthRange, yearRange } from '@beecount/web-features'
+import { accountDisplayName, currentMonthRange, yearRange } from '@beecount/web-features'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 import { VoiceInputButton } from './cmdk-ai/VoiceInputButton'
 
@@ -502,7 +506,7 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
                 <Item
                   key={acc.id}
                   icon={<CreditCard className="h-4 w-4" />}
-                  label={acc.name}
+                  label={accountDisplayName(acc)}
                   hint={`${formatAmount(acc.balance ?? 0)} ${acc.currency}`}
                   onSelect={() => handleSelectAccount(acc)}
                 />
@@ -641,6 +645,11 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             <Item icon={<FolderTree className="h-4 w-4" />} label={t('nav.categories')} onSelect={() => goto('categories')} />
             <Item icon={<Tag className="h-4 w-4" />} label={t('nav.tags')} onSelect={() => goto('tags')} />
             <Item icon={<FileBarChart2 className="h-4 w-4" />} label={t('nav.budgets')} onSelect={() => goto('budgets')} />
+            <Item icon={<PiggyBank className="h-4 w-4" />} label={t('nav.timeDeposits')} onSelect={() => goto('time-deposits')} />
+            <Item icon={<PackageCheck className="h-4 w-4" />} label={t('nav.itemReturns')} onSelect={() => goto('item-returns')} />
+            <Item icon={<Undo2 className="h-4 w-4" />} label={t('nav.refunds')} onSelect={() => goto('refunds')} />
+            <Item icon={<Landmark className="h-4 w-4" />} label={t('nav.loans')} onSelect={() => goto('loans')} />
+            <Item icon={<FileText className="h-4 w-4" />} label={t('nav.reimbursements')} onSelect={() => goto('reimbursements')} />
             <Item icon={<BookOpen className="h-4 w-4" />} label={t('nav.ledgers')} onSelect={() => goto('ledgers')} />
             <Item icon={<Settings className="h-4 w-4" />} label={t('nav.profile')} onSelect={() => goto('settings-profile')} />
             {isAdmin && (

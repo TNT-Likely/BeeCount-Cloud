@@ -5,11 +5,12 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Iterable
+from typing import Any, Iterable
 
 from .schema import (
     ImportError,
@@ -46,6 +47,123 @@ _DATETIME_CANDIDATES = (
 
 _CURRENCY_CHARS = re.compile(r"[¥￥$€£,\s]")
 _TAG_SPLIT = re.compile(r"[,，;；、]")
+
+# 多账户"账户:金额"之间的分隔符,以及键值分隔符
+_LEG_SPLIT = re.compile(r"[;；]+")
+_LEG_PAIR = re.compile(r"[:：]")
+
+
+def _to_float_or_none(raw: str) -> Decimal | None:
+    """剥离货币符号后解析为 Decimal;失败返回 None。"""
+    cleaned = _CURRENCY_CHARS.sub("", raw.strip())
+    cleaned = cleaned.replace("−", "-")
+    if not cleaned:
+        return None
+    try:
+        return Decimal(cleaned)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _parse_discount(raw: str | None) -> dict[str, Any] | None:
+    """优惠列 → discount dict。兼容 JSON 对象 或 纯数字(优惠金额)。无则 None。"""
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(d, dict):
+            return None
+        amt = d.get("discountAmount")
+        if amt is None:
+            amt = d.get("value")
+        if amt is None:
+            return None
+        try:
+            float(amt)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "mode": d.get("mode", "amount"),
+            "discountAmount": float(amt),
+            "couponName": d.get("couponName"),
+            "originalAmount": d.get("originalAmount"),
+            "finalAmount": d.get("finalAmount"),
+        }
+    dec = _to_float_or_none(s)
+    if dec is None:
+        return None
+    return {"mode": "amount", "discountAmount": float(abs(dec))}
+
+
+def _parse_transfer_fee(raw: str | None) -> dict[str, Any] | None:
+    """手续费列 → transfer_fee dict。兼容 JSON 对象 或 纯数字。无则 None。"""
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(d, dict):
+            return None
+        amt = d.get("amount")
+        if amt is None:
+            return None
+        try:
+            float(amt)
+        except (TypeError, ValueError):
+            return None
+        return {"mode": d.get("mode", "amount"), "amount": float(amt)}
+    dec = _to_float_or_none(s)
+    if dec is None:
+        return None
+    return {"mode": "amount", "amount": float(abs(dec))}
+
+
+def _parse_payment_legs(raw: str | None) -> list[dict[str, Any]] | None:
+    """多账户列 → payment_legs list。兼容 JSON 数组 或 '账户:金额; 账户:金额'。"""
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.startswith("["):
+        try:
+            arr = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(arr, list) or not arr:
+            return None
+        legs: list[dict[str, Any]] = []
+        for leg in arr:
+            if not isinstance(leg, dict):
+                continue
+            name = leg.get("accountName") or leg.get("account_name") or leg.get("name")
+            amt = leg.get("amount")
+            if not name or amt is None:
+                continue
+            try:
+                legs.append({"accountName": str(name), "amount": float(amt)})
+            except (TypeError, ValueError):
+                continue
+        return legs or None
+    legs = []
+    for piece in _LEG_SPLIT.split(s):
+        piece = piece.strip()
+        if not piece:
+            continue
+        m = _LEG_PAIR.split(piece, maxsplit=1)
+        if len(m) != 2:
+            continue
+        name = m[0].strip()
+        amt = _to_float_or_none(m[1])
+        if not name or amt is None or amt <= 0:
+            continue
+        legs.append({"accountName": name, "amount": float(amt)})
+    return legs or None
 
 
 def apply_mapping(
@@ -173,6 +291,16 @@ def _transform_row(row: ParsedRow, mapping: ImportFieldMapping) -> ImportTransac
         else None
     )
 
+    # v0021 扩展字段(优惠 / 手续费 / 多账户):按类型归属解析 —— discount /
+    # payment_legs 仅 expense 有效,transfer_fee 仅 transfer 有效;其余类型置 None。
+    discount = _parse_discount(opt(mapping.discount)) if tx_type == "expense" else None
+    transfer_fee = (
+        _parse_transfer_fee(opt(mapping.transfer_fee)) if tx_type == "transfer" else None
+    )
+    payment_legs = (
+        _parse_payment_legs(opt(mapping.payment_legs)) if tx_type == "expense" else None
+    )
+
     return ImportTransaction(
         tx_type=tx_type,
         amount=amount,
@@ -185,6 +313,9 @@ def _transform_row(row: ParsedRow, mapping: ImportFieldMapping) -> ImportTransac
         from_account_name=opt(mapping.from_account_name),
         to_account_name=opt(mapping.to_account_name),
         tag_names=tag_names,
+        discount=discount,
+        transfer_fee=transfer_fee,
+        payment_legs=payment_legs,
         source_row_number=row.row_number,
         source_raw_line=row.raw_line,
     )

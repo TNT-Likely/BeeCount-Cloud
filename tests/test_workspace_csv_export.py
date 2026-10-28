@@ -199,10 +199,10 @@ def test_csv_header_and_bom_default_en():
         body = r.content.decode("utf-8")
         assert body.startswith("\ufeff"), "CSV must start with UTF-8 BOM"
         first_line = body.lstrip("\ufeff").split("\n")[0]
-        # 默认 en
+        # 默认 en(0021 起末尾追加 Discount/Fee/Split Accounts 三列)
         assert first_line == (
             "Type,Category,Subcategory,Amount,Currency,Account,From Account,"
-            "To Account,Note,Time,Tags,Attachments"
+            "To Account,Note,Time,Tags,Attachments,Discount,Fee,Split Accounts"
         )
     finally:
         app.dependency_overrides.clear()
@@ -223,7 +223,7 @@ def test_csv_header_localized_zh_cn():
             headers=web_hdr,
         )
         first_line = r.content.decode("utf-8").lstrip("\ufeff").split("\n")[0]
-        assert first_line == "类型,分类,二级分类,金额,币种,账户,转出账户,转入账户,备注,时间,标签,附件"
+        assert first_line == "类型,分类,二级分类,金额,币种,账户,转出账户,转入账户,备注,时间,标签,附件,优惠,手续费,多账户"
     finally:
         app.dependency_overrides.clear()
 
@@ -242,7 +242,7 @@ def test_csv_header_localized_zh_tw():
             headers=web_hdr,
         )
         first_line = r.content.decode("utf-8").lstrip("\ufeff").split("\n")[0]
-        assert first_line == "類型,分類,二級分類,金額,幣種,帳戶,轉出帳戶,轉入帳戶,備註,時間,標籤,附件"
+        assert first_line == "類型,分類,二級分類,金額,幣種,帳戶,轉出帳戶,轉入帳戶,備註,時間,標籤,附件,優惠,手續費,多賬戶"
     finally:
         app.dependency_overrides.clear()
 

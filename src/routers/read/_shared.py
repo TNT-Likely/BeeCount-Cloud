@@ -33,6 +33,9 @@ from ...models import (
     Ledger,
     LedgerMember,
     ReadBudgetProjection,
+    ReadItemProjection,
+    ReadRefundProjection,
+    ReadTimeDepositProjection,
     ReadTxProjection,
     SyncChange,
     User,
@@ -41,6 +44,7 @@ from ...models import (
     UserProfile,
     UserTagProjection,
 )
+from ...services.linked_transactions import refund_entity_id_from_tx_sync_id
 from ...schemas import (
     AnalyticsMetric,
     AnalyticsScope,
@@ -420,6 +424,172 @@ def _tags_list(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _tx_extension_fields(
+    row: Any,
+    item_name: str | None = None,
+    time_deposit_name: str | None = None,
+    refund_source_label: str | None = None,
+) -> dict[str, Any]:
+    """0021 交易扩展字段:projection JSON 文本列 → 原生对象。
+
+    discount(优惠)/ transfer_fee(转账手续费)/ payment_legs(合并付款)/
+    member_shares(成员分摊,0024)。空值 / 坏 JSON → None,跟
+    ReadTransactionOut 的默认值语义一致。
+
+    归物(0029):item_id 直接从 row 取;item_name 由调用方按本页 sync_id
+    批量查好传进来(避免逐行查物品表的 N+1)。
+
+    定期存款(0031):time_deposit_id 直接从 row 取;time_deposit_name 同理
+    由调用方批量查好传进来(定存没有名称列,由账户名 + 本金合成)。
+
+    退款到账(0032):refund_source_label 由调用方按 tx sync_id 批量反查
+    (退款记录 → 原账单)传进来;非退款关联交易恒为 None。
+    """
+    out: dict[str, Any] = {}
+    for attr, key in (
+        ("discount_json", "discount"),
+        ("transfer_fee_json", "transfer_fee"),
+        ("payment_legs_json", "payment_legs"),
+        ("member_shares_json", "member_shares"),
+    ):
+        raw = getattr(row, attr, None)
+        value: Any = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, (dict, list)) and parsed:
+                value = parsed
+        out[key] = value
+    out["item_id"] = getattr(row, "item_sync_id", None)
+    out["item_name"] = item_name
+    # 定期存款利息(0030):关联交易 sync_id 直接取(弱引用,存款被删不影响交易)。
+    out["time_deposit_id"] = getattr(row, "time_deposit_sync_id", None)
+    out["time_deposit_name"] = time_deposit_name
+    # 退款到账(0032):原账单摘要(备注 > 分类名 > 金额·日期);非退款关联为 None。
+    out["refund_source_label"] = refund_source_label
+    return out
+
+
+def item_names_by_sync_id(
+    db: Any, rows: list[Any], *, ledger_ids: set[str] | None = None
+) -> dict[str, str]:
+    """归物(0029):批量把 tx 行的 item_sync_id 换成物品名。
+
+    一次查询搞定本页所有关联物品(避免 N+1);物品被删 → 映射里没有该
+    sync_id,item_name 自然为 None(交易不阻塞,只是不显示名字)。
+    """
+    ids = {
+        str(getattr(row, "item_sync_id"))
+        for row in rows
+        if getattr(row, "item_sync_id", None)
+    }
+    if not ids:
+        return {}
+    stmt = select(ReadItemProjection.sync_id, ReadItemProjection.name).where(
+        ReadItemProjection.sync_id.in_(ids)
+    )
+    if ledger_ids:
+        stmt = stmt.where(ReadItemProjection.ledger_id.in_(ledger_ids))
+    return {sid: name for sid, name in db.execute(stmt).all()}
+
+
+def time_deposit_names_by_sync_id(
+    db: Any, rows: list[Any], *, ledger_ids: set[str] | None = None
+) -> dict[str, str]:
+    """定期存款(0031):批量把 tx 行的 time_deposit_sync_id 换成存款展示名。
+
+    定存没有「名称」列,展示名由「资金来源账户名 + 币种本金」合成,便于在流水里
+    一眼认出这笔利息来自哪笔定存。一次查询搞定本页(避免 N+1);存款被删 →
+    映射里没有该 sync_id,name 为 None(交易不阻塞,只是不显示名字)。
+    """
+    ids = {
+        str(getattr(row, "time_deposit_sync_id"))
+        for row in rows
+        if getattr(row, "time_deposit_sync_id", None)
+    }
+    if not ids:
+        return {}
+    stmt = select(
+        ReadTimeDepositProjection.sync_id,
+        ReadTimeDepositProjection.account_name,
+        ReadTimeDepositProjection.principal,
+        ReadTimeDepositProjection.currency,
+    ).where(ReadTimeDepositProjection.sync_id.in_(ids))
+    if ledger_ids:
+        stmt = stmt.where(ReadTimeDepositProjection.ledger_id.in_(ledger_ids))
+    out: dict[str, str] = {}
+    for sid, account_name, principal, currency in db.execute(stmt).all():
+        amount = f"{principal or 0:,.2f}".rstrip("0").rstrip(".")
+        account = (account_name or "").strip()
+        out[sid] = f"{account} · {currency} {amount}" if account else f"{currency} {amount}"
+    return out
+
+
+def refund_source_labels_by_tx_sync_id(
+    db: Any, rows: list[Any], *, ledger_ids: set[str] | None = None
+) -> dict[str, str]:
+    """退款到账(0032):批量把「退款关联交易」的 sync_id 换成原账单展示名。
+
+    退款 status=received 会生成 income 关联交易,tx sync_id = ``<refund_id>::rf-tx``
+    / ``<refund_id>::rf-leg-N``。流水里这笔只看得到金额和「退款到账」备注,认不出
+    退的是哪笔消费 —— 这里反查 退款记录 → 原交易,回填一句原账单摘要。
+
+    展示名优先级:原单备注 > 分类名 > 「金额 · 日期」(总有值,老数据也认得出)。
+    三次查询搞定本页(避免 N+1);原单被删 → 该 tx 不进映射,label 为 None。
+    """
+    entity_by_tx: dict[str, str] = {}
+    for row in rows:
+        tx_sid = str(getattr(row, "sync_id", "") or "")
+        entity_id = refund_entity_id_from_tx_sync_id(tx_sid)
+        if entity_id:
+            entity_by_tx[tx_sid] = entity_id
+    if not entity_by_tx:
+        return {}
+
+    # 退款记录 → 原单 id(弱引用,原交易被删则 original_tx_id 仍存但查不到行)。
+    stmt = select(
+        ReadRefundProjection.sync_id, ReadRefundProjection.original_tx_id
+    ).where(ReadRefundProjection.sync_id.in_(set(entity_by_tx.values())))
+    if ledger_ids:
+        stmt = stmt.where(ReadRefundProjection.ledger_id.in_(ledger_ids))
+    orig_by_refund = {
+        rid: oid for rid, oid in db.execute(stmt).all() if oid
+    }
+    if not orig_by_refund:
+        return {}
+
+    # 原单 → 展示名。
+    tx_stmt = select(
+        ReadTxProjection.sync_id,
+        ReadTxProjection.note,
+        ReadTxProjection.category_name,
+        ReadTxProjection.amount,
+        ReadTxProjection.happened_at,
+    ).where(ReadTxProjection.sync_id.in_(set(orig_by_refund.values())))
+    if ledger_ids:
+        tx_stmt = tx_stmt.where(ReadTxProjection.ledger_id.in_(ledger_ids))
+    label_by_orig: dict[str, str] = {}
+    for oid, note, category_name, amount, happened_at in db.execute(tx_stmt).all():
+        label = (note or "").strip() or (category_name or "").strip()
+        if not label:
+            amt = f"{float(amount or 0):,.2f}".rstrip("0").rstrip(".")
+            day = happened_at.strftime("%Y-%m-%d") if hasattr(happened_at, "strftime") else ""
+            label = f"{amt} · {day}" if day else amt
+        label_by_orig[str(oid)] = label
+
+    out: dict[str, str] = {}
+    for tx_sid, entity_id in entity_by_tx.items():
+        oid = orig_by_refund.get(entity_id)
+        if not oid:
+            continue
+        label = label_by_orig.get(str(oid))
+        if label:
+            out[tx_sid] = label
+    return out
+
+
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -439,6 +609,16 @@ def _projection_totals(
     收支 SUM 排除 exclude_from_stats=True 的标记笔(#340 D1,补 0017 的遗漏:
     此前只有 analytics 过滤了,账本卡片没过滤 → 两处统计对不上)。tx_count /
     latest 不过滤 —— D1 语义:标记只排收支金额,仍计入账单列表与笔数。
+
+    「支出统计不含已退款」:expense_total 再扣掉这些账本下支出原单的有效
+    退款(退款维度 refunded_total,折本位币)。账本/全局维度不看退款去向
+    哪张卡 —— 钱已退回用户,支出就没真实发生;「退回本卡才算」的卡维度口径
+    只用于账户页/流水删除线(_refunded_to_account)。balance_all 不动:
+    「余额=钱的位置」是交易现金流口径,退款不是交易(D5)。
+
+    退款只认**已到账**(received)—— pending 的钱还没回到用户手里,此时支出
+    仍真实发生、回款 income 也未生成(见 _refund_totals_for_txs 的
+    received_only),统计若提前冲减就会与余额给出相反结论。
 
     返回 (count, income_ex, expense_ex, balance_all, latest):balance_all 是
     **不排除**标记笔的收支差 —— 「余额=钱的位置」必须含标记笔(D5,与 App
@@ -471,6 +651,32 @@ def _projection_totals(
         ).where(ReadTxProjection.ledger_id == ledger_internal_id)
     ).one()
     tx_count, income_total, expense_total, balance_all, latest_raw = row
+    # 支出扣已退款(全局口径):只有存在退款时才多两次轻查询,无退款的账本
+    # 零额外开销。标记笔与上面的 _counted 一致 —— 不计收支的原单,其退款
+    # 也不从统计里扣。
+    refund_rows = _refunded_expense_tx_rows(
+        db, ledger_ids=[ledger_internal_id], received_only=True
+    )
+    if refund_rows:
+        totals, _by_account = _refund_totals_for_txs(
+            db,
+            ledger_ids=[ledger_internal_id],
+            tx_ids=[r.sync_id for r in refund_rows],
+            received_only=True,
+        )
+        refunded_expense = 0.0
+        for refund_row in refund_rows:
+            if refund_row.exclude_from_stats:
+                continue
+            refunded = totals.get(refund_row.sync_id, 0.0)
+            if refunded <= 0:
+                continue
+            refunded_expense += _refund_native(
+                refunded,
+                amount=float(refund_row.amount or 0.0),
+                native_amount=refund_row.native_amount,
+            )
+        expense_total = max(0.0, expense_total - refunded_expense)
     return (
         int(tx_count or 0),
         float(income_total or 0),
@@ -478,6 +684,173 @@ def _projection_totals(
         float(balance_all or 0),
         _to_utc(latest_raw) if latest_raw else None,
     )
+
+
+def _refund_totals_for_txs(
+    db: Session,
+    *,
+    ledger_ids: str | list[str] | tuple[str, ...],
+    tx_ids: list[str] | None = None,
+    received_only: bool = False,
+) -> tuple[dict[str, float], dict[tuple[str, str], float]]:
+    """0022 退款聚合(默认不含 cancelled;received_only 时只认已到账)。
+
+    返回 ``(totals, by_account)``:
+
+    - ``totals[original_tx_id]``:该原单有效退款合计 —— 退款管理页进度 /
+      剩余可退金额用这个(退款维度:钱退没退回来);
+    - ``by_account[(original_tx_id, account_sync_id)]``:按退款去向卡拆分
+      (unified 退到顶层 accountId;split 按 refund_legs 各腿 accountId)。
+
+    卡维度消费方(流水列表删除线 / 账户页支出):只认「退回本卡」的部分。跨卡
+    退款 —— 统一退到别的卡 / 分别退到其他卡 —— 钱到了别的卡,原支出卡的
+    支出仍然成立(余额也没回来),不能算已退款;这与卡的角度(账户余额)口径
+    一致。
+
+    ``received_only=True`` 是「钱真的回到用户手里」的口径:只统计 status=
+    received 的退款。删除线 / 支出冲减 / 账户页支出一律用它 —— 回款 income
+    只在 received 时生成(services/linked_transactions.py),pending 的钱还没
+    到账,不该同时被算成「已退款」,否则统计说钱回来了、余额却仍扣着。
+    默认 False = 含 pending 的「已申请」口径(额度占用),退款管理页进度由
+    list_refunds 自己 GROUP BY,不走本函数。
+
+    ``tx_ids=None`` 时不按原单过滤,返回这些账本下**全部**退款 —— 统计类
+    端点(analytics / summary / 标签 / 预算 / 成员)事先不知道哪些原单有退款,
+    传 None 一次拿全,再由调用方只对自己聚合到的行扣减。
+    """
+    totals: dict[str, float] = {}
+    by_account: dict[tuple[str, str], float] = {}
+    if isinstance(ledger_ids, str):
+        ledger_ids = [ledger_ids]
+    conditions = [
+        ReadRefundProjection.ledger_id.in_(ledger_ids),
+        ReadRefundProjection.status == "received"
+        if received_only
+        else ReadRefundProjection.status != "cancelled",
+    ]
+    if tx_ids is not None:
+        if not tx_ids:
+            return totals, by_account
+        conditions.append(ReadRefundProjection.original_tx_id.in_(tx_ids))
+    rows = db.execute(
+        select(
+            ReadRefundProjection.original_tx_id,
+            ReadRefundProjection.amount,
+            ReadRefundProjection.account_sync_id,
+            ReadRefundProjection.refund_mode,
+            ReadRefundProjection.refund_legs_json,
+        ).where(and_(*conditions))
+    ).all()
+    for original_tx_id, amount, account_sync_id, refund_mode, legs_json in rows:
+        amt = float(amount or 0.0)
+        if amt <= 0:
+            continue
+        orig = str(original_tx_id)
+        totals[orig] = totals.get(orig, 0.0) + amt
+        if refund_mode == "split" and legs_json:
+            try:
+                legs = json.loads(legs_json)
+            except (json.JSONDecodeError, TypeError):
+                legs = None
+            if isinstance(legs, list):
+                for leg in legs:
+                    if not isinstance(leg, dict):
+                        continue
+                    leg_account = str(leg.get("accountId") or "").strip()
+                    leg_amount = float(leg.get("amount") or 0.0)
+                    if not leg_account or leg_amount <= 0:
+                        continue
+                    key = (orig, leg_account)
+                    by_account[key] = by_account.get(key, 0.0) + leg_amount
+                continue
+        # unified / 0025 之前的老数据 / split 腿解析失败:整笔记到顶层去向
+        # 账户(可为空串 —— pending 未选账户 / 脏数据,匹配不上任何真实卡)。
+        key = (orig, str(account_sync_id or ""))
+        by_account[key] = by_account.get(key, 0.0) + amt
+    return totals, by_account
+
+
+def _refunded_to_account(
+    row: Any,
+    *,
+    totals: dict[str, float],
+    by_account: dict[tuple[str, str], float],
+) -> float:
+    """单行交易的「退回本卡」退款额(卡维度,配合 _refund_totals_for_txs)。
+
+    原交易有账户:取 ``by_account[(sync_id, account_sync_id)]``,没有去向
+    本卡的退款就是 0 —— 跨卡退款不计入,本卡支出仍成立。
+    原交易无账户(脏数据 / 极老数据):无从判断卡片,退化为总口径 totals,
+    保持与旧版删除线行为一致,不凭空改判。
+    """
+    account_sync_id = getattr(row, "account_sync_id", None)
+    if account_sync_id:
+        return by_account.get((row.sync_id, str(account_sync_id)), 0.0)
+    return totals.get(row.sync_id, 0.0)
+
+
+def _refunded_expense_tx_rows(
+    db: Session,
+    *,
+    ledger_ids: list[str] | tuple[str, ...],
+    received_only: bool = False,
+) -> list[Any]:
+    """有退款的**支出原单**投影行(整行,调用方按需取列)。
+
+    「支出统计不含已退款」的公共取数层:统计端点只需要对这些行扣退款,
+    无退款的行一分钱不差,不用全表扫。两次轻查询:
+      1. 这些账本下有效退款的 original_tx_id 去重;
+      2. 按 id 捞原单行(tx_type='expense' —— 退款只挂在支出上)。
+
+    ``received_only=True`` 时第 1 步只认已到账(received)的退款,与
+    _refund_totals_for_txs(received_only=True) 配套 —— 只有 pending 退款的
+    原单直接不进结果,统计端少捞一行。
+
+    返回的行走原单币种(amount)与账本本位币(native_amount)双轨,调用方
+    按自己口径折算(见 _refund_native)。
+    """
+    if not ledger_ids:
+        return []
+    refunded_ids = set(
+        db.scalars(
+            select(ReadRefundProjection.original_tx_id)
+            .where(
+                ReadRefundProjection.ledger_id.in_(ledger_ids),
+                ReadRefundProjection.status == "received"
+                if received_only
+                else ReadRefundProjection.status != "cancelled",
+            )
+            .distinct()
+        ).all()
+    )
+    if not refunded_ids:
+        return []
+    return list(
+        db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id.in_(ledger_ids),
+                ReadTxProjection.sync_id.in_(refunded_ids),
+                ReadTxProjection.tx_type == "expense",
+            )
+        ).all()
+    )
+
+
+def _refund_native(
+    refund_amount: float,
+    *,
+    amount: float,
+    native_amount: float | None,
+) -> float:
+    """把退款额折成账本本位币。
+
+    退款与原单同币种(退款页按 original_amount 校验可退余额),故按原单的
+    native/amount 比率折算 —— 跟 member-share-stats 折分摊额同款算法。
+    native 缺失(0018 之前的老数据)/ amount=0 时比率按 1,即原额。
+    """
+    if native_amount is None or not amount:
+        return refund_amount
+    return refund_amount * (float(native_amount) / float(amount))
 
 
 def _clamp_month_start_day(value: int | None) -> int:
@@ -653,6 +1026,7 @@ __all__ = [
     'Ledger',
     'LedgerMember',
     'ReadBudgetProjection',
+    'ReadItemProjection',
     'ReadTxProjection',
     'UserAccountProjection',
     'UserCategoryProjection',
@@ -703,8 +1077,16 @@ __all__ = [
     '_resolve_ledger_name',
     '_load_owner_identity',
     '_tags_list',
+    '_tx_extension_fields',
+    'item_names_by_sync_id',
+    'time_deposit_names_by_sync_id',
+    'refund_source_labels_by_tx_sync_id',
     '_to_utc',
     '_projection_totals',
+    '_refund_totals_for_txs',
+    '_refunded_to_account',
+    '_refunded_expense_tx_rows',
+    '_refund_native',
     '_bucket_key',
     '_analytics_range',
     '_csv_field',

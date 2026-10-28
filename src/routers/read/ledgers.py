@@ -1,11 +1,39 @@
 """账本维度读端点:/ledgers, /ledgers/{id}, /ledgers/{id}/stats,
-及 /ledgers/{id}/{transactions,accounts,categories,budgets,tags} 的列表查询。
+及 /ledgers/{id}/{transactions,accounts,categories,budgets,tags,
+time-deposits,item-returns,refunds} 的列表查询。
 
 都是以账本为主键的 projection 查询,不做跨账本聚合。"""
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import false as sa_false
 
+from ...entity_extensions import (
+    item_derived,
+    loan_derived,
+    time_deposit_derived,
+    time_deposit_payout_plans_derived,
+)
+from ...models import (
+    ReadItemProjection,
+    ReadItemReturnProjection,
+    ReadLoanProjection,
+    ReadMemberProjection,
+    ReadRefundProjection,
+    ReadReimbursementProjection,
+    ReadTimeDepositProjection,
+)
+from ...schemas import (
+    ReadItemOut,
+    ReadItemReturnOut,
+    ReadLoanOut,
+    ReadMemberOut,
+    ReadRefundOut,
+    ReadReimbursementOut,
+    ReadTimeDepositOut,
+    TimeDepositPayoutPlanOut,
+)
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
 
@@ -28,7 +56,7 @@ def list_ledgers(
 ) -> list[ReadLedgerOut]:
     # 共享账本 Phase 1:走 LedgerMember 表拿 caller 能访问的全部 ledger(含
     # 自己 owner 的 + 加入的共享账本)。admin 用户直接看所有(管理后台需求)。
-    from ...ledger_access import list_accessible_memberships, count_ledger_members
+    from ...ledger_access import count_ledger_members, list_accessible_memberships
 
     if _is_admin(current_user):
         rows = list(db.scalars(select(Ledger).order_by(Ledger.created_at.desc())).all())
@@ -288,6 +316,23 @@ def list_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 0022 退款进度:按本页原单批量聚合两个口径(都不含 cancelled)——
+    # refunded_by_tx 按原单合计(退款维度),refunded_by_tx_account 按
+    # (原单, 去向卡)拆分(卡维度:流水删除线只认退回本卡的部分,跨卡退款
+    # 钱到了别的卡,本卡支出仍成立,与账户余额口径一致)。
+    tx_ids = [row.sync_id for row in rows]
+    refunded_by_tx, refunded_by_tx_account = _refund_totals_for_txs(
+        db, ledger_ids=ledger.id, tx_ids=tx_ids, received_only=True
+    )
+    # 归物(0029):本页交易关联到的物品名(一次查完,避免逐行查)。
+    item_names = item_names_by_sync_id(db, rows, ledger_ids={ledger.id})
+    # 定期存款(0031):本页交易关联到的定存展示名(同样一次查完)。
+    time_deposit_names = time_deposit_names_by_sync_id(db, rows, ledger_ids={ledger.id})
+    # 退款到账(0032):本页退款关联交易 → 原账单摘要(一次查完,避免逐行查)。
+    refund_source_labels = refund_source_labels_by_tx_sync_id(
+        db, rows, ledger_ids={ledger.id}
+    )
+
     results: list[ReadTransactionOut] = []
     for row in rows:
         tag_ids: list[str] = []
@@ -329,8 +374,24 @@ def list_transactions(
                 attachments=attachments,
                 exclude_from_stats=bool(row.exclude_from_stats),
                 exclude_from_budget=bool(row.exclude_from_budget),
+                # 0022 退款进度:该原单当前有效退款合计(不含 cancelled)。
+                # 前端在 refunded_total >= amount(容差 0.011)时画删除线。
+                refunded_total=refunded_by_tx.get(row.sync_id, 0.0),
+                # 0022 退款进度(卡维度):其中实际退回本卡的部分。跨卡退款
+                # 不计入 —— 钱到了别的卡,本卡支出仍成立,删除线以此为准。
+                refunded_to_account=_refunded_to_account(
+                    row,
+                    totals=refunded_by_tx,
+                    by_account=refunded_by_tx_account,
+                ),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                **_tx_extension_fields(
+                    row,
+                    item_name=item_names.get(row.item_sync_id or ""),
+                    time_deposit_name=time_deposit_names.get(row.time_deposit_sync_id or ""),
+                    refund_source_label=refund_source_labels.get(row.sync_id or ""),
+                ),
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -393,6 +454,12 @@ def list_accounts(
             payment_due_day=row.payment_due_day,
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
+            card_number=row.card_number,
+            icon=row.icon,
+            # 别名 + 出账日计入当期(0027)。billing_day_in_current 是 NOT NULL,
+            # 但老库 upgrade 前读到的行可能仍是 None(NoneType)→ 兜底 True。
+            alias=row.alias,
+            billing_day_in_current=bool(row.billing_day_in_current),
             hidden=row.hidden,
         )
         for row in rows
@@ -525,6 +592,776 @@ def list_budgets(
 
 
 @router.get(
+    "/ledgers/{ledger_external_id}/time-deposits",
+    response_model=list[ReadTimeDepositOut],
+)
+def list_time_deposits(
+    ledger_external_id: str,
+    status: str | None = Query(default=None, description="holding / matured / withdrawn"),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadTimeDepositOut]:
+    """定期存款只读列表(0021,Cloud issue #80)。
+
+    派生字段(预期利息/剩余天数/是否到期)按今天现算,不落库。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadTimeDepositProjection).where(
+        ReadTimeDepositProjection.ledger_id == ledger.id
+    )
+    if status:
+        query = query.where(ReadTimeDepositProjection.status == status)
+    # 起息日倒序 + 新建在前;同日起息按 sync_id 稳定排序。
+    rows = db.scalars(
+        query.order_by(
+            ReadTimeDepositProjection.start_date.desc(),
+            ReadTimeDepositProjection.sync_id.asc(),
+        )
+    ).all()
+
+    # 已收利息(0030):关联交易中 tx_type='income'(利息)的金额合计与笔数,按存款
+    # 现算。与「到息计划」(仅预期/提醒)不同,这是真实入账的利息流水。
+    linked_rows = db.execute(
+        select(
+            ReadTxProjection.time_deposit_sync_id,
+            func.sum(
+                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+            ),
+            func.count(),
+        )
+        .where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.time_deposit_sync_id.is_not(None),
+            ReadTxProjection.tx_type == "income",
+        )
+        .group_by(ReadTxProjection.time_deposit_sync_id)
+    ).all()
+    interest_received: dict[str, float] = {}
+    interest_tx_count: dict[str, int] = {}
+    for sid, total, n in linked_rows:
+        interest_received[sid] = float(total or 0.0)
+        interest_tx_count[sid] = int(n or 0)
+
+    results: list[ReadTimeDepositOut] = []
+    for row in rows:
+        derived = time_deposit_derived(
+            principal=float(row.principal or 0.0),
+            annual_rate=float(row.annual_rate or 0.0),
+            start_date=row.start_date,
+            maturity_date=row.maturity_date,
+            status=row.status or "holding",
+            actual_interest=row.actual_interest,
+            interest_mode=row.interest_mode or "simple",
+        )
+        # 到息计划(0028,多笔):坏 JSON → 当无计划,不让脏数据炸列表。
+        payout_plans_raw: list[dict[str, Any]] | None = None
+        if row.payout_plans_json:
+            try:
+                parsed = json.loads(row.payout_plans_json)
+                if isinstance(parsed, list):
+                    payout_plans_raw = parsed
+            except (json.JSONDecodeError, TypeError):
+                payout_plans_raw = None
+        plans = time_deposit_payout_plans_derived(payout_plans_raw)
+        results.append(
+            ReadTimeDepositOut(
+                id=row.sync_id,
+                principal=float(row.principal or 0.0),
+                currency=row.currency or "CNY",
+                annual_rate=float(row.annual_rate or 0.0),
+                term_months=int(row.term_months or 12),
+                start_date=_to_utc(row.start_date),
+                maturity_date=_to_utc(row.maturity_date),
+                status=row.status or "holding",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                auto_renew=bool(row.auto_renew),
+                interest_mode=row.interest_mode or "simple",
+                note=row.note,
+                withdrawn_at=_to_utc(row.withdrawn_at) if row.withdrawn_at else None,
+                actual_interest=row.actual_interest,
+                expected_interest=derived["expected_interest"],
+                days_remaining=derived["days_remaining"],
+                is_matured=derived["is_matured"],
+                payout_plans=[
+                    TimeDepositPayoutPlanOut(**plan) for plan in plans["plans"]
+                ],
+                payout_plans_total=plans["total"],
+                next_payout_date=plans["next_payout_date"],
+                interest_received=interest_received.get(row.sync_id, 0.0),
+                interest_tx_count=interest_tx_count.get(row.sync_id, 0),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/item-returns",
+    response_model=list[ReadItemReturnOut],
+)
+def list_item_returns(
+    ledger_external_id: str,
+    status: str | None = Query(
+        default=None, description="pending / returned / refunded / cancelled"
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadItemReturnOut]:
+    """归物只读列表(0021,App issue #465 退款诉求)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadItemReturnProjection).where(
+        ReadItemReturnProjection.ledger_id == ledger.id
+    )
+    if status:
+        query = query.where(ReadItemReturnProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadItemReturnProjection.happened_at.desc(),
+            ReadItemReturnProjection.sync_id.asc(),
+        )
+    ).all()
+
+    results: list[ReadItemReturnOut] = []
+    for row in rows:
+        results.append(
+            ReadItemReturnOut(
+                id=row.sync_id,
+                name=row.name or "",
+                original_tx_id=row.original_tx_id,
+                original_amount=row.original_amount,
+                refund_amount=float(row.refund_amount or 0.0),
+                happened_at=_to_utc(row.happened_at),
+                reason=row.reason,
+                status=row.status or "pending",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                category_id=row.category_sync_id,
+                category_name=row.category_name,
+                note=row.note,
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/items",
+    response_model=list[ReadItemOut],
+)
+def list_items(
+    ledger_external_id: str,
+    status: str | None = Query(
+        default=None, description="in_use(在用) / disposed(已处置);不传 = 全部"
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadItemOut]:
+    """归物 · 物品持有列表(0029)。
+
+    派生态(持有天数 / 净成本 / 日均成本 / 保修状态)在这里按「今天」现算:
+    - 关联交易支出按账本本位币(native_amount)累计进成本;
+    - 已处置的持有天数**定格**在处置日,不随时间再涨。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadItemProjection).where(ReadItemProjection.ledger_id == ledger.id)
+    if status:
+        query = query.where(ReadItemProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadItemProjection.purchase_date.desc(),
+            ReadItemProjection.sync_id.asc(),
+        )
+    ).all()
+
+    # 关联交易:一次 GROUP BY(按物品 + 交易类型)拿到每件物品的
+    # 支出合计、收入合计与总笔数(避免逐行查)。
+    linked_rows = db.execute(
+        select(
+            ReadTxProjection.item_sync_id,
+            ReadTxProjection.tx_type,
+            func.sum(
+                func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount)
+            ),
+            func.count(),
+        )
+        .where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.item_sync_id.is_not(None),
+            ReadTxProjection.tx_type.in_(["expense", "income"]),
+        )
+        .group_by(ReadTxProjection.item_sync_id, ReadTxProjection.tx_type)
+    ).all()
+    linked_expense: dict[str, float] = {}
+    linked_income: dict[str, float] = {}
+    linked_count: dict[str, int] = {}
+    for sid, ttype, total, n in linked_rows:
+        amount = float(total or 0.0)
+        if ttype == "income":
+            linked_income[sid] = amount
+        else:
+            linked_expense[sid] = amount
+        linked_count[sid] = linked_count.get(sid, 0) + int(n)
+
+    results: list[ReadItemOut] = []
+    for row in rows:
+        derived = item_derived(
+            purchase_date=row.purchase_date,
+            purchase_amount=float(row.purchase_amount or 0.0),
+            warranty_until=row.warranty_until,
+            status=row.status or "in_use",
+            disposal_type=row.disposal_type,
+            disposal_date=row.disposal_date,
+            disposal_amount=row.disposal_amount,
+            linked_expense=linked_expense.get(row.sync_id, 0.0),
+            linked_income=linked_income.get(row.sync_id, 0.0),
+        )
+        results.append(
+            ReadItemOut(
+                id=row.sync_id,
+                name=row.name or "",
+                purchase_date=_to_utc(row.purchase_date),
+                purchase_amount=float(row.purchase_amount or 0.0),
+                warranty_until=(
+                    _to_utc(row.warranty_until) if row.warranty_until else None
+                ),
+                status=row.status or "in_use",
+                disposal_type=row.disposal_type,
+                disposal_date=(
+                    _to_utc(row.disposal_date) if row.disposal_date else None
+                ),
+                disposal_amount=row.disposal_amount,
+                category_id=row.category_sync_id,
+                category_name=row.category_name,
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                note=row.note,
+                held_days=derived["held_days"],
+                total_cost=derived["total_cost"],
+                daily_cost=derived["daily_cost"],
+                linked_expense=derived["linked_expense"],
+                linked_income=derived["linked_income"],
+                warranty_status=derived["warranty_status"],
+                warranty_days_remaining=derived["warranty_days_remaining"],
+                is_disposed=derived["is_disposed"],
+                linked_tx_count=linked_count.get(row.sync_id, 0),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/items/{item_id}/transactions",
+    response_model=list[ReadTransactionOut],
+)
+def list_item_transactions(
+    ledger_external_id: str,
+    item_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadTransactionOut]:
+    """归物(0029):这件物品关联的全部交易(按时间倒序)。
+
+    物品详情「查看所有关联的交易」用。交易本身不受物品状态影响 —— 物品
+    报废/卖掉后这些交易仍在(只是物品不再继续累计)。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+    item = db.scalar(
+        select(ReadItemProjection).where(
+            ReadItemProjection.ledger_id == ledger.id,
+            ReadItemProjection.sync_id == item_id,
+        )
+    )
+
+    rows = db.scalars(
+        select(ReadTxProjection)
+        .where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.item_sync_id == item_id,
+        )
+        .order_by(
+            ReadTxProjection.happened_at.desc(),
+            ReadTxProjection.tx_index.desc(),
+        )
+    ).all()
+
+    results: list[ReadTransactionOut] = []
+    for row in rows:
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                maybe = json.loads(row.tag_sync_ids_json)
+                if isinstance(maybe, list):
+                    tag_ids = [str(t) for t in maybe]
+            except json.JSONDecodeError:
+                tag_ids = []
+        attachments: list[dict[str, Any]] | None = None
+        if row.attachments_json:
+            try:
+                maybe_att = json.loads(row.attachments_json)
+                if isinstance(maybe_att, list):
+                    attachments = maybe_att
+            except json.JSONDecodeError:
+                attachments = None
+        results.append(
+            ReadTransactionOut(
+                id=row.sync_id,
+                tx_index=row.tx_index,
+                tx_type=row.tx_type,
+                amount=row.amount,
+                happened_at=_to_utc(row.happened_at),
+                note=row.note,
+                category_name=row.category_name,
+                category_kind=row.category_kind,
+                account_name=row.account_name,
+                from_account_name=row.from_account_name,
+                to_account_name=row.to_account_name,
+                category_id=row.category_sync_id,
+                account_id=row.account_sync_id,
+                from_account_id=row.from_account_sync_id,
+                to_account_id=row.to_account_sync_id,
+                tags=row.tags_csv or None,
+                tags_list=_tags_list(row.tags_csv),
+                tag_ids=tag_ids,
+                attachments=attachments,
+                exclude_from_stats=bool(row.exclude_from_stats),
+                exclude_from_budget=bool(row.exclude_from_budget),
+                currency_code=row.currency_code,
+                native_amount=row.native_amount,
+                **_tx_extension_fields(row, item_name=(item.name if item else None)),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/time-deposits/{deposit_id}/transactions",
+    response_model=list[ReadTransactionOut],
+)
+def list_time_deposit_transactions(
+    ledger_external_id: str,
+    deposit_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadTransactionOut]:
+    """定期存款利息(0030):这件存款关联的全部交易(按时间倒序)。
+
+    存款详情「查看所有关联的利息流水」用。交易本身不受存款状态影响 ——
+    存款支取/删除后这些交易仍在(只是不再计入「已收利息」聚合)。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+    deposit = db.scalar(
+        select(ReadTimeDepositProjection).where(
+            ReadTimeDepositProjection.ledger_id == ledger.id,
+            ReadTimeDepositProjection.sync_id == deposit_id,
+        )
+    )
+
+    rows = db.scalars(
+        select(ReadTxProjection)
+        .where(
+            ReadTxProjection.ledger_id == ledger.id,
+            ReadTxProjection.time_deposit_sync_id == deposit_id,
+        )
+        .order_by(
+            ReadTxProjection.happened_at.desc(),
+            ReadTxProjection.tx_index.desc(),
+        )
+    ).all()
+
+    results: list[ReadTransactionOut] = []
+    for row in rows:
+        tag_ids: list[str] = []
+        if row.tag_sync_ids_json:
+            try:
+                maybe = json.loads(row.tag_sync_ids_json)
+                if isinstance(maybe, list):
+                    tag_ids = [str(t) for t in maybe]
+            except json.JSONDecodeError:
+                tag_ids = []
+        attachments: list[dict[str, Any]] | None = None
+        if row.attachments_json:
+            try:
+                maybe_att = json.loads(row.attachments_json)
+                if isinstance(maybe_att, list):
+                    attachments = maybe_att
+            except json.JSONDecodeError:
+                attachments = None
+        results.append(
+            ReadTransactionOut(
+                id=row.sync_id,
+                tx_index=row.tx_index,
+                tx_type=row.tx_type,
+                amount=row.amount,
+                happened_at=_to_utc(row.happened_at),
+                note=row.note,
+                category_name=row.category_name,
+                category_kind=row.category_kind,
+                account_name=row.account_name,
+                from_account_name=row.from_account_name,
+                to_account_name=row.to_account_name,
+                category_id=row.category_sync_id,
+                account_id=row.account_sync_id,
+                from_account_id=row.from_account_sync_id,
+                to_account_id=row.to_account_sync_id,
+                tags=row.tags_csv or None,
+                tags_list=_tags_list(row.tags_csv),
+                tag_ids=tag_ids,
+                attachments=attachments,
+                exclude_from_stats=bool(row.exclude_from_stats),
+                exclude_from_budget=bool(row.exclude_from_budget),
+                currency_code=row.currency_code,
+                native_amount=row.native_amount,
+                **_tx_extension_fields(row, item_name=None),
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/members",
+    response_model=list[ReadMemberOut],
+)
+def list_members(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadMemberOut]:
+    """账本内自定义成员只读列表(0024)。
+
+    账本自己维护的「人」名单(爸爸/妈妈/我),不要求登录账号 —— 跟共享账本的
+    LedgerMember 是两套东西。用途是给支出账单做**人头分摊**(member_shares)。
+    排序:sort_order 升序,sync_id 兜底保证顺序稳定。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    rows = db.scalars(
+        select(ReadMemberProjection)
+        .where(ReadMemberProjection.ledger_id == ledger.id)
+        .order_by(
+            ReadMemberProjection.sort_order.asc(),
+            ReadMemberProjection.sync_id.asc(),
+        )
+    ).all()
+    return [
+        ReadMemberOut(
+            id=row.sync_id,
+            name=row.name or "",
+            note=row.note,
+            sort_order=int(row.sort_order or 0),
+            icon=row.icon,
+            linked_user_id=row.linked_user_id,
+            last_change_id=source_change_id,
+            ledger_id=ledger.external_id,
+            ledger_name=ledger_name,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/refunds",
+    response_model=list[ReadRefundOut],
+)
+def list_refunds(
+    ledger_external_id: str,
+    status: str | None = Query(
+        default=None, description="pending / received / cancelled"
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadRefundOut]:
+    """交易退款只读列表(0022,App issue #465 退款功能)。
+
+    派生字段 refunded_total / remaining_refundable 按原单聚合现算
+    (cancelled 不计入累计),不落库。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadRefundProjection).where(
+        ReadRefundProjection.ledger_id == ledger.id
+    )
+    if status:
+        query = query.where(ReadRefundProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadRefundProjection.happened_at.desc(),
+            ReadRefundProjection.sync_id.asc(),
+        )
+    ).all()
+
+    # 按原单聚合有效退款合计(cancelled 不计);一次 GROUP BY,不 N+1。
+    totals = {
+        str(tx_id): float(total or 0.0)
+        for tx_id, total in db.execute(
+            select(
+                ReadRefundProjection.original_tx_id,
+                func.sum(ReadRefundProjection.amount),
+            )
+            .where(
+                ReadRefundProjection.ledger_id == ledger.id,
+                ReadRefundProjection.status != "cancelled",
+            )
+            .group_by(ReadRefundProjection.original_tx_id)
+        ).all()
+    }
+
+    results: list[ReadRefundOut] = []
+    for row in rows:
+        original_amount = row.original_amount
+        refunded_total = totals.get(str(row.original_tx_id), 0.0)
+        remaining = (
+            max(float(original_amount) - refunded_total, 0.0)
+            if original_amount is not None
+            else 0.0
+        )
+        # 退款分摊(0025):解析 refund_legs_json 回原生数组;坏 JSON → None。
+        refund_legs: list[dict[str, Any]] | None = None
+        if row.refund_legs_json:
+            try:
+                parsed = json.loads(row.refund_legs_json)
+                if isinstance(parsed, list) and parsed:
+                    refund_legs = parsed
+            except (json.JSONDecodeError, TypeError):
+                refund_legs = None
+        results.append(
+            ReadRefundOut(
+                id=row.sync_id,
+                original_tx_id=row.original_tx_id,
+                original_amount=original_amount,
+                amount=float(row.amount or 0.0),
+                currency=row.currency or "CNY",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                happened_at=_to_utc(row.happened_at),
+                reason=row.reason,
+                status=row.status or "pending",
+                note=row.note,
+                refund_mode=row.refund_mode or "unified",
+                refund_legs=refund_legs,
+                refunded_total=refunded_total,
+                remaining_refundable=remaining,
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/loans",
+    response_model=list[ReadLoanOut],
+)
+def list_loans(
+    ledger_external_id: str,
+    status: str | None = Query(
+        default=None, description="active / repaid / cancelled"
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadLoanOut]:
+    """借款只读列表(0023)。
+
+    派生字段 repay_progress / days_to_due / is_overdue 按今天现算,不落库。
+    """
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadLoanProjection).where(ReadLoanProjection.ledger_id == ledger.id)
+    if status:
+        query = query.where(ReadLoanProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadLoanProjection.started_at.desc(),
+            ReadLoanProjection.sync_id.asc(),
+        )
+    ).all()
+
+    results: list[ReadLoanOut] = []
+    for row in rows:
+        derived = loan_derived(
+            principal=float(row.principal or 0.0),
+            repaid_amount=float(row.repaid_amount or 0.0),
+            due_at=row.due_at,
+            status=row.status or "active",
+        )
+        results.append(
+            ReadLoanOut(
+                id=row.sync_id,
+                direction=row.direction or "borrowed",
+                counterparty=row.counterparty or "",
+                principal=float(row.principal or 0.0),
+                currency=row.currency or "CNY",
+                interest_rate=float(row.interest_rate or 0.0),
+                started_at=_to_utc(row.started_at),
+                due_at=_to_utc(row.due_at) if row.due_at else None,
+                repaid_amount=float(row.repaid_amount or 0.0),
+                status=row.status or "active",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                note=row.note,
+                repay_progress=derived["repay_progress"],
+                days_to_due=derived["days_to_due"],
+                is_overdue=derived["is_overdue"],
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/ledgers/{ledger_external_id}/reimbursements",
+    response_model=list[ReadReimbursementOut],
+)
+def list_reimbursements(
+    ledger_external_id: str,
+    status: str | None = Query(
+        default=None, description="pending / reimbursed / cancelled"
+    ),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadReimbursementOut]:
+    """报销只读列表(0023)。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+
+    query = select(ReadReimbursementProjection).where(
+        ReadReimbursementProjection.ledger_id == ledger.id
+    )
+    if status:
+        query = query.where(ReadReimbursementProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadReimbursementProjection.happened_at.desc(),
+            ReadReimbursementProjection.sync_id.asc(),
+        )
+    ).all()
+
+    results: list[ReadReimbursementOut] = []
+    for row in rows:
+        results.append(
+            ReadReimbursementOut(
+                id=row.sync_id,
+                title=row.title or "",
+                payer=row.payer,
+                reimburser=row.reimburser,
+                amount=float(row.amount or 0.0),
+                currency=row.currency or "CNY",
+                category_id=row.category_sync_id,
+                category_name=row.category_name,
+                happened_at=_to_utc(row.happened_at),
+                status=row.status or "pending",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                related_tx_id=row.related_tx_id,
+                note=row.note,
+                last_change_id=source_change_id,
+                ledger_id=ledger.external_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
     "/ledgers/{ledger_external_id}/budgets/usage",
     response_model=ReadBudgetUsageOut,
 )
@@ -581,6 +1418,43 @@ def list_budgets_usage(
 
     start, end = _current_period_range(period_day, now)
 
+    # 「支出统计不含已退款」—— 预算用量是支出统计的一种(已用=周期内支出),
+    # 同样扣有效退款(退款维度,折本位币)。只捞有退款的原单行,按 category
+    # 分桶,total 预算扣全量、category 预算扣命中分类(含子分类)的部分。
+    # exclude_from_budget 标记笔不进用量(SQL base_q 同款过滤),其退款也不扣。
+    refund_rows = _refunded_expense_tx_rows(
+        db, ledger_ids=[ledger.id], received_only=True
+    )
+    refund_all_native = 0.0
+    refund_by_category: dict[str, float] = {}
+    if refund_rows:
+        refund_totals, _refund_by_account = _refund_totals_for_txs(
+            db, ledger_ids=[ledger.id], tx_ids=[r.sync_id for r in refund_rows],
+            received_only=True,
+        )
+        for row in refund_rows:
+            if row.exclude_from_budget:
+                continue
+            happened_at = _to_utc(row.happened_at) if row.happened_at else None
+            if happened_at is None or happened_at < start or happened_at >= end:
+                continue
+            refunded = refund_totals.get(row.sync_id, 0.0)
+            if refunded <= 0:
+                continue
+            refunded_native = _refund_native(
+                refunded,
+                amount=float(row.amount or 0.0),
+                native_amount=row.native_amount,
+            )
+            if refunded_native <= 0:
+                continue
+            refund_all_native += refunded_native
+            cat_id = row.category_sync_id
+            if cat_id:
+                refund_by_category[cat_id] = (
+                    refund_by_category.get(cat_id, 0.0) + refunded_native
+                )
+
     items: list[ReadBudgetUsageItemOut] = []
     for b in dedup.values():
         # 预算金额本身是账本本位币,用量必须同计量单位:
@@ -608,6 +1482,16 @@ def list_budgets_usage(
             base_q = base_q.where(ReadTxProjection.category_sync_id.in_(ids))
 
         used = float(db.scalar(base_q) or 0.0)
+        # 扣已退款:total 预算扣全量;category 预算只扣命中分类(父+子)的部分。
+        if refund_all_native > 0 or refund_by_category:
+            if (b.budget_type or "total") == "category" and b.category_sync_id:
+                refund_sum = 0.0
+                for cat_id, amt in refund_by_category.items():
+                    if cat_id in ids:
+                        refund_sum += amt
+            else:
+                refund_sum = refund_all_native
+            used = max(0.0, used - refund_sum)
         items.append(ReadBudgetUsageItemOut(budget_id=b.sync_id, used=abs(used)))
 
     return ReadBudgetUsageOut(items=items)

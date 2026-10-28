@@ -41,13 +41,21 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import projection
 from .models import (
     Ledger,
     ReadBudgetProjection,
+    ReadItemReturnProjection,
+    ReadItemProjection,
+    ReadLoanProjection,
+    ReadMemberProjection,
+    ReadReimbursementProjection,
+    ReadRefundProjection,
+    ReadTimeDepositProjection,
     ReadTxProjection,
     SyncChange,
     UserAccountProjection,
@@ -57,10 +65,15 @@ from .models import (
 )
 from .services.category_icon import resolve_icon_by_name
 
-
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
 # 比如 ``ledger_snapshot`` 是 sync_changes 里的元数据行,不走这条路径)。
-INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger", "exchange_rate_override"}
+INDIVIDUAL_ENTITY_TYPES = {
+    "transaction", "account", "category", "tag", "budget", "ledger",
+    "exchange_rate_override", "time_deposit", "item_return", "refund",
+    "loan", "reimbursement", "member",
+    # 归物 · 物品持有(0029)
+    "item",
+}
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
 # 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
@@ -130,6 +143,13 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("paymentDueDay", "payment_due_day"),
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
+        # 完整卡号 + 图标 key(0026)。缺键时 _merge_from_spec 从 existing 行补齐。
+        ("cardNumber", "card_number"),
+        ("icon", "icon"),
+        # 别名 + 出账日计入当期(0027)。缺键时同样从 existing 行补齐,不被
+        # partial-update 冲成默认值。
+        ("alias", "alias"),
+        ("billingDayInCurrent", "billing_day_in_current"),
         # 账户隐藏(issue #240):payload 键 hidden(camelCase 同名,跟 App
         # serializeAccount 对齐)。缺键时 _merge_from_spec 从 existing 行补齐,
         # 不被 partial-update 冲成 False(merge 契约测试见
@@ -208,6 +228,143 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # _sync_native_amount_after_merge。
         ("currencyCode", "currency_code"),
         ("nativeAmount", "native_amount"),
+        # 优惠/折扣(0021):JSON 文本列 ↔ payload dict,_json_loads_safe 反序列化
+        # 保证 mobile pull 到的 merge payload 是原生 dict;缺键保留既有值。
+        ("discount", "discount_json", _json_loads_safe),
+        # 转账手续费(0021):同上,仅 transfer 有意义。
+        ("transferFee", "transfer_fee_json", _json_loads_safe),
+        # 多账户合并付款(0021):同上,payload 是 leg 数组,仅 expense 有意义。
+        ("paymentLegs", "payment_legs_json", _json_loads_safe),
+        # 成员分摊(0024):同上,payload 是 share 数组,仅 expense 有意义。
+        # 按人拆分不改账户余额,只影响成员维度统计。
+        ("memberShares", "member_shares_json", _json_loads_safe),
+        # 归物(0029):关联物品 sync_id。缺键保留既有值(改备注不丢关联)。
+        ("itemId", "item_sync_id"),
+    ]),
+    # 定期存款(0021,Cloud issue #80):merge 语义同 budget;日期列存
+    # DateTime 但业务上是"日"粒度,round-trip 时 _isoformat_or_none 给
+    # mobile 的是当天 00:00 UTC 的 ISO 串,App 端按日期展示。
+    "time_deposit": _MergeSpec(ReadTimeDepositProjection, [
+        ("syncId", "sync_id"),
+        ("principal", "principal"),
+        ("currency", "currency"),
+        ("annualRate", "annual_rate"),
+        ("termMonths", "term_months"),
+        ("startDate", "start_date", _isoformat_or_none),
+        ("maturityDate", "maturity_date", _isoformat_or_none),
+        ("status", "status"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("autoRenew", "auto_renew"),
+        ("interestMode", "interest_mode"),
+        ("note", "note"),
+        ("withdrawnAt", "withdrawn_at", _isoformat_or_none),
+        ("actualInterest", "actual_interest"),
+        # 到息计划(0028,多笔):JSON 数组,与退款腿同款 merge 方式。
+        ("payoutPlans", "payout_plans_json", _json_loads_safe),
+    ]),
+    # 归物(0021,App issue #465 退款诉求)。
+    "item_return": _MergeSpec(ReadItemReturnProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("originalTxId", "original_tx_id"),
+        ("originalAmount", "original_amount"),
+        ("refundAmount", "refund_amount"),
+        ("happenedAt", "happened_at", _isoformat_or_none),
+        ("reason", "reason"),
+        ("status", "status"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("categoryId", "category_sync_id"),
+        ("categoryName", "category_name"),
+        ("note", "note"),
+    ]),
+    # 归物 · 物品持有(0029):跟上面的 item_return(物品归还/退款流程)是两套
+    # 实体 —— 这套记录「我持有的物品」。merge 语义同 time_deposit:日期列
+    # _isoformat_or_none 给 mobile 的是当天 00:00 UTC 的 ISO 串。
+    "item": _MergeSpec(ReadItemProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("purchaseDate", "purchase_date", _isoformat_or_none),
+        ("purchaseAmount", "purchase_amount"),
+        ("warrantyUntil", "warranty_until", _isoformat_or_none),
+        ("status", "status"),
+        ("disposalType", "disposal_type"),
+        ("disposalDate", "disposal_date", _isoformat_or_none),
+        ("disposalAmount", "disposal_amount"),
+        ("categoryId", "category_sync_id"),
+        ("categoryName", "category_name"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("note", "note"),
+    ]),
+    # 交易退款(0022,App issue #465 退款功能):挂在原始支出交易上的退款记录,
+    # 支持同单多笔部分退。merge 语义同 budget;日期列 _isoformat_or_none 给
+    # mobile 的是当天 00:00 UTC 的 ISO 串。
+    "refund": _MergeSpec(ReadRefundProjection, [
+        ("syncId", "sync_id"),
+        ("originalTxId", "original_tx_id"),
+        ("originalAmount", "original_amount"),
+        ("amount", "amount"),
+        ("currency", "currency"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("happenedAt", "happened_at", _isoformat_or_none),
+        ("reason", "reason"),
+        ("status", "status"),
+        ("note", "note"),
+        # 退款分摊(0025):统一退/分别退。split 时 refundLegs 承载各腿,
+        # 顶层 accountId 可空(unified 时腿为空)。
+        ("refundMode", "refund_mode"),
+        ("refundLegs", "refund_legs_json", _json_loads_safe),
+    ]),
+    # 账本内自定义成员(0024):账本自己维护的人名(爸爸/妈妈/我),不要求登录
+    # 账号;给支出账单做**人头分摊**用。跟 LedgerMember(共享账本登录成员)
+    # 是两套东西,别混。
+    "member": _MergeSpec(ReadMemberProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("note", "note"),
+        ("sortOrder", "sort_order"),
+        # 成员档案(图标 / 关联记账人):跟其它字段同款 merge 契约 ——
+        # push 不带这两个键时保留原值,显式 null 才清空。
+        ("icon", "icon"),
+        ("linkedUserId", "linked_user_id"),
+    ]),
+    # 借款(0023):借入/借出跟踪。direction/counterparty/principal/interest_rate
+    # 等字段;status 三态 active/repaid/cancelled。
+    "loan": _MergeSpec(ReadLoanProjection, [
+        ("syncId", "sync_id"),
+        ("direction", "direction"),
+        ("counterparty", "counterparty"),
+        ("principal", "principal"),
+        ("currency", "currency"),
+        ("interestRate", "interest_rate"),
+        ("startedAt", "started_at", _isoformat_or_none),
+        ("dueAt", "due_at", _isoformat_or_none),
+        ("repaidAmount", "repaid_amount"),
+        ("status", "status"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("note", "note"),
+    ]),
+    # 报销(0023):垫付后找人/公司报销。title/payer/reimburser/amount/related_tx_id
+    # 等;status 三态 pending/reimbursed/cancelled。
+    "reimbursement": _MergeSpec(ReadReimbursementProjection, [
+        ("syncId", "sync_id"),
+        ("title", "title"),
+        ("payer", "payer"),
+        ("reimburser", "reimburser"),
+        ("amount", "amount"),
+        ("currency", "currency"),
+        ("categoryId", "category_sync_id"),
+        ("categoryName", "category_name"),
+        ("happenedAt", "happened_at", _isoformat_or_none),
+        ("status", "status"),
+        ("accountId", "account_sync_id"),
+        ("accountName", "account_name"),
+        ("relatedTxId", "related_tx_id"),
+        ("note", "note"),
     ]),
 }
 
@@ -225,6 +382,13 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
 _LEDGER_UPSERT_DISPATCH: dict[str, Callable] = {
     "budget": projection.upsert_budget,
     "transaction": projection.upsert_tx,
+    "time_deposit": projection.upsert_time_deposit,
+    "item_return": projection.upsert_item_return,
+    "item": projection.upsert_item,
+    "refund": projection.upsert_refund,
+    "loan": projection.upsert_loan,
+    "reimbursement": projection.upsert_reimbursement,
+    "member": projection.upsert_member,
 }
 
 
@@ -337,9 +501,67 @@ def _delete_user_exchange_rate_override(db: Session, user_id: str, sync_id: str)
     )
 
 
+def _delete_time_deposit(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_time_deposit(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="time_deposit", entity_sync_id=sync_id,
+    )
+
+
+def _delete_item_return(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_item_return(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="item_return", entity_sync_id=sync_id,
+    )
+
+
+def _delete_item(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_item(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="item", entity_sync_id=sync_id,
+    )
+
+
+def _delete_refund(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_refund(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="refund", entity_sync_id=sync_id,
+    )
+
+
+def _delete_loan(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_loan(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="loan", entity_sync_id=sync_id,
+    )
+
+
+def _delete_reimbursement(
+    db: Session, ledger_id: str, sync_id: str, user_id: str
+) -> None:
+    projection.delete_reimbursement(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="reimbursement", entity_sync_id=sync_id,
+    )
+
+
+def _delete_member(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
+    projection.delete_member(db, ledger_id=ledger_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="member", entity_sync_id=sync_id,
+    )
+
+
 _LEDGER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str, str], None]] = {
     "transaction": _delete_tx,
     "budget": _delete_budget,
+    "time_deposit": _delete_time_deposit,
+    "item_return": _delete_item_return,
+    "item": _delete_item,
+    "refund": _delete_refund,
+    "loan": _delete_loan,
+    "reimbursement": _delete_reimbursement,
+    "member": _delete_member,
 }
 
 

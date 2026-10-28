@@ -18,6 +18,12 @@ export const APP_SECTIONS: AppSection[] = [
   'categories',
   'tags',
   'budgets',
+  'time-deposits',
+  'item-returns',
+  'refunds',
+  'loans',
+  'reimbursements',
+  'members',
   'ledgers',
   'overview',
   'settings-profile',
@@ -88,6 +94,18 @@ function parseRootSection(parts: string[]): AppSection {
       return 'tags'
     case 'budgets':
       return 'budgets'
+    case 'time-deposits':
+      return 'time-deposits'
+    case 'item-returns':
+      return 'item-returns'
+    case 'refunds':
+      return 'refunds'
+    case 'loans':
+      return 'loans'
+    case 'reimbursements':
+      return 'reimbursements'
+    case 'members':
+      return 'members'
     case 'ledgers':
       return 'ledgers'
     case 'overview':
@@ -183,6 +201,12 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'categories' ||
     parts[1] === 'tags' ||
     parts[1] === 'budgets' ||
+    parts[1] === 'time-deposits' ||
+    parts[1] === 'item-returns' ||
+    parts[1] === 'refunds' ||
+    parts[1] === 'loans' ||
+    parts[1] === 'reimbursements' ||
+    parts[1] === 'members' ||
     parts[1] === 'overview'
   ) {
     return { kind: 'app', ledgerId: '', section: parseRootSection(parts.slice(1)) }
@@ -218,6 +242,18 @@ export function routePath(route: AppRoute): string {
       return '/app/tags'
     case 'budgets':
       return '/app/budgets'
+    case 'time-deposits':
+      return '/app/time-deposits'
+    case 'item-returns':
+      return '/app/item-returns'
+    case 'refunds':
+      return '/app/refunds'
+    case 'loans':
+      return '/app/loans'
+    case 'reimbursements':
+      return '/app/reimbursements'
+    case 'members':
+      return '/app/members'
     case 'ledgers':
       return '/app/ledgers'
     case 'overview':

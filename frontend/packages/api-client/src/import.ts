@@ -27,6 +27,12 @@ export type ImportFieldMapping = {
   to_account_name: string | null
   note: string | null
   tags: string[]
+  /** v0021 扩展字段(可选 CSV 列名):优惠 */
+  discount?: string | null
+  /** v0021 扩展字段(可选 CSV 列名):手续费 */
+  transfer_fee?: string | null
+  /** v0021 扩展字段(可选 CSV 列名):多账户 */
+  payment_legs?: string | null
   datetime_format: string | null
   strip_currency_symbols: boolean
   expense_is_negative: boolean

@@ -264,6 +264,9 @@ def list_accounts(user: User, *, account_type: str | None = None) -> list[dict[s
                 "credit_limit": float(r.credit_limit) if r.credit_limit is not None else None,
                 "billing_day": r.billing_day,
                 "payment_due_day": r.payment_due_day,
+                # 0027:别名(展示短名)+ 出账日计入当期
+                "alias": r.alias,
+                "billing_day_in_current": bool(r.billing_day_in_current),
             }
             for r in sorted(seen.values(), key=lambda r: (r.name or "").lower())
         ]

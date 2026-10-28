@@ -3,56 +3,82 @@
 @tailwind utilities;
 
 @layer base {
+  /* ===== 设计 token:Notion 暖中性克制风 =====
+     取自 awesome-design-md/design-md/notion/DESIGN.md。两条硬约束:
+       1) 中性色一律暖调(色相 ≈30°,黄棕底),绝不用蓝灰 ——
+          Notion 的 #f6f5f4 / #31302e / #615d59 / #a39e98 全部带黄棕底。
+       2) 阴影多层叠加、单层不透明度 ≤ 0.05 —— 深度是"感受到的"而非"看到的"。
+     层次靠底色明度差 + whisper 边框(1px 低透明度),不靠加重描边。
+     注意:--primary / --ring / --accent 会被 PrimaryColorProvider 在运行时
+     覆盖(见 packages/ui/src/theme/primary-color-script.ts),这里的值只是
+     JS 执行前的首帧兜底。 */
   :root {
-    --background: 210 25% 97%;
-    --foreground: 220 20% 16%;
-    --card: 0 0% 100%;
-    --card-foreground: 216 23% 18%;
+    --background: 30 12% 97%; /* 暖白页面底 */
+    --foreground: 30 6% 14%; /* 暖近黑(Notion 用 rgba(0,0,0,0.95)) */
+    --card: 0 0% 100%; /* Notion 画布:纯白 */
+    --card-foreground: 30 6% 16%;
     --popover: 0 0% 100%;
-    --popover-foreground: 216 23% 18%;
-    --primary: 38 92% 52%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 43 95% 92%;
-    --secondary-foreground: 216 23% 18%;
-    --muted: 220 20% 94%;
-    --muted-foreground: 220 9% 45%;
+    --popover-foreground: 30 6% 16%;
+    --primary: 38 92% 52%; /* 蜂蜜金兜底 */
+    --primary-foreground: 30 20% 98%;
+    --secondary: 30 10% 95%; /* 暖中性次级底 */
+    --secondary-foreground: 30 6% 16%;
+    --muted: 30 10% 96%; /* Notion 暖白 #f6f5f4 */
+    --muted-foreground: 30 5% 40%; /* Warm Gray 500 系 */
     /* accent 跟随 primary 色相:primary-color-script.ts 会动态设
        --accent-light;这里用 fallback 兜底(JS 还没跑到的首帧)。 */
     --accent: var(--accent-light, 38 80% 90%);
-    --accent-foreground: 216 23% 18%;
+    --accent-foreground: 30 6% 16%;
     --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 220 16% 88%;
-    --input: 220 16% 88%;
+    --destructive-foreground: 30 20% 98%;
+    --border: 30 8% 88%; /* whisper 边框(组件还会按 /60~/70 再降透明度) */
+    --input: 30 8% 86%;
     --ring: 38 92% 52%;
-    --radius: 0.75rem;
-    --shadow: 38 40% 28%;
+    --radius: 0.75rem; /* 12px,同 Notion 卡片圆角 */
+
+    /* 阴影:4/5 层叠加,单层不透明度 ≤ 0.05;暗部带暖调而非纯黑。
+       对应 tailwind.config 的 shadow-soft / shadow-deep。 */
+    --shadow-color: 30 10% 12%;
+    --shadow-card:
+      0 0.175px 1.04px hsl(var(--shadow-color) / 0.01),
+      0 0.8px 2.93px hsl(var(--shadow-color) / 0.02),
+      0 2.025px 7.85px hsl(var(--shadow-color) / 0.027),
+      0 4px 18px hsl(var(--shadow-color) / 0.04);
+    --shadow-deep:
+      0 0.175px 1.04px hsl(var(--shadow-color) / 0.012),
+      0 0.8px 2.93px hsl(var(--shadow-color) / 0.02),
+      0 2.025px 7.85px hsl(var(--shadow-color) / 0.03),
+      0 6px 18px hsl(var(--shadow-color) / 0.04),
+      0 12px 52px hsl(var(--shadow-color) / 0.05);
   }
 
   .dark {
-    --background: 220 16% 8%;
-    --foreground: 210 40% 98%;
-    --card: 220 15% 11%;
-    --card-foreground: 210 40% 98%;
-    --popover: 0 0% 12%;
-    --popover-foreground: 210 40% 98%;
+    /* 暗色不靠投影分层(Notion 暗色用色阶对比),所以 --shadow-color 压到近黑,
+       层次完全交给 background(9%) → card(14%) 的明度差。 */
+    --background: 30 4% 9%;
+    --foreground: 30 8% 96%;
+    --card: 30 4% 14%;
+    --card-foreground: 30 8% 96%;
+    --popover: 30 4% 15%;
+    --popover-foreground: 30 8% 96%;
     --primary: 43 96% 56%;
-    --primary-foreground: 0 0% 10%;
-    --secondary: 220 13% 19%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 218 16% 14%;
-    --muted-foreground: 217 10% 65%;
+    --primary-foreground: 30 10% 8%;
+    --secondary: 30 4% 20%;
+    --secondary-foreground: 30 8% 96%;
+    --muted: 30 4% 18%;
+    --muted-foreground: 30 5% 68%;
     --accent: var(--accent-dark, 40 85% 22%);
-    /* accent 亮/暗统一用浅色底(见 primary-color-script),foreground 深色文字。
-       另:当前代码里已不再用 `text-accent-foreground`(交互 hover 统一走 bg-primary/15
-       text-primary),这个变量只给将来未预见的使用场景作兜底。 */
-    --accent-foreground: 216 23% 18%;
+    /* accent 亮/暗统一用浅色底(见 primary-color-script),所以浅色模式下
+       foreground 是深色文字;暗色模式下 accent 底偏暗,foreground 给浅色。
+       另:当前代码里已不再用 `text-accent-foreground`(交互 hover 统一走
+       bg-primary/15 text-primary),这个变量只给将来未预见的使用场景作兜底。 */
+    --accent-foreground: 30 8% 96%;
     --destructive: 0 74% 58%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 17% 23%;
-    --input: 217 17% 23%;
+    --destructive-foreground: 30 20% 98%;
+    --border: 30 4% 24%;
+    --input: 30 4% 26%;
     --ring: 43 96% 56%;
-    --shadow: 215 70% 2%;
+    --shadow-color: 30 10% 2%;
   }
 
   /* 收支颜色方案：跟随 mobile incomeExpenseColorSchemeProvider。默认 red =
@@ -87,15 +113,14 @@
 }
 
 @layer components {
+  /* 卡片 / 面板统一走 Notion 多层阴影(shadow-soft);弹层玻璃面板用更深的 shadow-deep。
+     边框一律 whisper(组件按 /60~/70 再降透明度),不做加重描边。 */
   .card {
-    @apply rounded-xl border border-border/60 bg-card shadow-[0_1px_0_hsl(var(--border)/0.35)];
+    @apply rounded-xl border border-border/70 bg-card shadow-soft;
   }
 
   .bc-panel {
-    @apply rounded-2xl border border-border/70 bg-card/95 shadow-sm;
-    box-shadow:
-      0 8px 24px -18px hsl(var(--shadow) / 0.55),
-      0 1px 0 0 hsl(var(--primary) / 0.08) inset;
+    @apply rounded-2xl border border-border/70 bg-card/95 shadow-soft;
   }
 
   .bc-toolbar {
@@ -107,8 +132,7 @@
   }
 
   .bc-glass {
-    @apply border border-border/70 bg-card;
-    box-shadow: 0 10px 30px -18px hsl(var(--shadow) / 0.45);
+    @apply border border-border/70 bg-card shadow-deep;
   }
 
   .bc-hero-border {

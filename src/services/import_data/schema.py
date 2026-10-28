@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 SUPPORTED_FORMATS = ("beecount", "generic")
 DEFAULT_DEDUP_STRATEGY = "skip_duplicates"
@@ -73,6 +73,10 @@ class ImportFieldMapping:
     from_account_name: str | None = None
     to_account_name: str | None = None
     note: str | None = None
+    # v0021 扩展字段(可选 CSV 列名):优惠 / 手续费 / 多账户
+    discount: str | None = None
+    transfer_fee: str | None = None
+    payment_legs: str | None = None
     # v30 多币种:币种列(可选)。值须像 ISO code(3-8 位字母)才被采纳。
     currency: str | None = None
     tags: list[str] = field(default_factory=list)
@@ -130,6 +134,10 @@ class ImportTransaction:
     from_account_name: str | None = None
     to_account_name: str | None = None
     tag_names: list[str] = field(default_factory=list)
+    # v0021 扩展字段(已解析为结构化对象,而非原始列值)
+    discount: dict[str, Any] | None = None
+    transfer_fee: dict[str, Any] | None = None
+    payment_legs: list[dict[str, Any]] | None = None
     # 原始 CSV 行号(从 header+1 开始),错误时定位用
     source_row_number: int = 0
     source_raw_line: str = ""

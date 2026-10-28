@@ -14,7 +14,7 @@ import {
   useLocale,
   useT,
 } from '@beecount/ui'
-import { Amount, CategoryIcon, periodLabel, TransactionList } from '@beecount/web-features'
+import { Amount, CategoryIcon, netExpenseAmount, periodLabel, TransactionList } from '@beecount/web-features'
 import { ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
@@ -607,7 +607,11 @@ function aggregate(transactions: WorkspaceTransaction[], startDay = 1): StatsAgg
   const tagMap = new Map<string, { count: number; amount: number; color: string | null }>()
 
   for (const tx of transactions) {
-    const amt = Math.abs(Number(tx.amount) || 0)
+    // 「支出统计不含已退款」:支出按净额(扣有效退款)聚合,与服务端统计
+    // 端点同口径;收入/转账无退款,按原额。分类详情是全局维度,扣全部退款。
+    const amt = tx.tx_type === 'expense'
+      ? netExpenseAmount(tx)
+      : Math.abs(Number(tx.amount) || 0)
     total += amt
     if (amt > maxAmount) {
       maxAmount = amt

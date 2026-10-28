@@ -158,11 +158,11 @@ def get_member_role(
 
 
 def list_ledger_members(
-    db: Session, *, ledger_id: int
+    db: Session, *, ledger_id: str
 ) -> list[tuple[str, str]]:
     """``[(user_id, role), ...]``。用于 WS fan-out / 权限审计。
 
-    ``ledger_id`` 是 ``Ledger.id`` (INT 主键),不是 ``external_id`` 字符串。
+    ``ledger_id`` 是 ``Ledger.id``(String(36) UUID 主键),不是 ``external_id``。
     """
     return [
         (row.user_id, row.role)

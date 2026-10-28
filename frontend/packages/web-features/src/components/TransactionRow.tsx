@@ -1,12 +1,18 @@
 import type { AttachmentRef, ReadCategory, ReadTag, ReadTransaction } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
+import { Ban, BadgePercent, CircleSlash, Clock, Gift, Layers, Paperclip, PiggyBank, Receipt, Tag, Undo2, Users, Wallet } from 'lucide-react'
 
 import { CategoryIcon } from './CategoryIcon'
 import { TagChip } from './TagChip'
 import { currencySymbol } from '../lib/currencies'
+import { dispatchOpenTimeDepositDetail } from '../lib/entityDetailEvents'
+import { isFullyRefundedToCard } from '../lib/refunds'
 import { composeTransactionRowTitle, type NoteDisplayMode } from '../lib/transactionRowTitle'
 
 export type TransactionRowVariant = 'default' | 'compact'
+
+/** 0024 成员分摊:流水行最多显示几个姓名,超出折叠成「+N」(行宽有限)。 */
+const MEMBER_NAME_LIMIT = 2
 
 type CommonProps = {
   row: ReadTransaction
@@ -103,7 +109,14 @@ export function TransactionRow({
     !!row.currency_code &&
     row.native_amount != null &&
     row.native_amount !== row.amount
-  const categoryText = row.category_name || (row.tx_type === 'transfer' ? t('enum.txType.transfer') : '-')
+  // 分类为空时不再显示裸「-」,退回交易类型文案(支出/收入/转账),避免空内容难看。
+  const categoryText =
+    row.category_name ||
+    (row.tx_type === 'transfer'
+      ? t('enum.txType.transfer')
+      : row.tx_type === 'income'
+        ? t('enum.txType.income')
+        : t('enum.txType.expense'))
   const rowTitle = composeTransactionRowTitle({
     mode: noteDisplayMode,
     categoryName: row.category_name,
@@ -114,6 +127,43 @@ export function TransactionRow({
     row.tx_type === 'transfer'
       ? `${row.from_account_name || '-'} → ${row.to_account_name || '-'}`
       : row.account_name || '-'
+
+  // 0021 交易扩展字段展示:优惠减免额 / 转账手续费 / 多账户合并付款。
+  const fmt2 = (n?: number | null) =>
+    (n ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  // 优惠仅 expense 有意义;discountAmount = 减免额(原价 − 实付)。
+  // amount 模式下 discountAmount 可能缺省,退回到 value(减免额)。
+  const discountSaved =
+    row.discount
+      ? (row.discount.discountAmount ??
+        (row.discount.mode === 'amount' ? row.discount.value : null))
+      : null
+  const hasMultiPay = Array.isArray(row.payment_legs) && row.payment_legs.length > 0
+
+  // 0022 退款进度(卡维度):「退回本卡」的退款累计 ≥ 原单金额 → 全额退款,
+  // 流水金额画删除线(与服务端 refunded_to_account 口径一致,容差 0.011)。
+  // 跨卡退款钱到了别的卡,本卡支出仍成立(余额也没回来),不画线 —— 与卡的
+  // 角度(账户余额)保持一致。仅 expense 有意义(退款只挂支出)。
+  const isFullyRefunded =
+    row.tx_type === 'expense' && isFullyRefundedToCard(row)
+
+  // 0024 成员分摊:流水行只显示姓名(金额/占比在详情弹窗里看),重名按
+  // memberId 去重 —— 同一个人被拆成两条腿不该显示两遍。
+  const memberNames = (() => {
+    const shares = row.member_shares
+    if (!Array.isArray(shares) || shares.length === 0) return []
+    const out: string[] = []
+    const seen = new Set<string>()
+    for (const share of shares) {
+      const name = share.memberName || share.memberId
+      if (!name) continue
+      const key = share.memberId || name
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(name)
+    }
+    return out
+  })()
 
   const isCompact = variant === 'compact'
 
@@ -226,73 +276,163 @@ export function TransactionRow({
           ) : null}
         </div>
 
-        {/* 右上:hover 动作 + 金额 — self-start 钉顶 */}
-        <div className="flex shrink-0 items-center justify-end gap-2 self-start">
-          {(editableOnEdit || onDelete) && !isCompact && !selectionMode ? (
-            <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-              {editableOnEdit ? (
-                <button
-                  type="button"
-                  disabled={!canManage}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    editableOnEdit(row)
-                  }}
-                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+        {/* 右上:hover 动作 + 金额 — self-start 钉顶;下方附"交易后余额"流水行 */}
+        <div className="flex shrink-0 flex-col items-end justify-start gap-0.5 self-start">
+          <div className="flex items-center justify-end gap-2">
+            {(editableOnEdit || onDelete) && !isCompact && !selectionMode ? (
+              <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                {editableOnEdit ? (
+                  <button
+                    type="button"
+                    disabled={!canManage}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      editableOnEdit(row)
+                    }}
+                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                  >
+                    {t('common.edit')}
+                  </button>
+                ) : null}
+                {onDelete ? (
+                  <button
+                    type="button"
+                    disabled={!canManage}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onDelete(row)
+                    }}
+                    className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    {t('common.delete')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {/* 全额退款(卡维度):金额置灰 + 删除线 —— 置灰优先于支出红/收入绿,
+                一眼看出这笔钱已退回本卡、不再计支出。保留删除线是为了跟
+                「已退款」语义继续对齐(容差 0.011),tooltip 说明口径。 */}
+            <span
+              className={`font-mono tabular-nums font-bold ${
+                isFullyRefunded
+                  ? 'text-muted-foreground/70 line-through decoration-1'
+                  : amountTone === 'positive'
+                    ? 'text-income'
+                    : amountTone === 'negative'
+                      ? 'text-expense'
+                      : 'text-foreground'
+              } ${isCompact ? 'text-sm' : 'text-base'}`}
+              title={isFullyRefunded ? t('transactions.refundedStrikeHint') : undefined}
+            >
+              {sign}
+              {/* 外币显示其币种符号(JP¥/US$…,与本位币一眼区分);本位币维持纯数字 */}
+              {isForeignCurrency ? currencySymbol(row.currency_code as string) : ''}
+              {row.amount.toLocaleString('zh-CN', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })}
+            </span>
+          </div>
+          {/* 资产流水余额(server with_balance 计算):
+              - 合并付款(0021):分别显示每个腿账户的余额(balance_by_account)。
+              - 否则:显示主账户余额(balance_after)。转账默认追踪转出账户;
+                账户筛选模式下追踪被筛选账户(双向)。 */}
+          {(() => {
+            // 账户明细(对账单)场景下只显示「该账户」的交易后余额,不做合并付款
+            // 多腿拆分(否则会把另一条腿的账户余额也带出来,反而看不清本卡余额)。
+            // 其余列表场景(普通交易流水)保留合并付款的多腿余额展示。
+            const legBalances =
+              row.balance_by_account && row.payment_legs && !currentAccountId
+                ? Object.entries(row.balance_by_account)
+                    .map(([aid, bal]) => ({
+                      aid,
+                      name:
+                        row.payment_legs!.find((l) => l.accountId === aid)?.accountName ||
+                        aid,
+                      bal: bal as number,
+                    }))
+                    .filter((e) => e.bal != null)
+                : []
+            if (legBalances.length > 0) {
+              return (
+                <span
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono tabular-nums text-[11px] text-muted-foreground"
+                  title={t('transactions.balanceAfterHint')}
                 >
-                  {t('common.edit')}
-                </button>
-              ) : null}
-              {onDelete ? (
-                <button
-                  type="button"
-                  disabled={!canManage}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onDelete(row)
-                  }}
-                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  {legBalances.map((e, i) => (
+                    <span key={e.aid} className="inline-flex items-center gap-1">
+                      {i > 0 ? (
+                        <span className="text-border">·</span>
+                      ) : null}
+                      <span className="font-sans">{e.name}</span>
+                      <span
+                        className={
+                          e.bal < 0 ? 'text-expense' : 'text-muted-foreground'
+                        }
+                      >
+                        {t('transactions.balanceAfter')}
+                        {e.bal.toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              )
+            }
+            if (row.balance_after != null) {
+              return (
+                <span
+                  className={`font-mono tabular-nums text-[11px] ${
+                    (row.balance_after as number) < 0
+                      ? 'text-expense'
+                      : 'text-muted-foreground'
+                  }`}
+                  title={t('transactions.balanceAfterHint')}
                 >
-                  {t('common.delete')}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          <span className={`font-mono tabular-nums font-bold ${
-            amountTone === 'positive'
-              ? 'text-income'
-              : amountTone === 'negative'
-                ? 'text-expense'
-                : 'text-foreground'
-          } ${isCompact ? 'text-sm' : 'text-base'}`}>
-            {sign}
-            {/* 外币显示其币种符号(JP¥/US$…,与本位币一眼区分);本位币维持纯数字 */}
-            {isForeignCurrency ? currencySymbol(row.currency_code as string) : ''}
-            {row.amount.toLocaleString('zh-CN', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2
-            })}
-          </span>
+                  {t('transactions.balanceAfter')}
+                  {(row.balance_after as number).toLocaleString('zh-CN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </span>
+              )
+            }
+            return null
+          })()}
         </div>
 
-        {/* 左下:时间·账户·标签·附件 — self-end 钉到 row 底部 */}
+        {/* 左下:时间·账户·标签·附件·扩展字段 —— self-end 钉到 row 底部。
+            每个元信息前加一个小图标,视觉更整齐("好看一点")。 */}
         <div className={`mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 self-end ${
           isCompact ? 'text-[11px]' : 'text-xs'
         } text-muted-foreground`}>
-          <span className="font-mono tabular-nums">{formatDateTime(row.happened_at)}</span>
+          <span className="inline-flex items-center gap-1">
+            <Clock className="h-3 w-3 shrink-0 opacity-60" />
+            <span className="font-mono tabular-nums">{formatDateTime(row.happened_at)}</span>
+          </span>
           {accountText && accountText !== '-' ? (
-            <span className="truncate">· {accountText}</span>
+            <span className="inline-flex items-center gap-1">
+              <Wallet className="h-3 w-3 shrink-0 opacity-60" />
+              <span className="truncate">{accountText}</span>
+            </span>
           ) : null}
-          {row.tags_list && row.tags_list.length > 0
-            ? row.tags_list.map((tagName) => (
-                <TagChip
-                  key={tagName}
-                  name={tagName}
-                  color={tagColorByName?.get(tagName.trim().toLowerCase())}
-                  onClick={onClickTag}
-                />
-              ))
-            : null}
+          {row.tags_list && row.tags_list.length > 0 ? (
+            <span className="inline-flex items-center gap-1">
+              <Tag className="h-3 w-3 shrink-0 opacity-60" />
+              <span className="flex flex-wrap items-center gap-1">
+                {row.tags_list.map((tagName) => (
+                  <TagChip
+                    key={tagName}
+                    name={tagName}
+                    color={tagColorByName?.get(tagName.trim().toLowerCase())}
+                    onClick={onClickTag}
+                  />
+                ))}
+              </span>
+            </span>
+          ) : null}
           {hasAttachments && firstAttachment ? (
             <button
               type="button"
@@ -303,16 +443,117 @@ export function TransactionRow({
               className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary"
               title={firstAttachment.originalName || firstAttachment.fileName || t('attachment.default')}
             >
-              <span aria-hidden>📎</span>
+              <Paperclip className="h-3 w-3 shrink-0 opacity-70" />
               <span className="font-mono tabular-nums">{attachments.length}</span>
             </button>
           ) : null}
-          {/* §4.2 标记小灰字 — 不改金额、不加图标,只在第二排尾部追加灰字标签 */}
+          {/* 0021 交易扩展字段:优惠减免 / 转账手续费 / 多账户合并付款 —— 仅在有值时展示 */}
+          {discountSaved != null && discountSaved !== 0 ? (
+            <span className="inline-flex items-center gap-1" title={t('transactions.extDiscountHint')}>
+              <BadgePercent className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('transactions.extDiscount')}</span>
+              <span className="font-mono tabular-nums text-foreground">{fmt2(discountSaved)}</span>
+            </span>
+          ) : null}
+          {row.transfer_fee ? (
+            row.transfer_fee.mode === 'discount' ? (
+              /* 0026 优惠模式:转出方少扣、到账方全收 —— 用「优惠」语义展示 */
+              <span className="inline-flex items-center gap-1" title={t('transactions.extTransferDiscountHint')}>
+                <Gift className="h-3 w-3 shrink-0 opacity-60" />
+                <span>{t('transactions.extTransferDiscount')}</span>
+                <span className="font-mono tabular-nums text-foreground">{fmt2(row.transfer_fee.amount)}</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1" title={t('transactions.extFeeHint')}>
+                <Receipt className="h-3 w-3 shrink-0 opacity-60" />
+                <span>{t('transactions.extFee')}</span>
+                <span className="font-mono tabular-nums text-foreground">{fmt2(row.transfer_fee.amount)}</span>
+              </span>
+            )
+          ) : null}
+          {hasMultiPay ? (
+            <span className="inline-flex items-center gap-1" title={t('transactions.extPaymentLegsHint')}>
+              <Layers className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('transactions.extPaymentLegs')}</span>
+              <span className="font-mono tabular-nums text-foreground">
+                {row.payment_legs!.map((leg, idx) => (
+                  <span key={leg.accountId || idx}>
+                    {idx > 0 ? ' + ' : ''}
+                    {leg.accountName || '?'}
+                    {' '}
+                    {fmt2(leg.amount)}
+                  </span>
+                ))}
+              </span>
+            </span>
+          ) : null}
+          {/* 定期存款(0031):利息收入关联的定存 —— 可点开定存详情(0032) */}
+          {row.time_deposit_id ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-sm underline decoration-dotted decoration-muted-foreground/50 underline-offset-2 transition-opacity hover:opacity-100 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              style={{ opacity: 0.85 }}
+              title={
+                row.time_deposit_name
+                  ? t('transactions.extTimeDepositHint').replace('{name}', row.time_deposit_name)
+                  : t('transactions.extTimeDeposit')
+              }
+              onClick={(e) => {
+                // 行整体点击是「打开交易详情」,这里 stopPropagation 只开定存详情。
+                e.stopPropagation()
+                dispatchOpenTimeDepositDetail(row.time_deposit_id as string)
+              }}
+            >
+              <PiggyBank className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('transactions.extTimeDeposit')}</span>
+              {row.time_deposit_name ? (
+                <span className="font-mono tabular-nums text-foreground">{row.time_deposit_name}</span>
+              ) : null}
+            </button>
+          ) : null}
+          {/* 0024 成员分摊:这笔账算在谁头上 —— 人多时折叠成「+N」 */}
+          {memberNames.length > 0 ? (
+            <span
+              className="inline-flex items-center gap-1"
+              title={t('transactions.memberSharesHint').replace('{names}', memberNames.join('、'))}
+            >
+              <Users className="h-3 w-3 shrink-0 opacity-60" />
+              <span>
+                {memberNames.slice(0, MEMBER_NAME_LIMIT).join('、')}
+                {memberNames.length > MEMBER_NAME_LIMIT
+                  ? ` +${memberNames.length - MEMBER_NAME_LIMIT}`
+                  : ''}
+              </span>
+            </span>
+          ) : null}
+          {/* 退款到账(0032):回显退的是哪张原单 —— 仅在有值时展示 */}
+          {row.refund_source_label ? (
+            <span
+              className="inline-flex items-center gap-1"
+              title={t('transactions.extRefundSourceHint').replace(
+                '{name}',
+                row.refund_source_label
+              )}
+            >
+              <Undo2 className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('transactions.extRefundSource')}</span>
+              <span className="font-mono tabular-nums text-foreground">
+                {row.refund_source_label}
+              </span>
+            </span>
+          ) : null}
+          {/* §4.2 标记小灰字 —— 加图标,保持最小视觉噪声 */}
           {row.exclude_from_stats ? (
-            <span>· {t('txFlagExcludedTag')}</span>
+            <span className="inline-flex items-center gap-1">
+              <Ban className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('txFlagExcludedTag')}</span>
+            </span>
           ) : null}
           {row.exclude_from_budget ? (
-            <span>· {t('txFlagBudgetExcludedTag')}</span>
+            <span className="inline-flex items-center gap-1">
+              <CircleSlash className="h-3 w-3 shrink-0 opacity-60" />
+              <span>{t('txFlagBudgetExcludedTag')}</span>
+            </span>
           ) : null}
         </div>
 

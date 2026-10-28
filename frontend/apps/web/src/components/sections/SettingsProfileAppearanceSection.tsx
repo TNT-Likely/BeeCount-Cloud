@@ -50,6 +50,7 @@ import {
   headerSkinLabelKey,
 } from '../../lib/header-skins'
 import { localizeError } from '../../i18n/errors'
+import { APPEARANCE_KEYS, resolveAppearancePrefs } from '../../lib/appearancePrefs'
 import { TwoFactorAuthInline } from './TwoFactorAuthSection'
 import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
 
@@ -210,6 +211,9 @@ export function SettingsProfileAppearanceSection() {
   // 动态皮肤默认播放动效;关掉后 mobile 那边皮肤停在静态帧(省电)
   const skinAnimation = appearance.skin_animation ?? true
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
+  // 日历偏好:节假日默认开(贴合既有"一直显示节假日"行为),农历默认关(需主动开启)。
+  // 走 resolveAppearancePrefs 统一归一化,避免组件里散落魔法布尔。
+  const { showHolidays, showLunar } = resolveAppearancePrefs(appearance)
   const [appearanceSaving, setAppearanceSaving] = useState(false)
 
   const saveAppearance = async (
@@ -618,6 +622,56 @@ export function SettingsProfileAppearanceSection() {
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                     skinAnimation ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 日历 - 显示法定节假日:默认开。关掉后日格不再显示「休 / 班」角标
+                与玫瑰底,节假日图例也一并隐藏(见 CalendarPage 的 showHolidays 判断)。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.showHolidays')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showHolidays}
+                aria-label={t('profile.sync.showHolidays') as string}
+                disabled={appearanceSaving}
+                onClick={() =>
+                  void saveAppearance({ [APPEARANCE_KEYS.SHOW_HOLIDAYS]: !showHolidays })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  showHolidays ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    showHolidays ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 日历 - 显示农历:默认关(新功能)。开启后日格日期下方会多一行农历
+                小字(如「正月初一」),由 CalendarPage 的 showLunar 判断渲染。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.showLunar')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showLunar}
+                aria-label={t('profile.sync.showLunar') as string}
+                disabled={appearanceSaving}
+                onClick={() => void saveAppearance({ [APPEARANCE_KEYS.SHOW_LUNAR]: !showLunar })}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  showLunar ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    showLunar ? 'translate-x-[18px]' : 'translate-x-0.5'
                   }`}
                 />
               </button>

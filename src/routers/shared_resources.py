@@ -62,6 +62,8 @@ class SharedAccountItem(BaseModel):
     payment_due_day: int | None
     bank_name: str | None
     card_last_four: str | None
+    # 账户别名(0027):共享账本场景下成员看到的展示名,空 = 沿用 name。
+    alias: str | None = None
 
 
 class SharedTagItem(BaseModel):
@@ -144,6 +146,7 @@ def get_shared_resources(
                 payment_due_day=a.payment_due_day,
                 bank_name=a.bank_name,
                 card_last_four=a.card_last_four,
+                alias=a.alias,
             )
             for a in accts
         ],

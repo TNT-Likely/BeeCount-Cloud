@@ -7,12 +7,17 @@ import {
   Brush,
   Info,
   Key,
+  Landmark,
   Languages,
   LogOut,
+  FileText,
   Moon,
+  PackageCheck,
+  PiggyBank,
   Smartphone,
   Sparkles,
   Sun,
+  Undo2,
   User,
   Users,
   Wallet,
@@ -127,7 +132,8 @@ export function AvatarDropdown({
           </div>
           <div className="mx-1 h-px bg-border/60" />
 
-          {/* Tools 组:预算 + 账本 + 年度报告。访问频率低,不进顶部 nav */}
+          {/* Tools 组:预算 + 定期存款 + 归物 + 退款 + 账本 + 附件 + 年度报告。
+              访问频率低,不进顶部 nav。 */}
           <GroupLabel>{t('nav.group.tools')}</GroupLabel>
           <MenuButton
             icon={Wallet}
@@ -135,6 +141,48 @@ export function AvatarDropdown({
             onClick={() => onNavigate('budgets')}
           >
             {t('nav.budgets')}
+          </MenuButton>
+          <MenuButton
+            icon={PiggyBank}
+            active={currentSection === 'time-deposits'}
+            onClick={() => onNavigate('time-deposits')}
+          >
+            {t('nav.timeDeposits')}
+          </MenuButton>
+          <MenuButton
+            icon={PackageCheck}
+            active={currentSection === 'item-returns'}
+            onClick={() => onNavigate('item-returns')}
+          >
+            {t('nav.itemReturns')}
+          </MenuButton>
+          <MenuButton
+            icon={Undo2}
+            active={currentSection === 'refunds'}
+            onClick={() => onNavigate('refunds')}
+          >
+            {t('nav.refunds')}
+          </MenuButton>
+          <MenuButton
+            icon={Users}
+            active={currentSection === 'members'}
+            onClick={() => onNavigate('members')}
+          >
+            {t('nav.members')}
+          </MenuButton>
+          <MenuButton
+            icon={Landmark}
+            active={currentSection === 'loans'}
+            onClick={() => onNavigate('loans')}
+          >
+            {t('nav.loans')}
+          </MenuButton>
+          <MenuButton
+            icon={FileText}
+            active={currentSection === 'reimbursements'}
+            onClick={() => onNavigate('reimbursements')}
+          >
+            {t('nav.reimbursements')}
           </MenuButton>
           <MenuButton
             icon={BookOpen}

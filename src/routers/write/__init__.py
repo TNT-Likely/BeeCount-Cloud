@@ -18,8 +18,15 @@ from . import (
     budgets,
     categories,
     exchange_rate_overrides,
+    item_returns,
+    items,
     ledgers,
+    loans,
+    members,
+    reimbursements,
+    refunds,
     tags,
+    time_deposits,
     transactions,
     transactions_batch,
     transactions_batch_delete,
@@ -35,3 +42,11 @@ router.include_router(budgets.router)
 router.include_router(categories.router)
 router.include_router(tags.router)
 router.include_router(exchange_rate_overrides.router)
+router.include_router(time_deposits.router)
+router.include_router(item_returns.router)
+# 归物 · 物品持有(0029);与 item_returns(物品归还/退款流程)是两套端点。
+router.include_router(items.router)
+router.include_router(refunds.router)
+router.include_router(loans.router)
+router.include_router(reimbursements.router)
+router.include_router(members.router)

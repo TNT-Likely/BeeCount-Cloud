@@ -226,6 +226,12 @@ function TotalBudgetRow({
 
   const fmtAmount = (v: number) =>
     Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })
+  // 日均可用可能是小数(如 ¥0.33/天),不能按整数取整,否则会被舍成 ¥0。
+  const fmtDailyAmount = (v: number) =>
+    Math.abs(v).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
 
   return (
     <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-3">
@@ -264,7 +270,7 @@ function TotalBudgetRow({
           <span>
             {t('home.budget.dailyAvailable').replace(
               '{amount}',
-              fmtAmount(dailyAvailable),
+              fmtDailyAmount(dailyAvailable),
             )}
           </span>
         )}

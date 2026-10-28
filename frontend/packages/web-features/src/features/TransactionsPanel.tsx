@@ -29,6 +29,7 @@ import type {
 } from '@beecount/api-client'
 
 import { TransactionAttachmentEditor, type TransactionAttachmentEditorHandle } from '../components/TransactionAttachmentEditor'
+import { TxExtensionEditor } from '../components/TxExtensionEditor'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import { CategoryPickerDialog } from '../components/CategoryPickerDialog'
 import { CategoryIcon } from '../components/CategoryIcon'
@@ -36,6 +37,7 @@ import { TagPickerDialog } from '../components/TagPickerDialog'
 import { TransactionList } from '../components/TransactionList'
 import { useSingleFlight } from '../lib/singleFlight'
 import { tagTextColorOn } from '../lib/tagColorPalette'
+import { legsToWire, toNum } from '../lib/txExtensions'
 import type { TxForm } from '../forms'
 
 type TransactionsPanelProps = {
@@ -51,6 +53,15 @@ type TransactionsPanelProps = {
   accounts: ReadAccount[]
   categories: ReadCategory[]
   tags: ReadTag[]
+  /** 0024 账本内自定义成员(可选)。给支出账单的「成员分摊」下拉用;
+   *  不传 = 该账本还没建成员,编辑区不展示分摊区块。 */
+  memberOptions?: readonly { id: string; name: string }[]
+  /** 0029 归物候选(可选)。给支出的「关联物品」下拉用;不传 = 该账本还没有
+   *  物品,编辑区不展示该区块。 */
+  itemOptions?: readonly { id: string; name: string }[]
+  /** 0030 定期存款候选(可选)。给收入的「关联定期存款」下拉用;不传 = 该账本
+   *  还没有存款,编辑区不展示该区块。 */
+  depositOptions?: readonly { id: string; name: string }[]
   ledgerOptions: Array<{ ledger_id: string; ledger_name: string }>
   writeLedgerId: string
   onWriteLedgerIdChange: (ledgerId: string) => void
@@ -247,6 +258,9 @@ export function TransactionsPanel({
   accounts,
   categories,
   tags,
+  memberOptions = [],
+  itemOptions = [],
+  depositOptions = [],
   ledgerOptions,
   writeLedgerId,
   onWriteLedgerIdChange,
@@ -343,9 +357,24 @@ export function TransactionsPanel({
   }, [categories, form.category_name, form.tx_type])
 
   const isTransfer = form.tx_type === 'transfer'
+  // name → syncId:提交折扣/手续费/legs 的 wire 对象时解析账户 id 用
+  // (服务端 upsert 也接受纯账户名,但带 id 更稳,rename 时投影只刷 name)。
+  const accountIdByName = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const row of accounts) {
+      const key = (row.name || '').trim().toLowerCase()
+      if (key && row.id && !map.has(key)) map.set(key, row.id)
+    }
+    return map
+  }, [accounts])
+  // 0021 合并付款:开启后 legs 必须完整(每腿有账户 + 正金额 + 合计 == amount),
+  // 否则禁用保存(服务端也会 400,前端提前拦)。
+  const legsValid = !form.payment_merge_enabled || isTransfer
+    ? true
+    : legsToWire(form.payment_legs, toNum(form.amount), accountIdByName) !== null
   // 非转账允许不选账户（与 mobile 保持一致，tx.accountId 本来就是 nullable）；
   // 转账必须两端都选（否则无法表达方向）。
-  const canSubmit = Boolean(writeLedgerId.trim()) && Number.isFinite(Number(form.amount)) && Number(form.amount) > 0 && (isTransfer
+  const canSubmit = Boolean(writeLedgerId.trim()) && Number.isFinite(Number(form.amount)) && Number(form.amount) > 0 && legsValid && (isTransfer
     ? Boolean(form.from_account_name.trim()) && Boolean(form.to_account_name.trim())
     : Boolean(form.category_name.trim()))
   const selectedTags = form.tags
@@ -364,7 +393,11 @@ export function TransactionsPanel({
         category_name: '',
         category_kind: 'transfer',
         exclude_from_stats: false,
-        exclude_from_budget: false
+        exclude_from_budget: false,
+        // 0021:折扣/合并付款仅 expense;切 transfer 时清掉,手续费保留。
+        discount: { ...form.discount, discount_enabled: false },
+        payment_merge_enabled: false,
+        payment_legs: []
       })
       return
     }
@@ -377,7 +410,15 @@ export function TransactionsPanel({
       from_account_name: '',
       to_account_name: '',
       // 不计入预算仅 expense 显示;切到 income 时清掉
-      exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false
+      exclude_from_budget: nextType === 'expense' ? form.exclude_from_budget : false,
+      // 0021:手续费仅 transfer;切 expense/income 时清掉。折扣/合并付款
+      // 仅 expense:income 清掉,expense 保留(用户可能来回改)。
+      transfer_fee: { ...form.transfer_fee, transfer_fee_enabled: false },
+      discount: nextType === 'expense'
+        ? form.discount
+        : { ...form.discount, discount_enabled: false },
+      payment_merge_enabled: nextType === 'expense' ? form.payment_merge_enabled : false,
+      payment_legs: nextType === 'expense' ? form.payment_legs : []
     })
   }
 
@@ -586,6 +627,13 @@ export function TransactionsPanel({
                   </Select>
                 </div>
               </>
+            ) : form.payment_merge_enabled ? (
+              // 0021 合并付款:账户改由下方 legs 逐条选择,单账户下拉隐藏
+              // (避免"选了又好像没选"的困惑)。
+              <div className="space-y-1">
+                <Label>{t('transactions.table.account')}</Label>
+                <Input disabled value={t('txExt.legs.accountHidden')} />
+              </div>
             ) : (
               <div className="space-y-1">
                 <Label>{t('transactions.table.account')}</Label>
@@ -723,6 +771,18 @@ export function TransactionsPanel({
                 </button>
               </div>
             ) : null}
+            {/* 0021 扩展字段:折扣(expense)/ 合并付款(expense)/ 手续费(transfer) */}
+            <TxExtensionEditor
+              form={form}
+              onFormChange={onFormChange}
+              accountOptions={accountOptions}
+              accountIdByName={accountIdByName}
+              hiddenAccountNames={hiddenAccountNames}
+              memberOptions={memberOptions}
+              itemOptions={itemOptions}
+              depositOptions={depositOptions}
+              disabled={!canWrite || saving || selectingImages || !writeLedgerId}
+            />
             {open ? <TransactionAttachmentEditor
               key={`${writeLedgerId}:${form.editingId || 'new'}`}
               ref={attachmentEditor}

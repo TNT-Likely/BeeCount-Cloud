@@ -7,10 +7,20 @@ import type {
   ReadAccount,
   ReadBudget,
   ReadCategory,
+  ReadItem,
+  ReadItemReturn,
   ReadLedger,
   ReadLedgerDetail,
+  ReadLoan,
+  ReadMember,
+  ReadReimbursement,
+  ReadRefund,
   ReadTag,
+  ReadTimeDeposit,
   ReadTransaction,
+  MemberShareStats,
+  CounterpartyStats,
+  CounterpartyStat,
   SharedResourcesBundle,
   WorkspaceAccount,
   WorkspaceAnalytics,
@@ -67,6 +77,161 @@ export async function fetchReadTags(token: string, ledgerId: string): Promise<Re
 
 export async function fetchReadBudgets(token: string, ledgerId: string): Promise<ReadBudget[]> {
   return authedGet<ReadBudget[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/budgets`, token)
+}
+
+/** 定期存款(0021)。status 可选过滤:holding / matured / withdrawn。 */
+export async function fetchReadTimeDeposits(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadTimeDeposit[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadTimeDeposit[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/time-deposits${query}`,
+    token,
+  )
+}
+
+/** 归物 · 物品持有(0029)。status 可选过滤:in_use / disposed;不传 = 全部。 */
+export async function fetchReadItems(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadItem[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadItem[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/items${query}`,
+    token,
+  )
+}
+
+/** 归物(0029):这件物品关联的全部交易(按时间倒序)。 */
+export async function fetchReadItemTransactions(
+  token: string,
+  ledgerId: string,
+  itemId: string,
+): Promise<ReadTransaction[]> {
+  return authedGet<ReadTransaction[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/items/${encodeURIComponent(itemId)}/transactions`,
+    token,
+  )
+}
+
+/** 定期存款利息(0030):某笔存款关联的全部交易(按时间倒序)。 */
+export async function fetchReadTimeDepositTransactions(
+  token: string,
+  ledgerId: string,
+  depositId: string,
+): Promise<ReadTransaction[]> {
+  return authedGet<ReadTransaction[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/time-deposits/${encodeURIComponent(depositId)}/transactions`,
+    token,
+  )
+}
+
+/** 归物(0021)。status 可选过滤:pending / returned / refunded / cancelled。 */
+export async function fetchReadItemReturns(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadItemReturn[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadItemReturn[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/item-returns${query}`,
+    token,
+  )
+}
+
+/** 账本内自定义成员(0024):账本自己维护的人名,用于支出账单人头分摊。 */
+export async function fetchReadMembers(
+  token: string,
+  ledgerId: string,
+): Promise<ReadMember[]> {
+  return authedGet<ReadMember[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/members`,
+    token,
+  )
+}
+
+/** 成员维度统计(0024):有分摊按分摊,无分摊按记账人。 */
+export async function fetchMemberShareStats(
+  token: string,
+  ledgerId: string,
+  options?: { scope?: string; period?: string; tzOffsetMinutes?: number },
+): Promise<MemberShareStats> {
+  const query = new URLSearchParams()
+  query.set('scope', options?.scope || 'month')
+  if (options?.period) query.set('period', options.period)
+  if (typeof options?.tzOffsetMinutes === 'number') {
+    query.set('tz_offset_minutes', String(options.tzOffsetMinutes))
+  }
+  return authedGet<MemberShareStats>(
+    `/ledgers/${encodeURIComponent(ledgerId)}/member-share-stats?${query.toString()}`,
+    token,
+  )
+}
+
+/** 交易对手维度统计(平帐):按借款 counterparty 聚合借入/借出,对充出净额。 */
+export async function fetchCounterpartyStats(
+  token: string,
+  ledgerId: string,
+  options?: {
+    scope?: string
+    period?: string
+    tzOffsetMinutes?: number
+    status?: string
+  },
+): Promise<CounterpartyStats> {
+  const query = new URLSearchParams()
+  query.set('scope', options?.scope || 'all')
+  if (options?.period) query.set('period', options.period)
+  if (typeof options?.tzOffsetMinutes === 'number') {
+    query.set('tz_offset_minutes', String(options.tzOffsetMinutes))
+  }
+  if (options?.status) query.set('status', options.status)
+  return authedGet<CounterpartyStats>(
+    `/ledgers/${encodeURIComponent(ledgerId)}/counterparty-stats?${query.toString()}`,
+    token,
+  )
+}
+
+/** 交易退款(0022)。status 可选过滤:pending / received / cancelled。 */
+export async function fetchReadRefunds(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadRefund[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadRefund[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/refunds${query}`,
+    token,
+  )
+}
+
+/** 借款(0023)。status 可选过滤:active / repaid / cancelled。 */
+export async function fetchReadLoans(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadLoan[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadLoan[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/loans${query}`,
+    token,
+  )
+}
+
+/** 报销(0023)。status 可选过滤:pending / reimbursed / cancelled。 */
+export async function fetchReadReimbursements(
+  token: string,
+  ledgerId: string,
+  status?: string,
+): Promise<ReadReimbursement[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return authedGet<ReadReimbursement[]>(
+    `/read/ledgers/${encodeURIComponent(ledgerId)}/reimbursements${query}`,
+    token,
+  )
 }
 
 export type ReadBudgetUsageItem = {
@@ -143,6 +308,8 @@ export async function fetchWorkspaceTransactions(
     dateFrom?: string
     /** happened_at < dateTo (ISO 8601, 独占)。前端通常传"次日 00:00"包含整天。 */
     dateTo?: string
+    /** 为 true 时请求 server 计算每笔交易完成后主账户余额(balance_after)。 */
+    withBalance?: boolean
     limit?: number
     offset?: number
   }
@@ -161,6 +328,7 @@ export async function fetchWorkspaceTransactions(
   if (typeof options?.amountMax === 'number') query.set('amount_max', `${options.amountMax}`)
   if (options?.dateFrom) query.set('date_from', options.dateFrom)
   if (options?.dateTo) query.set('date_to', options.dateTo)
+  if (options?.withBalance) query.set('with_balance', 'true')
   if (typeof options?.limit === 'number') query.set('limit', `${options.limit}`)
   if (typeof options?.offset === 'number') query.set('offset', `${options.offset}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
@@ -304,6 +472,19 @@ export async function fetchNetWorthHistory(
   if (typeof options?.tzOffsetMinutes === 'number') query.set('tz_offset_minutes', `${options.tzOffsetMinutes}`)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return authedGet<NetWorthHistory>(`/read/workspace/net-worth-history${suffix}`, token)
+}
+
+/** 跨账本定期存款只读列表(0021,资产页净资产 / 资产构成并入定期存款 —— 与
+ *  `/read/workspace/accounts` 同口径,均跨账本聚合)。`ledgerId` / `status` 可选过滤。 */
+export async function fetchWorkspaceTimeDeposits(
+  token: string,
+  options?: { ledgerId?: string; status?: string },
+): Promise<ReadTimeDeposit[]> {
+  const query = new URLSearchParams()
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.status) query.set('status', options.status)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<ReadTimeDeposit[]>(`/read/workspace/time-deposits${suffix}`, token)
 }
 
 // ============================================================================

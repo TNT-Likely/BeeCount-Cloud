@@ -7,6 +7,7 @@
  */
 import { fetchWorkspaceTransactions, type WorkspaceTransaction } from '@beecount/api-client'
 
+import { netExpenseAmount } from '../../../lib/refunds'
 import { aggregate } from './aggregate'
 import type { AnnualReportData, TransactionLite } from './types'
 
@@ -72,10 +73,15 @@ async function fetchAllPaged(
 function toLite(
   t: WorkspaceTransaction & { tx_type: 'expense' | 'income' | 'transfer' },
 ): TransactionLite {
+  // 「支出统计不含已退款」:支出行取净支出额(扣有效退款合计),年度报告
+  // 所有支出聚合(总额 / 月度 / 分类 / 时段 / 单日 / 标签)自动排除已退款
+  // 部分,无需在 aggregate 里逐处改。收入 / 转账无退款,保持原额。
+  const amount =
+    t.tx_type === 'expense' ? netExpenseAmount(t) : t.amount
   return {
     id: t.id,
     txType: t.tx_type,
-    amount: t.amount,
+    amount,
     happenedAt: t.happened_at,
     note: t.note,
     categoryName: t.category_name,

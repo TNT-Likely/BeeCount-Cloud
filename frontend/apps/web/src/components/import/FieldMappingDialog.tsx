@@ -44,6 +44,9 @@ const OPTIONAL_FIELDS: Array<keyof ImportFieldMapping> = [
   'to_account_name',
   'currency',
   'note',
+  'discount',
+  'transfer_fee',
+  'payment_legs',
 ]
 
 const NONE_SENTINEL = '__none__'

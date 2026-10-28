@@ -26,6 +26,10 @@ _HEADER_ALIASES = {
     "time": {"time", "时间", "時間"},
     "tags": {"tags", "标签", "標籤"},
     "attachments": {"attachments", "附件"},
+    # v0021 扩展字段(跟 web 导出表头对齐)
+    "discount": {"discount", "优惠", "優惠"},
+    "transfer_fee": {"fee", "transfer fee", "手续费", "手續費"},
+    "payment_legs": {"split accounts", "payment_legs", "多账户", "多賬戶"},
 }
 
 
@@ -83,6 +87,9 @@ class BeeCountParser:
             to_account_name=_column_for(headers, _HEADER_ALIASES["to_account"]),
             note=_column_for(headers, _HEADER_ALIASES["note"]),
             tags=[t for t in [_column_for(headers, _HEADER_ALIASES["tags"])] if t],
+            discount=_column_for(headers, _HEADER_ALIASES["discount"]),
+            transfer_fee=_column_for(headers, _HEADER_ALIASES["transfer_fee"]),
+            payment_legs=_column_for(headers, _HEADER_ALIASES["payment_legs"]),
             datetime_format=None,  # BeeCount 是 ISO-ish 格式,auto-try OK
             strip_currency_symbols=False,  # BeeCount 导出不含币种符号
             expense_is_negative=False,

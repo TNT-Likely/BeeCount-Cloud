@@ -21,6 +21,8 @@ import {
 import type { ReadAccount } from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
+import { BankGlyphOnWhite, BankIconBadge } from '../components/BankIconBadge'
+import { BankIconPicker } from '../components/BankIconPicker'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
 import { accountDefaults } from '../forms'
@@ -33,6 +35,8 @@ import {
   LIABILITY_TYPES,
   splitByCurrency
 } from '../lib/assetAggregation'
+import { accountDisplayName, hasAlias } from '../lib/accounts'
+import { bankIconOf, matchBankIcon } from '../lib/bankIcons'
 import { useSingleFlight } from '../lib/singleFlight'
 
 
@@ -311,8 +315,12 @@ function HiddenAccountsSection({
                 onClick={() => onClickAccount?.(row)}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
               >
-                <TypeIcon type={row.account_type || 'other'} size={20} />
-                <span className="truncate text-sm">{row.name}</span>
+                {row.icon ? (
+                  <BankIconBadge icon={row.icon} size={20} radius={6} />
+                ) : (
+                  <TypeIcon type={row.account_type || 'other'} size={20} />
+                )}
+                <span className="truncate text-sm">{accountDisplayName(row)}</span>
                 <span className="shrink-0 rounded bg-muted px-1 py-[1px] text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                   {t('accounts.hidden.badge')}
                 </span>
@@ -616,8 +624,8 @@ function BankCardTile({
         onClick ? 'cursor-pointer' : ''
       }`}
       style={{
-        // 比 16:10 稍高一点，正文能放三列 stats 不挤。
-        aspectRatio: '16 / 11',
+        // 16:9 —— 比原 16:11 更紧凑(用户反馈行高偏高),三列 stats 仍放得下。
+        aspectRatio: '16 / 9',
         background: `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
         boxShadow: `0 4px 12px -4px ${color}66, 0 1px 2px rgba(0,0,0,0.06)`
       }}
@@ -676,12 +684,26 @@ function BankCardTile({
         {/* 顶部：类型图标 + 账户名 + 币种 pill */}
         <div className="flex items-center gap-1.5">
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/95 shadow-sm ring-1 ring-white/50">
-            <TypeIcon type={accountType} size={16} />
+            {/* 0026:账户指定了银行/支付图标时用品牌色字符,否则回退类型图标。 */}
+            {row.icon ? (
+              <BankGlyphOnWhite icon={row.icon} size={15} />
+            ) : (
+              <TypeIcon type={accountType} size={16} />
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12px] font-semibold leading-tight drop-shadow-sm">
-              {row.name}
+              {accountDisplayName(row)}
             </div>
+            {/* 0027:设了别名时补一行原名,对账时能确认到底是哪张卡 */}
+            {hasAlias(row) ? (
+              <div
+                className="truncate text-[9px] leading-tight text-white/70"
+                title={row.name}
+              >
+                {row.name}
+              </div>
+            ) : null}
           </div>
           <span className="shrink-0 rounded bg-white/25 px-1 py-[1px] text-[9px] font-semibold tracking-wider">
             {currency}
@@ -859,7 +881,8 @@ const VALUATION_TYPES: { value: string }[] = [
   { value: 'investment' },
   { value: 'insurance' },
   { value: 'social_fund' },
-  { value: 'loan' }
+  { value: 'loan' },
+  { value: 'time_deposit' }
 ]
 
 // 账户类型 → 品牌 SVG 图标路径。SVG 已从 BeeCount (mobile) `assets/icons/*.svg`
@@ -877,7 +900,8 @@ const TYPE_ICON_URL: Record<string, string> = {
   investment: '/icons/account/investment.svg',
   insurance: '/icons/account/insurance.svg',
   social_fund: '/icons/account/social_fund.svg',
-  loan: '/icons/account/loan.svg'
+  loan: '/icons/account/loan.svg',
+  time_deposit: '/icons/account/time_deposit.svg'
 }
 
 function TypeIcon({ type, size = 28 }: { type: string; size?: number }) {
@@ -908,7 +932,8 @@ const TYPE_COLORS: Record<string, string> = {
   investment: '#ec4899',
   insurance: '#14b8a6',
   social_fund: '#84cc16',
-  loan: '#dc2626'
+  loan: '#dc2626',
+  time_deposit: '#0ea5e9'
 }
 
 /** 账户类型 label i18n 查找:先看 accountType.<value> key,回退到原始 value。
@@ -1077,8 +1102,27 @@ export function AccountsPanel({
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  // 0026:账户图标选择器(开户行未自动匹配时手动挑)。
+  const [iconPickerOpen, setIconPickerOpen] = useState(false)
   // #450 同款:保存请求返回前的连点会重复创建 —— 单飞守卫 + 按钮禁用。
   const { saving, guard } = useSingleFlight()
+
+  // 开户行输入 → 自动匹配内置银行图标。手动挑过的图标不被覆盖(手动优先);
+  // 自动匹配得来的图标在开户行改到未识别银行时自动清除,转手动设置。
+  const handleBankNameChange = (value: string) => {
+    const matched = matchBankIcon(value)
+    const next: AccountForm = { ...form, bank_name: value }
+    if (matched) {
+      if (!form.icon || form.icon_auto) {
+        next.icon = matched
+        next.icon_auto = true
+      }
+    } else if (form.icon_auto) {
+      next.icon = ''
+      next.icon_auto = false
+    }
+    onFormChange(next)
+  }
 
   // 账户隐藏(issue #240):净资产 hero / 资产构成饼图按 D1 用全量 rows 计算
   // (隐藏不改「钱在哪」);只有「底部分组列表」拆成在用/已隐藏两部分展示。
@@ -1167,14 +1211,29 @@ export function AccountsPanel({
             <DialogTitle>{form.editingId ? t('accounts.button.update') : t('accounts.button.create')}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3">
-            <div className="space-y-1">
-              <Label>{t('accounts.table.name')}</Label>
-              <Input
-                placeholder={t('accounts.placeholder.name')}
-                value={form.name}
-                onChange={(e) => onFormChange({ ...form, name: e.target.value })}
-              />
+            {/* 0027:账户名 + 别名。别名是列表/卡片上展示的短名,所有类型可填;
+                空 = 显示账户名。 */}
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1">
+                <Label>{t('accounts.table.name')}</Label>
+                <Input
+                  placeholder={t('accounts.placeholder.name')}
+                  value={form.name}
+                  onChange={(e) => onFormChange({ ...form, name: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('accounts.field.alias')}</Label>
+                <Input
+                  placeholder={t('accounts.placeholder.alias')}
+                  value={form.alias}
+                  onChange={(e) => onFormChange({ ...form, alias: e.target.value })}
+                />
+              </div>
             </div>
+            <p className="-mt-1 text-xs text-muted-foreground">
+              {t('accounts.field.aliasHint')}
+            </p>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
                 <Label>{t('accounts.table.type')}</Label>
@@ -1194,13 +1253,15 @@ export function AccountsPanel({
                       next.credit_limit = ''
                       next.billing_day = ''
                       next.payment_due_day = ''
+                      // 0027:出账日计入当期只对信用卡有意义,离开时回默认口径
+                      next.billing_day_in_current = true
                     }
-                    // 离开 bank_card / credit_card → 清空银行卡元信息
+                    // 离开 bank_card / credit_card → 清空开户行(bank_name)。
+                    // 卡号 / 后四位 / 图标现在所有类型都能录,不再随类型切换清空。
                     const wasBankOrCredit = form.account_type === 'bank_card' || form.account_type === 'credit_card'
                     const isBankOrCredit = value === 'bank_card' || value === 'credit_card'
                     if (wasBankOrCredit && !isBankOrCredit) {
                       next.bank_name = ''
-                      next.card_last_four = ''
                     }
                     onFormChange(next)
                   }}
@@ -1311,19 +1372,73 @@ export function AccountsPanel({
                       onChange={(e) => onFormChange({ ...form, payment_due_day: e.target.value })}
                     />
                   </div>
+                  {/* 0027:出账日(账单日)当天消费计入哪一期账单。 */}
+                  <div className="space-y-1">
+                    <Label>{t('accounts.field.billingDayInCurrent')}</Label>
+                    <Select
+                      value={form.billing_day_in_current ? 'current' : 'next'}
+                      onValueChange={(value) =>
+                        onFormChange({
+                          ...form,
+                          billing_day_in_current: value === 'current',
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="current">
+                          {t('accounts.credit.billingInCurrent')}
+                        </SelectItem>
+                        <SelectItem value="next">
+                          {t('accounts.credit.billingInNext')}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  {t('accounts.credit.billingInCurrentHint')}
+                </p>
               </div>
             ) : null}
 
-            {/* 银行卡 / 信用卡 元信息:开户行 + 卡号后四位。 */}
+            {/* 开户行(银行卡 / 信用卡 元信息,0026):自动匹配内置银行图标;
+                其他账户类型无此字段,不展示。 */}
             {form.account_type === 'bank_card' || form.account_type === 'credit_card' ? (
+              <div className="space-y-1">
+                <Label>{t('accounts.field.bankName')}</Label>
+                <Input
+                  placeholder={t('accounts.field.bankNameHint')}
+                  value={form.bank_name}
+                  onChange={(e) => handleBankNameChange(e.target.value)}
+                />
+              </div>
+            ) : null}
+
+            {/* 卡号 + 后四位(所有账户类型可录,0026):完整卡号 ≥4 位时自动
+                派生后四位,不用手填。非银行卡账户(现金 / 微信 / 支付宝 / 资产
+                等)也能记一笔账户编号 / 卡号,跟别名一样只影响展示。 */}
+            <div className="space-y-3">
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1">
-                  <Label>{t('accounts.field.bankName')}</Label>
+                  <Label>{t('accounts.field.cardNumber')}</Label>
                   <Input
-                    placeholder={t('accounts.field.bankNameHint')}
-                    value={form.bank_name}
-                    onChange={(e) => onFormChange({ ...form, bank_name: e.target.value })}
+                    inputMode="numeric"
+                    placeholder="**** **** **** ****"
+                    value={form.card_number}
+                    onChange={(e) => {
+                      // 只接受数字与空格(用户按 4 位分组输入),提交时归一化
+                      const raw = e.target.value.replace(/[^\d ]/g, '')
+                      const digits = raw.replace(/\D/g, '')
+                      onFormChange({
+                        ...form,
+                        card_number: raw,
+                        // 完整卡号 ≥4 位时自动派生后四位,不用手填
+                        card_last_four: digits.length >= 4 ? digits.slice(-4) : form.card_last_four
+                      })
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
@@ -1339,9 +1454,46 @@ export function AccountsPanel({
                       onFormChange({ ...form, card_last_four: next })
                     }}
                   />
+                  <p className="text-[10px] text-muted-foreground">
+                    {t('accounts.field.cardLastFourHint')}
+                  </p>
                 </div>
               </div>
-            ) : null}
+            </div>
+
+            {/* 账户图标(所有账户类型可设,0026):自动匹配结果 / 手动设置。
+                填了开户行(银行卡 / 信用卡)会自动匹配,其他类型手挑。 */}
+            <div className="space-y-1">
+              <Label>{t('accounts.field.icon')}</Label>
+              <div className="flex items-center gap-2">
+                {form.icon ? (
+                  <BankIconBadge icon={form.icon} size={28} />
+                ) : (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-md bg-muted text-[10px] text-muted-foreground">
+                    {t('accounts.icon.defaultBadge')}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs">
+                    {form.icon
+                      ? form.icon_auto
+                        ? t('accounts.icon.autoMatched', { name: bankIconOf(form.icon)?.label || '' })
+                        : t('accounts.icon.manual', { name: bankIconOf(form.icon)?.label || '' })
+                      : matchBankIcon(form.bank_name)
+                        ? t('accounts.icon.autoMatched', { name: bankIconOf(matchBankIcon(form.bank_name))?.label || '' })
+                        : t('accounts.icon.unrecognized')}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
+                  onClick={() => setIconPickerOpen(true)}
+                >
+                  {form.icon ? t('accounts.icon.change') : t('accounts.icon.set')}
+                </Button>
+              </div>
+            </div>
 
             {/* 备注 — 所有类型可填。 */}
             <div className="space-y-1">
@@ -1411,6 +1563,16 @@ export function AccountsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 0026:内置银行/支付图标选择器(开户行未识别时手动设置) */}
+      <BankIconPicker
+        open={iconPickerOpen}
+        current={form.icon || null}
+        onSelect={(icon) =>
+          onFormChange({ ...form, icon: icon || '', icon_auto: false })
+        }
+        onOpenChange={setIconPickerOpen}
+      />
     </>
   )
 }

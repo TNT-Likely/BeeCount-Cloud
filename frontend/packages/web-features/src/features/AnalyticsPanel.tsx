@@ -14,15 +14,21 @@ import {
   TableRow,
   useT
 } from '@beecount/ui'
-import type { WorkspaceAnalytics } from '@beecount/api-client'
+import type { MemberShareStat, WorkspaceAnalytics } from '@beecount/api-client'
 
 import { formatAmountCny } from '../format'
 
 type AnalyticsPanelProps = {
   data: WorkspaceAnalytics | null
+  /**
+   * 0024 成员维度统计(可选)。
+   * 口径:有 member_shares 的支出按成员分摊金额计入,没有分摊的按记账人归属。
+   * 没传(null)表示还没加载;空数组 = 本期没有成员维度的账。
+   */
+  memberStats?: MemberShareStat[] | null
 }
 
-export function AnalyticsPanel({ data }: AnalyticsPanelProps) {
+export function AnalyticsPanel({ data, memberStats }: AnalyticsPanelProps) {
   const t = useT()
 
   const summary = data?.summary || {
@@ -222,6 +228,63 @@ export function AnalyticsPanel({ data }: AnalyticsPanelProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* 0024 成员维度排行:谁花了多少。没数据时(本期无分摊且无人记账)不渲染。 */}
+      {memberStats && memberStats.length > 0 ? (
+        <Card className="bc-panel">
+          <CardHeader>
+            <CardTitle>{t('analytics.memberRank.title')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('analytics.memberRank.member')}</TableHead>
+                    <TableHead>{t('analytics.memberRank.expense')}</TableHead>
+                    <TableHead>{t('analytics.memberRank.income')}</TableHead>
+                    <TableHead>{t('analytics.memberRank.count')}</TableHead>
+                    <TableHead>{t('analytics.memberRank.share')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {memberStats.map((item) => {
+                    const grandTotal = memberStats.reduce(
+                      (sum, r) => sum + (r.expense_total || 0),
+                      0
+                    )
+                    const pct =
+                      grandTotal > 0
+                        ? Math.round(((item.expense_total || 0) / grandTotal) * 1000) / 10
+                        : 0
+                    return (
+                      <TableRow key={`${item.kind}:${item.id}`} className="odd:bg-muted/20">
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5">
+                            {item.name}
+                            {/* kind=member 是账本内自定义成员;user 是记账人
+                                (未分摊的账按记账人归属),给个淡标区分口径。 */}
+                            {item.kind === 'user' ? (
+                              <Badge variant="outline">{t('analytics.memberRank.byRecorder')}</Badge>
+                            ) : null}
+                          </span>
+                        </TableCell>
+                        <TableCell>{formatAmountCny(item.expense_total)}</TableCell>
+                        <TableCell>{formatAmountCny(item.income_total)}</TableCell>
+                        <TableCell>{item.tx_count}</TableCell>
+                        <TableCell>{pct ? `${pct}%` : '—'}</TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t('analytics.memberRank.hint')}
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }

@@ -14,7 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beeco
 import {
   BudgetsPanel,
   budgetDefaults,
-  currentMonthRange,
+  computeTotalBudgetDailySummary,
   type BudgetForm,
   type BudgetUsage,
 } from '@beecount/web-features'
@@ -122,18 +122,16 @@ export function BudgetsPage() {
   }, [categories, ensureLoadedMany])
 
   // 总预算的"日均可用 / 剩余天数",对齐 mobile budget_page.dart 算法。
+  // 用 computeTotalBudgetDailySummary 统一派生(不钳 remaining,超支时 isOver=true)。
   const totalSummary = useMemo(() => {
     const total = budgets.find((b) => b.type === 'total')
     if (!total) return null
-    const startDay = Math.max(1, Math.min(28, currentLedger?.month_start_day ?? 1))
-    const { end } = currentMonthRange(startDay)
-    const now = new Date()
-    const msPerDay = 1000 * 60 * 60 * 24
-    const daysRemaining = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / msPerDay))
     const used = usageById[total.id]?.used ?? 0
-    const remaining = Math.max(0, total.amount - used)
-    const dailyAvailable = daysRemaining > 0 ? remaining / daysRemaining : 0
-    return { daysRemaining, dailyAvailable }
+    return computeTotalBudgetDailySummary(
+      total.amount,
+      used,
+      currentLedger?.month_start_day ?? 1,
+    )
   }, [budgets, usageById, currentLedger])
 
   const onSubmit = async (): Promise<boolean> => {

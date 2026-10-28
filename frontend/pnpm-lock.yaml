@@ -150,6 +150,9 @@ importers:
       '@types/react':
         specifier: ^18.3.3
         version: 18.3.28
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@25.6.0)
 
 packages:
 

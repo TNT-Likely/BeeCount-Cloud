@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   createCategory,
   createTransaction,
+  fetchReadItems,
+  fetchReadMembers,
+  fetchReadTimeDeposits,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
@@ -10,6 +13,9 @@ import {
   updateTransaction,
   uploadAttachment,
   type AttachmentRef,
+  type ReadItem,
+  type ReadMember,
+  type ReadTimeDeposit,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -25,6 +31,14 @@ import {
   txDefaults,
   type CategoryForm,
   type TxForm,
+  discountFromWire,
+  discountToWire,
+  legsFromWire,
+  legsToWire,
+  sharesFromWire,
+  sharesToWire,
+  transferFeeFromWire,
+  transferFeeToWire,
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../app/useLedgerWrite'
@@ -65,6 +79,12 @@ export function GlobalEditDialogs() {
   const [editTxAccounts, setEditTxAccounts] = useState<WorkspaceAccount[]>([])
   const [editTxCategories, setEditTxCategories] = useState<WorkspaceCategory[]>([])
   const [editTxTags, setEditTxTags] = useState<WorkspaceTag[]>([])
+  // 0024 账本内自定义成员(支出账单人头分摊用)
+  const [editTxMembers, setEditTxMembers] = useState<ReadMember[]>([])
+  // 0029 归物候选(编辑弹窗的「关联物品」下拉)
+  const [editTxItems, setEditTxItems] = useState<ReadItem[]>([])
+  // 0030 定期存款候选(编辑弹窗的「关联定期存款」下拉,利息按键预填后展示)
+  const [editTxDeposits, setEditTxDeposits] = useState<ReadTimeDeposit[]>([])
   const [refsLoading, setRefsLoading] = useState(false)
   // v30 多币种:编辑交易时币种弹窗展示各币种对账本主币种的汇率。
   const editTxBase = (
@@ -115,14 +135,24 @@ export function GlobalEditDialogs() {
       if (!ledgerId) return
       setRefsLoading(true)
       try {
-        const [accts, cats, tagsList] = await Promise.all([
+        const [accts, cats, tagsList, members, items, deposits] = await Promise.all([
           fetchWorkspaceAccounts(token, { ledgerId, limit: 500 }),
           fetchWorkspaceCategories(token, { ledgerId, limit: 500 }),
           fetchWorkspaceTags(token, { ledgerId, limit: 500 }),
+          // 0024 成员(账本内自定义成员,给支出分摊用)。没有成员时返回空数组,
+          // 编辑区就不展示分摊区块 —— 这条失败不阻断其它 refs。
+          fetchReadMembers(token, ledgerId).catch(() => [] as ReadMember[]),
+          // 0029 归物候选(给支出的「关联物品」下拉用),同上容错。
+          fetchReadItems(token, ledgerId).catch(() => [] as ReadItem[]),
+          // 0030 定期存款候选(给收入的「关联定期存款」下拉用),同上容错。
+          fetchReadTimeDeposits(token, ledgerId).catch(() => [] as ReadTimeDeposit[]),
         ])
         setEditTxAccounts(accts)
         setEditTxCategories(cats)
         setEditTxTags(tagsList)
+        setEditTxMembers(members)
+        setEditTxItems(items)
+        setEditTxDeposits(deposits)
       } catch (err) {
         notifyError(err)
       } finally {
@@ -165,6 +195,20 @@ export function GlobalEditDialogs() {
         attachments: Array.isArray(tx.attachments) ? tx.attachments : [],
         exclude_from_stats: Boolean(tx.exclude_from_stats),
         exclude_from_budget: Boolean(tx.exclude_from_budget),
+        // 0021 扩展字段回填(与 TransactionsPage.onEdit 同一套 wire→form 转换)
+        discount: discountFromWire(tx.discount),
+        transfer_fee: transferFeeFromWire(tx.transfer_fee),
+        payment_merge_enabled:
+          Array.isArray(tx.payment_legs) && tx.payment_legs.length > 0,
+        payment_legs: legsFromWire(tx.payment_legs),
+        // 0024 成员分摊回填(仅 expense)
+        member_split_enabled:
+          Array.isArray(tx.member_shares) && tx.member_shares.length > 0,
+        member_shares: sharesFromWire(tx.member_shares),
+        // 0029 归物回填(仅 expense)
+        item_id: tx.item_id || '',
+        // 0030 定期存款利息回填(仅 income)
+        time_deposit_id: tx.time_deposit_id || '',
       })
       // 等 refs 拉完再打开 dialog,确保 category/account/tag 下拉有数据
       await loadRefsForLedger(ledgerId)
@@ -189,6 +233,12 @@ export function GlobalEditDialogs() {
       const defaults = txDefaults()
       setEditTxForm({
         ...defaults,
+        // 0030 利息按键 / 其它场景预填:交易类型 + 金额 + 账户 + 关联存款。
+        tx_type: prefill?.txType || defaults.tx_type,
+        category_kind: (prefill?.txType || defaults.tx_type),
+        amount: prefill?.amount || defaults.amount,
+        account_name: prefill?.accountName || defaults.account_name,
+        time_deposit_id: prefill?.timeDepositId || defaults.time_deposit_id,
         happened_at: prefill?.happenedAt || defaults.happened_at,
       })
       await loadRefsForLedger(ledgerId)
@@ -271,6 +321,15 @@ export function GlobalEditDialogs() {
       }
     }
 
+    // 0021 扩展字段:折扣/手续费/合并付款提交(与 TransactionsPage 同一口径,
+    // form → camelCase wire,未启用/不合法 → null)
+    const accountByName = new Map(
+      editTxAccounts
+        .filter((row) => (row.name || '').trim())
+        .map((row) => [(row.name || '').trim().toLowerCase(), row.id] as const),
+    )
+    const isTransfer = editTxForm.tx_type === 'transfer'
+
     const payload = {
       tx_type: editTxForm.tx_type,
       amount: amountNum,
@@ -301,7 +360,28 @@ export function GlobalEditDialogs() {
         editTxForm.tx_type === 'transfer' ? false : editTxForm.exclude_from_stats,
       exclude_from_budget:
         editTxForm.tx_type === 'expense' ? editTxForm.exclude_from_budget : false,
-      ...currencyFields
+      ...currencyFields,
+      discount: editTxForm.tx_type === 'expense'
+        ? discountToWire(editTxForm.discount, amountNum)
+        : null,
+      transfer_fee: isTransfer
+        ? transferFeeToWire(editTxForm.transfer_fee, accountByName)
+        : null,
+      payment_legs:
+        editTxForm.tx_type === 'expense' && editTxForm.payment_merge_enabled
+          ? legsToWire(editTxForm.payment_legs, amountNum, accountByName)
+          : null,
+      // 0024 成员分摊:仅 expense + 开启时提交;未开启/不合法 → null
+      member_shares:
+        editTxForm.tx_type === 'expense' && editTxForm.member_split_enabled
+          ? sharesToWire(editTxForm.member_shares, amountNum)
+          : null,
+      // 0029 归物:仅 expense 可挂物品;不关联 → 显式 null(解除关联)
+      item_id:
+        editTxForm.tx_type === 'expense' ? editTxForm.item_id || null : null,
+      // 0030 定期存款利息:仅 income 可挂存款(利息按键生成);不关联 → 显式 null
+      time_deposit_id:
+        editTxForm.tx_type === 'income' ? editTxForm.time_deposit_id || null : null,
     }
 
     try {
@@ -416,6 +496,31 @@ export function GlobalEditDialogs() {
     notifySuccess,
   ])
 
+  const editTxMemberOptions = useMemo(
+    () => editTxMembers.map((m) => ({ id: m.id, name: m.name })),
+    [editTxMembers],
+  )
+  const editTxItemOptions = useMemo(
+    () =>
+      editTxItems
+        .filter((it) => (it.name || '').trim())
+        .map((it) => ({ id: it.id, name: (it.name || '').trim() })),
+    [editTxItems],
+  )
+  const editTxDepositOptions = useMemo(
+    () =>
+      editTxDeposits
+        .filter((d) => (d.id || '').trim())
+        .map((d) => ({
+          id: d.id,
+          // 下拉项展示:账户(币种) + 本金 + 利率,方便从多笔存款里挑出目标。
+          name: `${d.account_name || t('timeDeposits.noAccount')} · ${(
+            d.currency || 'CNY'
+          ).trim()} ${(d.principal || 0).toFixed(2)} @ ${((d.annual_rate || 0) * 100).toFixed(2)}%`
+        })),
+    [editTxDeposits, t],
+  )
+
   return (
     <>
       <TransactionsPanel
@@ -435,6 +540,9 @@ export function GlobalEditDialogs() {
       })}
       categories={editTxCategories}
       tags={editTxTags}
+      memberOptions={editTxMemberOptions}
+      itemOptions={editTxItemOptions}
+      depositOptions={editTxDepositOptions}
       ledgerOptions={ledgerOptions}
       writeLedgerId={editTxLedgerId}
       onWriteLedgerIdChange={handleLedgerChange}

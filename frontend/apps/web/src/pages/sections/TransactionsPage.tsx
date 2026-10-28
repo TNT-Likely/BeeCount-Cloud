@@ -54,7 +54,10 @@ import {
   type ReadAccount,
   type ReadCategory,
   type ReadLedger,
+  type ReadItem,
+  type ReadMember,
   type ReadTag,
+  type ReadTimeDeposit,
   type ReadTransaction,
   type WorkspaceTag,
   type ProfileMe,
@@ -65,6 +68,9 @@ import {
   fetchAdminUsers,
   fetchReadLedgerDetail,
   fetchReadLedgers,
+  fetchReadItems,
+  fetchReadMembers,
+  fetchReadTimeDeposits,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTransaction,
@@ -99,6 +105,16 @@ import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
 import { consumePendingShareText } from '../../lib/pwa-intake'
 import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
+import {
+  discountFromWire,
+  discountToWire,
+  legsFromWire,
+  legsToWire,
+  sharesFromWire,
+  sharesToWire,
+  transferFeeFromWire,
+  transferFeeToWire
+} from '@beecount/web-features'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 
@@ -517,6 +533,95 @@ export function TransactionsPage() {
     txIsSharedEditor && sharedBundle ? sharedAsRead.categories : txDictionaryCategories
   const txWriteTags =
     txIsSharedEditor && sharedBundle ? sharedAsRead.tags : txDictionaryTags
+  // 0024 账本内自定义成员:给支出账单的「成员分摊」下拉用。按写账本现拉;
+  // sync 推送时跟着刷新(成员在成员页增删,这边要能感知)。拉不到就当没成员,
+  // 编辑区不展示分摊区块 —— 不影响其它字段。
+  const [txWriteMembers, setTxWriteMembers] = useState<ReadMember[]>([])
+  const [memberVersion, setMemberVersion] = useState(0)
+  useSyncRefresh(() => setMemberVersion((v) => v + 1))
+  useEffect(() => {
+    if (!txWriteLedgerId) {
+      setTxWriteMembers([])
+      return
+    }
+    let cancelled = false
+    fetchReadMembers(token, txWriteLedgerId)
+      .then((rows) => {
+        if (!cancelled) setTxWriteMembers(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxWriteMembers([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, txWriteLedgerId, memberVersion])
+  const txMemberOptions = useMemo(
+    () => txWriteMembers.map((m) => ({ id: m.id, name: m.name })),
+    [txWriteMembers]
+  )
+  // 0029 归物候选:给支出的「关联物品」下拉用。同成员口径 —— 按写账本现拉,
+  // sync 推送时刷新;拉不到就没有该区块(不影响其它字段)。
+  const [txWriteItems, setTxWriteItems] = useState<ReadItem[]>([])
+  const [itemVersion, setItemVersion] = useState(0)
+  useSyncRefresh(() => setItemVersion((v) => v + 1))
+  useEffect(() => {
+    if (!txWriteLedgerId) {
+      setTxWriteItems([])
+      return
+    }
+    let cancelled = false
+    fetchReadItems(token, txWriteLedgerId)
+      .then((rows) => {
+        if (!cancelled) setTxWriteItems(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxWriteItems([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, txWriteLedgerId, itemVersion])
+  const txItemOptions = useMemo(
+    () =>
+      txWriteItems
+        .filter((it) => (it.name || '').trim())
+        .map((it) => ({ id: it.id, name: (it.name || '').trim() })),
+    [txWriteItems]
+  )
+  // 0030 定期存款候选:给收入的「关联定期存款」下拉用(利息按键预填后展示)。
+  const [txWriteDeposits, setTxWriteDeposits] = useState<ReadTimeDeposit[]>([])
+  const [depositVersion, setDepositVersion] = useState(0)
+  useSyncRefresh(() => setDepositVersion((v) => v + 1))
+  useEffect(() => {
+    if (!txWriteLedgerId) {
+      setTxWriteDeposits([])
+      return
+    }
+    let cancelled = false
+    fetchReadTimeDeposits(token, txWriteLedgerId)
+      .then((rows) => {
+        if (!cancelled) setTxWriteDeposits(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTxWriteDeposits([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, txWriteLedgerId, depositVersion])
+  const txDepositOptions = useMemo(
+    () =>
+      txWriteDeposits
+        .filter((d) => (d.id || '').trim())
+        .map((d) => ({
+          id: d.id,
+          name: `${d.account_name || t('timeDeposits.noAccount')} · ${(
+            d.currency || 'CNY'
+          ).trim()} ${(d.principal || 0).toFixed(2)} @ ${((d.annual_rate || 0) * 100).toFixed(2)}%`
+        })),
+    [txWriteDeposits, t]
+  )
   const txFilterAccountOptions = useMemo(
     () =>
       [...new Set(accounts.map((row) => (row.name || '').trim()).filter((value) => value.length > 0))].sort((a, b) =>
@@ -640,6 +745,8 @@ export function TransactionsPage() {
           amountMax: Number.isFinite(maxNum) && txFilterApplied.amountMax ? maxNum : undefined,
           dateFrom: dateFromIso,
           dateTo: dateToIso,
+          // 资产流水:请求 server 计算每笔交易完成后的主账户余额。
+          withBalance: true,
           limit: txPageSize,
           offset: (txPage - 1) * txPageSize
         }),
@@ -1298,7 +1405,29 @@ export function TransactionsPage() {
         // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
         exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
         exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false,
-        ...currencyFields
+        ...currencyFields,
+        // 0021 扩展字段:form → camelCase wire 对象。未启用/不合法 → null
+        // (不发字段,旧行为)。折扣仅 expense、手续费仅 transfer、合并付款
+        // 仅 expense —— 类型不匹配时 normalize 也会清,这里提前按类型门控。
+        discount: txForm.tx_type === 'expense'
+          ? discountToWire(txForm.discount, submitAmount)
+          : null,
+        transfer_fee: isTransfer
+          ? transferFeeToWire(txForm.transfer_fee, accountByName)
+          : null,
+        payment_legs: txForm.tx_type === 'expense' && txForm.payment_merge_enabled
+          ? legsToWire(txForm.payment_legs, submitAmount, accountByName)
+          : null,
+        // 0024 成员分摊:仅 expense + 开启分摊时提交;未开启/不合法 → null
+        member_shares: txForm.tx_type === 'expense' && txForm.member_split_enabled
+          ? sharesToWire(txForm.member_shares, submitAmount)
+          : null,
+        // 0029 归物:仅 expense 可挂物品(金额计入该物品累计成本);
+        // 不关联 → 显式 null(编辑时用于解除关联)。
+        item_id: txForm.tx_type === 'expense' ? txForm.item_id || null : null,
+        // 0030 定期存款利息:仅 income 可挂存款(利息按键生成);
+        // 不关联 → 显式 null(编辑时用于解除关联)。
+        time_deposit_id: txForm.tx_type === 'income' ? txForm.time_deposit_id || null : null
       }
       // eslint-disable-next-line no-console
       console.info('[tx-save] request', {
@@ -1759,6 +1888,9 @@ export function TransactionsPage() {
                 categories={txWriteCategories}
                 iconPreviewUrlByFileId={categoryIconPreviewByFileId}
                 tags={txWriteTags}
+                memberOptions={txMemberOptions}
+                itemOptions={txItemOptions}
+                depositOptions={txDepositOptions}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}
@@ -1824,7 +1956,22 @@ export function TransactionsPage() {
                             .filter((value) => value.length > 0),
                     attachments: normalizeAttachmentRefs(tx.attachments),
                     exclude_from_stats: Boolean(tx.exclude_from_stats),
-                    exclude_from_budget: Boolean(tx.exclude_from_budget)
+                    exclude_from_budget: Boolean(tx.exclude_from_budget),
+                    // §0021 扩展字段回填:折扣(expense)/转账手续费(transfer)/
+                    // 合并付款(expense)。wire→form 转换统一走 web-features 纯函数。
+                    discount: discountFromWire(tx.discount),
+                    transfer_fee: transferFeeFromWire(tx.transfer_fee),
+                    payment_merge_enabled:
+                      Array.isArray(tx.payment_legs) && tx.payment_legs.length > 0,
+                    payment_legs: legsFromWire(tx.payment_legs),
+                    // §0024 成员分摊回填(仅 expense)
+                    member_split_enabled:
+                      Array.isArray(tx.member_shares) && tx.member_shares.length > 0,
+                    member_shares: sharesFromWire(tx.member_shares),
+                    // §0029 归物回填(仅 expense)
+                    item_id: tx.item_id || '',
+                    // §0030 定期存款利息回填(仅 income)
+                    time_deposit_id: tx.time_deposit_id || ''
                   })
                 }}
                 onDelete={(row) =>

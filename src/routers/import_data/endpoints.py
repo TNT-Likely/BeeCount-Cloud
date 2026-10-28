@@ -75,6 +75,10 @@ class FieldMappingPayload(BaseModel):
     # v30 多币种:币种列(可选)
     currency: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # v0021 扩展字段(可选 CSV 列名):优惠 / 手续费 / 多账户
+    discount: str | None = None
+    transfer_fee: str | None = None
+    payment_legs: str | None = None
     datetime_format: str | None = None
     strip_currency_symbols: bool = True
     expense_is_negative: bool = False
@@ -95,6 +99,9 @@ class FieldMappingPayload(BaseModel):
             note=self.note,
             currency=self.currency,
             tags=list(self.tags),
+            discount=self.discount,
+            transfer_fee=self.transfer_fee,
+            payment_legs=self.payment_legs,
             datetime_format=self.datetime_format,
             strip_currency_symbols=self.strip_currency_symbols,
             expense_is_negative=self.expense_is_negative,
@@ -115,6 +122,9 @@ def _mapping_to_payload(m: ImportFieldMapping) -> dict:
         "note": m.note,
         "currency": m.currency,
         "tags": list(m.tags),
+        "discount": m.discount,
+        "transfer_fee": m.transfer_fee,
+        "payment_legs": m.payment_legs,
         "datetime_format": m.datetime_format,
         "strip_currency_symbols": m.strip_currency_symbols,
         "expense_is_negative": m.expense_is_negative,
@@ -756,6 +766,9 @@ def _tx_to_payload(tx) -> dict:
         "from_account_name": tx.from_account_name,
         "to_account_name": tx.to_account_name,
         "tag_names": list(tx.tag_names),
+        "discount": tx.discount,
+        "transfer_fee": tx.transfer_fee,
+        "payment_legs": tx.payment_legs,
         "source_row_number": tx.source_row_number,
     }
 
@@ -833,6 +846,11 @@ def _build_tx_payload(tx, auto_tags: list[str], actor_base: dict) -> dict:
         "account_name": tx.account_name,
         "from_account_name": tx.from_account_name,
         "to_account_name": tx.to_account_name,
+        # v0021 扩展字段(优惠 / 手续费 / 多账户):已在 transformer 按类型归属解析,
+        # 这里透传;create_transaction 内部的 normalize 会按交易类型丢弃不合规字段。
+        "discount": tx.discount,
+        "transfer_fee": tx.transfer_fee,
+        "payment_legs": tx.payment_legs,
     }
     if merged:
         payload["tags"] = merged

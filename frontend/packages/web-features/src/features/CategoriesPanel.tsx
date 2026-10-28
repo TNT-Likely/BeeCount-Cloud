@@ -402,9 +402,9 @@ function CategoriesCardBody({
  *
  * 跟 app 端 `lib/pages/category/icon_picker_page.dart` 行为一致:
  * - 按当前 `kind`(支出 / 收入)拿到分组(`getIconGroupsByKind`),组里都是
- *   app 已经在用的图标(8 组支出 + 4 组收入,≈70 个),所有 key 都在
- *   categoryIconMap.ts 的 KNOWN_NAMES / FLUTTER_RENAMES 里有定义,Material
- *   Symbols 字体一定能渲出来,不会再出现"图标渲成字面文字"的乱码。
+ *   app 已经在用的图标(支出/收入各一个置顶「常用」分组 + 7/3 个主题分组),
+ *   所有 key 都在 categoryIconMap.ts 的 KNOWN_NAMES / FLUTTER_RENAMES 里有定义,
+ *   Material Symbols 字体一定能渲出来,不会再出现"图标渲成字面文字"的乱码。
  * - 顶部 group tabs(餐饮/出行/购物...)切换。
  * - 搜索框:有内容时切换为"跨组按 key 模糊匹配"的扁平结果(label 也参与匹配)。
  * - 选中后 onSelect 写回 form.icon 并关闭;stored 值保持跟 app 端 stored 值

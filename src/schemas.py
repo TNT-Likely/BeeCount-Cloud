@@ -4,7 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # 6 位 hex，开头必须有 #；字母大小写都接受，validator 会归一化成大写。
 _HEX6_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -521,10 +520,42 @@ class ReadTransactionOut(BaseModel):
     # exclude_from_budget=不计入预算用量。两者独立,旧数据 default False。
     exclude_from_stats: bool = False
     exclude_from_budget: bool = False
+    # 0022 退款进度:该支出当前有效退款合计(不含 cancelled;仅 expense 有意义)。
+    # 前端 refunded_total >= amount(容差 0.011)时给流水金额画删除线(已退款)。
+    refunded_total: float = 0.0
+    # 0022 退款进度(卡维度):有效退款中实际退回到本交易所在卡的钱 ——
+    # unified 退到本卡 / split 腿里本卡那部分。跨卡退款不计入:钱到了别的卡,
+    # 本卡这笔支出仍然成立(余额也没回来),不能画删除线。
+    # 删除线口径:refunded_to_account >= amount(容差 0.011);原交易无账户的
+    # 老数据退化为 refunded_total 总口径。
+    refunded_to_account: float = 0.0
     # 交易级多币种(0018):currency_code=原币种(null 视作账本本位币);
     # native_amount=折账本本位币快照(null 时前端 fallback 用 amount)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 优惠/折扣(0021):null=无优惠。形态见 WriteTransactionCreateRequest.discount。
+    discount: dict[str, Any] | None = None
+    # 转账手续费(0021):null=无手续费。仅 transfer 有意义。
+    transfer_fee: dict[str, Any] | None = None
+    # 多账户合并付款(0021):null=单账户付款。仅 expense 有意义。
+    payment_legs: list[dict[str, Any]] | None = None
+    # 成员分摊(0024):null=未分摊(统计按记账人归属)。仅 expense 有意义。
+    # 形态 [{"memberId","memberName","ratio","amount"}, ...],sum(amount)==amount。
+    # 按人拆分,不影响账户余额。
+    member_shares: list[dict[str, Any]] | None = None
+    # 归物(0029):关联物品的 sync_id / 名称。null = 未关联任何物品。
+    # 挂上的支出会计入该物品的累计成本(维护/配件/延保)。
+    item_id: str | None = None
+    item_name: str | None = None
+    # 定期存款利息(0030):关联定期存款的 sync_id;null = 未关联。
+    # 挂上的收入(利息)会计入该存款「已收利息」。
+    time_deposit_id: str | None = None
+    # 0031:关联定存的展示名(账户名 + 币种本金,服务端合成)。仅展示用,
+    # 存款被删为 None —— 交易不阻塞,只是流水里不显示名字。
+    time_deposit_name: str | None = None
+    # 0032:退款到账关联交易回显的原账单摘要(备注 > 分类名 >「金额 · 日期」)。
+    # 仅退款 received 生成的 income 关联交易有值;其余交易恒为 None。
+    refund_source_label: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -540,6 +571,17 @@ class ReadTransactionOut(BaseModel):
     last_edited_by_display_name: str | None = None
     last_edited_by_avatar_url: str | None = None
     last_edited_by_avatar_version: int | None = None
+    # 资产流水余额:该交易完成后,其主账户(支出/收入=账户;转账=转出账户;
+    # 账户筛选模式下=被筛选账户,转账双向都计入)的余额。仅 `with_balance=true`
+    # 时在服务端计算并返回;否则为 null。口径与 WorkspaceAccount.balance 一致
+    # (initial + income - expense + transfer_to - transfer_from,amount 口径),
+    # 因此账户最后一笔交易的余额 = 该账户当前余额。多账本/多币种场景下为简化口径。
+    balance_after: float | None = None
+    # 多账户合并付款(0021)时,每笔交易完成后各个腿账户的余额,形如
+    # {account_sync_id: balance_after_for_that_leg}。仅 `with_balance=true` 且
+    # 该笔是合并付款时才有值;单账户交易此字段为 null(前端回退到 balance_after)。
+    # 用途:交易流水中合并付款要把每个参与账户的余额分别展示,而非只显示一个。
+    balance_by_account: dict[str, float] | None = None
 
 
 class ReadAccountOut(BaseModel):
@@ -561,6 +603,14 @@ class ReadAccountOut(BaseModel):
     payment_due_day: int | None = None
     bank_name: str | None = None
     card_last_four: str | None = None
+    # 完整卡号(0026)。用户手动录入,card_last_four 可由其后四位派生。
+    card_number: str | None = None
+    # 账户图标 key(0026):内置银行/支付图标注册表主键;空 = 按 account_type 回退。
+    icon: str | None = None
+    # 账户别名(0027):展示用短名,所有账户类型可用。空 = 沿用 name。
+    alias: str | None = None
+    # 出账日(账单日)当天计入当期账单(0027,信用卡口径)。非信用卡账户无意义。
+    billing_day_in_current: bool = True
     # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
     # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
     hidden: bool = False
@@ -611,6 +661,263 @@ class ReadBudgetOut(BaseModel):
     period: str
     start_day: int
     enabled: bool
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class TimeDepositPayoutPlanIn(BaseModel):
+    """到息计划写入形态(0028):到息日 + 该次金额 + 可选备注。
+
+    amount 是自由金额 —— 不区分「利息」还是「本息合计」,系统只负责记录。
+    """
+
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    date: str
+    amount: float = Field(gt=0)
+    note: str | None = None
+
+
+class TimeDepositPayoutPlanOut(BaseModel):
+    """到息计划只读形态:is_due 由读端点按「今天」派生(不落库)。"""
+
+    date: str
+    amount: float
+    note: str | None = None
+    is_due: bool = False
+
+
+class ReadTimeDepositOut(BaseModel):
+    """定期存款只读视图(0021,Cloud issue #80)。
+
+    派生字段(expected_interest / days_remaining / is_matured)由读端点按
+    "今天"现算,不落库 —— 避免后台任务刷状态,也避免跨时区日期口径分裂。
+    """
+
+    id: str
+    principal: float
+    currency: str
+    # 年利率小数(0.0325 = 3.25%)。
+    annual_rate: float
+    term_months: int
+    start_date: datetime
+    maturity_date: datetime
+    status: str
+    account_id: str | None = None
+    account_name: str | None = None
+    auto_renew: bool = False
+    interest_mode: str = "simple"
+    note: str | None = None
+    withdrawn_at: datetime | None = None
+    actual_interest: float | None = None
+    # --- 派生(读时计算)--------------------------------------------------- #
+    # 预期利息:withdrawn 时 = actual_interest(实得);否则按利率 + 期限现算。
+    expected_interest: float = 0.0
+    # 距到期天数(负数 = 已过期未支取;withdrawn 恒 0)。
+    days_remaining: int = 0
+    # 今天是否已达到期日(status != 'withdrawn' 时有意义)。
+    is_matured: bool = False
+    # --- 到息计划(0028,多笔)--------------------------------------------- #
+    # 计划只作预期/提醒:不生成交易、不进余额与收支统计。
+    payout_plans: list[TimeDepositPayoutPlanOut] = Field(default_factory=list)
+    # 计划金额合计(展示用)。
+    payout_plans_total: float = 0.0
+    # 下一个尚未到息的计划日期;全部已到息或无计划 → None。
+    next_payout_date: str | None = None
+    # 已收利息(0030):关联该存款、且为收入(利息)的交易金额合计(按账本本位币)。
+    # 与「到息计划」(仅预期/提醒)不同,这是真实入账的利息流水。
+    interest_received: float = 0.0
+    # 已收利息笔数(关联交易中 tx_type='income' 的条数)。
+    interest_tx_count: int = 0
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadItemOut(BaseModel):
+    """归物 · 物品持有只读视图(0029)。
+
+    记录一件物品的购买日期与金额,按存活时间摊出日均成本,跟踪保修,直到
+    二手卖出或报废才停止记录。派生字段(held_days / total_cost / daily_cost /
+    warranty_status)由读端点按「今天」现算,不落库 —— 处置后天数定格,不随
+    时间继续增长。
+    """
+
+    id: str
+    name: str
+    purchase_date: datetime
+    purchase_amount: float
+    warranty_until: datetime | None = None
+    # 'in_use'(在用,默认) | 'disposed'(已处置)
+    status: str = "in_use"
+    # 处置方式:'sold'(二手卖出,有收入) | 'scrapped'(报废)。仅 disposed 有意义。
+    disposal_type: str | None = None
+    disposal_date: datetime | None = None
+    disposal_amount: float | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+    # --- 派生(读时计算)--------------------------------------------------- #
+    # 持有天数(含购买当天;disposed 时定格在处置日)。
+    held_days: int = 0
+    # 净成本 = 购买金额 + 关联交易支出 - 二手卖出收入(可为负 = 处置回本还赚)。
+    total_cost: float = 0.0
+    # 日均成本 = 净成本 / 持有天数。
+    daily_cost: float = 0.0
+    # 挂在这件物品上的交易支出累计(维护/配件/延保……)。
+    linked_expense: float = 0.0
+    # 挂在这件物品上的交易收入累计(回收款 / 折价补偿 / 保修理赔入账……),
+    # 同样抵减净成本。
+    linked_income: float = 0.0
+    # 'none'(没记保修) | 'active'(保修中) | 'expired'(已过保)
+    # —— 过保后物品仍存活、继续摊成本。
+    warranty_status: str = "none"
+    # 保修剩余天数;expired 时是负的过期天数;none 时为 None。
+    warranty_days_remaining: int | None = None
+    is_disposed: bool = False
+    # 关联交易笔数(物品详情列出所有关联交易)。
+    linked_tx_count: int = 0
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadItemReturnOut(BaseModel):
+    """归物(旧:物品归还/退款流程)只读视图(0021,App issue #465 退款诉求)。"""
+
+    id: str
+    name: str
+    original_tx_id: str | None = None
+    original_amount: float | None = None
+    refund_amount: float
+    happened_at: datetime
+    reason: str | None = None
+    # 'pending'(待归还) | 'returned'(已归还待退款) | 'refunded'(已退款入账)
+    # | 'cancelled'(已取消)
+    status: str
+    account_id: str | None = None
+    account_name: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    note: str | None = None
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadRefundOut(BaseModel):
+    """交易退款只读视图(0022,App issue #465 退款功能)。
+
+    挂在原始支出交易上的退款记录;同一原单可有多笔(部分退/多次退)。
+    refunded_total / remaining_refundable 由读端点现算(按原单聚合,
+    cancelled 不计入),不落库。
+    """
+
+    id: str
+    original_tx_id: str
+    original_amount: float | None = None
+    amount: float
+    currency: str = "CNY"
+    account_id: str | None = None
+    account_name: str | None = None
+    happened_at: datetime
+    reason: str | None = None
+    # 'pending'(待退款/处理中) | 'received'(已到账) | 'cancelled'(已取消)
+    status: str
+    note: str | None = None
+    # 退款分摊模式(0025):'unified'(默认,统一退至单一账户) | 'split'(分别退款)。
+    refund_mode: str = "unified"
+    # 分别退款(0025)腿:解析自 refund_legs_json 的
+    #   [{"accountId": "a1", "accountName": "工行卡", "amount": 60.0}, ...]
+    # 仅 split 模式非空;unified 时为 None(退到 account_id)。
+    refund_legs: list[dict[str, Any]] | None = None
+    # --- 派生(读时按原单聚合)--------------------------------------------- #
+    # 该原单当前有效退款合计(不含 cancelled;含本笔)。
+    refunded_total: float = 0.0
+    # 该原单剩余可退金额(original_amount - refunded_total,负值钳 0)。
+    remaining_refundable: float = 0.0
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadMemberOut(BaseModel):
+    """账本内自定义成员只读视图(0024)。
+
+    账本自己维护的「人」名单(爸爸/妈妈/我),不要求登录账号 —— 跟共享账本的
+    LedgerMember 是两套东西。用途:给支出账单做**人头分摊**,让成员维度统计
+    能回答「谁花了多少」。
+    """
+
+    id: str
+    name: str
+    note: str | None = None
+    sort_order: int = 0
+    # 成员图标 key(人物语义 Material Symbols 名);空 = 前端回退默认图标。
+    icon: str | None = None
+    # 关联的记账人(登录用户 id);空 = 未关联。
+    linked_user_id: str | None = None
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadLoanOut(BaseModel):
+    """借款只读视图(0023)。
+
+    direction: 'borrowed'(借入) | 'lent'(借出)。
+    repay_progress / days_to_due / is_overdue 由读端点按今天现算,不落库。
+    """
+
+    id: str
+    direction: str
+    counterparty: str
+    principal: float
+    currency: str = "CNY"
+    interest_rate: float = 0.0
+    started_at: datetime
+    due_at: datetime | None = None
+    repaid_amount: float = 0.0
+    # 'active'(在借) | 'repaid'(已结清) | 'cancelled'(作废)
+    status: str
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+    # --- 派生(读时按今天现算)--------------------------------------------- #
+    # 还款进度 0..1(repaid_amount / principal)。
+    repay_progress: float = 0.0
+    # 距到期天数(无到期日 = None);负数 = 已过期未结清。
+    days_to_due: int | None = None
+    # 已逾期(due_at 早于今天 且 status='active')。
+    is_overdue: bool = False
+    last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+
+
+class ReadReimbursementOut(BaseModel):
+    """报销只读视图(0023)。
+
+    title 报销事由;payer 垫付方;reimburser 给付方;
+    status: 'pending'(待报销) | 'reimbursed'(已到账) | 'cancelled'(已取消)。
+    """
+
+    id: str
+    title: str
+    payer: str | None = None
+    reimburser: str | None = None
+    amount: float
+    currency: str = "CNY"
+    category_id: str | None = None
+    category_name: str | None = None
+    happened_at: datetime
+    status: str
+    account_id: str | None = None
+    account_name: str | None = None
+    related_tx_id: str | None = None
+    note: str | None = None
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -814,6 +1121,30 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 折账本本位币快照(前端按汇率算好传入)。不传 → item 不产生字段(旧行为)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 优惠/折扣(0021,App issue #465):仅 expense。形态
+    # {"mode": "percent"|"amount", "value": ..., "couponName": ...,
+    #  "originalAmount": ..., "discountAmount": ..., "finalAmount": ...}
+    # finalAmount 恒等于 amount(实付)。服务端只做结构透传 + 落库,不重算。
+    discount: dict[str, Any] | None = None
+    # 转账手续费/优惠(0021):仅 transfer。形态
+    # {"amount": ..., "mode": "deduct_from_source"|"deduct_from_target"
+    #  |"separate_account"|"discount", "feeAccountId": ..., "feeAccountName": ...}
+    # discount=转出方少扣 amount(实扣 amount-优惠额,到账方全收 amount)。
+    transfer_fee: dict[str, Any] | None = None
+    # 多账户合并付款(0021):仅 expense。形态
+    # [{"accountId": ..., "accountName": ..., "amount": ...}, ...]
+    # sum(legs) 必须等于 amount(容差 0.01),snapshot_mutator 校验。
+    payment_legs: list[dict[str, Any]] | None = None
+    # 成员分摊(0024):仅 expense。形态
+    # [{"memberId": ..., "memberName": ..., "ratio": ..., "amount": ...}, ...]
+    # sum(shares.amount) 必须等于 amount(容差 0.011)。按人拆分,不动账户余额。
+    member_shares: list[dict[str, Any]] | None = None
+    # 归物(0029):关联物品的 sync_id。挂上后该笔支出计入物品累计成本
+    # (维护/配件/延保……);不传 = 不关联任何物品。
+    item_id: str | None = None
+    # 定期存款利息(0030):关联定期存款的 sync_id。挂上后该笔收入(利息)计入
+    # 该存款「已收利息」;不传 = 不关联任何存款。
+    time_deposit_id: str | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
@@ -839,6 +1170,272 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 交易级多币种(0018):显式传入优先(mutator 不再联动);None = 不变。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 0021 结构化扩展字段:显式传 null = 清除该扩展;缺键 = 不动。
+    discount: dict[str, Any] | None = None
+    transfer_fee: dict[str, Any] | None = None
+    payment_legs: list[dict[str, Any]] | None = None
+    member_shares: list[dict[str, Any]] | None = None
+    # 归物(0029):关联物品;显式 null = 解除关联。
+    item_id: str | None = None
+    # 定期存款利息(0030):关联交易;显式 null = 解除关联。
+    time_deposit_id: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 定期存款 / 归物(0021)/ 交易退款(0022)                                         #
+# --------------------------------------------------------------------------- #
+
+
+class WriteTimeDepositCreateRequest(WriteBaseRequest):
+    principal: float = Field(gt=0)
+    currency: str | None = None
+    # 年利率小数(0.0325 = 3.25%)。允许 0(活期式定存),不允许负。
+    annual_rate: float = Field(default=0.0, ge=0)
+    term_months: int = Field(default=12, ge=1, le=600)
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    start_date: str
+    # 到期日可不传 —— 服务端按 start_date + term_months 推算。
+    maturity_date: str | None = None
+    status: Literal["holding", "matured", "withdrawn"] = "holding"
+    account_id: str | None = None
+    account_name: str | None = None
+    auto_renew: bool = False
+    interest_mode: Literal["simple", "compound"] = "simple"
+    note: str | None = None
+    withdrawn_at: str | None = None
+    actual_interest: float | None = None
+    # 到息计划(0028,多笔):可挂多条;不传 = 无计划。
+    payout_plans: list[TimeDepositPayoutPlanIn] | None = None
+
+
+class WriteTimeDepositUpdateRequest(WriteBaseRequest):
+    # 全部可选(partial update);显式 None = 清除可空字段。
+    principal: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    annual_rate: float | None = Field(default=None, ge=0)
+    term_months: int | None = Field(default=None, ge=1, le=600)
+    start_date: str | None = None
+    maturity_date: str | None = None
+    status: Literal["holding", "matured", "withdrawn"] | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    auto_renew: bool | None = None
+    interest_mode: Literal["simple", "compound"] | None = None
+    note: str | None = None
+    withdrawn_at: str | None = None
+    actual_interest: float | None = None
+    # 到息计划(0028,多笔):不传 = 保持现值;显式 [] 或 null = 清空计划。
+    payout_plans: list[TimeDepositPayoutPlanIn] | None = None
+
+
+class WriteItemCreateRequest(WriteBaseRequest):
+    """归物 · 物品持有创建(0029)。"""
+
+    name: str = Field(min_length=1, max_length=255)
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    purchase_date: str
+    # 购买金额(账本本位币)。允许 0(赠品),不允许负。
+    purchase_amount: float = Field(default=0.0, ge=0)
+    # 保修到期日;不传 = 未记录保修。到期只是过保,物品仍存活。
+    warranty_until: str | None = None
+    status: Literal["in_use", "disposed"] = "in_use"
+    # disposed 时必填语义:sold(有回收款)/ scrapped(无)。缺则按 scrapped。
+    disposal_type: Literal["sold", "scrapped"] | None = None
+    disposal_date: str | None = None
+    disposal_amount: float | None = Field(default=None, ge=0)
+    category_id: str | None = None
+    category_name: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+
+
+class WriteItemUpdateRequest(WriteBaseRequest):
+    """归物 · 物品持有更新(0029)。全部可选(partial update)。
+
+    status 改回 in_use 会清掉 disposal_* 三个字段(由 validate_item 处理),
+    避免「二手卖掉后又改回在用」时留下残余的处置信息。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    purchase_date: str | None = None
+    purchase_amount: float | None = Field(default=None, ge=0)
+    warranty_until: str | None = None
+    status: Literal["in_use", "disposed"] | None = None
+    disposal_type: Literal["sold", "scrapped"] | None = None
+    disposal_date: str | None = None
+    disposal_amount: float | None = Field(default=None, ge=0)
+    category_id: str | None = None
+    category_name: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+
+
+class WriteItemReturnCreateRequest(WriteBaseRequest):
+    name: str = Field(min_length=1, max_length=255)
+    original_tx_id: str | None = None
+    original_amount: float | None = Field(default=None, ge=0)
+    refund_amount: float = Field(default=0.0, ge=0)
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    happened_at: str
+    reason: str | None = None
+    status: Literal["pending", "returned", "refunded", "cancelled"] = "pending"
+    account_id: str | None = None
+    account_name: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    note: str | None = None
+
+
+class WriteItemReturnUpdateRequest(WriteBaseRequest):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    original_tx_id: str | None = None
+    original_amount: float | None = Field(default=None, ge=0)
+    refund_amount: float | None = Field(default=None, ge=0)
+    happened_at: str | None = None
+    reason: str | None = None
+    status: Literal["pending", "returned", "refunded", "cancelled"] | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    note: str | None = None
+
+
+class WriteRefundCreateRequest(WriteBaseRequest):
+    # 关联原始支出交易 sync_id(必填;服务端校验存在且 tx_type='expense',
+    # 并把原单金额快照到 original_amount)。
+    original_tx_id: str = Field(min_length=1, max_length=255)
+    # 本笔退款金额(> 0)。同单多笔累计(非 cancelled)不得超原单金额。
+    amount: float = Field(gt=0)
+    # 缺省取原交易币种。
+    currency: str | None = None
+    # 退款去向账户(退款入账/期待的账户)。
+    account_id: str | None = None
+    account_name: str | None = None
+    # 'YYYY-MM-DD' 或 ISO datetime;含时分秒时服务端**保留**时间(退款精确到分钟)。
+    happened_at: str
+    reason: str | None = None
+    status: Literal["pending", "received", "cancelled"] = "pending"
+    note: str | None = None
+    # 退款分摊模式(0025):'unified'(默认,统一退至单一账户) | 'split'(分别退款)。
+    refund_mode: Literal["unified", "split"] = "unified"
+    # 分别退款(0025)腿:[{"accountId","accountName","amount"},...];sum==amount。
+    # 仅 split 模式有意义;unified 时后端忽略并清空。
+    refund_legs: list[dict[str, Any]] | None = None
+
+
+class WriteRefundUpdateRequest(WriteBaseRequest):
+    # 全部可选(partial update);显式 None = 清除可空字段。
+    original_tx_id: str | None = Field(default=None, min_length=1, max_length=255)
+    amount: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    happened_at: str | None = None
+    reason: str | None = None
+    status: Literal["pending", "received", "cancelled"] | None = None
+    note: str | None = None
+    # 退款分摊模式(0025)。
+    refund_mode: Literal["unified", "split"] | None = None
+    # 分别退款(0025)腿;[...sum==amount];仅 split 有意义。
+    refund_legs: list[dict[str, Any]] | None = None
+
+
+class WriteMemberCreateRequest(WriteBaseRequest):
+    """账本内自定义成员(0024)。name 必填;sort_order 仅影响列表展示顺序。
+
+    icon / linked_user_id 是成员档案:图标只影响展示;关联记账人影响统计
+    归属(该用户记的、无分摊的交易并入本成员)。
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    note: str | None = None
+    sort_order: int = 0
+    icon: str | None = Field(default=None, max_length=64)
+    linked_user_id: str | None = Field(default=None, max_length=36)
+
+
+class WriteMemberUpdateRequest(WriteBaseRequest):
+    # 全部可选(partial update);显式 None = 清除可空字段。
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    note: str | None = None
+    sort_order: int | None = None
+    icon: str | None = Field(default=None, max_length=64)
+    linked_user_id: str | None = Field(default=None, max_length=36)
+
+
+class WriteLoanCreateRequest(WriteBaseRequest):
+    direction: Literal["borrowed", "lent"] = "borrowed"
+    counterparty: str = Field(min_length=1, max_length=500)
+    principal: float = Field(gt=0)
+    currency: str | None = None
+    # 年利率小数(0.05 = 5%)。允许 0,不允许负。
+    interest_rate: float = Field(default=0.0, ge=0)
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    started_at: str
+    # 到期日可空(无限期)。
+    due_at: str | None = None
+    repaid_amount: float = Field(default=0.0, ge=0)
+    status: Literal["active", "repaid", "cancelled"] = "active"
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+
+
+class WriteLoanUpdateRequest(WriteBaseRequest):
+    # 全部可选(partial update);显式 None = 清除可空字段。
+    direction: Literal["borrowed", "lent"] | None = None
+    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
+    principal: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    interest_rate: float | None = Field(default=None, ge=0)
+    started_at: str | None = None
+    due_at: str | None = None
+    repaid_amount: float | None = Field(default=None, ge=0)
+    status: Literal["active", "repaid", "cancelled"] | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    note: str | None = None
+
+
+class WriteReimbursementCreateRequest(WriteBaseRequest):
+    # 报销事由(必填)。
+    title: str = Field(min_length=1, max_length=500)
+    # 实际垫付方(通常是我,可空)。
+    payer: str | None = None
+    # 报销给付方(公司 / 他人,可空)。
+    reimburser: str | None = None
+    amount: float = Field(gt=0)
+    currency: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    # 'YYYY-MM-DD' 或 ISO datetime;服务端只取日期部分。
+    happened_at: str
+    status: Literal["pending", "reimbursed", "cancelled"] = "pending"
+    account_id: str | None = None
+    account_name: str | None = None
+    # 关联垫付交易 sync_id(弱引用,可空)。
+    related_tx_id: str | None = None
+    note: str | None = None
+
+
+class WriteReimbursementUpdateRequest(WriteBaseRequest):
+    # 全部可选(partial update);显式 None = 清除可空字段。
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    payer: str | None = None
+    reimburser: str | None = None
+    amount: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    happened_at: str | None = None
+    status: Literal["pending", "reimbursed", "cancelled"] | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    related_tx_id: str | None = None
+    note: str | None = None
 
 
 
@@ -858,6 +1455,14 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # 完整卡号(0026)。card_last_four 缺省时服务端从其后四位派生。
+    card_number: str | None = Field(default=None, max_length=64)
+    # 账户图标 key(0026):内置银行/支付图标注册表主键;空 = 按 account_type 回退。
+    icon: str | None = Field(default=None, max_length=64)
+    # 账户别名(0027):展示用短名。空串 / None = 无别名(沿用 name)。
+    alias: str | None = Field(default=None, max_length=255)
+    # 出账日计入当期(0027):true = 账单日当天消费入本期账单;false = 入下期。
+    billing_day_in_current: bool = True
     # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
     # (mutator / write handler)是 Task 4,本字段暂不生效。
     hidden: bool = False
@@ -874,6 +1479,15 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
+    # 完整卡号 + 图标 key(0026)。None = 清空(PATCH exclude_unset 下不带 key
+    # 才是不改)。
+    card_number: str | None = Field(default=None, max_length=64)
+    icon: str | None = Field(default=None, max_length=64)
+    # 别名(0027)。None = 清空别名(退回显示 name),不带 key = 不改。
+    alias: str | None = Field(default=None, max_length=255)
+    # 出账日计入当期(0027)。None = 不改(PATCH exclude_unset);显式 true/false
+    # 才改 —— False 与"不传"可区分,不会被默认值吞掉。
+    billing_day_in_current: bool | None = None
     # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
     hidden: bool | None = None
 

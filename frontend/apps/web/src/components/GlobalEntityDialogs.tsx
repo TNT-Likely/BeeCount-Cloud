@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   fetchWorkspaceTags,
+  fetchWorkspaceTimeDeposits,
   fetchWorkspaceTransactions,
+  type ReadTimeDeposit,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTag,
@@ -20,12 +22,14 @@ import {
   onOpenDetailAccount,
   onOpenDetailCategory,
   onOpenDetailTag,
+  onOpenDetailTimeDeposit,
   onOpenDetailTx,
   type DetailScope,
 } from '../lib/txDialogEvents'
 import { AccountDetailDialog } from './dialogs/AccountDetailDialog'
 import { CategoryDetailDialog } from './dialogs/CategoryDetailDialog'
 import { TagDetailDialog } from './dialogs/TagDetailDialog'
+import { TimeDepositDetailDialog } from './dialogs/TimeDepositDetailDialog'
 import { TransactionDetailDialog } from './dialogs/TransactionDetailDialog'
 
 const DETAIL_PAGE_SIZE = 50
@@ -78,6 +82,11 @@ export function GlobalEntityDialogs() {
 
   const [tag, setTag] = useState<WorkspaceTag | null>(null)
   const [tagScope, setTagScope] = useState<DetailScope>('current')
+
+  // 定期存款(0032):只有 id,数据按 id 现拉(workspace 端点一次拿全再 find,
+  // 定存量级很小,不值得为此加一个 by-id 端点)。
+  const [timeDeposit, setTimeDeposit] = useState<ReadTimeDeposit | null>(null)
+  const [timeDepositLoading, setTimeDepositLoading] = useState(false)
   const [tagTxs, setTagTxs] = useState<WorkspaceTransaction[]>([])
   const [tagTotal, setTagTotal] = useState(0)
   const [tagOffset, setTagOffset] = useState(0)
@@ -100,13 +109,33 @@ export function GlobalEntityDialogs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
+  // 监听定期存款 detail(0032):只有 id,按 id 现拉完整记录
+  useEffect(() => {
+    return onOpenDetailTimeDeposit((id) => {
+      setTimeDeposit(null)
+      setTimeDepositLoading(true)
+      void fetchWorkspaceTimeDeposits(token)
+        .then((rows) => {
+          setTimeDeposit(rows.find((row) => row.id === id) ?? null)
+        })
+        .catch(() => setTimeDeposit(null))
+        .finally(() => setTimeDepositLoading(false))
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
+
   const loadAccountTxs = useCallback(
-    async (accountName: string, scope: DetailScope, offset: number) => {
+    async (accountSyncId: string, scope: DetailScope, offset: number) => {
       setAccountLoading(true)
       try {
         const page = await fetchWorkspaceTransactions(token, {
-          accountName,
+          accountSyncId,
           ledgerId: scope === 'current' ? activeLedgerId || undefined : undefined,
+          // 账户流水视图:传 accountSyncId 触发 server「账户对账单」模式
+          // (statement_account_sync_id = accountSyncId),每行都追踪该账户余额,
+          // 转账双向、合并付款腿账户都正确计入;TransactionRow 在金额下方
+          // 渲染「余额 ¥xxx」= 该笔交易完成后该账户余额。
+          withBalance: true,
           limit: DETAIL_PAGE_SIZE,
           offset,
         })
@@ -130,7 +159,7 @@ export function GlobalEntityDialogs() {
       setAccountTxs([])
       setAccountTotal(0)
       setAccountOffset(0)
-      void loadAccountTxs(acc.name, defaultScope, 0)
+      void loadAccountTxs(acc.id, defaultScope, 0)
       // 同时拉一份 tags 字典(如还没拉)
       if (tagsDict.length === 0) {
         void fetchWorkspaceTags(token, { limit: 500 }).then(setTagsDict).catch(() => undefined)
@@ -145,7 +174,7 @@ export function GlobalEntityDialogs() {
       setAccountTxs([])
       setAccountTotal(0)
       setAccountOffset(0)
-      void loadAccountTxs(account.name, next, 0)
+      void loadAccountTxs(account.id, next, 0)
     },
     [account, accountScope, loadAccountTxs],
   )
@@ -334,7 +363,7 @@ export function GlobalEntityDialogs() {
         onPreviewAttachment={previewAttachment}
         resolveAttachmentPreviewUrl={ref => resolvePreview(ref.cloudFileId || '')}
         onClose={() => setAccount(null)}
-        onLoadMore={(name, off) => void loadAccountTxs(name, accountScope, off)}
+        onLoadMore={(id, off) => void loadAccountTxs(id, accountScope, off)}
       />
       <CategoryDetailDialog
         onPreviewAttachment={previewAttachment}
@@ -371,6 +400,11 @@ export function GlobalEntityDialogs() {
         resolveAttachmentPreviewUrl={ref => resolvePreview(ref.cloudFileId || '')}
         onClose={() => setTag(null)}
         onLoadMore={(syncId, off) => void loadTagTxs(syncId, tagScope, off)}
+      />
+      <TimeDepositDetailDialog
+        deposit={timeDeposit}
+        loading={timeDepositLoading}
+        onClose={() => setTimeDeposit(null)}
       />
     </>
   )

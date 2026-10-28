@@ -4,6 +4,8 @@ import type {
   WorkspaceTag,
   WorkspaceTransaction,
 } from '@beecount/api-client'
+// 事件名常量的唯一真理源在 web-features(流水行在那里派发),这里只监听。
+import { DETAIL_TIME_DEPOSIT_EVENT } from '@beecount/web-features'
 
 /**
  * 跨组件触发实体详情/编辑弹窗的轻量事件总线 — 让 CommandPalette 等不在
@@ -25,6 +27,11 @@ import type {
 const NEW_TX_EVENT = 'bee:open-new-tx'
 const EDIT_TX_EVENT = 'bee:open-edit-tx'
 const DETAIL_TX_EVENT = 'bee:open-detail-tx'
+// 定期存款详情(0032):流水里的利息收入点「定期存款」chip 打开。
+// 复用 web-features 导出的事件名常量(流水行在 web-features 里派发),
+// 避免两处各写一份字符串。只传 sync_id —— 流水行手上只有 id,
+// 完整数据由 GlobalEntityDialogs 现拉。
+const DETAIL_TD_EVENT = DETAIL_TIME_DEPOSIT_EVENT
 
 // 监听器计数 — 让派发方判断"目标页是否挂载",决定是否展示「请到对应页编辑」
 // 提示。比 dispatchEvent 自己的回执机制简单。
@@ -39,6 +46,14 @@ let editCategoryHandlerCount = 0
 export type NewTxPrefill = {
   happenedAt?: string
   ledgerId?: string
+  /** 预填交易类型(利息按键会传 'income')。 */
+  txType?: 'expense' | 'income' | 'transfer'
+  /** 预填金额(字符串,绑 input)。 */
+  amount?: string
+  /** 预填账户名(利息按键会带出存款关联的账户)。 */
+  accountName?: string
+  /** 定期存款利息(0030):预填关联的定期存款 sync_id(利息按键生成关联流水)。 */
+  timeDepositId?: string
 }
 
 export function dispatchOpenNewTx(prefill?: NewTxPrefill) {
@@ -51,6 +66,25 @@ export function dispatchOpenEditTx(tx: WorkspaceTransaction) {
 
 export function dispatchOpenDetailTx(tx: WorkspaceTransaction) {
   window.dispatchEvent(new CustomEvent(DETAIL_TX_EVENT, { detail: tx }))
+}
+
+/**
+ * 定期存款(0032):打开定存详情弹窗。只带 sync_id —— 调用方(流水行、资产页)
+ * 手上只有 id,完整数据由 GlobalEntityDialogs 现拉,避免各调用方各自 fetch。
+ */
+export function dispatchOpenDetailTimeDeposit(timeDepositId: string) {
+  window.dispatchEvent(new CustomEvent<string>(DETAIL_TD_EVENT, { detail: timeDepositId }))
+}
+
+export function onOpenDetailTimeDeposit(
+  handler: (timeDepositId: string) => void,
+): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(DETAIL_TD_EVENT, wrapped)
+  return () => window.removeEventListener(DETAIL_TD_EVENT, wrapped)
 }
 
 export function hasEditTxHandler(): boolean {

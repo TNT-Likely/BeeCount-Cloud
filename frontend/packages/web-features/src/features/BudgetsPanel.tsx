@@ -50,7 +50,7 @@ type BudgetsPanelProps = {
   canManage: boolean
   /** 月剩余天数 / 日均可用 — 由 page 层计算后塞进来,匹配 mobile budget_page 的
    *  "本月还剩 X 天 · 日均可用 ¥Y" 文案。null = 不显示。 */
-  totalSummary?: { daysRemaining: number; dailyAvailable: number } | null
+  totalSummary?: { daysRemaining: number; dailyAvailable: number; isOver: boolean } | null
 }
 
 /**
@@ -374,7 +374,7 @@ function BudgetCard({
   used: number
   currency: string
   iconPreviewUrlByFileId?: Record<string, string>
-  summary: { daysRemaining: number; dailyAvailable: number } | null
+  summary: { daysRemaining: number; dailyAvailable: number; isOver: boolean } | null
   canManage: boolean
   onEdit: () => void
   onDelete: () => void
@@ -458,16 +458,25 @@ function BudgetCard({
         </span>
       </div>
 
-      {/* 总预算特有的"日均可用"hint */}
+      {/* 总预算特有的"日均可用 / 已超支"hint */}
       {isTotal && summary ? (
         <div className="mt-2 flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5 text-xs">
           <span className="text-muted-foreground">
             {t('budgets.daysRemaining').replace('{n}', String(summary.daysRemaining))}
           </span>
-          <span className="font-medium">
-            {t('budgets.dailyAvailable')}{' '}
-            <Amount value={summary.dailyAvailable} currency={currency} size="sm" tone="default" />
-          </span>
+          {summary.isOver ? (
+            <span className="font-medium text-expense">{t('budgets.dailyOver')}</span>
+          ) : (
+            <span className="font-medium">
+              {t('budgets.dailyAvailable')}{' '}
+              <Amount
+                value={summary.dailyAvailable}
+                currency={currency}
+                size="sm"
+                tone="default"
+              />
+            </span>
+          )}
         </div>
       ) : null}
 

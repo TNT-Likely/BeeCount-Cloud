@@ -24,6 +24,8 @@
  * 文件。手工维护也可以,但要保证 KNOWN_NAMES 涵盖所有可能出现的 stored 值。
  */
 
+import { MEMBER_ICONS } from './memberIcons'
+
 /**
  * Flutter 内部重命名(stored 值 → Flutter 实际渲染的 `Icons.xxx` 名)。
  * 来源:`lib/services/data/category_service.dart` 的 `getCategoryIcon` switch
@@ -359,10 +361,17 @@ export function resolveMaterialIconName(stored: string | null | undefined): stri
 /**
  * Google Fonts 子集下载清单 —— 包含所有可能被渲染的 Material Symbols 名字,
  * 字典序排好。= `KNOWN_NAMES` ∪ `FLUTTER_RENAMES` 的 target(大多已在 KNOWN
- * 里,去重)。
+ * 里,去重)∪ `MEMBER_ICONS`(成员头像图标,另一处独立的图标集,同样靠这
+ * 份字体渲染 —— 漏了成员图标就会在成员卡片上渲成字面量)。
  */
 export const MATERIAL_SYMBOLS_SUBSET: readonly string[] = Object.freeze(
-  Array.from(new Set([...KNOWN_NAMES, ...Object.values(FLUTTER_RENAMES)])).sort()
+  Array.from(
+    new Set([
+      ...KNOWN_NAMES,
+      ...Object.values(FLUTTER_RENAMES),
+      ...MEMBER_ICONS,
+    ])
+  ).sort()
 )
 
 /**

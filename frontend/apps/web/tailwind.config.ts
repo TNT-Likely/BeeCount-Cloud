@@ -55,7 +55,11 @@ const config: Config = {
         sm: 'calc(var(--radius) - 4px)'
       },
       boxShadow: {
-        soft: '0 10px 30px -16px hsl(var(--shadow) / 0.55)'
+        // Notion 多层阴影(单层不透明度 ≤ 0.05),层定义在 styles.css 的
+        // --shadow-card / --shadow-deep。UI 包的浮层组件(card/dialog/
+        // dropdown/select/sheet)统一走 shadow-soft,弹层走 shadow-deep。
+        soft: 'var(--shadow-card)',
+        deep: 'var(--shadow-deep)'
       }
     }
   },

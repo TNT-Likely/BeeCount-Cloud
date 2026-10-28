@@ -4,12 +4,26 @@ import type {
   BudgetCreatePayload,
   BudgetUpdatePayload,
   CategoryPayload,
+  ItemCreatePayload,
+  ItemUpdatePayload,
+  ItemReturnCreatePayload,
+  ItemReturnUpdatePayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
   ReadAccount,
   ReadCategory,
   ReadTag,
+  RefundCreatePayload,
+  RefundUpdatePayload,
+  MemberCreatePayload,
+  MemberUpdatePayload,
+  LoanCreatePayload,
+  LoanUpdatePayload,
+  ReimbursementCreatePayload,
+  ReimbursementUpdatePayload,
   TagPayload,
+  TimeDepositCreatePayload,
+  TimeDepositUpdatePayload,
   TxPayload,
   WriteCommitMeta
 } from './types'
@@ -213,6 +227,370 @@ export async function deleteBudget(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/budgets/${encodeURIComponent(budgetId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 定期存款(0021)
+// ---------------------------------------------------------------------------
+
+export async function createTimeDeposit(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: TimeDepositCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/time-deposits`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateTimeDeposit(
+  token: string,
+  ledgerId: string,
+  depositId: string,
+  baseChangeId: number,
+  payload: TimeDepositUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/time-deposits/${encodeURIComponent(depositId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteTimeDeposit(
+  token: string,
+  ledgerId: string,
+  depositId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/time-deposits/${encodeURIComponent(depositId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 归物 · 物品持有(0029)
+// ---------------------------------------------------------------------------
+
+export async function createItem(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: ItemCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/items`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateItem(
+  token: string,
+  ledgerId: string,
+  itemId: string,
+  baseChangeId: number,
+  payload: ItemUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/items/${encodeURIComponent(itemId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteItem(
+  token: string,
+  ledgerId: string,
+  itemId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/items/${encodeURIComponent(itemId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 归物(退货/退还物品,0021)
+// ---------------------------------------------------------------------------
+
+export async function createItemReturn(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: ItemReturnCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/item-returns`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateItemReturn(
+  token: string,
+  ledgerId: string,
+  returnId: string,
+  baseChangeId: number,
+  payload: ItemReturnUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/item-returns/${encodeURIComponent(returnId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteItemReturn(
+  token: string,
+  ledgerId: string,
+  returnId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/item-returns/${encodeURIComponent(returnId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 账本内自定义成员(0024)
+// ---------------------------------------------------------------------------
+
+export async function createMember(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: MemberCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/members`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateMember(
+  token: string,
+  ledgerId: string,
+  memberId: string,
+  baseChangeId: number,
+  payload: MemberUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/members/${encodeURIComponent(memberId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteMember(
+  token: string,
+  ledgerId: string,
+  memberId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/members/${encodeURIComponent(memberId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 交易退款(0022)
+// ---------------------------------------------------------------------------
+
+export async function createRefund(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: RefundCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/refunds`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateRefund(
+  token: string,
+  ledgerId: string,
+  refundId: string,
+  baseChangeId: number,
+  payload: RefundUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/refunds/${encodeURIComponent(refundId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteRefund(
+  token: string,
+  ledgerId: string,
+  refundId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/refunds/${encodeURIComponent(refundId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 借款(0023)
+// ---------------------------------------------------------------------------
+
+export async function createLoan(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: LoanCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/loans`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateLoan(
+  token: string,
+  ledgerId: string,
+  loanId: string,
+  baseChangeId: number,
+  payload: LoanUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/loans/${encodeURIComponent(loanId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteLoan(
+  token: string,
+  ledgerId: string,
+  loanId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/loans/${encodeURIComponent(loanId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 报销(0023)
+// ---------------------------------------------------------------------------
+
+export async function createReimbursement(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: ReimbursementCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/reimbursements`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+export async function updateReimbursement(
+  token: string,
+  ledgerId: string,
+  reimbursementId: string,
+  baseChangeId: number,
+  payload: ReimbursementUpdatePayload,
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/reimbursements/${encodeURIComponent(reimbursementId)}`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+  )
+}
+
+export async function deleteReimbursement(
+  token: string,
+  ledgerId: string,
+  reimbursementId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/reimbursements/${encodeURIComponent(reimbursementId)}`,
     token,
     { base_change_id: baseChangeId },
   )

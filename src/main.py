@@ -30,6 +30,7 @@ from .routers import import_data as import_router
 from .routers import invites as invites_router
 from .routers import members as members_router
 from .routers import member_stats as member_stats_router
+from .routers import counterparty_stats as counterparty_stats_router
 from .routers import shared_resources as shared_resources_router
 from .mcp import server as mcp_server
 from .websocket_manager import WSConnectionManager
@@ -193,6 +194,7 @@ app.include_router(invites_router.router, prefix=settings.api_prefix, tags=["inv
 app.include_router(members_router.router, prefix=settings.api_prefix, tags=["members"])
 app.include_router(shared_resources_router.router, prefix=settings.api_prefix, tags=["shared-resources"])
 app.include_router(member_stats_router.router, prefix=settings.api_prefix, tags=["member-stats"])
+app.include_router(counterparty_stats_router.router, prefix=settings.api_prefix, tags=["counterparty-stats"])
 
 
 # ============================================================================

@@ -214,3 +214,50 @@ export function convertTypeTotalsToBase(
   }
   return { totals, missing: [...missing].sort() }
 }
+
+/**
+ * 持有中定期存款本金 → 主币种合计(#资产构成包含定期存款)。
+ *
+ * 口径:定期存款是「被锁定」的资产 —— 创建时后端已自动从原账户扣除本金(一笔
+ * expense 关联交易,见 linked_transactions.reconcile_time_deposit_linked_tx),
+ * 所以账户余额里**不含**本金;本金作为独立资产头寸在此计入。支取(withdrawn)后
+ * 本息已通过 income 流回账户,**不能**再算(否则重复)。已收利息(通过「利息」按键
+ * 生成的 income 交易)已进账户余额,也**不**在此重复加。
+ *
+ * 铁律对齐:`effectiveRateToBase` 缺失汇率的整币种直接剔除(不计入 total、返回
+ * 给 missing 出脚注),绝不按 1 折入 —— 与净资产 / 资产 / 负债折算同口径。
+ */
+export type TimeDepositAssetInput = {
+  id: string
+  principal: number
+  currency: string
+  /** 仅 holding / matured(未支取)计入;withdrawn 本金已回账户,不计。 */
+  status?: string | null
+}
+
+export function timeDepositTotalsToBase(
+  deposits: TimeDepositAssetInput[],
+  base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+): { total: number; missing: string[] } {
+  const held = deposits.filter(
+    (d) => (d.status || '') !== 'withdrawn' && Number(d.principal) > 0,
+  )
+  const byCur = new Map<string, number>()
+  for (const d of held) {
+    const cur = (d.currency || 'CNY').toUpperCase()
+    byCur.set(cur, (byCur.get(cur) ?? 0) + Number(d.principal))
+  }
+  let total = 0
+  const missing = new Set<string>()
+  for (const [cur, subtotal] of byCur) {
+    const eff = effectiveRateToBase(cur, base, auto, overrides)
+    if (!eff) {
+      missing.add(cur)
+      continue
+    }
+    total += subtotal * eff.rate
+  }
+  return { total, missing: [...missing].sort() }
+}

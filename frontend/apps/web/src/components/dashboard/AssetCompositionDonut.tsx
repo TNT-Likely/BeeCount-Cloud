@@ -25,7 +25,10 @@ const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }>
   investment: { color: '#ec4899', group: 'asset' },
   insurance: { color: '#14b8a6', group: 'asset' },
   social_fund: { color: '#84cc16', group: 'asset' },
-  loan: { color: '#dc2626', group: 'liability' }
+  loan: { color: '#dc2626', group: 'liability' },
+  // 资产构成包含定期存款(#):持有中本金作为独立资产类别,与账户余额不重叠
+  // (本金创建时已自动从原账户扣出,不会重复计)。
+  time_deposit: { color: '#0ea5e9', group: 'asset' }
 }
 
 export function AssetCompositionDonut({ accounts }: Props) {
@@ -72,26 +75,26 @@ export function AssetCompositionDonut({ accounts }: Props) {
       </CardHeader>
       <CardContent>
         {accounts.length === 0 ? (
-          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-56 items-center justify-center text-xs text-muted-foreground">
             {t('home.assetComp.empty')}
           </div>
         ) : loading ? (
-          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-56 items-center justify-center text-xs text-muted-foreground">
             {t('home.assetComp.loading')}
           </div>
         ) : needsBase ? (
           // 多币种但未设主币种:与资产页汇总卡同款引导,绝不猜币种按 1 折算。
-          <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
+          <div className="flex h-56 flex-col items-center justify-center gap-1 px-6 text-center">
             <p className="text-sm font-medium">{t('accounts.needBaseCurrency.title')}</p>
             <p className="text-xs text-muted-foreground">{t('accounts.needBaseCurrency.desc')}</p>
           </div>
         ) : data.length === 0 ? (
-          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-56 items-center justify-center text-xs text-muted-foreground">
             {t('home.assetComp.empty')}
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-[200px_1fr]">
-            <div className="relative h-48">
+            <div className="relative h-56">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie

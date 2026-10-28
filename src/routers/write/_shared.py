@@ -45,6 +45,13 @@ from ...models import (
     AuditLog,
     Ledger,
     LedgerMember,
+    ReadItemProjection,
+    ReadItemReturnProjection,
+    ReadLoanProjection,
+    ReadMemberProjection,
+    ReadReimbursementProjection,
+    ReadRefundProjection,
+    ReadTimeDepositProjection,
     ReadTxProjection,
     SyncChange,
     SyncPushIdempotency,
@@ -59,10 +66,24 @@ from ...schemas import (
     WriteCategoryUpdateRequest,
     WriteCommitMeta,
     WriteEntityDeleteRequest,
+    WriteItemCreateRequest,
+    WriteItemReturnCreateRequest,
+    WriteItemReturnUpdateRequest,
+    WriteItemUpdateRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteLoanCreateRequest,
+    WriteLoanUpdateRequest,
+    WriteMemberCreateRequest,
+    WriteMemberUpdateRequest,
+    WriteReimbursementCreateRequest,
+    WriteReimbursementUpdateRequest,
+    WriteRefundCreateRequest,
+    WriteRefundUpdateRequest,
     WriteTagCreateRequest,
     WriteTagUpdateRequest,
+    WriteTimeDepositCreateRequest,
+    WriteTimeDepositUpdateRequest,
     WriteTransactionCreateRequest,
     WriteTransactionUpdateRequest,
 )
@@ -560,7 +581,14 @@ async def _commit_create_tx_fast(
         lock_ledger_for_materialize(db, ledger.id)
         now = _utcnow()
         # 空 snapshot 跑 mutator —— 只为复用其字段规范化 + actor 标记逻辑。
-        _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
+        # ValueError = 业务校验失败(如 0021 合并付款 legs 合计不符)→ 400,
+        # 跟 _commit_write 的错误映射一致。
+        try:
+            _snap, tx_id = _mutate_create_tx({"items": [], "count": 0}, mutate_payload)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
         new_item = _snap["items"][0]
 
         change_row = SyncChange(
@@ -735,7 +763,13 @@ async def _commit_write_fast_tx(
             from ...snapshot_mutator import update_transaction
             # 构造最小 snapshot 让 mutator 跑逻辑(只有 1 个 item)
             minimal_snap = {"items": [prev_item], "count": 1}
-            minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
+            # ValueError = 业务校验失败(如 0021 合并付款 legs 合计不符)→ 400
+            try:
+                minimal_snap = update_transaction(minimal_snap, tx_id, mutate_payload)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
             new_item = minimal_snap["items"][0]
 
             change_row = SyncChange(
@@ -839,6 +873,243 @@ async def _commit_write_fast_tx(
     return response
 
 
+async def _commit_entity_write(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    ledger: Ledger,
+    base_change_id: int,
+    request_payload: dict,
+    idempotency_key: str | None,
+    device_id: str,
+    audit_action: str,
+    entity_type: str,
+    entity_id: str | None,
+    action: str,  # "upsert" | "delete"
+    model: Any,
+    upsert_fn: Any,
+    delete_fn: Any,
+    prefix: str,
+    validate_fn: Any,
+) -> WriteCommitMeta:
+    """通用 ledger-scope 实体快路径写入(0021 定期存款/归物用)。
+
+    这两个实体不进 snapshot(snapshot 只有 items/accounts/categories/tags/
+    budgets),所以没有 mutator 对偶函数;本函数直连投影表,结构对齐
+    ``_commit_write_fast_tx``:
+
+      create : 生成 syncId → validate_fn 归一 → SyncChange + upsert
+      update : 读 projection 行(merge_with_existing 补缺键)→ validate_fn
+               → SyncChange + upsert
+      delete : 读行确认存在(404 兜底)→ SyncChange + delete
+
+    validate_fn(payload, *, creating) 抛 ValueError → 400(业务校验失败)。
+    DB 工作整段丢 threadpool;WS 广播在线程返回后做。
+    """
+    from ...sync_applier import merge_with_existing
+
+    def _core() -> tuple[WriteCommitMeta, bool]:
+        lock_ledger_for_materialize(db, ledger.id)
+        now = _utcnow()
+
+        if action == "delete":
+            if entity_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="entity id is required for delete",
+                )
+            existing = db.scalar(
+                select(model).where(
+                    model.ledger_id == ledger.id,
+                    model.sync_id == entity_id,
+                )
+            )
+            if existing is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found"
+                )
+            change_row = SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type=entity_type,
+                entity_sync_id=entity_id,
+                action="delete",
+                payload_json={},
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(change_row)
+            db.flush()
+            delete_fn(db, ledger_id=ledger.id, sync_id=entity_id)
+            new_change_id = change_row.change_id
+            entity_id_out: str | None = entity_id
+        else:
+            if entity_id is None:
+                # create:新 syncId + 全量归一
+                sync_id = f"{prefix}_{uuid4().hex[:12]}"
+                camel = dict(request_payload)
+                camel.pop("base_change_id", None)
+                camel = {k: v for k, v in camel.items() if not k.startswith("__")}
+                camel["syncId"] = sync_id
+                try:
+                    merged = validate_fn(camel, creating=True)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                    ) from exc
+            else:
+                # update:merge 补缺键 + 归一
+                existing = db.scalar(
+                    select(model).where(
+                        model.ledger_id == ledger.id,
+                        model.sync_id == entity_id,
+                    )
+                )
+                if existing is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found"
+                    )
+                camel = dict(request_payload)
+                camel.pop("base_change_id", None)
+                camel = {k: v for k, v in camel.items() if not k.startswith("__")}
+                camel.setdefault("syncId", entity_id)
+                # web 语义:payload 里**显式**出现的 null = 清除可空字段
+                # (见 WriteXxxUpdateRequest 注释);而 merge_with_existing 对
+                # 「缺键 / None」一律用旧值补齐(sync push 契约)—— 所以在
+                # merge 之后把显式 null 的键压回去,保证 web 能清空。
+                explicit_null_keys = [k for k, v in camel.items() if v is None]
+                merged = merge_with_existing(
+                    db, entity_type, ledger.id, entity_id, camel
+                )
+                for key in explicit_null_keys:
+                    merged[key] = None
+                try:
+                    merged = validate_fn(merged, creating=False)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                    ) from exc
+                sync_id = entity_id
+            change_row = SyncChange(
+                user_id=ledger.user_id,
+                ledger_id=ledger.id,
+                entity_type=entity_type,
+                entity_sync_id=sync_id,
+                action="upsert",
+                payload_json=merged,
+                updated_at=now,
+                updated_by_device_id=device_id,
+                updated_by_user_id=current_user.id,
+            )
+            db.add(change_row)
+            db.flush()
+            upsert_fn(
+                db,
+                ledger_id=ledger.id,
+                user_id=ledger.user_id,
+                source_change_id=change_row.change_id,
+                payload=merged,
+            )
+            new_change_id = change_row.change_id
+            entity_id_out = sync_id
+
+        # 0024:借款 / 报销 自动关联交易(流水 + 余额)。必须在 commit 前、同一
+        # 事务内执行,保证与实体本体原子生效;删除 / 清空账户 / 取消时清理。
+        if entity_type in ("loan", "reimbursement", "time_deposit", "refund"):
+            from ...services.linked_transactions import reconcile_entity_linked_tx
+            reconcile_entity_linked_tx(
+                db=db,
+                ledger_id=ledger.id,
+                owner_user_id=ledger.user_id,
+                actor_user_id=current_user.id,
+                device_id=device_id,
+                source_change_id=new_change_id,
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id_out,
+                payload=(merged if action != "delete" else {}),
+            )
+
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                ledger_id=ledger.id,
+                action=audit_action,
+                metadata_json={
+                    "ledgerId": ledger.external_id,
+                    "baseChangeId": base_change_id,
+                    "newChangeId": new_change_id,
+                    "entityId": entity_id_out,
+                },
+            )
+        )
+
+        response = WriteCommitMeta(
+            ledger_id=ledger.external_id,
+            base_change_id=base_change_id,
+            new_change_id=new_change_id,
+            server_timestamp=now,
+            idempotency_replayed=False,
+            entity_id=entity_id_out,
+        )
+
+        request_hash = _hash_request(request.method, request.url.path, request_payload)
+        if idempotency_key:
+            db.add(
+                SyncPushIdempotency(
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_json=response.model_dump(mode="json"),
+                    created_at=now,
+                    expires_at=now + timedelta(hours=24),
+                )
+            )
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if idempotency_key:
+                replay = _load_idempotent_response(
+                    db,
+                    user_id=current_user.id,
+                    device_id=device_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if replay is not None:
+                    return replay, True
+            raise
+        return response, False
+
+    response, did_replay = await run_in_threadpool(_core)
+
+    if not did_replay:
+        from ...websocket_manager import broadcast_to_ledger
+
+        await broadcast_to_ledger(
+            db=db,
+            ws_manager=request.app.state.ws_manager,
+            ledger_id=ledger.id,
+            payload={
+                "type": "sync_change",
+                "ledgerId": ledger.external_id,
+                "serverCursor": response.new_change_id,
+                "serverTimestamp": response.server_timestamp.isoformat(),
+            },
+        )
+    logger.info(
+        "write.commit.entity action=%s entity_type=%s ledger=%s entity=%s change_id=%d device=%s user=%s replay=%s",
+        audit_action, entity_type, ledger.external_id, response.entity_id,
+        response.new_change_id, device_id, current_user.id, did_replay,
+    )
+    return response
+
+
 def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
     """projection row → snapshot item dict,跟 snapshot_builder.build 的格式一致。"""
     from ...snapshot_builder import _to_iso_utc
@@ -901,6 +1172,23 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["currencyCode"] = row.currency_code
     if row.native_amount is not None:
         item["nativeAmount"] = row.native_amount
+    # 0021 扩展字段(优惠/转账手续费/合并付款):JSON 文本 → 原生对象带上,
+    # update merge 不传该字段时保留原值;新的 SyncChange payload 用 camelCase
+    # 携带它们(mobile apply / full pull 重建都不会丢)。
+    for json_key, raw in (
+        ("discount", row.discount_json),
+        ("transferFee", row.transfer_fee_json),
+        ("paymentLegs", row.payment_legs_json),
+        # 成员分摊(0024)
+        ("memberShares", row.member_shares_json),
+    ):
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if parsed:
+                item[json_key] = parsed
     return item
 
 
@@ -1269,6 +1557,13 @@ __all__ = [
     'AuditLog',
     'Ledger',
     'LedgerMember',
+    'ReadItemProjection',
+    'ReadItemReturnProjection',
+    'ReadLoanProjection',
+    'ReadMemberProjection',
+    'ReadReimbursementProjection',
+    'ReadRefundProjection',
+    'ReadTimeDepositProjection',
     'ReadTxProjection',
     'SyncChange',
     'SyncPushIdempotency',
@@ -1281,10 +1576,24 @@ __all__ = [
     'WriteCategoryUpdateRequest',
     'WriteCommitMeta',
     'WriteEntityDeleteRequest',
+    'WriteItemReturnCreateRequest',
+    'WriteItemReturnUpdateRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteLoanCreateRequest',
+    'WriteLoanUpdateRequest',
+    'WriteMemberCreateRequest',
+    'WriteMemberUpdateRequest',
+    'WriteReimbursementCreateRequest',
+    'WriteReimbursementUpdateRequest',
+    'WriteRefundCreateRequest',
+    'WriteRefundUpdateRequest',
+    'WriteItemCreateRequest',
+    'WriteItemUpdateRequest',
     'WriteTagCreateRequest',
     'WriteTagUpdateRequest',
+    'WriteTimeDepositCreateRequest',
+    'WriteTimeDepositUpdateRequest',
     'WriteTransactionCreateRequest',
     'WriteTransactionUpdateRequest',
     'SCOPE_APP_WRITE',
@@ -1332,6 +1641,7 @@ __all__ = [
     '_load_idempotent_response',
     '_commit_write_fast_tx',
     '_commit_create_tx_fast',
+    '_commit_entity_write',
     '_projection_row_to_tx_dict',
     '_commit_write',
     '_prepare_write',

@@ -67,7 +67,7 @@ export function MonthlyTrendBars({ data }: Props) {
       </CardHeader>
       <CardContent>
         {slice.length === 0 ? (
-          <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-56 items-center justify-center text-xs text-muted-foreground">
             {t('home.trendBars.empty')}
           </div>
         ) : (

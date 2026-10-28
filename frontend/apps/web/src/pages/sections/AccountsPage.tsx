@@ -12,12 +12,14 @@ import {
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
+  fetchWorkspaceTimeDeposits,
   fetchWorkspaceTransactions,
   updateAccount,
   type ExchangeRateOverride,
   type ExchangeRatesResponse,
   type NetWorthHistory,
   type ReadAccount,
+  type ReadTimeDeposit,
   type WorkspaceAccount,
   type WorkspaceTag,
   type WorkspaceTransaction,
@@ -46,9 +48,11 @@ import {
   computeCurrencySummary,
   computeTypeGroups,
   effectiveRateToBase,
+  matchBankIcon,
   mergeGroupsToBase,
   resolveCurrencyFields,
   splitByCurrency,
+  timeDepositTotalsToBase,
   type AccountForm,
   type CurrencyBucket,
 } from '@beecount/web-features'
@@ -155,6 +159,11 @@ export function AccountsPage() {
     null,
   )
 
+  // 跨账本定期存款(与账户同口径,全局聚合):持有中(holding/matured)本金作为资产
+  // 头寸并入净资产 / 总资产(存入定期时已自动从原账户扣出,不重复计)。withdrawn
+  // 本金已回账户,不计。刷新即现拉,失败置 [] 不阻塞账户列表。
+  const [timeDeposits, setTimeDeposits] = usePageCache<ReadTimeDeposit[]>('accounts:timeDeposits', [])
+
   // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
   // dispatch openDetailAccount 事件,弹窗在全局渲染。
 
@@ -170,16 +179,19 @@ export function AccountsPage() {
   const refresh = useCallback(async () => {
     try {
       const tzOffsetMinutes = -new Date().getTimezoneOffset()
-      const [accountRows, tagRows, history] = await Promise.all([
+      const [accountRows, tagRows, history, tdRows] = await Promise.all([
         fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { limit: 500 }),
         // 净值趋势是全局资产(账户为 user-global、跨所有账本),绝不按当前账本过滤 ——
         // 否则切到无交易的账本时趋势会空,而净资产卡(全局账户余额)仍有数据,口径不一致。
         fetchNetWorthHistory(token, { tzOffsetMinutes }).catch(() => null),
+        // 跨账本定期存款,与账户同口径(全局聚合)。失败置 [] 不阻塞账户列表。
+        fetchWorkspaceTimeDeposits(token).catch(() => [] as ReadTimeDeposit[]),
       ])
       setRows(accountRows)
       setTags(tagRows)
       setNetWorthHistory(history)
+      setTimeDeposits(tdRows)
 
       // 只有"主币种存在 + 账户涉及 ≥2 种币种"才需要折算卡。其余情况清空缓存,
       // 让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
@@ -283,6 +295,12 @@ export function AccountsPage() {
         payment_due_day: isCreditCard ? paymentDueDayNum : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
+        // 0026:完整卡号 + 账户图标。卡号去掉分组空格后提交;后四位服务端派生。
+        card_number: isBankOrCredit ? form.card_number.replace(/\s+/g, '') || null : null,
+        icon: form.icon || null,
+        // 0027:别名(所有类型都能填)+ 出账日计入当期(信用卡口径)。
+        alias: form.alias.trim() || null,
+        billing_day_in_current: isCreditCard ? form.billing_day_in_current : true,
         // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
         hidden: form.hidden,
       }
@@ -510,8 +528,30 @@ export function AccountsPage() {
       assetTotal += summary.assetTotal * eff.rate
       liabilityTotal += summary.liabilityTotal * eff.rate
     }
+    // 定期存款:持有中(holding / matured)本金作为独立资产头寸并入净资产 / 总资产
+    // —— 存入定期时后端已自动从原账户扣出本金(一笔转账关联交易),账户余额里不含
+    // 它,这里补回来,总资产才不会凭空少了本金。withdrawn 本金已回账户,不计。
+    // 缺失汇率的整币种同样剔除(missing 出脚注),绝不按 1 折入。
+    const td = timeDepositTotalsToBase(timeDeposits, effectiveBase, rates, rateOverrides)
+    for (const m of td.missing) missing.add(m)
+    netWorth += td.total
+    assetTotal += td.total
     // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除。
     const mergedGroups = mergeGroupsToBase(buckets, effectiveBase, rates, rateOverrides)
+    // 定期存款作为独立资产类别并入构成图(与账户余额不重叠:本金创建时已从原账户
+    // 扣出)。仅在折入主币种后的总额 > 0 时加一片,缺失汇率的整币种已计入 missing 剔除。
+    if (td.total > 0) {
+      mergedGroups.push({
+        type: 'time_deposit',
+        label: t('accountType.time_deposit'),
+        color: '#0ea5e9',
+        isLiability: false,
+        rows: [],
+        subtotals: [{ currency: effectiveBase, value: td.total }],
+        positiveAssetTotal: td.total,
+        negativeAssetTotal: 0,
+      })
+    }
     return {
       needsBase: false as const,
       base: effectiveBase,
@@ -520,6 +560,8 @@ export function AccountsPage() {
       netWorth,
       assetTotal,
       liabilityTotal,
+      // 持有中定期存款本金(已折入主币种),供资产卡单独展示一行。
+      timeDepositTotal: td.total,
       mergedGroups,
       buckets: buckets.sort(
         (a, b) =>
@@ -530,7 +572,7 @@ export function AccountsPage() {
       missing: [...missing].sort(),
       rateDate: singleCurrency ? undefined : rates?.rate_date,
     }
-  }, [base, rows, rates, rateOverrides, t])
+  }, [base, rows, rates, rateOverrides, t, timeDeposits])
 
   return (
     <>
@@ -625,6 +667,35 @@ export function AccountsPage() {
               </div>
             </div>
 
+            {/* 总资产含「持有中定期存款本金」的提示:存入定期时本金已从原账户扣出,
+                这里作为独立资产头寸补回,避免总资产凭空缩水。仅在 > 0 时显示。 */}
+            {converted.timeDepositTotal > 0 ? (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <img
+                  src="/icons/account/time_deposit.svg"
+                  alt=""
+                  width={16}
+                  height={16}
+                  className="shrink-0 select-none"
+                  draggable={false}
+                  aria-hidden
+                />
+                <span className="flex-1">{t('accountType.time_deposit')}</span>
+                <span className="flex items-baseline gap-0.5">
+                  {!converted.singleCurrency ? (
+                    <span className="font-mono text-[10px]">≈</span>
+                  ) : null}
+                  <Amount
+                    value={converted.timeDepositTotal}
+                    currency={converted.base}
+                    showCurrency
+                    size="sm"
+                    bold
+                  />
+                </span>
+              </div>
+            ) : null}
+
             {/* 「构成 / 走势」tab —— 构成=各币种分组折算到主币种后按类型聚合
                 (currency=base)的 donut(单币种即本币原值);走势=嵌入式净值走势图。
                 选择设备级持久化(见 ASSET_VIEW_KEY)。无构成数据时构成 tab 退化为空。
@@ -714,6 +785,15 @@ export function AccountsPage() {
               : '',
             bank_name: row.bank_name ?? '',
             card_last_four: row.card_last_four ?? '',
+            card_number: row.card_number ?? '',
+            // 0026:回填图标。老数据没有图标时按开户行自动匹配一个(保存即落库,
+            // 不碰任何数据);已有图标视为手动指定,改开户行不覆盖。
+            icon: row.icon ?? matchBankIcon(row.bank_name) ?? '',
+            icon_auto: !row.icon && !!matchBankIcon(row.bank_name),
+            // 0027:别名 + 出账日计入当期回填。老数据 billing_day_in_current
+            // 缺省 → true(与服务端默认口径一致)。
+            alias: row.alias ?? '',
+            billing_day_in_current: row.billing_day_in_current ?? true,
             hidden: row.hidden ?? false,
           })
         }}
