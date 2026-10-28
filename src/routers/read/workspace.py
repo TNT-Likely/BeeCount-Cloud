@@ -19,6 +19,7 @@ from ...entity_extensions import (
     time_deposit_derived,
     time_deposit_payout_plans_derived,
 )
+from ...projection import parse_loan_repayments
 from ...models import (
     ExchangeRateCache,
     ReadLoanProjection,
@@ -1518,6 +1519,7 @@ def list_workspace_loans(
                 account_id=row.account_sync_id,
                 account_name=row.account_name,
                 note=row.note,
+                repayments=parse_loan_repayments(row.repayments_json),
                 repay_progress=derived["repay_progress"],
                 days_to_due=derived["days_to_due"],
                 is_overdue=derived["is_overdue"],

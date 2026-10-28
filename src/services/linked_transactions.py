@@ -95,12 +95,19 @@ def _upsert_linked_tx(
     from_account_name: str | None = None,
     to_account_id: str | None = None,
     to_account_name: str | None = None,
+    exclude_from_stats: bool = True,
+    exclude_from_budget: bool = True,
 ) -> None:
     """写入一条关联交易(income / expense / transfer)。幂等:同 syncId 走 upsert。
 
     三组账户字段(account / from / to)**每次都显式写入**(不适用的写 None):
     projection 只在 key 存在时覆盖,缺键会保留上一版的值 —— 实体从「支出」
     改成「转账」时必须把旧的 accountId 清掉,否则账户余额会被重复计算。
+
+    ``exclude_from_stats`` / ``exclude_from_budget`` 默认 True:关联交易默认进
+    余额 / 流水、但不进收支统计与预算(如借款本金不是真收入)。登记还款的
+    **本金**复用 True(不污染收支);而登记还款的**利息**显式传 False,让其作为
+    正常支出 / 收入计入统计。
     """
     item: dict[str, Any] = {
         "syncId": tx_sync_id,
@@ -116,8 +123,8 @@ def _upsert_linked_tx(
         "note": note,
         "currencyCode": currency,
         # 标记笔:进余额 / 流水,但不进收支统计与预算(借款本金不是真收入)。
-        "excludeFromStats": True,
-        "excludeFromBudget": True,
+        "excludeFromStats": bool(exclude_from_stats),
+        "excludeFromBudget": bool(exclude_from_budget),
         "txIndex": 0,
     }
     if category_id:
@@ -211,6 +218,11 @@ def reconcile_loan_linked_tx(
             actor_user_id=actor_user_id, device_id=device_id,
             tx_sync_id=repay_tx_id,
         )
+        _delete_loan_repayment_txs(
+            db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id, device_id=device_id,
+            entity_id=entity_id,
+        )
         return
 
     direction = str(payload.get("direction") or "borrowed").strip().lower()
@@ -224,6 +236,10 @@ def reconcile_loan_linked_tx(
     happened_at = payload.get("startedAt") or payload.get("happenedAt")
     status = str(payload.get("status") or "active").strip().lower()
     note = payload.get("note") or ""
+    # 登记还款(0032):每条 {id, amount(本金部分), interestAmount, repayAccountId,
+    # repayAccountName, happenedAt, note};本金走所选银行卡且 excludeFromStats,
+    # 利息作为正常支出 / 收入计入统计。
+    repayments = payload.get("repayments") or []
 
     # 没选账户,或已取消 → 清理所有关联交易(钱没进任何账户)。
     if not account_id or status == "cancelled":
@@ -236,6 +252,11 @@ def reconcile_loan_linked_tx(
             db, ledger_id=ledger_id, owner_user_id=owner_user_id,
             actor_user_id=actor_user_id, device_id=device_id,
             tx_sync_id=repay_tx_id,
+        )
+        _delete_loan_repayment_txs(
+            db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id, device_id=device_id,
+            entity_id=entity_id,
         )
         return
 
@@ -252,8 +273,74 @@ def reconcile_loan_linked_tx(
         currency=currency, note=principal_note,
     )
 
-    # 已还流水:借入的归还是支出,借出的收回是收入。repaid<=0 视为还没还,清理。
-    if repaid > 0:
+    # 登记还款流水(0032):逐条生成 ::rp-body-<id>(本金,不进收支)与可选的
+    # ::rp-interest-<id>(利息,正常支出 / 收入)。本金 / 利息都打到「所选银行卡」
+    # (repayAccountId),不再强制走借款账户 —— 满足「可选择还款银行卡」。
+    registered_sum = 0.0
+    active_ids: set[str] = set()
+    for r in repayments:
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("id") or "").strip()
+        if not rid:
+            continue
+        ramt = float(r.get("amount") or 0.0)
+        if ramt <= 0:
+            continue
+        registered_sum += ramt
+        rint = float(r.get("interestAmount") or 0.0)
+        repay_account_id = r.get("repayAccountId")
+        repay_account_name = r.get("repayAccountName")
+        r_happened = r.get("happenedAt") or happened_at
+        r_note = r.get("note") or ""
+        body_id = f"{entity_id}::rp-body-{rid}"
+        interest_id = f"{entity_id}::rp-interest-{rid}"
+        body_type = "expense" if borrowed else "income"
+        body_label = "归还本金" if borrowed else "收回本金"
+        body_note = f"{body_label}-{counterparty}" + (f" ({r_note})" if r_note else "")
+        _upsert_linked_tx(
+            db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id, device_id=device_id,
+            source_change_id=source_change_id, tx_sync_id=body_id,
+            tx_type=body_type, amount=ramt, account_id=repay_account_id,
+            account_name=repay_account_name, happened_at=r_happened,
+            currency=currency, note=body_note,
+            exclude_from_stats=True, exclude_from_budget=True,
+        )
+        if rint > 0:
+            interest_type = "expense" if borrowed else "income"
+            interest_label = "支付利息" if borrowed else "收回利息"
+            interest_note = f"{interest_label}-{counterparty}" + (f" ({r_note})" if r_note else "")
+            _upsert_linked_tx(
+                db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+                actor_user_id=actor_user_id, device_id=device_id,
+                source_change_id=source_change_id, tx_sync_id=interest_id,
+                tx_type=interest_type, amount=rint, account_id=repay_account_id,
+                account_name=repay_account_name, happened_at=r_happened,
+                currency=currency, note=interest_note,
+                exclude_from_stats=False, exclude_from_budget=False,
+            )
+        else:
+            _delete_linked_tx(
+                db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+                actor_user_id=actor_user_id, device_id=device_id,
+                tx_sync_id=interest_id,
+            )
+        active_ids.add(body_id)
+        active_ids.add(interest_id)
+
+    # 清理本借款下、不在 active 集合里的 ::rp-* 孤儿流水(删除某条登记还款 / 利息
+    # 变化后残余)。
+    _delete_loan_repayment_txs(
+        db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id, device_id=device_id,
+        entity_id=entity_id, keep_ids=active_ids,
+    )
+
+    # 历史手填「已还金额」(未被登记还款覆盖的部分)→ 走借款账户,保持旧行为。
+    # 这样 repaidAmount 总额 = 登记还款合计 + 历史手填余额,流水不重不漏。
+    legacy_amount = repaid - registered_sum
+    if legacy_amount > 1e-9:
         repay_type = "expense" if borrowed else "income"
         repay_label = "归还" if borrowed else "收回"
         repay_note = f"{repay_label}-{counterparty}" + (f" ({note})" if note else "")
@@ -261,9 +348,10 @@ def reconcile_loan_linked_tx(
             db, ledger_id=ledger_id, owner_user_id=owner_user_id,
             actor_user_id=actor_user_id, device_id=device_id,
             source_change_id=source_change_id, tx_sync_id=repay_tx_id,
-            tx_type=repay_type, amount=repaid, account_id=account_id,
+            tx_type=repay_type, amount=legacy_amount, account_id=account_id,
             account_name=account_name, happened_at=happened_at,
             currency=currency, note=repay_note,
+            exclude_from_stats=True, exclude_from_budget=True,
         )
     else:
         _delete_linked_tx(
@@ -552,6 +640,37 @@ def reconcile_refund_linked_tx(
             tx_type="income", amount=amt, account_id=aid,
             account_name=aname, happened_at=happened_at,
             currency=currency, note=rf_note,
+        )
+
+
+def _delete_loan_repayment_txs(
+    db: Any,
+    *,
+    ledger_id: str,
+    owner_user_id: str,
+    actor_user_id: str,
+    device_id: str,
+    entity_id: str,
+    keep_ids: set[str] | None = None,
+) -> None:
+    """删除本借款实体下、sync_id 以 '<entity_id>::rp-' 开头且不在 keep_ids 里的
+    关联交易(登记还款的本金 / 利息流水)。keep_ids 为空 / None 即删除全部
+    (实体删除 / 取消时调用)。还款走所选银行卡,与借款账户(``::ln-``)互不干扰,
+    故用独立前缀 ``::rp-`` 区分。"""
+    prefix = f"{entity_id}::rp-"
+    existing = db.scalars(
+        select(ReadTxProjection.sync_id).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id.like(f"{prefix}%"),
+        )
+    ).all()
+    for sid in existing:
+        if keep_ids is not None and sid in keep_ids:
+            continue
+        _delete_linked_tx(
+            db, ledger_id=ledger_id, owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id, device_id=device_id,
+            tx_sync_id=sid,
         )
 
 

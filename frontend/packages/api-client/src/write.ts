@@ -19,6 +19,7 @@ import type {
   MemberUpdatePayload,
   LoanCreatePayload,
   LoanUpdatePayload,
+  LoanRepaymentCreatePayload,
   ReimbursementCreatePayload,
   ReimbursementUpdatePayload,
   TagPayload,
@@ -539,6 +540,43 @@ export async function deleteLoan(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/loans/${encodeURIComponent(loanId)}`,
+    token,
+    { base_change_id: baseChangeId },
+  )
+}
+
+/** 登记一笔借款还款(0032):本金走所选银行卡且不进收支,利息作正常支出 / 收入,
+ *  并自动生成对应的交易流水。 */
+export async function createLoanRepayment(
+  token: string,
+  ledgerId: string,
+  loanId: string,
+  baseChangeId: number,
+  payload: LoanRepaymentCreatePayload,
+  idempotencyKey?: string,
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/loans/${encodeURIComponent(loanId)}/repayments`,
+    token,
+    {
+      base_change_id: baseChangeId,
+      ...payload,
+    },
+    idempotencyKey,
+  )
+}
+
+/** 撤销一笔借款还款(0032):删除对应还款明细,并清理其关联交易流水,
+ *  已结清的借款会自动回退为在借。 */
+export async function deleteLoanRepayment(
+  token: string,
+  ledgerId: string,
+  loanId: string,
+  repaymentId: string,
+  baseChangeId: number,
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/loans/${encodeURIComponent(loanId)}/repayments/${encodeURIComponent(repaymentId)}`,
     token,
     { base_change_id: baseChangeId },
   )

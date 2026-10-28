@@ -331,8 +331,6 @@ export type LoanForm = {
   started_at: string
   /** 到期日 'YYYY-MM-DD'(可空)。 */
   due_at: string
-  /** 已还金额(>= 0,默认 0)。 */
-  repaid_amount: string
   /** active / repaid / cancelled。 */
   status: 'active' | 'repaid' | 'cancelled'
   account_id: string
@@ -349,7 +347,6 @@ export const loanDefaults = (): LoanForm => ({
   interest_rate: '0',
   started_at: new Date().toISOString().slice(0, 10),
   due_at: '',
-  repaid_amount: '0',
   status: 'active',
   account_id: '',
   account_name: '',

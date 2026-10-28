@@ -1030,6 +1030,10 @@ class ReadLoanProjection(Base):
     account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 登记还款(0032):JSON 文本列,形态
+    # [{"id","amount","interestAmount","repayAccountId","repayAccountName",
+    #   "happenedAt","note"}, ...];本金部分不进收支统计,利息作为正常支出 / 收入。
+    repayments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 

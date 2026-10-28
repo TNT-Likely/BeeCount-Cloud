@@ -16,11 +16,6 @@ export const LOAN_STATUSES = ['active', 'repaid', 'cancelled'] as const
 
 export type LoanStatus = (typeof LOAN_STATUSES)[number]
 
-/** active 的下一档是 repaid(标记结清);终态(repaid/cancelled)返回 null。 */
-export function nextLoanStatus(status: string): LoanStatus | null {
-  return status === 'active' ? 'repaid' : null
-}
-
 export type LoanProgress = {
   /** 已还比例 0..1。 */
   ratio: number

@@ -347,6 +347,8 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("accountId", "account_sync_id"),
         ("accountName", "account_name"),
         ("note", "note"),
+        # 登记还款(0032):JSON 文本列 → 原生 list,编辑借款时缺省保留旧值。
+        ("repayments", "repayments_json", _json_loads_safe),
     ]),
     # 报销(0023):垫付后找人/公司报销。title/payer/reimburser/amount/related_tx_id
     # 等;status 三态 pending/reimbursed/cancelled。

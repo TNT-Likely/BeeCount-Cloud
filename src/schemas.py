@@ -885,6 +885,9 @@ class ReadLoanOut(BaseModel):
     account_id: str | None = None
     account_name: str | None = None
     note: str | None = None
+    # 登记还款(0032)明细:[{id, amount(本金), interestAmount(利息), repayAccountId,
+    # repayAccountName, happenedAt, note}, ...];本金不进收支,利息记为支出 / 收入。
+    repayments: list = []
     # --- 派生(读时按今天现算)--------------------------------------------- #
     # 还款进度 0..1(repaid_amount / principal)。
     repay_progress: float = 0.0
@@ -1377,7 +1380,6 @@ class WriteLoanCreateRequest(WriteBaseRequest):
     started_at: str
     # 到期日可空(无限期)。
     due_at: str | None = None
-    repaid_amount: float = Field(default=0.0, ge=0)
     status: Literal["active", "repaid", "cancelled"] = "active"
     account_id: str | None = None
     account_name: str | None = None
@@ -1386,6 +1388,8 @@ class WriteLoanCreateRequest(WriteBaseRequest):
 
 class WriteLoanUpdateRequest(WriteBaseRequest):
     # 全部可选(partial update);显式 None = 清除可空字段。
+    # 注:已还金额(repaidAmount)不再经此接口手工改 —— 由「登记还款」端点维护,
+    # 保证本金流水 / 利息流水与所选银行卡一致。
     direction: Literal["borrowed", "lent"] | None = None
     counterparty: str | None = Field(default=None, min_length=1, max_length=500)
     principal: float | None = Field(default=None, gt=0)
@@ -1393,10 +1397,28 @@ class WriteLoanUpdateRequest(WriteBaseRequest):
     interest_rate: float | None = Field(default=None, ge=0)
     started_at: str | None = None
     due_at: str | None = None
-    repaid_amount: float | None = Field(default=None, ge=0)
     status: Literal["active", "repaid", "cancelled"] | None = None
     account_id: str | None = None
     account_name: str | None = None
+    note: str | None = None
+
+
+class LoanRepaymentCreateRequest(WriteBaseRequest):
+    """登记一笔借款还款(0032)。前端生成 repayment_id 作为幂等 / 撤销锚点。
+
+    - amount:本次还的**本金**部分(不进收支统计)。
+    - interest_amount:本次利息(可选);> 0 时作为正常支出 / 收入计入统计。
+    - repay_account_id / repay_account_name:还款所用银行卡(用户自选,不再强制
+      走借款账户)。
+    - happened_at:还款发生时间;note:备注。
+    """
+
+    repayment_id: str = Field(min_length=1, max_length=64)
+    amount: float = Field(gt=0)
+    interest_amount: float = Field(default=0.0, ge=0)
+    repay_account_id: str = Field(min_length=1, max_length=255)
+    repay_account_name: str | None = None
+    happened_at: str
     note: str | None = None
 
 

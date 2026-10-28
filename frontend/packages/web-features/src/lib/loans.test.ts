@@ -2,20 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   loanProgress,
-  nextLoanStatus,
   validateLoanInput,
 } from './loans'
-
-describe('nextLoanStatus', () => {
-  it('active 推进到 repaid', () => {
-    expect(nextLoanStatus('active')).toBe('repaid')
-  })
-
-  it('repaid / cancelled 是终态', () => {
-    expect(nextLoanStatus('repaid')).toBeNull()
-    expect(nextLoanStatus('cancelled')).toBeNull()
-  })
-})
 
 describe('loanProgress', () => {
   it('未还', () => {

@@ -3,11 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createLoan,
   deleteLoan,
+  createLoanRepayment,
+  deleteLoanRepayment,
   fetchReadLoans,
   fetchWorkspaceAccounts,
   updateLoan,
   type ReadLoan,
-  type LoanUpdatePayload,
+  type LoanRepaymentCreatePayload,
   type WorkspaceAccount,
 } from '@beecount/api-client'
 import { Card, CardContent, CardHeader, CardTitle, useT, useToast } from '@beecount/ui'
@@ -91,7 +93,6 @@ export function LoansPage() {
   const buildPayload = useCallback((f: LoanForm) => {
     const principal = Number(f.principal || 0)
     const interestRate = Number(f.interest_rate || 0)
-    const repaidAmount = Number(f.repaid_amount || 0)
     return {
       direction: f.direction,
       counterparty: f.counterparty.trim(),
@@ -100,7 +101,6 @@ export function LoansPage() {
       interest_rate: Number.isFinite(interestRate) ? interestRate : 0,
       started_at: f.started_at,
       due_at: f.due_at ? f.due_at : null,
-      repaid_amount: Number.isFinite(repaidAmount) ? repaidAmount : 0,
       status: f.status,
       account_id: f.account_id || null,
       account_name: f.account_name || null,
@@ -119,7 +119,6 @@ export function LoansPage() {
       interestRate: Number(form.interest_rate),
       startedAt: form.started_at,
       dueAt: form.due_at || null,
-      repaidAmount: Number(form.repaid_amount),
     })
     if (error) {
       toast.error(t(`loans.error.${error}`), t('notice.error'))
@@ -148,23 +147,6 @@ export function LoansPage() {
     }
   }
 
-  const onAdvanceStatus = async (
-    row: ReadLoan,
-    nextStatus: LoanUpdatePayload['status'],
-  ): Promise<void> => {
-    if (!activeLedgerId) return
-    try {
-      await retryOnConflict(activeLedgerId, (base) =>
-        updateLoan(token, activeLedgerId, row.id, base, { status: nextStatus }),
-      )
-      notifySuccess(t('loans.notice.statusAdvanced'))
-      await refresh()
-    } catch (err) {
-      if (isWriteConflict(err)) await refresh()
-      notifyError(err)
-    }
-  }
-
   const onDelete = async (row: ReadLoan): Promise<void> => {
     if (!activeLedgerId) return
     try {
@@ -172,6 +154,42 @@ export function LoansPage() {
         deleteLoan(token, activeLedgerId, row.id, base),
       )
       notifySuccess(t('loans.notice.deleted'))
+      await refresh()
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+    }
+  }
+
+  const onRegisterRepayment = async (
+    row: ReadLoan,
+    payload: LoanRepaymentCreatePayload,
+  ): Promise<boolean> => {
+    if (!activeLedgerId) return false
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        createLoanRepayment(token, activeLedgerId, row.id, base, payload),
+      )
+      notifySuccess(t('loans.repayment.registered'))
+      await refresh()
+      return true
+    } catch (err) {
+      if (isWriteConflict(err)) await refresh()
+      notifyError(err)
+      return false
+    }
+  }
+
+  const onDeleteRepayment = async (
+    row: ReadLoan,
+    repaymentId: string,
+  ): Promise<void> => {
+    if (!activeLedgerId) return
+    try {
+      await retryOnConflict(activeLedgerId, (base) =>
+        deleteLoanRepayment(token, activeLedgerId, row.id, repaymentId, base),
+      )
+      notifySuccess(t('loans.repayment.removed'))
       await refresh()
     } catch (err) {
       if (isWriteConflict(err)) await refresh()
@@ -195,8 +213,9 @@ export function LoansPage() {
             form={form}
             onFormChange={setForm}
             onSubmit={onSubmit}
-            onAdvanceStatus={onAdvanceStatus}
             onDelete={onDelete}
+            onRegisterRepayment={onRegisterRepayment}
+            onDeleteRepayment={onDeleteRepayment}
             canManage={Boolean(activeLedgerId)}
           />
         )}

@@ -976,6 +976,11 @@ def upsert_loan(
         "account_sync_id": _as_str(payload.get("accountId")),
         "account_name": _as_str(payload.get("accountName")),
         "note": _as_str(payload.get("note")),
+        "repayments_json": (
+            json.dumps(payload["repayments"], ensure_ascii=False)
+            if payload.get("repayments")
+            else None
+        ),
         "source_change_id": source_change_id,
     }
     _upsert(db, ReadLoanProjection, ("ledger_id", "sync_id"), values)
@@ -983,6 +988,19 @@ def upsert_loan(
 
 def delete_loan(db: Session, *, ledger_id: str, sync_id: str) -> None:
     delete_entity(db, ReadLoanProjection, ledger_id=ledger_id, sync_id=sync_id)
+
+
+def parse_loan_repayments(text: str | None) -> list[dict[str, Any]]:
+    """read_loan_projection.repayments_json 文本 → 还款明细列表;容错返回 []。"""
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [r for r in data if isinstance(r, dict)]
 
 
 def upsert_reimbursement(

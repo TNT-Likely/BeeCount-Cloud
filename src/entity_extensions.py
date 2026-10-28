@@ -714,6 +714,13 @@ def validate_loan(payload: dict[str, Any], *, creating: bool) -> dict[str, Any]:
 
     currency = str(out.get("currency") or "CNY").strip().upper() or "CNY"
     out["currency"] = currency[:16]
+
+    # 登记还款(0032):明细列表(若存在)。只做类型清洗,业务强一致校验(金额上限 /
+    # 重复 id)在还款写端点做。这里确保它始终是 list[dict],不会污染其它字段。
+    repayments = payload.get("repayments")
+    if not isinstance(repayments, list):
+        repayments = []
+    out["repayments"] = [r for r in repayments if isinstance(r, dict)]
     return out
 
 

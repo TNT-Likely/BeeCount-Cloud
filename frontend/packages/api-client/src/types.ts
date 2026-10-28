@@ -646,6 +646,22 @@ export type RefundUpdatePayload = {
 }
 
 /** 借款(0023)。direction:borrowed=借入 / lent=借出。 */
+export type LoanRepayment = {
+  /** 还款记录 id(前端生成,用于幂等 / 撤销锚点)。 */
+  id: string
+  /** 本次偿还的本金部分(不进收支统计)。 */
+  amount: number
+  /** 本次利息(可选);> 0 时作为正常支出 / 收入计入统计。 */
+  interestAmount: number
+  /** 还款所用银行卡 id(用户自选,不再强制走借款账户)。 */
+  repayAccountId: string
+  /** 还款所用银行卡名称。 */
+  repayAccountName?: string | null
+  /** 还款发生日 'YYYY-MM-DD' 或 ISO。 */
+  happenedAt: string
+  note?: string | null
+}
+
 export type ReadLoan = {
   id: string
   /** borrowed = 借入(欠别人);lent = 借出(别人欠我)。 */
@@ -661,13 +677,15 @@ export type ReadLoan = {
   started_at: string
   /** 到期日(可空,无限期)。 */
   due_at?: string | null
-  /** 已还金额。 */
+  /** 已还金额(由登记还款明细汇总,服务端算)。 */
   repaid_amount: number
   /** active = 在借 / repaid = 已结清 / cancelled = 作废 */
   status: 'active' | 'repaid' | 'cancelled' | string
   account_id?: string | null
   account_name?: string | null
   note?: string | null
+  /** 登记还款(0032)明细列表。 */
+  repayments?: LoanRepayment[]
   /** 还款进度 0..1(服务端按今天现算)。 */
   repay_progress: number
   /** 距到期天数(无到期日 = null,负数 = 已过期)。 */
@@ -692,8 +710,6 @@ export type LoanCreatePayload = {
   started_at: string
   /** 到期日(可空)。 */
   due_at?: string | null
-  /** 已还金额,>= 0,默认 0。 */
-  repaid_amount?: number
   status?: 'active' | 'repaid' | 'cancelled'
   account_id?: string | null
   account_name?: string | null
@@ -708,10 +724,26 @@ export type LoanUpdatePayload = {
   interest_rate?: number | null
   started_at?: string | null
   due_at?: string | null
-  repaid_amount?: number | null
   status?: 'active' | 'repaid' | 'cancelled' | null
   account_id?: string | null
   account_name?: string | null
+  note?: string | null
+}
+
+/** 登记一笔借款还款(0032)。本金不进收支,利息(若有)记为正常支出 / 收入。 */
+export type LoanRepaymentCreatePayload = {
+  /** 前端生成的还款记录 id(幂等 / 撤销锚点),1..64 字符。 */
+  repayment_id: string
+  /** 本次偿还的本金部分(> 0)。 */
+  amount: number
+  /** 本次利息(默认 0,>= 0)。 */
+  interest_amount?: number
+  /** 还款所用银行卡 id(用户自选)。 */
+  repay_account_id: string
+  /** 还款所用银行卡名称。 */
+  repay_account_name?: string | null
+  /** 还款发生日 'YYYY-MM-DD' 或 ISO。 */
+  happened_at: string
   note?: string | null
 }
 

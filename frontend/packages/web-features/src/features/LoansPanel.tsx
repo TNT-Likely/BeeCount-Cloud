@@ -20,25 +20,26 @@ import {
   useT,
 } from '@beecount/ui'
 
-import type { ReadLoan } from '@beecount/api-client'
+import type {
+  LoanRepayment,
+  LoanRepaymentCreatePayload,
+  ReadLoan,
+} from '@beecount/api-client'
 
 import { Amount } from '../components/Amount'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { LoanForm } from '../forms'
 import { loanDefaults } from '../forms'
-import {
-  loanProgress,
-  nextLoanStatus,
-  validateLoanInput,
-} from '../lib/loans'
+import { loanProgress, validateLoanInput } from '../lib/loans'
 
 /**
- * 0023 借款面板。
+ * 0023 借款面板(0032 增强)。
  *
  * 借款是独立实体(不挂在交易上):direction 区分借入/借出,counterparty 是交易对手。
  * 还款进度 repay_progress 与逾期 days_to_due / is_overdue 由服务端按今天现算,
- * 前端直接展示。「下一步」把 active 推进到 repaid(实际 PATCH 由 page 层完成)。
- * 保存前用 validateLoanInput 做与服务端同规则的预校验。
+ * 前端直接展示。点击卡片打开「详情」,详情里可「登记还款」——本金走自选银行卡、
+ * 不进收支统计,利息记为正常支出,并自动生成对应的交易流水(与交易流水同形态)。
+ * 「标记已结清」按钮已移除:结清状态由还款明细汇总(还清 → repaid)自动驱动。
  */
 
 export type LoanAccountOption = {
@@ -53,8 +54,12 @@ type LoansPanelProps = {
   form: LoanForm
   onFormChange: (next: LoanForm) => void
   onSubmit: () => Promise<boolean> | boolean
-  onAdvanceStatus: (row: ReadLoan, nextStatus: 'repaid') => Promise<void> | void
   onDelete: (row: ReadLoan) => Promise<void> | void
+  onRegisterRepayment: (
+    row: ReadLoan,
+    payload: LoanRepaymentCreatePayload,
+  ) => Promise<boolean> | boolean
+  onDeleteRepayment: (row: ReadLoan, repaymentId: string) => Promise<void> | void
   canManage: boolean
 }
 
@@ -69,6 +74,16 @@ function dateOnly(value: string | null | undefined): string {
   return value.slice(0, 10)
 }
 
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function genRepaymentId(): string {
+  const c = globalThis.crypto
+  if (c && typeof c.randomUUID === 'function') return `rp-${c.randomUUID()}`
+  return `rp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 export function LoansPanel({
   loans,
   accountOptions,
@@ -76,8 +91,9 @@ export function LoansPanel({
   form,
   onFormChange,
   onSubmit,
-  onAdvanceStatus,
   onDelete,
+  onRegisterRepayment,
+  onDeleteRepayment,
   canManage,
 }: LoansPanelProps) {
   const t = useT()
@@ -85,7 +101,26 @@ export function LoansPanel({
   const [submitting, setSubmitting] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<ReadLoan | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [advancingId, setAdvancingId] = useState<string | null>(null)
+
+  // 详情弹窗:用 id 派生,保证登记/撤销还款后随列表刷新同步。
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const detailRow = useMemo(
+    () => loans.find((r) => r.id === detailId) || null,
+    [loans, detailId],
+  )
+
+  // 登记还款弹窗状态
+  const [registerOpen, setRegisterOpen] = useState(false)
+  const [rpAmount, setRpAmount] = useState('')
+  const [rpInterest, setRpInterest] = useState('')
+  const [rpAccountId, setRpAccountId] = useState('__none__')
+  const [rpDate, setRpDate] = useState(todayStr())
+  const [rpNote, setRpNote] = useState('')
+  const [repaying, setRepaying] = useState(false)
+  const [rpError, setRpError] = useState<string | null>(null)
+
+  const [pendingDeleteRepayment, setPendingDeleteRepayment] = useState<LoanRepayment | null>(null)
+  const [deletingRepayment, setDeletingRepayment] = useState(false)
 
   const accountNameById = useMemo(() => {
     const map = new Map<string, string>()
@@ -103,7 +138,6 @@ export function LoansPanel({
     interestRate: Number(form.interest_rate),
     startedAt: form.started_at,
     dueAt: form.due_at || null,
-    repaidAmount: Number(form.repaid_amount),
   })
 
   const handleOpenCreate = () => {
@@ -121,13 +155,13 @@ export function LoansPanel({
       interest_rate: String(row.interest_rate ?? 0),
       started_at: dateOnly(row.started_at),
       due_at: row.due_at ? dateOnly(row.due_at) : '',
-      repaid_amount: String(row.repaid_amount ?? 0),
       status: (row.status as LoanForm['status']) || 'active',
       account_id: row.account_id || '',
       account_name:
         row.account_name || (row.account_id ? accountNameById.get(row.account_id) || '' : ''),
       note: row.note || '',
     })
+    setDetailId(null)
     setDialogOpen(true)
   }
 
@@ -153,18 +187,67 @@ export function LoansPanel({
     }
   }
 
-  const handleAdvance = async (row: ReadLoan) => {
-    const next = nextLoanStatus(row.status)
-    if (next !== 'repaid') return
-    setAdvancingId(row.id)
+  const openRegister = () => {
+    setRpAmount('')
+    setRpInterest('')
+    setRpAccountId('__none__')
+    setRpDate(todayStr())
+    setRpNote('')
+    setRpError(null)
+    setRegisterOpen(true)
+  }
+
+  const handleRegisterSubmit = async () => {
+    if (!detailRow) return
+    const amount = Number(rpAmount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setRpError(t('loans.repayment.amountRequired'))
+      return
+    }
+    if (rpAccountId === '__none__') {
+      setRpError(t('loans.repayment.accountRequired'))
+      return
+    }
+    const remaining = (detailRow.principal || 0) - (detailRow.repaid_amount || 0)
+    if (amount > remaining + 1e-9) {
+      setRpError(t('loans.repayment.exceedsRemaining'))
+      return
+    }
+    const interest = Number(rpInterest || 0)
+    const acctName = accountNameById.get(rpAccountId) || ''
+    const payload: LoanRepaymentCreatePayload = {
+      repayment_id: genRepaymentId(),
+      amount,
+      interest_amount: Number.isFinite(interest) && interest > 0 ? interest : 0,
+      repay_account_id: rpAccountId,
+      repay_account_name: acctName || null,
+      happened_at: rpDate,
+      note: rpNote.trim() || null,
+    }
+    setRepaying(true)
     try {
-      await onAdvanceStatus(row, next)
+      const ok = await onRegisterRepayment(detailRow, payload)
+      if (ok) setRegisterOpen(false)
     } finally {
-      setAdvancingId(null)
+      setRepaying(false)
+    }
+  }
+
+  const handleConfirmDeleteRepayment = async () => {
+    if (!detailRow || !pendingDeleteRepayment) return
+    setDeletingRepayment(true)
+    try {
+      await onDeleteRepayment(detailRow, pendingDeleteRepayment.id)
+      setPendingDeleteRepayment(null)
+    } finally {
+      setDeletingRepayment(false)
     }
   }
 
   const errorText = formError ? t(`loans.error.${formError}`) : null
+  const repayments = detailRow?.repayments || []
+  const detailRemaining =
+    (detailRow?.principal || 0) - (detailRow?.repaid_amount || 0)
 
   return (
     <div className="space-y-4">
@@ -185,11 +268,11 @@ export function LoansPanel({
         <div className="space-y-3">
           {loans.map((row) => {
             const progress = loanProgress(row.repaid_amount, row.principal)
-            const next = nextLoanStatus(row.status)
             return (
               <div
                 key={row.id}
-                className="rounded-xl border border-border/60 bg-card p-4 transition hover:border-primary/40 hover:shadow-sm"
+                onClick={() => setDetailId(row.id)}
+                className="cursor-pointer rounded-xl border border-border/60 bg-card p-4 transition hover:border-primary/40 hover:shadow-sm"
               >
                 <div className="flex items-start gap-3">
                   <span
@@ -244,20 +327,26 @@ export function LoansPanel({
                 ) : null}
 
                 <div className="mt-3 flex items-center justify-end gap-2">
-                  {next ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={!canManage || advancingId === row.id}
-                      onClick={() => void handleAdvance(row)}
-                    >
-                      {t('loans.advance.repaid')}
-                    </Button>
-                  ) : null}
-                  <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => handleOpenEdit(row)}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!canManage}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleOpenEdit(row)
+                    }}
+                  >
                     {t('common.edit')}
                   </Button>
-                  <Button size="sm" variant="ghost" disabled={!canManage} onClick={() => setPendingDelete(row)}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!canManage}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setPendingDelete(row)
+                    }}
+                  >
                     {t('common.delete')}
                   </Button>
                 </div>
@@ -369,47 +458,33 @@ export function LoansPanel({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <Label>{t('loans.field.repaidAmount')}</Label>
-                <Input
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
-                  placeholder="0.00"
-                  value={form.repaid_amount}
-                  onChange={(e) => onFormChange({ ...form, repaid_amount: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>{t('loans.field.account')}</Label>
-                <Select
-                  value={form.account_id || '__none__'}
-                  onValueChange={(value) => {
-                    if (value === '__none__') {
-                      onFormChange({ ...form, account_id: '', account_name: '' })
-                      return
-                    }
-                    const hit = accountOptions.find((a) => a.id === value)
-                    onFormChange({ ...form, account_id: value, account_name: hit?.name || '' })
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('loans.field.accountPlaceholder')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
-                      <span className="text-muted-foreground">{t('loans.field.accountNone')}</span>
+            <div className="space-y-1">
+              <Label>{t('loans.field.account')}</Label>
+              <Select
+                value={form.account_id || '__none__'}
+                onValueChange={(value) => {
+                  if (value === '__none__') {
+                    onFormChange({ ...form, account_id: '', account_name: '' })
+                    return
+                  }
+                  const hit = accountOptions.find((a) => a.id === value)
+                  onFormChange({ ...form, account_id: value, account_name: hit?.name || '' })
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t('loans.field.accountPlaceholder')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    <span className="text-muted-foreground">{t('loans.field.accountNone')}</span>
+                  </SelectItem>
+                  {accountOptions.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
                     </SelectItem>
-                    {accountOptions.map((a) => (
-                      <SelectItem key={a.id} value={a.id}>
-                        {a.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1">
@@ -439,6 +514,214 @@ export function LoansPanel({
         </DialogContent>
       </Dialog>
 
+      {/* 详情 dialog */}
+      <Dialog open={detailRow !== null} onOpenChange={(open) => { if (!open) setDetailId(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              <span className="flex items-center gap-2">
+                {detailRow ? detailRow.counterparty || t('loans.untitled') : ''}
+                {detailRow ? (
+                  <Badge variant={STATUS_VARIANT[detailRow.status] || 'outline'}>
+                    {t(`loans.status.${detailRow.status}`)}
+                  </Badge>
+                ) : null}
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          {detailRow ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.detail.principal')}</div>
+                  <Amount value={detailRow.principal} currency={currency} size="md" bold tone="default" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.detail.remaining')}</div>
+                  <Amount value={detailRemaining} currency={currency} size="md" bold tone="default" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.field.direction')}</div>
+                  <div>{t(`loans.direction.${detailRow.direction}`)}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.field.account')}</div>
+                  <div>{resolveAccountName(detailRow) || t('loans.field.accountNone')}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.field.startedAt')}</div>
+                  <div>{dateOnly(detailRow.started_at)}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">{t('loans.field.dueAt')}</div>
+                  <div>{detailRow.due_at ? dateOnly(detailRow.due_at) : '—'}</div>
+                </div>
+              </div>
+
+              {detailRow.note ? (
+                <p className="text-xs text-muted-foreground">{detailRow.note}</p>
+              ) : null}
+
+              {/* 还款记录 */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium">{t('loans.detail.repayments')}</span>
+                  {canManage ? (
+                    <Button size="sm" variant="outline" onClick={openRegister}>
+                      {t('loans.detail.registerRepayment')}
+                    </Button>
+                  ) : null}
+                </div>
+                {repayments.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">{t('loans.detail.emptyRepayments')}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {repayments.map((rp) => (
+                      <div
+                        key={rp.id}
+                        className="rounded-lg border border-border/60 bg-muted/30 p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm">
+                            <span className="font-medium">
+                              {t('loans.repayment.amount')}: {Number(rp.amount || 0).toFixed(2)}
+                            </span>
+                            {Number(rp.interestAmount || 0) > 0 ? (
+                              <span className="ml-2 text-muted-foreground">
+                                {t('loans.repayment.interestAmount')}: {Number(rp.interestAmount || 0).toFixed(2)}
+                              </span>
+                            ) : null}
+                          </div>
+                          {canManage ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setPendingDeleteRepayment(rp)}
+                            >
+                              {t('loans.repayment.delete')}
+                            </Button>
+                          ) : null}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          {dateOnly(rp.happenedAt)}
+                          {rp.repayAccountName ? ` · ${rp.repayAccountName}` : ''}
+                        </div>
+                        {rp.note ? (
+                          <p className="mt-1 text-xs text-muted-foreground">{rp.note}</p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter>
+                {canManage ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      handleOpenEdit(detailRow)
+                    }}
+                  >
+                    {t('common.edit')}
+                  </Button>
+                ) : null}
+                <Button variant="outline" onClick={() => setDetailId(null)}>
+                  {t('dialog.close')}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* 登记还款 dialog */}
+      <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('loans.detail.registerRepayment')}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label>{t('loans.repayment.amount')}</Label>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={rpAmount}
+                  onChange={(e) => setRpAmount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('loans.repayment.interestAmount')}</Label>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={rpInterest}
+                  onChange={(e) => setRpInterest(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label>{t('loans.repayment.account')}</Label>
+              <Select value={rpAccountId} onValueChange={setRpAccountId}>
+                <SelectTrigger>
+                  <SelectValue placeholder={t('loans.repayment.accountPlaceholder')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    <span className="text-muted-foreground">{t('loans.repayment.accountPlaceholder')}</span>
+                  </SelectItem>
+                  {accountOptions.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label>{t('loans.repayment.happenedAt')}</Label>
+                <Input type="date" value={rpDate} onChange={(e) => setRpDate(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label>{t('loans.field.currency')}</Label>
+                <Input value={currency} disabled />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label>{t('loans.repayment.note')}</Label>
+              <Textarea rows={2} value={rpNote} onChange={(e) => setRpNote(e.target.value)} />
+            </div>
+
+            <p className="text-[11px] text-muted-foreground">
+              {t('loans.repayment.principalHint')}
+              {Number(rpInterest || 0) > 0 ? ` ${t('loans.repayment.interestHint')}` : ''}
+            </p>
+
+            {rpError ? <p className="text-xs text-destructive">{rpError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={repaying} onClick={() => setRegisterOpen(false)}>
+              {t('dialog.cancel')}
+            </Button>
+            <Button disabled={repaying || !canManage} onClick={() => void handleRegisterSubmit()}>
+              {t('loans.detail.registerRepayment')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ConfirmDialog
         open={pendingDelete !== null}
         onCancel={() => {
@@ -448,6 +731,19 @@ export function LoansPanel({
         loading={deleting}
         title={t('loans.delete.title')}
         description={t('loans.delete.confirm')}
+        confirmText={t('common.delete')}
+        confirmVariant="destructive"
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteRepayment !== null}
+        onCancel={() => {
+          if (!deletingRepayment) setPendingDeleteRepayment(null)
+        }}
+        onConfirm={() => void handleConfirmDeleteRepayment()}
+        loading={deletingRepayment}
+        title={t('loans.repayment.delete')}
+        description={t('loans.repayment.deleteConfirm')}
         confirmText={t('common.delete')}
         confirmVariant="destructive"
       />

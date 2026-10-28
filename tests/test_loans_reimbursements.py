@@ -24,7 +24,12 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import Ledger, ReadLoanProjection, ReadReimbursementProjection
+from src.models import (
+    Ledger,
+    ReadLoanProjection,
+    ReadReimbursementProjection,
+    ReadTxProjection,
+)
 
 
 def _make_client():
@@ -204,20 +209,33 @@ def test_loan_crud_roundtrip_and_derived():
     assert row["repay_progress"] == 0.0
     assert row["days_to_due"] is not None and row["days_to_due"] < 0
 
-    # 更新:标记部分还款
+    # 更新:登记一笔还款(0032)—— 本金 400 走所选银行卡 acc-x,自动累计已还金额。
+    # 注意:已还金额不再由编辑接口手工改,改由「登记还款」端点维护。
     base = _change_id(client, tk, "LDG")
-    upd = client.patch(
-        f"/api/v1/write/ledgers/LDG/loans/{row['id']}",
+    rp = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{row['id']}/repayments",
         headers={"Authorization": f"Bearer {tk}"},
-        json={"base_change_id": base, "repaid_amount": 400, "status": "active"},
+        json={
+            "base_change_id": base,
+            "repayment_id": "rp-1",
+            "amount": 400,
+            "interest_amount": 0,
+            "repay_account_id": "acc-x",
+            "repay_account_name": "招商银行",
+            "happened_at": "2026-02-01",
+            "note": "部分还款",
+        },
     )
-    assert upd.status_code == 200, upd.text
+    assert rp.status_code == 200, rp.text
     loans = client.get(
         "/api/v1/read/ledgers/LDG/loans",
         headers={"Authorization": f"Bearer {tk}"},
     ).json()
     assert loans[0]["repaid_amount"] == 400
     assert abs(loans[0]["repay_progress"] - 0.4) < 1e-6
+    assert loans[0]["status"] == "active"
+    assert len(loans[0]["repayments"]) == 1
+    assert loans[0]["repayments"][0]["id"] == "rp-1"
 
     # 删除
     base = _change_id(client, tk, "LDG")
@@ -327,6 +345,191 @@ def test_mobile_push_loan_partial_update_keeps_existing_fields():
         assert row.started_at is not None
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------- #
+# 登记还款(0032)                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def _get_loan(client: TestClient, token: str, ledger_id: str, loan_id: str):
+    loans = client.get(
+        f"/api/v1/read/ledgers/{ledger_id}/loans",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    for l in loans:
+        if l["id"] == loan_id:
+            return l
+    return None
+
+
+def _txs_by_prefix(TS, ledger_id: str, prefix: str) -> list[dict]:
+    db = TS()
+    try:
+        # ledger_id 入参是 external_id(如 "LDG"),但 ReadTxProjection.ledger_id
+        # 存的是内部 ledger.id(UUID)。先按原值查,查不到再解析成内部 id。
+        rows = db.scalars(
+            select(ReadTxProjection).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id.like(f"{prefix}%"),
+            )
+        ).all()
+        if not rows:
+            led = db.scalar(select(Ledger).where(Ledger.external_id == ledger_id))
+            if led is not None:
+                rows = db.scalars(
+                    select(ReadTxProjection).where(
+                        ReadTxProjection.ledger_id == led.id,
+                        ReadTxProjection.sync_id.like(f"{prefix}%"),
+                    )
+                ).all()
+        return [
+            {
+                "sync_id": r.sync_id,
+                "type": r.tx_type,
+                "amount": float(r.amount or 0.0),
+                "account_sync_id": r.account_sync_id,
+                "exclude_from_stats": bool(r.exclude_from_stats),
+                "exclude_from_budget": bool(r.exclude_from_budget),
+                "note": r.note,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def test_loan_repayment_generates_linked_txs_and_respects_stats():
+    """登记还款:本金走所选银行卡且不进收支,利息作正常支出计入统计,还清自动置
+    repaid,撤销回退。"""
+    client, TS, tk, _, _ = _setup("loan_rp@test.com", "LDG")
+
+    created = _create_loan(
+        client, tk, "LDG", direction="borrowed", counterparty="王五",
+        principal=1000, started_at="2026-01-01", account_id="acc-1",
+        account_name="招商银行", status="active",
+    )
+    loan_id = created["entity_id"]
+
+    # 还款 1:本金 600 + 利息 50,走 acc-2
+    base = _change_id(client, tk, "LDG")
+    r1 = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={
+            "base_change_id": base, "repayment_id": "rp-1", "amount": 600,
+            "interest_amount": 50, "repay_account_id": "acc-2",
+            "repay_account_name": "工行", "happened_at": "2026-02-01",
+            "note": "第1期",
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    loan = _get_loan(client, tk, "LDG", loan_id)
+    assert loan["repaid_amount"] == 600
+    assert loan["status"] == "active"
+    assert len(loan["repayments"]) == 1
+
+    body_txs = _txs_by_prefix(TS, "LDG", f"{loan_id}::rp-body-")
+    assert len(body_txs) == 1
+    bt = body_txs[0]
+    assert bt["type"] == "expense"  # 借入归还 = 支出(钱出 acc-2)
+    assert bt["amount"] == 600
+    assert bt["account_sync_id"] == "acc-2"
+    assert bt["exclude_from_stats"] is True  # 本金不进收支统计
+    assert bt["exclude_from_budget"] is True
+
+    int_txs = _txs_by_prefix(TS, "LDG", f"{loan_id}::rp-interest-")
+    assert len(int_txs) == 1
+    it = int_txs[0]
+    assert it["type"] == "expense"
+    assert it["amount"] == 50
+    assert it["account_sync_id"] == "acc-2"
+    assert it["exclude_from_stats"] is False  # 利息正常支出
+    assert it["exclude_from_budget"] is False
+
+    # 借款本金流水仍在
+    prin = _txs_by_prefix(TS, "LDG", f"{loan_id}::ln-principal")
+    assert len(prin) == 1 and prin[0]["type"] == "income" and prin[0]["account_sync_id"] == "acc-1"
+
+    # 还款 2:本金 400 还清,无利息
+    base = _change_id(client, tk, "LDG")
+    r2 = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={
+            "base_change_id": base, "repayment_id": "rp-2", "amount": 400,
+            "interest_amount": 0, "repay_account_id": "acc-2",
+            "repay_account_name": "工行", "happened_at": "2026-03-01",
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    loan = _get_loan(client, tk, "LDG", loan_id)
+    assert loan["repaid_amount"] == 1000
+    assert loan["status"] == "repaid"
+    assert len(_txs_by_prefix(TS, "LDG", f"{loan_id}::rp-body-rp-2")) == 1
+    assert len(_txs_by_prefix(TS, "LDG", f"{loan_id}::rp-interest-rp-2")) == 0
+
+    # 撤销还款 1:回退到 400 / active,rp-1 流水清理
+    base = _change_id(client, tk, "LDG")
+    d = client.request(
+        "DELETE",
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments/rp-1",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={"base_change_id": base},
+    )
+    assert d.status_code == 200, d.text
+    loan = _get_loan(client, tk, "LDG", loan_id)
+    assert loan["repaid_amount"] == 400
+    assert loan["status"] == "active"
+    assert len(_txs_by_prefix(TS, "LDG", f"{loan_id}::rp-body-rp-1")) == 0
+    assert len(_txs_by_prefix(TS, "LDG", f"{loan_id}::rp-interest-rp-1")) == 0
+    assert len(_txs_by_prefix(TS, "LDG", f"{loan_id}::rp-body-rp-2")) == 1  # rp-2 仍在
+
+
+def test_loan_repayment_validation_rejects_bad_input():
+    client, TS, tk, _, _ = _setup("loan_rp_val@test.com", "LDG")
+    created = _create_loan(
+        client, tk, "LDG", direction="borrowed", counterparty="赵六",
+        principal=1000, started_at="2026-01-01", account_id="acc-1",
+        status="active",
+    )
+    loan_id = created["entity_id"]
+
+    # 超额还款被拒
+    base = _change_id(client, tk, "LDG")
+    r = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={
+            "base_change_id": base, "repayment_id": "rp-x", "amount": 1500,
+            "repay_account_id": "acc-2", "happened_at": "2026-02-01",
+        },
+    )
+    assert r.status_code == 400, r.text
+
+    # 正常还清
+    base = _change_id(client, tk, "LDG")
+    r = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={
+            "base_change_id": base, "repayment_id": "rp-1", "amount": 1000,
+            "repay_account_id": "acc-2", "happened_at": "2026-02-01",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # 已结清再还被拒
+    base = _change_id(client, tk, "LDG")
+    r = client.post(
+        f"/api/v1/write/ledgers/LDG/loans/{loan_id}/repayments",
+        headers={"Authorization": f"Bearer {tk}"},
+        json={
+            "base_change_id": base, "repayment_id": "rp-2", "amount": 1,
+            "repay_account_id": "acc-2", "happened_at": "2026-03-01",
+        },
+    )
+    assert r.status_code == 400, r.text
 
 
 # --------------------------------------------------------------------------- #
