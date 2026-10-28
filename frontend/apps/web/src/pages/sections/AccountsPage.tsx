@@ -14,11 +14,15 @@ import {
   fetchWorkspaceTags,
   fetchWorkspaceTimeDeposits,
   fetchWorkspaceTransactions,
+  fetchWorkspaceLoans,
+  fetchWorkspaceReimbursements,
   updateAccount,
   type ExchangeRateOverride,
   type ExchangeRatesResponse,
   type NetWorthHistory,
   type ReadAccount,
+  type ReadLoan,
+  type ReadReimbursement,
   type ReadTimeDeposit,
   type WorkspaceAccount,
   type WorkspaceTag,
@@ -53,6 +57,8 @@ import {
   resolveCurrencyFields,
   splitByCurrency,
   timeDepositTotalsToBase,
+  loanTotalsToBase,
+  reimbursementTotalsToBase,
   type AccountForm,
   type CurrencyBucket,
 } from '@beecount/web-features'
@@ -164,6 +170,12 @@ export function AccountsPage() {
   // 本金已回账户,不计。刷新即现拉,失败置 [] 不阻塞账户列表。
   const [timeDeposits, setTimeDeposits] = usePageCache<ReadTimeDeposit[]>('accounts:timeDeposits', [])
 
+  // 跨账本借款 / 报销(与账户同口径,全局聚合):借款未结应收(借出)/ 应付(借入)、
+  // 报销待报销均为跨账本实体,须同口径并入净资产 / 资产构成。刷新即现拉,失败置 []
+  // 不阻塞账户列表。
+  const [loans, setLoans] = usePageCache<ReadLoan[]>('accounts:loans', [])
+  const [reimbursements, setReimbursements] = usePageCache<ReadReimbursement[]>('accounts:reimbursements', [])
+
   // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
   // dispatch openDetailAccount 事件,弹窗在全局渲染。
 
@@ -179,7 +191,7 @@ export function AccountsPage() {
   const refresh = useCallback(async () => {
     try {
       const tzOffsetMinutes = -new Date().getTimezoneOffset()
-      const [accountRows, tagRows, history, tdRows] = await Promise.all([
+      const [accountRows, tagRows, history, tdRows, loanRows, rbRows] = await Promise.all([
         fetchWorkspaceAccounts(token, { limit: 500 }),
         fetchWorkspaceTags(token, { limit: 500 }),
         // 净值趋势是全局资产(账户为 user-global、跨所有账本),绝不按当前账本过滤 ——
@@ -187,11 +199,16 @@ export function AccountsPage() {
         fetchNetWorthHistory(token, { tzOffsetMinutes }).catch(() => null),
         // 跨账本定期存款,与账户同口径(全局聚合)。失败置 [] 不阻塞账户列表。
         fetchWorkspaceTimeDeposits(token).catch(() => [] as ReadTimeDeposit[]),
+        // 跨账本借款 / 报销,与账户同口径(全局聚合)。失败置 [] 不阻塞账户列表。
+        fetchWorkspaceLoans(token).catch(() => [] as ReadLoan[]),
+        fetchWorkspaceReimbursements(token).catch(() => [] as ReadReimbursement[]),
       ])
       setRows(accountRows)
       setTags(tagRows)
       setNetWorthHistory(history)
       setTimeDeposits(tdRows)
+      setLoans(loanRows)
+      setReimbursements(rbRows)
 
       // 只有"主币种存在 + 账户涉及 ≥2 种币种"才需要折算卡。其余情况清空缓存,
       // 让卡不渲染。汇率请求任一失败置 null,不影响账户列表正常展示。
@@ -536,6 +553,22 @@ export function AccountsPage() {
     for (const m of td.missing) missing.add(m)
     netWorth += td.total
     assetTotal += td.total
+    // 借款:借出未结应收作为资产加回、借入未结应付作为负债扣减。对齐
+    // linked_transactions 关联交易语义 —— 借入本金以 income 进账户、借出本金以
+    // expense 出账户,账户余额已含这笔现金流水,但系统未记录对应的应收 / 应付,
+    // 必须在此纠偏净值,否则借出被低估、借入被高估(与定期存款「加回本金」同族)。
+    // 仅 active 计入;repaid / cancelled 净额 0。缺失汇率整币种剔除(missing 出脚注)。
+    const loan = loanTotalsToBase(loans, effectiveBase, rates, rateOverrides)
+    for (const m of loan.missing) missing.add(m)
+    netWorth += loan.lentAsset - loan.borrowedLiability
+    assetTotal += loan.lentAsset
+    liabilityTotal += loan.borrowedLiability
+    // 报销:待报销金额 = 别人欠我还的钱(应收资产)。垫付通常已在别处记为支出(账户
+    // 余额已减),故在此加回;reimbursed 到账时已有 income 流水恢复现金,不计。
+    const rb = reimbursementTotalsToBase(reimbursements, effectiveBase, rates, rateOverrides)
+    for (const m of rb.missing) missing.add(m)
+    netWorth += rb.asset
+    assetTotal += rb.asset
     // donut 与上面总额同口径:mergeGroupsToBase 内部对缺失汇率币种同样剔除。
     const mergedGroups = mergeGroupsToBase(buckets, effectiveBase, rates, rateOverrides)
     // 定期存款作为独立资产类别并入构成图(与账户余额不重叠:本金创建时已从原账户
@@ -552,6 +585,32 @@ export function AccountsPage() {
         negativeAssetTotal: 0,
       })
     }
+    // 借出(应收资产)与待报销(应收资产)并入构成图。借入(应付负债)不入正资产环,
+    // 已折进 liabilityTotal 在「负债」卡体现。
+    if (loan.lentAsset > 0) {
+      mergedGroups.push({
+        type: 'loan_lent',
+        label: t('accountType.loan_lent'),
+        color: '#f59e0b',
+        isLiability: false,
+        rows: [],
+        subtotals: [{ currency: effectiveBase, value: loan.lentAsset }],
+        positiveAssetTotal: loan.lentAsset,
+        negativeAssetTotal: 0,
+      })
+    }
+    if (rb.asset > 0) {
+      mergedGroups.push({
+        type: 'reimbursement',
+        label: t('accountType.reimbursement'),
+        color: '#a855f7',
+        isLiability: false,
+        rows: [],
+        subtotals: [{ currency: effectiveBase, value: rb.asset }],
+        positiveAssetTotal: rb.asset,
+        negativeAssetTotal: 0,
+      })
+    }
     return {
       needsBase: false as const,
       base: effectiveBase,
@@ -562,6 +621,9 @@ export function AccountsPage() {
       liabilityTotal,
       // 持有中定期存款本金(已折入主币种),供资产卡单独展示一行。
       timeDepositTotal: td.total,
+      loanLentTotal: loan.lentAsset,
+      loanBorrowedTotal: loan.borrowedLiability,
+      reimbursementTotal: rb.asset,
       mergedGroups,
       buckets: buckets.sort(
         (a, b) =>
@@ -572,7 +634,7 @@ export function AccountsPage() {
       missing: [...missing].sort(),
       rateDate: singleCurrency ? undefined : rates?.rate_date,
     }
-  }, [base, rows, rates, rateOverrides, t, timeDeposits])
+  }, [base, rows, rates, rateOverrides, t, timeDeposits, loans, reimbursements])
 
   return (
     <>
@@ -691,6 +753,89 @@ export function AccountsPage() {
                     showCurrency
                     size="sm"
                     bold
+                  />
+                </span>
+              </div>
+            ) : null}
+
+            {/* 借款:借出未结应收(资产)与借入未结应付(负债,玫瑰色)分别体现;
+                报销:待报销应收资产。三者均已在上文净额并入净资产 / 资产 / 负债,
+                这里仅作透明展示,仅在 > 0 时显示。 */}
+            {converted.loanLentTotal > 0 ? (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <img
+                  src="/icons/account/loan.svg"
+                  alt=""
+                  width={16}
+                  height={16}
+                  className="shrink-0 select-none"
+                  draggable={false}
+                  aria-hidden
+                />
+                <span className="flex-1">{t('accountType.loan_lent')}</span>
+                <span className="flex items-baseline gap-0.5">
+                  {!converted.singleCurrency ? (
+                    <span className="font-mono text-[10px]">≈</span>
+                  ) : null}
+                  <Amount
+                    value={converted.loanLentTotal}
+                    currency={converted.base}
+                    showCurrency
+                    size="sm"
+                    bold
+                  />
+                </span>
+              </div>
+            ) : null}
+            {converted.reimbursementTotal > 0 ? (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <img
+                  src="/icons/account/reimbursement.svg"
+                  alt=""
+                  width={16}
+                  height={16}
+                  className="shrink-0 select-none"
+                  draggable={false}
+                  aria-hidden
+                />
+                <span className="flex-1">{t('accountType.reimbursement')}</span>
+                <span className="flex items-baseline gap-0.5">
+                  {!converted.singleCurrency ? (
+                    <span className="font-mono text-[10px]">≈</span>
+                  ) : null}
+                  <Amount
+                    value={converted.reimbursementTotal}
+                    currency={converted.base}
+                    showCurrency
+                    size="sm"
+                    bold
+                  />
+                </span>
+              </div>
+            ) : null}
+            {converted.loanBorrowedTotal > 0 ? (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-rose-500/80 dark:text-rose-400/80">
+                <img
+                  src="/icons/account/loan.svg"
+                  alt=""
+                  width={16}
+                  height={16}
+                  className="shrink-0 select-none"
+                  draggable={false}
+                  aria-hidden
+                />
+                <span className="flex-1">{t('accountType.loan_borrowed')}</span>
+                <span className="flex items-baseline gap-0.5">
+                  {!converted.singleCurrency ? (
+                    <span className="font-mono text-[10px]">≈</span>
+                  ) : null}
+                  <Amount
+                    value={converted.loanBorrowedTotal}
+                    currency={converted.base}
+                    showCurrency
+                    size="sm"
+                    bold
+                    tone="negative"
                   />
                 </span>
               </div>

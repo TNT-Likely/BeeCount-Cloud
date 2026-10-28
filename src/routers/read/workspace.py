@@ -15,17 +15,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...entity_extensions import (
+    loan_derived,
     time_deposit_derived,
     time_deposit_payout_plans_derived,
 )
 from ...models import (
     ExchangeRateCache,
+    ReadLoanProjection,
+    ReadReimbursementProjection,
     ReadTimeDepositProjection,
     ReadTxProjection,
     UserAccountProjection,
     UserExchangeRateProjection,
 )
-from ...schemas import ReadTimeDepositOut, TimeDepositPayoutPlanOut
+from ...schemas import (
+    ReadLoanOut,
+    ReadReimbursementOut,
+    ReadTimeDepositOut,
+    TimeDepositPayoutPlanOut,
+)
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1448,143 @@ def list_workspace_time_deposits(
                 last_change_id=_get_latest_change_id(db, ledger_id=row.ledger_id),
                 ledger_id=ext_id,
                 ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/workspace/loans",
+    response_model=list[ReadLoanOut],
+)
+def list_workspace_loans(
+    ledger_id: str | None = Query(default=None, description="按账本过滤;不传 = 全部可见账本"),
+    status: str | None = Query(default=None, description="active / repaid / cancelled"),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadLoanOut]:
+    """跨账本借款只读列表(0023,资产页净资产 / 资产构成并入借款用)。
+
+    资产页账户是 **工作区全局** 口径(`/read/workspace/accounts` 不传 ledger_id
+    即跨账本),借款必须同口径跨账本查询,否则借出(应收资产)/ 借入(应付负债)
+    的头寸无法并入净资产。派生字段(repay_progress / days_to_due /
+    is_overdue)按今天现算,与按账本端点 `list_loans` 同口径。
+    """
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin, ledger_id=ledger_id
+    )
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+    ledger_meta = {
+        l.id: (l.external_id, _resolve_ledger_name(db, ledger=l)) for l in ledgers
+    }
+
+    query = select(ReadLoanProjection).where(
+        ReadLoanProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if status:
+        query = query.where(ReadLoanProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadLoanProjection.started_at.desc(),
+            ReadLoanProjection.sync_id.asc(),
+        )
+    ).all()
+
+    results: list[ReadLoanOut] = []
+    for row in rows:
+        derived = loan_derived(
+            principal=float(row.principal or 0.0),
+            repaid_amount=float(row.repaid_amount or 0.0),
+            due_at=row.due_at,
+            status=row.status or "active",
+        )
+        ext_id, ledger_name = ledger_meta[row.ledger_id]
+        results.append(
+            ReadLoanOut(
+                id=row.sync_id,
+                direction=row.direction or "borrowed",
+                counterparty=row.counterparty or "",
+                principal=float(row.principal or 0.0),
+                currency=row.currency or "CNY",
+                interest_rate=float(row.interest_rate or 0.0),
+                started_at=_to_utc(row.started_at),
+                due_at=_to_utc(row.due_at) if row.due_at else None,
+                repaid_amount=float(row.repaid_amount or 0.0),
+                status=row.status or "active",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                note=row.note,
+                repay_progress=derived["repay_progress"],
+                days_to_due=derived["days_to_due"],
+                is_overdue=derived["is_overdue"],
+                last_change_id=_get_latest_change_id(db, ledger_id=row.ledger_id),
+                ledger_id=ext_id,
+                ledger_name=ledger_name,
+            )
+        )
+    return results
+
+
+@router.get(
+    "/workspace/reimbursements",
+    response_model=list[ReadReimbursementOut],
+)
+def list_workspace_reimbursements(
+    ledger_id: str | None = Query(default=None, description="按账本过滤;不传 = 全部可见账本"),
+    status: str | None = Query(default=None, description="pending / reimbursed / cancelled"),
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadReimbursementOut]:
+    """跨账本报销只读列表(0023,资产页净资产 / 资产构成并入待报销用)。
+
+    资产页账户是 **工作区全局** 口径(`/read/workspace/accounts` 不传 ledger_id
+    即跨账本),报销(待报销 = 应收资产头寸)必须同口径跨账本查询,才能并入净资产。
+    与按账本端点 `list_reimbursements` 同口径。
+    """
+    is_admin = _is_admin(current_user)
+    ledgers = _visible_workspace_ledgers(
+        db, current_user=current_user, is_admin=is_admin, ledger_id=ledger_id
+    )
+    if not ledgers:
+        return []
+    ledger_internal_ids = [l.id for l in ledgers]
+
+    query = select(ReadReimbursementProjection).where(
+        ReadReimbursementProjection.ledger_id.in_(ledger_internal_ids)
+    )
+    if status:
+        query = query.where(ReadReimbursementProjection.status == status)
+    rows = db.scalars(
+        query.order_by(
+            ReadReimbursementProjection.happened_at.desc(),
+            ReadReimbursementProjection.sync_id.asc(),
+        )
+    ).all()
+
+    results: list[ReadReimbursementOut] = []
+    for row in rows:
+        results.append(
+            ReadReimbursementOut(
+                id=row.sync_id,
+                title=row.title or "",
+                payer=row.payer,
+                reimburser=row.reimburser,
+                amount=float(row.amount or 0.0),
+                currency=row.currency or "CNY",
+                category_id=row.category_sync_id,
+                category_name=row.category_name,
+                happened_at=_to_utc(row.happened_at),
+                status=row.status or "pending",
+                account_id=row.account_sync_id,
+                account_name=row.account_name,
+                related_tx_id=row.related_tx_id,
+                note=row.note,
+                last_change_id=_get_latest_change_id(db, ledger_id=row.ledger_id),
             )
         )
     return results

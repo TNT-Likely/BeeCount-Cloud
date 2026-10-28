@@ -261,3 +261,98 @@ export function timeDepositTotalsToBase(
   }
   return { total, missing: [...missing].sort() }
 }
+
+/**
+ * 借款(0023)未结净额 → 主币种合计(资产页净资产 / 资产构成并入借款用)。
+ *
+ * 口径(对齐 linked_transactions 的关联交易语义,避免与账户余额重复 / 漏算):
+ * - lent(借出):本金以 expense 出账户、收回以 income 进账户。账户余额少了"别人
+ *   欠我的钱",但系统没有记录对应的应收 → 净资产被低估。故借出未结应收
+ *   (principal − repaid_amount)>0 作为**资产**加回。
+ * - borrowed(借入):本金以 income 进账户、归还以 expense 出账户。账户余额多了
+ *   "未还欠款"的钱,但系统没有记录对应的负债 → 净资产被高估。故借入未结应付
+ *   (principal − repaid_amount)>0 作为**负债**扣减。
+ * - 仅 active 计入;repaid / cancelled 已结清 / 作废,净额 0。
+ * 与 timeDepositTotalsToBase 同铁律:缺失汇率币种整币种剔除(返回 missing),
+ * 绝不按 1 折入。
+ */
+export type LoanAssetInput = {
+  direction: string
+  principal: number
+  repaid_amount?: number
+  currency: string
+  status?: string | null
+}
+
+export function loanTotalsToBase(
+  loans: LoanAssetInput[],
+  base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+): { lentAsset: number; borrowedLiability: number; missing: string[] } {
+  const active = loans.filter((l) => (l.status || 'active') === 'active')
+  const byCur = new Map<string, { lent: number; borrowed: number }>()
+  for (const l of active) {
+    const outstanding = Math.max(Number(l.principal) - Number(l.repaid_amount || 0), 0)
+    if (outstanding <= 0) continue
+    const cur = (l.currency || 'CNY').toUpperCase()
+    const bucket = byCur.get(cur) || { lent: 0, borrowed: 0 }
+    if (l.direction === 'lent') bucket.lent += outstanding
+    else bucket.borrowed += outstanding
+    byCur.set(cur, bucket)
+  }
+  let lentAsset = 0
+  let borrowedLiability = 0
+  const missing = new Set<string>()
+  for (const [cur, bucket] of byCur) {
+    const eff = effectiveRateToBase(cur, base, auto, overrides)
+    if (!eff) {
+      missing.add(cur)
+      continue
+    }
+    lentAsset += bucket.lent * eff.rate
+    borrowedLiability += bucket.borrowed * eff.rate
+  }
+  return { lentAsset, borrowedLiability, missing: [...missing].sort() }
+}
+
+/**
+ * 报销(0023)待报销 → 主币种合计(资产页净资产 / 资产构成并入待报销用)。
+ *
+ * 口径:垫付的钱通常已在别处记为支出(减少账户余额),待报销 = 别人欠我还的钱,
+ * 是**应收资产**。pending 计入;reimbursed(到账时已有 income 流水恢复现金)/
+ * cancelled 不计。与 timeDepositTotalsToBase 同铁律:缺失汇率币种整币种剔除,
+ * 绝不按 1 折入。
+ */
+export type ReimbursementAssetInput = {
+  amount: number
+  currency: string
+  status?: string | null
+}
+
+export function reimbursementTotalsToBase(
+  reimbursements: ReimbursementAssetInput[],
+  base: string,
+  auto: ExchangeRatesResponse | null,
+  overrides: ExchangeRateOverride[],
+): { asset: number; missing: string[] } {
+  const pending = reimbursements.filter((r) => (r.status || 'pending') === 'pending')
+  const byCur = new Map<string, number>()
+  for (const r of pending) {
+    const amt = Math.max(Number(r.amount), 0)
+    if (amt <= 0) continue
+    const cur = (r.currency || 'CNY').toUpperCase()
+    byCur.set(cur, (byCur.get(cur) || 0) + amt)
+  }
+  let asset = 0
+  const missing = new Set<string>()
+  for (const [cur, subtotal] of byCur) {
+    const eff = effectiveRateToBase(cur, base, auto, overrides)
+    if (!eff) {
+      missing.add(cur)
+      continue
+    }
+    asset += subtotal * eff.rate
+  }
+  return { asset, missing: [...missing].sort() }
+}

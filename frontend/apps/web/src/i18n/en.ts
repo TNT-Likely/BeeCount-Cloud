@@ -704,6 +704,9 @@ const en = {
   'accountType.insurance': 'Insurance',
   'accountType.social_fund': 'Social Fund',
   'accountType.loan': 'Loan',
+  'accountType.loan_lent': 'Lent',
+  'accountType.loan_borrowed': 'Borrowed',
+  'accountType.reimbursement': 'Reimbursement',
   'accountType.time_deposit': 'Time Deposit',
 
   'ops.device.header.platform': 'Platform',

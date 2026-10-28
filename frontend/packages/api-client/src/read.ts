@@ -487,6 +487,30 @@ export async function fetchWorkspaceTimeDeposits(
   return authedGet<ReadTimeDeposit[]>(`/read/workspace/time-deposits${suffix}`, token)
 }
 
+/** 跨账本借款只读列表(0023,资产页净资产 / 资产构成并入借款用)。 */
+export async function fetchWorkspaceLoans(
+  token: string,
+  options?: { ledgerId?: string; status?: string },
+): Promise<ReadLoan[]> {
+  const query = new URLSearchParams()
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.status) query.set('status', options.status)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<ReadLoan[]>(`/read/workspace/loans${suffix}`, token)
+}
+
+/** 跨账本报销只读列表(0023,资产页净资产 / 资产构成并入待报销用)。 */
+export async function fetchWorkspaceReimbursements(
+  token: string,
+  options?: { ledgerId?: string; status?: string },
+): Promise<ReadReimbursement[]> {
+  const query = new URLSearchParams()
+  if (options?.ledgerId) query.set('ledger_id', options.ledgerId)
+  if (options?.status) query.set('status', options.status)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return authedGet<ReadReimbursement[]>(`/read/workspace/reimbursements${suffix}`, token)
+}
+
 // ============================================================================
 // CSV 导出 — 见 .docs/web-csv-export-design.md
 // ============================================================================

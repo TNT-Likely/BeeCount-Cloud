@@ -227,6 +227,9 @@ const zhCN = {
   'accountType.insurance': '保险',
   'accountType.social_fund': '公积金/社保',
   'accountType.loan': '贷款',
+  'accountType.loan_lent': '借出',
+  'accountType.loan_borrowed': '借入',
+  'accountType.reimbursement': '报销',
   'accountType.time_deposit': '定期存款',
 
   'ops.device.header.platform': '平台',

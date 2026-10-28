@@ -667,6 +667,9 @@ const zhTW = {
   'accountType.insurance': '保險',
   'accountType.social_fund': '公積金/社保',
   'accountType.loan': '貸款',
+  'accountType.loan_lent': '借出',
+  'accountType.loan_borrowed': '借入',
+  'accountType.reimbursement': '報銷',
   'accountType.time_deposit': '定期存款',
 
   'ops.device.header.platform': '平台',
