@@ -12,6 +12,15 @@ interface Props {
 }
 
 // 与 AccountsPanel 里的 TRADABLE / VALUATION 分组 + 颜色一致。
+// 包含两套类型 key 映射:
+//  - Web 新建/编辑写入的规范类型(bank_card/credit_card/alipay/wechat/cash/...)
+//  - 移动端 sync 推入的历史别名(bank/wallet/credit)自动归类到对应规范类型
+const LEGACY_TYPE_ALIAS: Record<string, string> = {
+  bank: 'bank_card',
+  wallet: 'wallet',  // 保留为独立类型(支付宝/微信钱包)
+  credit: 'credit_card',
+}
+
 const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }> = {
   cash: { color: '#10b981', group: 'asset' },
   bank_card: { color: '#3b82f6', group: 'asset' },
@@ -19,6 +28,7 @@ const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }>
   credit_card: { color: '#ef4444', group: 'liability' },
   alipay: { color: '#06b6d4', group: 'asset' },
   wechat: { color: '#22c55e', group: 'asset' },
+  wallet: { color: '#06b6d4', group: 'asset' },   // 移动端别名 → 支付宝/微信钱包色
   other: { color: '#64748b', group: 'asset' },
   real_estate: { color: '#8b5cf6', group: 'asset' },
   vehicle: { color: '#f59e0b', group: 'asset' },
@@ -26,6 +36,10 @@ const TYPE_META: Record<string, { color: string; group: 'asset' | 'liability' }>
   insurance: { color: '#14b8a6', group: 'asset' },
   social_fund: { color: '#84cc16', group: 'asset' },
   loan: { color: '#dc2626', group: 'liability' }
+}
+
+function resolveType(raw: string): string {
+  return LEGACY_TYPE_ALIAS[raw] || raw
 }
 
 export function AssetCompositionDonut({ accounts }: Props) {
@@ -39,7 +53,16 @@ export function AssetCompositionDonut({ accounts }: Props) {
   const { effectiveBase, singleCurrency, needsBase, rates, rateOverrides, loading } =
     usePrimaryCurrencyRates(accounts)
   const { totals, missing, negativeAssets } = useMemo(
-    () => convertPositiveAssetTotalsToBase(accounts, effectiveBase, rates, rateOverrides),
+    () => {
+      // 先按币种折算 + 类型聚合,再把别名映射到规范类型并二次合并。
+      const raw = convertPositiveAssetTotalsToBase(accounts, effectiveBase, rates, rateOverrides)
+      const merged = new Map<string, number>()
+      for (const [type, signed] of raw.totals.entries()) {
+        const canonical = resolveType(type)
+        merged.set(canonical, (merged.get(canonical) ?? 0) + signed)
+      }
+      return { totals: merged, missing: raw.missing, negativeAssets: raw.negativeAssets }
+    },
     [accounts, effectiveBase, rates, rateOverrides],
   )
   const allRows = Array.from(totals.entries())

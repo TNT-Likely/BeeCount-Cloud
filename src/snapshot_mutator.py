@@ -6,6 +6,13 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from .member_splits import (
+    apply_snapshot_item,
+    normalize_splits,
+    splits_from_snapshot_item,
+)
+from . import payment_splits as _payment_splits
+from .party_profile import normalize_profile
 from .transaction_normalization import normalize_transaction_accounts
 
 logger = logging.getLogger(__name__)
@@ -15,7 +22,7 @@ def _new_sync_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
-_LEGACY_SYNC_ID_PATTERN = re.compile(r"^(tx|acc|cat|tag)_(\d+)_([A-Za-z0-9]+)$")
+_LEGACY_SYNC_ID_PATTERN = re.compile(r"^(tx|acc|cat|tag|mem)_(\d+)_([A-Za-z0-9]+)$")
 
 
 def _to_iso8601(raw: object) -> str:
@@ -99,10 +106,22 @@ _ACCOUNT_OPTIONAL_FIELD_MAP: tuple[tuple[str, str, str], ...] = (
     # (payload_key, snapshot_key, kind)
     ("note", "note", "str"),
     ("credit_limit", "creditLimit", "float"),
-    ("billing_day", "billingDay", "int"),
-    ("payment_due_day", "paymentDueDay", "int"),
+    # 信用卡账单日/还款日:支持秒精确(ISO 8601 datetime string),前端按天/秒设置
+    ("billing_day", "billingDay", "datetime"),
+    ("payment_due_day", "paymentDueDay", "datetime"),
+    # 账单周期锚点日/账单状态/账单金额字段
+    ("billing_cycle_start", "billingCycleStart", "datetime"),
+    ("bill_status", "billStatus", "int"),
+    ("bill_amount_due", "billAmountDue", "float"),
+    ("bill_minimum_amount", "billMinimumAmount", "float"),
+    ("bill_paid_amount", "billPaidAmount", "float"),
+    ("bill_remaining_amount", "billRemainingAmount", "float"),
     ("bank_name", "bankName", "str"),
     ("card_last_four", "cardLastFour", "str"),
+    # 账户图标/背景(issue #icon):Web create/update 请求体带 icon_key/icon_type/background_key 时才写;
+    ("icon_key", "iconKey", "str"),
+    ("icon_type", "iconType", "str"),
+    ("background_key", "backgroundKey", "str"),
     # 账户隐藏(issue #240):Web create/update 请求体带 hidden(bool)时才写;
     # 不带 key → 保留原值(不冲掉已有隐藏标记,契约对齐 mobile push 的 merge
     # 缺键保留语义)。
@@ -160,11 +179,13 @@ def ensure_snapshot_v2(snapshot: dict | None) -> dict:
     accounts = _ensure_list(target, "accounts")
     categories = _ensure_list(target, "categories")
     tags = _ensure_list(target, "tags")
+    members = _ensure_list(target, "members")
 
     _ensure_sync_id(items, "tx")
     _ensure_sync_id(accounts, "acc")
     _ensure_sync_id(categories, "cat")
     _ensure_sync_id(tags, "tag")
+    _ensure_sync_id(members, "mem")
 
     for item in items:
         item["type"] = str(item.get("type") or "expense")
@@ -181,6 +202,8 @@ def ensure_snapshot_v2(snapshot: dict | None) -> dict:
         category["kind"] = str(category.get("kind") or "expense").strip()
     for tag in tags:
         tag["name"] = str(tag.get("name") or "").strip()
+    for member in members:
+        member["name"] = str(member.get("name") or "").strip()
 
     target["count"] = len(items)
     return target
@@ -282,7 +305,7 @@ def _sort_transactions(snapshot: dict) -> None:
 def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     target = ensure_snapshot_v2(snapshot)
     tx_type = str(payload.get("tx_type") or "expense")
-    if tx_type not in {"expense", "income", "transfer"}:
+    if tx_type not in {"expense", "income", "transfer", "refund"}:
         raise ValueError("write validation failed: invalid transaction type")
 
     tx_id = _new_sync_id("tx")
@@ -298,6 +321,46 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
         item["currencyCode"] = str(payload.get("currency_code")).upper()
     if payload.get("native_amount") is not None:
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
+    # 转账手续费/优惠(0022) — 仅保存在主转账交易上作为元数据/关联
+    for pk, sk in (
+        ("transfer_fee_amount", "transferFeeAmount"),
+        ("transfer_discount_amount", "transferDiscountAmount"),
+        ("transfer_fee_account_id", "transferFeeAccountId"),
+        ("transfer_fee_account_name", "transferFeeAccountName"),
+        ("transfer_fee_tx_id", "transferFeeTxId"),
+        ("transfer_discount_tx_id", "transferDiscountTxId"),
+        # 支出优惠(0023)
+        ("discount_amount", "discountAmount"),
+    ):
+        if pk in payload and payload.get(pk) is not None:
+            item[sk] = payload.get(pk) if sk.endswith("Amount") else str(payload.get(pk))
+    # 归一化空/0 费率字段:保留显式 0 便于前端展示,但非 transfer 时不应存在
+    if str(item.get("type")) != "transfer":
+        for sk in ("transferFeeAmount", "transferDiscountAmount", "transferFeeAccountId", "transferFeeAccountName", "transferFeeTxId", "transferDiscountTxId"):
+            item.pop(sk, None)
+    # 支出优惠仅 expense 有效(0023)
+    if str(item.get("type")) != "expense":
+        item.pop("discountAmount", None)
+    # 成员关联/分摊(0024):只认 web 写请求的 snake_case key。
+    apply_snapshot_item(
+        item,
+        normalize_splits(
+            payload.get("member_splits"),
+            tx_type=tx_type,
+            amount=item["amount"],
+        ),
+    )
+    # 支出组合付款(0028,仅 expense):多账户分摊支付。
+    _ps = _payment_splits.normalize_splits(
+        payload.get("payment_splits"),
+        tx_type=tx_type,
+        amount=item["amount"],
+    )
+    _payment_splits.apply_snapshot_item(item, _ps)
+    if _ps:
+        # 组合付款时主账户由各 split 承担,清空单一账户字段避免余额重复扣减。
+        item.pop("accountId", None)
+        item.pop("accountName", None)
     if payload.get("note") is not None:
         item["note"] = str(payload.get("note"))
     if payload.get("category_name") is not None:
@@ -340,6 +403,51 @@ def create_transaction(snapshot: dict, payload: dict) -> tuple[dict, str]:
     _mark_entity_actor(item, payload, create=True)
     item = normalize_transaction_accounts(item)
 
+    # 退款(0025):强制从原单发起。原单必须是已存在的 expense;
+    # 退款金额必须为正,且「已退总额 + 本次退款」不得超过原单金额。
+    if str(item.get("type")) == "refund":
+        refund_of = str(payload.get("refund_of_sync_id") or "").strip()
+        if not refund_of:
+            raise ValueError("write validation failed: refund requires refund_of_sync_id")
+        orig = next(
+            (it for it in _ensure_list(target, "items")
+             if str(it.get("syncId")) == refund_of),
+            None,
+        )
+        if orig is None:
+            raise ValueError("write validation failed: refund_of_sync_id not found")
+        if str(orig.get("type")) != "expense":
+            raise ValueError("write validation failed: only expense transactions can be refunded")
+        orig_amount = _to_float(orig.get("amount"))
+        refund_amount = _to_float(item.get("amount"))
+        if refund_amount <= 0:
+            raise ValueError("write validation failed: refund amount must be positive")
+        # 当前 item 尚未 append,此处统计的是「除本次外的已退总额」。
+        already = sum(
+            _to_float(r.get("amount"))
+            for r in _ensure_list(target, "items")
+            if str(r.get("type")) == "refund"
+            and str(r.get("refundOfSyncId")) == refund_of
+        )
+        # 浮点容差:先按分四舍五入再比较。
+        if round((already + refund_amount) * 100) > round(orig_amount * 100) + 1:
+            raise ValueError(
+                "write validation failed: total refund amount exceeds original expense"
+            )
+        item["refundOfSyncId"] = refund_of
+        item["isRefund"] = True
+        # 退款(0025)备注规则:退款流水备注 = 原交易备注(后端派生,始终一致;
+        # 原单备注为空时为空,不再拼接任何后缀)。不依赖前端是否传 note。
+        item["note"] = orig.get("note") or ""
+        # 退款流水分类统一为「退款」(kind=refund),不再沿用原消费单分类;
+        # 清除可能传入的 categoryId,避免指向原分类。分类冲减由 analytics
+        # 按原单 category_name 完成,与此处展示分类无关。
+        item["categoryName"] = "退款"
+        item["categoryKind"] = "refund"
+        item.pop("categoryId", None)
+    else:
+        item["isRefund"] = False
+
     _ensure_list(target, "items").append(item)
     # 跳过 _sort_transactions(方案 B):snapshot 不写回,排序徒劳
     target["count"] = len(_ensure_list(target, "items"))
@@ -373,7 +481,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
 
     if "tx_type" in payload:
         tx_type = str(payload.get("tx_type") or "")
-        if tx_type not in {"expense", "income", "transfer"}:
+        if tx_type not in {"expense", "income", "transfer", "refund"}:
             raise ValueError("write validation failed: invalid transaction type")
         item["type"] = tx_type
     if "amount" in payload:
@@ -399,6 +507,58 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
         item["nativeAmount"] = _to_float(payload.get("native_amount"))
     if payload.get("currency_code") is not None:
         item["currencyCode"] = str(payload.get("currency_code")).upper()
+    # 转账手续费/优惠(0022)
+    for pk, sk, kind in (
+        ("transfer_fee_amount", "transferFeeAmount", "float"),
+        ("transfer_discount_amount", "transferDiscountAmount", "float"),
+        ("transfer_fee_account_id", "transferFeeAccountId", "str"),
+        ("transfer_fee_account_name", "transferFeeAccountName", "str"),
+        ("transfer_fee_tx_id", "transferFeeTxId", "str"),
+        ("transfer_discount_tx_id", "transferDiscountTxId", "str"),
+        # 支出优惠(0023)
+        ("discount_amount", "discountAmount", "float"),
+    ):
+        if pk in payload:
+            val = payload.get(pk)
+            if val is None or (isinstance(val, str) and not val.strip()):
+                item.pop(sk, None)
+            elif kind == "float":
+                item[sk] = _to_float(val)
+            else:
+                item[sk] = str(val).strip()
+    if str(item.get("type")) != "transfer":
+        for sk in ("transferFeeAmount", "transferDiscountAmount", "transferFeeAccountId", "transferFeeAccountName", "transferFeeTxId", "transferDiscountTxId"):
+            item.pop(sk, None)
+    # 支出优惠仅 expense 有效(0023)
+    if str(item.get("type")) != "expense":
+        item.pop("discountAmount", None)
+    # 成员关联/分摊(0024):不传 key = 保留既有归属(改备注/金额不该抹掉成员);
+    # 传 null/[] = 显式清除。切到 transfer 一律清空。
+    if "member_splits" in payload:
+        apply_snapshot_item(
+            item,
+            normalize_splits(
+                payload.get("member_splits"),
+                tx_type=str(item.get("type") or ""),
+                amount=_to_float(item.get("amount")),
+            ),
+        )
+    elif str(item.get("type")) == "transfer":
+        apply_snapshot_item(item, [])
+    # 支出组合付款(0028):不传 key = 保留;传 null/[] = 清除(恢复单一账户)。
+    # 非 expense 一律清空。
+    if "payment_splits" in payload:
+        _ps = _payment_splits.normalize_splits(
+            payload.get("payment_splits"),
+            tx_type=str(item.get("type") or ""),
+            amount=_to_float(item.get("amount")),
+        )
+        _payment_splits.apply_snapshot_item(item, _ps)
+        if _ps:
+            item.pop("accountId", None)
+            item.pop("accountName", None)
+    elif str(item.get("type")) != "expense":
+        _payment_splits.apply_snapshot_item(item, [])
     if "happened_at" in payload:
         item["happenedAt"] = _to_iso8601(payload.get("happened_at"))
 
@@ -421,6 +581,64 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
                 item.pop(snapshot_key, None)
             else:
                 item[snapshot_key] = str(value)
+
+    # 退款(0025)备注同步:原支出(expense)的备注被本请求显式修改时,联动更新
+    # 所有关联退款流水的备注 = 新备注(无后缀)。仅当目标是 expense 且本次
+    # payload 含 note 时生效。关联 refund 项仅在走完整 _commit_write(全量
+    # snapshot)时才存在于 target["items"],故本联动依赖调用方对"改备注的原单"
+    # 走完整路径(见 routers/write/transactions.py update_tx)。
+    if "note" in payload and str(item.get("type")) == "expense":
+        _new_note = (item.get("note") or "")
+        for _r in _ensure_list(target, "items"):
+            if (
+                str(_r.get("type")) == "refund"
+                and str(_r.get("refundOfSyncId")) == tx_id
+            ):
+                _r["note"] = _new_note
+
+    # 退款(0025):原单关联 + 金额上限校验。仅当最终 type=refund 时生效。
+    if str(item.get("type")) == "refund":
+        item["isRefund"] = True
+        # 退款流水分类统一为「退款」(kind=refund),不沿用原消费单分类;
+        # 编辑时同步把可能残留的原分类覆盖掉。
+        item["categoryName"] = "退款"
+        item["categoryKind"] = "refund"
+        item.pop("categoryId", None)
+        # 仅当显式传入且非空时允许覆盖原单关联(极少场景);null 时保持既有。
+        if "refund_of_sync_id" in payload:
+            rval = payload.get("refund_of_sync_id")
+            if rval:
+                item["refundOfSyncId"] = str(rval).strip()
+        refund_of = str(item.get("refundOfSyncId") or "")
+        if not refund_of:
+            raise ValueError("write validation failed: refund requires refund_of_sync_id")
+        orig = next(
+            (it for it in _ensure_list(target, "items")
+             if str(it.get("syncId")) == refund_of),
+            None,
+        )
+        if orig is None:
+            raise ValueError("write validation failed: refund_of_sync_id not found")
+        if str(orig.get("type")) != "expense":
+            raise ValueError("write validation failed: only expense transactions can be refunded")
+        orig_amount = _to_float(orig.get("amount"))
+        refund_amount = _to_float(item.get("amount"))
+        if refund_amount <= 0:
+            raise ValueError("write validation failed: refund amount must be positive")
+        # 排除当前正在编辑的退款自身(tx_id)。
+        already = sum(
+            _to_float(r.get("amount"))
+            for r in _ensure_list(target, "items")
+            if str(r.get("type")) == "refund"
+            and str(r.get("refundOfSyncId")) == refund_of
+            and str(r.get("syncId")) != tx_id
+        )
+        if round((already + refund_amount) * 100) > round(orig_amount * 100) + 1:
+            raise ValueError(
+                "write validation failed: total refund amount exceeds original expense"
+            )
+    else:
+        item["isRefund"] = False
     if "tags" in payload:
         raw_tags = payload.get("tags")
         normalized = _normalize_tx_tags(raw_tags)
@@ -840,6 +1058,85 @@ def delete_tag(snapshot: dict, tag_id: str, payload: dict | None = None) -> dict
             )
 
     tags.pop(idx)
+    return target
+
+
+# ============================================================================
+# Members(0024) —— user-global 消费/收入成员。跟 tags 同构，但被交易以
+# syncId 引用（memberSplits），所以改名要级联刷 name，删除要拦截在用的成员。
+# ============================================================================
+
+def create_member(snapshot: dict, payload: dict) -> tuple[dict, str]:
+    target = ensure_snapshot_v2(snapshot)
+    members = _ensure_list(target, "members")
+    name = _normalize_name(payload.get("name"))
+    if any(str(row.get("name", "")).strip().lower() == name.lower() for row in members):
+        raise ValueError("write validation failed: duplicated member")
+    sync_id = _new_sync_id("mem")
+    item = {
+        "syncId": sync_id,
+        "name": name,
+        "color": payload.get("color"),
+        "profile": normalize_profile(payload.get("profile")),
+    }
+    _mark_entity_actor(item, payload, create=True)
+    members.append(item)
+    return target, sync_id
+
+
+def update_member(snapshot: dict, member_id: str, payload: dict) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    members = _ensure_list(target, "members")
+    _, member = _find_by_sync_id(members, member_id, expected_prefix="mem")
+    _assert_actor_can_modify(member, payload)
+    old_name = str(member.get("name") or "").strip()
+    if "name" in payload:
+        new_name = _normalize_name(payload.get("name"))
+        if any(
+            str(row.get("syncId")) != member_id
+            and str(row.get("name", "")).strip().lower() == new_name.lower()
+            for row in members
+        ):
+            raise ValueError("write validation failed: duplicated member")
+        member["name"] = new_name
+    if "color" in payload:
+        member["color"] = payload.get("color")
+    if "profile" in payload:
+        member["profile"] = normalize_profile(payload.get("profile"))
+
+    new_name = str(member.get("name") or "").strip()
+    if old_name != new_name:
+        for tx in _ensure_list(target, "items"):
+            splits = splits_from_snapshot_item(tx)
+            changed = False
+            for split in splits:
+                if str(split.get("memberId") or "") == member_id:
+                    split["name"] = new_name
+                    changed = True
+            if changed:
+                apply_snapshot_item(tx, splits)
+    _mark_entity_actor(member, payload, create=False)
+    return target
+
+
+def delete_member(snapshot: dict, member_id: str, payload: dict | None = None) -> dict:
+    target = ensure_snapshot_v2(snapshot)
+    members = _ensure_list(target, "members")
+    idx, member = _find_by_sync_id(members, member_id, expected_prefix="mem")
+    _assert_actor_can_modify(member, payload or {})
+    in_use = sum(
+        1
+        for tx in _ensure_list(target, "items")
+        if any(
+            str(s.get("memberId") or "") == member_id
+            for s in splits_from_snapshot_item(tx)
+        )
+    )
+    if in_use > 0:
+        raise ValueError(
+            f"write validation failed: member has {in_use} linked transactions"
+        )
+    members.pop(idx)
     return target
 
 

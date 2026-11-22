@@ -61,6 +61,8 @@ from ...schemas import (
     WriteEntityDeleteRequest,
     WriteLedgerCreateRequest,
     WriteLedgerMetaUpdateRequest,
+    WriteMemberCreateRequest,
+    WriteMemberUpdateRequest,
     WriteTagCreateRequest,
     WriteTagUpdateRequest,
     WriteTransactionCreateRequest,
@@ -73,17 +75,20 @@ from ...snapshot_mutator import (
     create_account,
     create_budget,
     create_category,
+    create_member,
     create_tag,
     create_transaction,
     delete_account,
     delete_budget,
     delete_category,
+    delete_member,
     delete_tag,
     delete_transaction,
     ensure_snapshot_v2,
     update_account,
     update_budget,
     update_category,
+    update_member,
     update_tag,
     update_transaction,
 )
@@ -139,11 +144,13 @@ _USER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
+    "member": projection.upsert_member,
 }
 _USER_PROJECTION_DELETERS: dict[str, Any] = {
     "account": projection.delete_account,
     "category": projection.delete_category,
     "tag": projection.delete_tag,
+    "member": projection.delete_member,
 }
 _LEDGER_PROJECTION_UPSERTERS: dict[str, Any] = {
     "transaction": projection.upsert_tx,
@@ -162,6 +169,10 @@ _TX_CASCADE_FIELDS = frozenset({
     "accountName", "fromAccountName", "toAccountName",
     "categoryName",
     "tags",
+    # 成员改名(0024)会级联改 items 里的 memberNames/memberSplits；
+    # projection.rename_cascade_member 用 SQL 批量刷，同样可跳过 per-row upsert。
+    "memberNames",
+    "memberSplits",
 })
 
 
@@ -381,7 +392,8 @@ def _emit_entity_diffs(
     account_renames = _collect_renames(prev.get("accounts") or [], next_snapshot.get("accounts") or [])
     category_renames = _collect_renames(prev.get("categories") or [], next_snapshot.get("categories") or [])
     tag_renames = _collect_renames(prev.get("tags") or [], next_snapshot.get("tags") or [])
-    any_rename = bool(account_renames or category_renames or tag_renames)
+    member_renames = _collect_renames(prev.get("members") or [], next_snapshot.get("members") or [])
+    any_rename = bool(account_renames or category_renames or tag_renames or member_renames)
 
     emitted_ids: list[int] = []
     _diff_entity_list(db, ledger, current_user, device_id, now,
@@ -393,6 +405,9 @@ def _emit_entity_diffs(
     _diff_entity_list(db, ledger, current_user, device_id, now,
                       prev.get("tags") or [], next_snapshot.get("tags") or [],
                       "tag", emitted_ids)
+    _diff_entity_list(db, ledger, current_user, device_id, now,
+                      prev.get("members") or [], next_snapshot.get("members") or [],
+                      "member", emitted_ids)
 
     # Rename cascade via SQL batch,放在 tx diff 之前 —— 保证 tx diff 跳过的
     # cascade 行已经被刷新过。user-global 重构后 rename_cascade_* 按 user_id
@@ -410,6 +425,10 @@ def _emit_entity_diffs(
         projection.rename_cascade_tag(
             db, user_id=current_user.id, tag_sync_id=sync_id,
             old_name=old, new_name=new,
+        )
+    for sync_id, _old, new, _ in member_renames:
+        projection.rename_cascade_member(
+            db, user_id=current_user.id, member_sync_id=sync_id, new_name=new,
         )
 
     _diff_entity_list(db, ledger, current_user, device_id, now,
@@ -529,6 +548,40 @@ def _load_idempotent_response(
     return WriteCommitMeta.model_validate(payload)
 
 
+def _tx_is_refund(db: Session, ledger_id: int, tx_id: str) -> bool:
+    """判断目标 tx 本身是否为退款(refund)。
+
+    退款相关写操作(create / update)必须 build 全量 snapshot 才能校验「原单存在 /
+    是 expense / 已退总额」,而 fast path 只 SELECT 目标 tx 单条。此 helper 供
+    update_tx 路由决策:当目标 tx 本身就是退款(改金额等也会触发退款块校验原单)时,
+    回退到完整 _commit_write。
+    """
+    row = db.scalar(
+        select(ReadTxProjection.is_refund).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.sync_id == tx_id,
+        )
+    )
+    return bool(row)
+
+
+def _tx_has_linked_refunds(db: Session, ledger_id: int, tx_id: str) -> bool:
+    """判断目标 tx 是否被任一退款(refund)关联为其原单。
+
+    原支出(expense)改备注时需联动更新关联退款的备注,而该联动依赖完整 snapshot
+    (含所有 refund 项)。fast path 只 SELECT 目标 tx 单条,无法联动,故当「原单
+    改备注」且存在关联退款时,update_tx 需回退到完整 _commit_write。
+    """
+    count = db.scalar(
+        select(func.count()).select_from(ReadTxProjection).where(
+            ReadTxProjection.ledger_id == ledger_id,
+            ReadTxProjection.is_refund == 1,
+            ReadTxProjection.refund_of_sync_id == tx_id,
+        )
+    )
+    return bool(count)
+
+
 async def _commit_create_tx_fast(
     *,
     request: Request,
@@ -638,7 +691,14 @@ async def _commit_create_tx_fast(
             raise
         return response, False
 
-    response, did_replay = await run_in_threadpool(_core)
+    try:
+        response, did_replay = await run_in_threadpool(_core)
+    except ValueError as exc:
+        # mutator 的业务校验(如成员分摊金额之和 ≠ 交易金额)翻译成 4xx,
+        # 不要漏成 500。跟 _commit_write 的 ValueError 分支保持一致。
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     if not did_replay:
         from ...websocket_manager import broadcast_to_ledger
@@ -819,7 +879,12 @@ async def _commit_write_fast_tx(
             raise exc
         return response, False
 
-    response, did_replay = await run_in_threadpool(_core)
+    try:
+        response, did_replay = await run_in_threadpool(_core)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     if not did_replay:
         # 共享账本:fan-out 给所有 LedgerMember(非只 owner)。否则 web/Owner 写
@@ -905,6 +970,48 @@ def _projection_row_to_tx_dict(row: ReadTxProjection) -> dict[str, Any]:
         item["currencyCode"] = row.currency_code
     if row.native_amount is not None:
         item["nativeAmount"] = row.native_amount
+    # 转账手续费/优惠(0022)
+    if row.transfer_fee_amount is not None:
+        item["transferFeeAmount"] = row.transfer_fee_amount
+    if row.transfer_discount_amount is not None:
+        item["transferDiscountAmount"] = row.transfer_discount_amount
+    if row.transfer_fee_account_sync_id:
+        item["transferFeeAccountId"] = row.transfer_fee_account_sync_id
+    if row.transfer_fee_account_name:
+        item["transferFeeAccountName"] = row.transfer_fee_account_name
+    if row.transfer_fee_tx_sync_id:
+        item["transferFeeTxId"] = row.transfer_fee_tx_sync_id
+    if row.transfer_discount_tx_sync_id:
+        item["transferDiscountTxId"] = row.transfer_discount_tx_sync_id
+    # 支出优惠(0023):带上当前值,update 不传该字段时保留原值。
+    if row.discount_amount is not None:
+        item["discountAmount"] = row.discount_amount
+    # 成员关联/分摊(0024):必须带上当前值,否则 PATCH 更新会把成员归属抹掉
+    # (fast path 的 prev_item 只有这里列出的字段)。
+    if row.member_sync_ids_json:
+        try:
+            parsed_ids = json.loads(row.member_sync_ids_json)
+            if isinstance(parsed_ids, list) and parsed_ids:
+                item["memberIds"] = parsed_ids
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if row.member_names_csv:
+        item["memberNames"] = row.member_names_csv
+    if row.member_splits_json:
+        try:
+            parsed_splits = json.loads(row.member_splits_json)
+            if isinstance(parsed_splits, list) and parsed_splits:
+                item["memberSplits"] = parsed_splits
+        except (json.JSONDecodeError, TypeError):
+            pass
+    # 支出组合付款(0028):带上当前值,update 不传该字段时保留原值。
+    if row.payment_splits_json:
+        try:
+            parsed_splits = json.loads(row.payment_splits_json)
+            if isinstance(parsed_splits, list) and parsed_splits:
+                item["paymentSplits"] = parsed_splits
+        except (json.JSONDecodeError, TypeError):
+            pass
     return item
 
 
@@ -1287,6 +1394,8 @@ __all__ = [
     'WriteEntityDeleteRequest',
     'WriteLedgerCreateRequest',
     'WriteLedgerMetaUpdateRequest',
+    'WriteMemberCreateRequest',
+    'WriteMemberUpdateRequest',
     'WriteTagCreateRequest',
     'WriteTagUpdateRequest',
     'WriteTransactionCreateRequest',
@@ -1299,17 +1408,20 @@ __all__ = [
     'create_account',
     'create_budget',
     'create_category',
+    'create_member',
     'create_tag',
     'create_transaction',
     'delete_account',
     'delete_budget',
     'delete_category',
+    'delete_member',
     'delete_tag',
     'delete_transaction',
     'ensure_snapshot_v2',
     'update_account',
     'update_budget',
     'update_category',
+    'update_member',
     'update_tag',
     'update_transaction',
     'logger',

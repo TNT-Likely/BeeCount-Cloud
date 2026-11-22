@@ -28,16 +28,19 @@ type Props = {
   onSelectingChange: (selecting: boolean) => void
   upload: (file: File) => Promise<AttachmentRef>
   resolvePreview: (ref: AttachmentRef) => Promise<string | null>
+  /** 自定义标题(借款/还款等实体复用编辑器时不再是「交易附件」)。 */
+  label?: string
 }
 
 export const TransactionAttachmentEditor = forwardRef<
   TransactionAttachmentEditorHandle,
   Props
 >(function TransactionAttachmentEditor(
-  { attachments, disabled, upload, resolvePreview, onSelectingChange },
+  { attachments, disabled, upload, resolvePreview, onSelectingChange, label },
   handle
 ) {
   const t = useT()
+  const title = label || t('detail.transaction.attachments')
   const [drafts, setDrafts] = useState<AttachmentDraft[]>(() =>
     attachments.map((ref) => ({ id: draftId(), ref }))
   )
@@ -171,11 +174,11 @@ export const TransactionAttachmentEditor = forwardRef<
   return (
     <section
       className="space-y-3 md:col-span-2"
-      aria-label={t('detail.transaction.attachments')}
+      aria-label={title}
     >
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium">
-          {t('detail.transaction.attachments')}{' '}
+          {title}{' '}
           <span className="ml-1 text-xs font-normal text-muted-foreground">
             {drafts.length || ''}
           </span>

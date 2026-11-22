@@ -124,7 +124,8 @@ export function OverviewSection({
         <HomeYearHeatmap yearSeries={currentYearSeries} currency={currency} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+      {/* 资产构成 / 月度收支走势:两卡等宽占比,避免右侧柱图被挤压变形 */}
+      <div className="grid gap-4 lg:grid-cols-2">
         <AssetCompositionDonut accounts={accounts} />
         <MonthlyTrendBars data={analyticsData?.series || []} />
       </div>

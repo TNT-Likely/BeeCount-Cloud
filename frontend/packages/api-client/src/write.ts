@@ -6,6 +6,7 @@ import type {
   CategoryPayload,
   LedgerCreatePayload,
   LedgerMetaPayload,
+  MemberPayload,
   ReadAccount,
   ReadCategory,
   ReadTag,
@@ -297,6 +298,46 @@ export async function deleteTag(
 ): Promise<WriteCommitMeta> {
   return authedDelete<WriteCommitMeta>(
     `/write/ledgers/${encodeURIComponent(ledgerId)}/tags/${encodeURIComponent(tagId)}`,
+    token,
+    { base_change_id: baseChangeId }
+  )
+}
+
+/** 成员(0024)CRUD —— /write/ledgers/{id}/members。 */
+export async function createMember(
+  token: string,
+  ledgerId: string,
+  baseChangeId: number,
+  payload: MemberPayload
+): Promise<WriteCommitMeta> {
+  return authedPost<WriteCommitMeta>(`/write/ledgers/${encodeURIComponent(ledgerId)}/members`, token, {
+    base_change_id: baseChangeId,
+    ...payload
+  })
+}
+
+export async function updateMember(
+  token: string,
+  ledgerId: string,
+  memberId: string,
+  baseChangeId: number,
+  payload: Partial<MemberPayload>
+): Promise<WriteCommitMeta> {
+  return authedPatch<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/members/${encodeURIComponent(memberId)}`,
+    token,
+    { base_change_id: baseChangeId, ...payload }
+  )
+}
+
+export async function deleteMember(
+  token: string,
+  ledgerId: string,
+  memberId: string,
+  baseChangeId: number
+): Promise<WriteCommitMeta> {
+  return authedDelete<WriteCommitMeta>(
+    `/write/ledgers/${encodeURIComponent(ledgerId)}/members/${encodeURIComponent(memberId)}`,
     token,
     { base_change_id: baseChangeId }
   )

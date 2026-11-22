@@ -25,6 +25,8 @@ interface Props {
   hasMore?: boolean
   onLoadMore?: () => void
   canManage?: boolean
+  /** 锁账截止时刻(UTC ISO),透传给行组件禁用写操作。 */
+  lockCutoff?: string | null
   onEdit?: (row: ReadTransaction) => void
   onDelete?: (row: ReadTransaction) => void
   onPreviewAttachment?: (
@@ -59,6 +61,9 @@ interface Props {
   noteDisplayMode?: 'category' | 'note'
   /** 账户详情透传账户身份，转账显示该账户的资金方向。 */
   currentAccountId?: string
+  /** 特殊流水功能图标偏好 overrides(来自 profile appearance.flow_icons),
+   *  透传到 TransactionRow。 */
+  flowIconOverrides?: Record<string, string> | null
 }
 
 /**
@@ -78,6 +83,7 @@ export function TransactionList({
   hasMore = false,
   onLoadMore,
   canManage = true,
+  lockCutoff = null,
   onEdit,
   onDelete,
   onPreviewAttachment,
@@ -94,7 +100,8 @@ export function TransactionList({
   currentUserId,
   showLedger = false,
   noteDisplayMode = 'category',
-  currentAccountId
+  currentAccountId,
+  flowIconOverrides
 }: Props) {
   const t = useT()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -157,6 +164,7 @@ export function TransactionList({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 canManage={canManage}
+                lockCutoff={lockCutoff}
                 onPreviewAttachment={onPreviewAttachment}
                 onClickTag={onClickTag}
                 onSelect={onSelect}
@@ -166,6 +174,7 @@ export function TransactionList({
                 showLedger={showLedger}
                 noteDisplayMode={noteDisplayMode}
                 currentAccountId={currentAccountId}
+                flowIconOverrides={flowIconOverrides}
               />
             </li>
           ))}

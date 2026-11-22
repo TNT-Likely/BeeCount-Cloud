@@ -20,6 +20,7 @@ import {
   categoryDefaults,
   categoryIsChild,
   type CategoryForm,
+  SectionPageHeader,
 } from '@beecount/web-features'
 
 import { useLedgerWrite } from '../../app/useLedgerWrite'
@@ -177,6 +178,7 @@ export function CategoriesPage() {
 
   return (
     <>
+      <SectionPageHeader section="categories" title={t('categories.title')} />
       <CategoriesPanel
         form={form}
         rows={rows}

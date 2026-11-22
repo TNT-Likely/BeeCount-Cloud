@@ -20,6 +20,9 @@ import {
 
 import type { ReadAccount } from '@beecount/api-client'
 
+import { accountBackgroundCss } from '../accountIcons'
+import { AccountIcon } from '../components/AccountIcon'
+import { AccountIconPicker } from '../components/AccountIconPicker'
 import { Amount } from '../components/Amount'
 import { CurrencySelectorTrigger } from '../components/CurrencySelector'
 import type { AccountForm } from '../forms'
@@ -58,6 +61,8 @@ type MobileStyleAssetsProps = {
   /** 账户隐藏(issue #240):底部「已隐藏」分区里,每张隐藏卡的快捷「恢复」
    *  按钮回调(不经编辑弹窗,直接 PATCH hidden=false)。不传则不渲染该按钮。 */
   onRestore?: (row: ReadAccount) => void
+  /** 自定义账户图标 fileId → blob URL。 */
+  accountIconPreviewMap?: Record<string, string>
 }
 
 /**
@@ -77,7 +82,8 @@ function MobileStyleAssets({
   onClickAccount,
   onCreate,
   hideCurrencyCards = false,
-  onRestore
+  onRestore,
+  accountIconPreviewMap
 }: MobileStyleAssetsProps) {
   const t = useT()
   // 多币种 → 每币种一张卡;单币种 → 维持原 hero + 饼图。底部列表小计是否带币种
@@ -209,6 +215,7 @@ function MobileStyleAssets({
                           : undefined
                       }
                       onClick={onClickAccount ? () => onClickAccount(row) : undefined}
+                      accountIconPreviewMap={accountIconPreviewMap}
                     />
                   ))}
                 </div>
@@ -579,7 +586,8 @@ function BankCardTile({
   onEdit,
   onAdjustBalance,
   onDelete,
-  onClick
+  onClick,
+  accountIconPreviewMap
 }: {
   row: ReadAccount & AccountStats
   color: string
@@ -589,6 +597,7 @@ function BankCardTile({
   onAdjustBalance?: () => void
   onDelete?: () => void
   onClick?: () => void
+  accountIconPreviewMap?: Record<string, string>
 }) {
   const t = useT()
   const currency = row.currency || 'CNY'
@@ -600,6 +609,8 @@ function BankCardTile({
     typeof row.balance === 'number'
   // 展示余额：优先用 stats.balance（考虑所有交易后的结果），否则 initial_balance。
   const displayBalance = hasStats ? (row.balance as number) : row.initial_balance ?? 0
+  // 账户自定义背景(issue #icon):设置了 background_key 时覆盖类型色渐变。
+  const customBg = row.background_key ? accountBackgroundCss(row.background_key) : null
   // 估值账户：负债显示绝对值欠款，资产显示当前估值。
   const valuationValue = isLiability ? Math.abs(displayBalance) : displayBalance
   // 信用卡：按负债展示。已用 = max(0, -balance),可用 = 额度 - 已用(对齐 mobile）。
@@ -616,9 +627,12 @@ function BankCardTile({
         onClick ? 'cursor-pointer' : ''
       }`}
       style={{
-        // 比 16:10 稍高一点，正文能放三列 stats 不挤。
-        aspectRatio: '16 / 11',
-        background: `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
+        // 进一步降低卡片高度：2:1 更扁平，减少资产页整体高度。
+        aspectRatio: '2 / 1',
+        background: customBg
+          ? customBg.css
+          : `linear-gradient(135deg, ${color} 0%, ${color}d9 40%, ${color}99 75%, ${color}66 100%)`,
+        color: customBg ? customBg.textColor : undefined,
         boxShadow: `0 4px 12px -4px ${color}66, 0 1px 2px rgba(0,0,0,0.06)`
       }}
       onClick={onClick}
@@ -676,7 +690,19 @@ function BankCardTile({
         {/* 顶部：类型图标 + 账户名 + 币种 pill */}
         <div className="flex items-center gap-1.5">
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/95 shadow-sm ring-1 ring-white/50">
-            <TypeIcon type={accountType} size={16} />
+            {row.icon_key ? (
+              <AccountIcon
+                iconKey={row.icon_key}
+                iconType={row.icon_type}
+                bankName={row.bank_name}
+                accountType={accountType}
+                previewMap={accountIconPreviewMap}
+                size={16}
+                title={row.name}
+              />
+            ) : (
+              <BankIcon name={row.bank_name || row.name} type={accountType} size={16} />
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12px] font-semibold leading-tight drop-shadow-sm">
@@ -686,6 +712,16 @@ function BankCardTile({
           <span className="shrink-0 rounded bg-white/25 px-1 py-[1px] text-[9px] font-semibold tracking-wider">
             {currency}
           </span>
+        </div>
+        <div className="mt-1 flex items-baseline gap-1 text-[10px] text-white/85">
+          <span className="shrink-0">{t('accounts.initialAmount')}</span>
+          <Amount
+            value={row.initial_balance ?? 0}
+            currency={currency}
+            showCurrency
+            size="xs"
+            className="text-white/95"
+          />
         </div>
 
         {/* 正文：按类型切换布局 */}
@@ -894,6 +930,72 @@ function TypeIcon({ type, size = 28 }: { type: string; size?: number }) {
   )
 }
 
+/**
+ * 常见银行品牌识别 —— 关键词 → {简称, 品牌主色, 浅底}。
+ * 匹配顺序即数组顺序,先匹配到的优先(如「中国银行」要先于泛化的「银行」)。
+ * 简称用 1-2 个汉字,在银行卡卡片的小图标位里清晰可辨。
+ */
+const BANK_BRANDS: Array<{ key: string; short: string; color: string }> = [
+  { key: '工商银行', short: '工', color: '#c8102e' },
+  { key: '建设银行', short: '建', color: '#0b5cab' },
+  { key: '中国银行', short: '中', color: '#c8102e' },
+  { key: '农业银行', short: '农', color: '#009944' },
+  { key: '招商银行', short: '招', color: '#c8102e' },
+  { key: '中信银行', short: '信', color: '#c8102e' },
+  { key: '中信信用卡', short: '信', color: '#c8102e' },
+  { key: '广发银行', short: '广', color: '#005bac' },
+  { key: '华夏银行', short: '华', color: '#c8102e' },
+  { key: '邮政储蓄', short: '邮', color: '#007a33' },
+  { key: '交通银行', short: '交', color: '#0066b3' },
+  { key: '平安银行', short: '平', color: '#ff8200' },
+  { key: '浦发银行', short: '浦', color: '#00529b' },
+  { key: '民生银行', short: '民', color: '#00a0e9' },
+  { key: '兴业银行', short: '兴', color: '#c8102e' },
+  { key: '光大银行', short: '光', color: '#003f88' },
+  { key: '北京银行', short: '京', color: '#c8102e' },
+  { key: '上海银行', short: '沪', color: '#00529b' },
+]
+
+/** 从 bank_name / 账户名里识别银行品牌;未命中返回 null。 */
+function matchBankBrand(name: string | null | undefined) {
+  if (!name) return null
+  const text = String(name)
+  return BANK_BRANDS.find((brand) => text.includes(brand.key)) ?? null
+}
+
+/**
+ * 银行品牌图标 —— 命中已知银行时渲染品牌色圆角徽章 + 简称;
+ * 否则回退到通用 TypeIcon。银行卡卡片与详情弹窗共用。
+ */
+function BankIcon({
+  name,
+  type,
+  size = 16,
+}: {
+  name: string | null | undefined
+  type: string
+  size?: number
+}) {
+  const brand = matchBankBrand(name)
+  if (!brand) return <TypeIcon type={type} size={size} />
+  return (
+    <span
+      className="inline-flex shrink-0 items-center justify-center rounded font-bold leading-none"
+      style={{
+        width: size,
+        height: size,
+        color: brand.color,
+        background: `${brand.color}1a`,
+        fontSize: Math.max(9, Math.round(size * 0.62)),
+      }}
+      title={String(name)}
+      aria-label={String(name)}
+    >
+      {brand.short}
+    </span>
+  )
+}
+
 // 每种账户类型对应的品牌色，用于卡片边框/渐变。与 AssetCompositionDonut
 // 的配色保持一致，这样 overview 的饼图和这里的分组颜色呼应。
 const TYPE_COLORS: Record<string, string> = {
@@ -1052,12 +1154,18 @@ type AccountsPanelProps = {
   onDelete?: (row: ReadAccount) => void
   onAdjustBalance?: (row: ReadAccount) => void
   onClickAccount?: (row: ReadAccount) => void
+  /** 自定义账户图标 fileId → blob URL(web 层 AttachmentCache 预取)。 */
+  accountIconPreviewMap?: Record<string, string>
+  /** 上传自定义账户图标,返回附件 fileId;不传则表单隐藏上传入口。 */
+  onUploadAccountIcon?: (file: File) => Promise<string>
   /** true 时跳过多币种「每币种一张卡」网格区(用于折算汇总视图);缺省 false,
    *  其它调用方零影响。详见 MobileStyleAssets。 */
   hideCurrencyCards?: boolean
   /** 账户隐藏(issue #240):底部「已隐藏」分区每张卡的快捷「恢复」按钮回调。
    *  不传则该按钮不渲染(调用方尚未接线时零影响)。 */
   onRestore?: (row: ReadAccount) => void
+  /** 锁账期间冻结初始金额输入(0067)。后端也会强制 423。 */
+  initialBalanceFrozen?: boolean
 }
 
 export function AccountsPanel({
@@ -1072,8 +1180,11 @@ export function AccountsPanel({
   onDelete,
   onAdjustBalance,
   onClickAccount,
+  accountIconPreviewMap,
+  onUploadAccountIcon,
   hideCurrencyCards = false,
-  onRestore
+  onRestore,
+  initialBalanceFrozen = false
 }: AccountsPanelProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -1158,6 +1269,7 @@ export function AccountsPanel({
           onCreate={handleOpenCreate}
           hideCurrencyCards={hideCurrencyCards}
           onRestore={onRestore}
+          accountIconPreviewMap={accountIconPreviewMap}
         />
       )}
 
@@ -1194,6 +1306,12 @@ export function AccountsPanel({
                       next.credit_limit = ''
                       next.billing_day = ''
                       next.payment_due_day = ''
+                      // 信用卡的初始金额输入框存的是绝对值(正负由欠款/溢缴选择器决定),
+                      // 离开信用卡类型时要把符号还原回普通账户口径(欠款 = 负数)。
+                      const abs = Math.abs(Number(form.initial_balance || 0))
+                      next.initial_balance = String(
+                        form.credit_balance_state === 'debt' ? -abs : abs,
+                      )
                     }
                     // 离开 bank_card / credit_card → 清空银行卡元信息
                     const wasBankOrCredit = form.account_type === 'bank_card' || form.account_type === 'credit_card'
@@ -1240,33 +1358,46 @@ export function AccountsPanel({
               </div>
             </div>
             <div className="space-y-1">
-              <Label>{form.account_type === 'credit_card'
-                ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
-                : t(form.editingId ? 'detail.stats.currentBalance' : 'accounts.table.init')}</Label>
-              {form.account_type === 'credit_card' && !form.editingId ? (
-                <Select value={form.credit_balance_state}
-                  onValueChange={(value) => onFormChange({ ...form, credit_balance_state: value as 'debt' | 'overpayment' })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+              <Label>
+                {/* 信用卡的输入框存的是 initial_balance(开卡时的欠款/溢缴),
+                    所以标题统一叫「初始金额」;欠款/溢缴的正负由下方选择器决定。 */}
+                {t('accounts.initialAmount')}
+              </Label>
+              {form.account_type === 'credit_card' ? (
+                <Select
+                  value={form.credit_balance_state}
+                  disabled={initialBalanceFrozen}
+                  onValueChange={(value) =>
+                    onFormChange({ ...form, credit_balance_state: value as 'debt' | 'overpayment' })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="debt">{t('accounts.bankcard.currentOwed')}</SelectItem>
+                    <SelectItem value="debt">{t('accounts.credit.debtState')}</SelectItem>
                     <SelectItem value="overpayment">{t('accounts.credit.overpayment')}</SelectItem>
                   </SelectContent>
                 </Select>
               ) : null}
               <Input
-                aria-label={form.account_type === 'credit_card'
-                  ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
-                  : t(form.editingId ? 'detail.stats.currentBalance' : 'accounts.table.init')}
-                placeholder={form.account_type === 'credit_card'
-                  ? t(form.credit_balance_state === 'overpayment' ? 'accounts.credit.overpayment' : 'accounts.bankcard.currentOwed')
-                  : t('accounts.placeholder.initialBalance')}
+                aria-label={t('accounts.initialAmount')}
+                placeholder={t('accounts.placeholder.initialBalance')}
                 value={form.initial_balance}
-                readOnly={Boolean(form.editingId) && !VALUATION_TYPES_SET.has(form.account_type)}
+                disabled={initialBalanceFrozen}
+                title={initialBalanceFrozen ? t('settings.lock.accountFrozen') : undefined}
                 onChange={(e) => onFormChange({ ...form, initial_balance: e.target.value })}
               />
+              {initialBalanceFrozen ? (
+                <p className="text-xs text-amber-600">{t('settings.lock.accountFrozen')}</p>
+              ) : null}
             </div>
 
-            {form.editingId ? <p className="text-xs text-muted-foreground">{t('accounts.credit.editBalanceHint')}</p> : null}
+            {/* 信用卡:说明「初始金额」与「当前余额」的区别(当前余额走账户卡片的
+                「调整余额」,初始金额在这里改)。 */}
+            {form.account_type === 'credit_card' ? (
+              <p className="text-xs text-muted-foreground">{t('accounts.credit.initialHint')}</p>
+            ) : null}
             {form.account_type === 'credit_card' ? <p className="text-xs text-muted-foreground">{t('accounts.credit.estimateHint')}</p> : null}
             {/* 信用卡专属:信用额度 + 账单日 + 还款日(对齐 mobile credit_card
                 section)。还款提醒是 mobile 本地 SharedPreferences 不走 server,
@@ -1327,21 +1458,46 @@ export function AccountsPanel({
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>{t('accounts.field.cardLastFour')}</Label>
+                  <Label>{t('accounts.field.cardNumber')}</Label>
                   <Input
                     inputMode="numeric"
-                    maxLength={4}
-                    placeholder="****"
+                    maxLength={23}
+                    placeholder={t('accounts.field.cardNumberHint')}
                     value={form.card_last_four}
                     onChange={(e) => {
-                      // 只接受数字,最多 4 位 — 跟 mobile 一致(maxLength: 4)
-                      const next = e.target.value.replace(/\D/g, '').slice(0, 4)
-                      onFormChange({ ...form, card_last_four: next })
+                      // 允许输入完整卡号(数字/空格/连字符),方便直接复制粘贴;
+                      // 每 4 位自动加空格提升可读性。保存时只取后 4 位入库
+                      // (后端 card_last_four 字段约束为 8 字符)。
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 19)
+                      const grouped = digits.replace(/(.{4})/g, '$1 ').trim()
+                      onFormChange({ ...form, card_last_four: grouped })
                     }}
                   />
+                  <p className="text-[11px] text-muted-foreground">{t('accounts.field.cardNumberTip')}</p>
                 </div>
               </div>
             ) : null}
+
+            {/* 账户外观:图标(银行/支付/充值卡/自定义) + 卡片背景。 */}
+            <div className="space-y-1">
+              <Label>{t('accounts.field.appearance')}</Label>
+              <AccountIconPicker
+                iconKey={form.icon_key}
+                iconType={form.icon_type}
+                backgroundKey={form.background_key}
+                previewMap={accountIconPreviewMap}
+                onUploadCustom={onUploadAccountIcon}
+                onChange={(next) => onFormChange({ ...form, ...next })}
+                labels={{
+                  title: t('accounts.appearance.title') as string,
+                  iconSection: t('accounts.appearance.iconSection') as string,
+                  backgroundSection: t('accounts.appearance.backgroundSection') as string,
+                  custom: t('accounts.appearance.custom') as string,
+                  none: t('accounts.appearance.none') as string,
+                  uploadHint: t('accounts.appearance.uploadHint') as string,
+                }}
+              />
+            </div>
 
             {/* 备注 — 所有类型可填。 */}
             <div className="space-y-1">

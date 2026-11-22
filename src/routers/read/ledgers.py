@@ -7,6 +7,10 @@ from __future__ import annotations
 from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
+from ...member_splits import decode_row
+from ...party_profile import decode_profile
+from ... import payment_splits as _payment_splits
+from ...tx_running_balance import compute_running_balances
 
 
 def _dedupe_by_sync_id(rows):
@@ -241,6 +245,7 @@ def list_transactions(
     ledger_external_id: str,
     tx_type: str | None = Query(default=None),
     q: str | None = Query(default=None),
+    member_id: str | None = Query(default=None, description="按成员 syncId 精确过滤(含分摊)"),
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=2000),
@@ -268,6 +273,10 @@ def list_transactions(
     query = select(ReadTxProjection).where(ReadTxProjection.ledger_id == ledger.id)
     if tx_type:
         query = query.where(ReadTxProjection.tx_type == tx_type)
+    if member_id:
+        query = query.where(
+            ReadTxProjection.member_sync_ids_json.like(f'%"{member_id}"%')
+        )
     if start_at:
         query = query.where(ReadTxProjection.happened_at >= _to_utc(start_at))
     if end_at:
@@ -288,8 +297,60 @@ def list_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 每笔流水后的账户余额:按全量时间线算,不受本页 filter/offset/limit 影响。
+    balance_after_map = compute_running_balances(db, ledger_ids=[ledger.id])
+
+    # 退款(0025):读时聚合「原单已退金额」。一次 SQL 把结果集中被退款指向的
+    # 原交易 sync_id → 退款总额算出来,回填到对应原交易的 refunded_amount。
+    target_ids = [r.sync_id for r in rows if r.sync_id]
+    refunded_map: dict[str, float] = {}
+    if target_ids:
+        refund_rows = db.execute(
+            select(
+                ReadTxProjection.refund_of_sync_id,
+                func.coalesce(func.sum(ReadTxProjection.amount), 0.0),
+            )
+            .where(
+                ReadTxProjection.ledger_id == ledger.id,
+                ReadTxProjection.is_refund == 1,
+                ReadTxProjection.refund_of_sync_id.in_(target_ids),
+            )
+            .group_by(ReadTxProjection.refund_of_sync_id)
+        ).all()
+        for refund_of_id, total in refund_rows:
+            if refund_of_id:
+                refunded_map[refund_of_id] = float(total or 0.0)
+
+    # 合并还款(0039):一笔实际收付款同时结清多笔借款 → 交易流水只有一条。
+    # 按 tx_sync_id 反查合并组,取出被合并的各笔借款本金流水 sync_id,
+    # 前端据此展示「查看原单」。
+    merged_from_map: dict[str, list[str]] = {}
+    if target_ids:
+        group_rows = db.execute(
+            select(
+                LoanPaymentGroup.tx_sync_id,
+                LoanPaymentGroup.merged_from_sync_ids_json,
+            ).where(
+                LoanPaymentGroup.ledger_id == ledger.id,
+                LoanPaymentGroup.tx_sync_id.in_(target_ids),
+            )
+        ).all()
+        for tx_sync_id, raw_json in group_rows:
+            if not tx_sync_id:
+                continue
+            ids: list[str] = []
+            try:
+                parsed = json.loads(raw_json or "[]")
+                if isinstance(parsed, list):
+                    ids = [str(x) for x in parsed if str(x)]
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            if ids:
+                merged_from_map[tx_sync_id] = ids
+
     results: list[ReadTransactionOut] = []
     for row in rows:
+        balance_after = balance_after_map.get(row.sync_id, (None, None))
         tag_ids: list[str] = []
         if row.tag_sync_ids_json:
             try:
@@ -306,6 +367,10 @@ def list_transactions(
                     attachments = maybe_att
             except json.JSONDecodeError:
                 attachments = None
+        member_ids, member_names, member_splits = decode_row(
+            row.member_sync_ids_json, row.member_names_csv, row.member_splits_json
+        )
+        payment_splits = _payment_splits.decode_row(getattr(row, "payment_splits_json", None))
         results.append(
             ReadTransactionOut(
                 id=row.sync_id,
@@ -331,6 +396,23 @@ def list_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                transfer_fee_amount=row.transfer_fee_amount,
+                transfer_discount_amount=row.transfer_discount_amount,
+                transfer_fee_account_id=row.transfer_fee_account_sync_id,
+                transfer_fee_account_name=row.transfer_fee_account_name,
+                transfer_fee_tx_id=row.transfer_fee_tx_sync_id,
+                transfer_discount_tx_id=row.transfer_discount_tx_sync_id,
+                discount_amount=row.discount_amount,
+                is_refund=bool(row.is_refund),
+                refund_of_sync_id=row.refund_of_sync_id,
+                refunded_amount=refunded_map.get(row.sync_id),
+                merged_from_sync_ids=merged_from_map.get(row.sync_id) or [],
+                account_balance_after=balance_after[0],
+                counter_account_balance_after=balance_after[1],
+                member_ids=member_ids,
+                member_names=member_names,
+                member_splits=member_splits,
+                payment_splits=payment_splits,
                 last_change_id=source_change_id,
                 ledger_id=ledger.external_id,
                 ledger_name=ledger_name,
@@ -672,6 +754,45 @@ def list_tags(
             id=row.sync_id,
             name=row.name or "",
             color=row.color,
+            last_change_id=source_change_id,
+            ledger_id=ledger.external_id,
+            ledger_name=ledger_name,
+            created_by_user_id=None,
+            created_by_email=None,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/ledgers/{ledger_external_id}/members", response_model=list[ReadMemberOut])
+def list_members(
+    ledger_external_id: str,
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReadMemberOut]:
+    """消费/收入成员名单(0024)。user-global，跟 tags 一样按 user_id 取。"""
+    is_admin = _is_admin(current_user)
+    ledger, _ = _require_ledger(
+        db,
+        user_id=current_user.id,
+        ledger_external_id=ledger_external_id,
+        is_admin=is_admin,
+    )
+    ledger_name = _resolve_ledger_name(db, ledger=ledger)
+    source_change_id = _get_latest_change_id(db, ledger_id=ledger.id)
+    rows = db.scalars(
+        select(UserMemberProjection)
+        .where(UserMemberProjection.user_id == current_user.id)
+        .order_by(UserMemberProjection.sync_id.asc())
+    ).all()
+    rows.sort(key=lambda r: (r.name or "").lower())
+    return [
+        ReadMemberOut(
+            id=row.sync_id,
+            name=row.name or "",
+            color=row.color,
+            profile=decode_profile(row.profile_json),
             last_change_id=source_change_id,
             ledger_id=ledger.external_id,
             ledger_name=ledger_name,

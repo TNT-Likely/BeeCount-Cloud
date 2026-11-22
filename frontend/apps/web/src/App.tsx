@@ -63,6 +63,27 @@ const SettingsProfilePage = lazy(() =>
 const TagsPage = lazy(() =>
   import('./pages/sections/TagsPage').then((m) => ({ default: m.TagsPage })),
 )
+const MembersPage = lazy(() =>
+  import('./pages/sections/MembersPage').then((m) => ({ default: m.MembersPage })),
+)
+const ContactsPage = lazy(() =>
+  import('./pages/sections/ContactsPage').then((m) => ({ default: m.ContactsPage })),
+)
+const LoansPage = lazy(() =>
+  import('./pages/sections/LoansPage').then((m) => ({ default: m.LoansPage })),
+)
+const DepositsPage = lazy(() =>
+  import('./pages/sections/DepositsPage').then((m) => ({ default: m.DepositsPage })),
+)
+const SavingPlansPage = lazy(() =>
+  import('./pages/sections/SavingPlansPage').then((m) => ({ default: m.SavingPlansPage })),
+)
+const ReimbursementsPage = lazy(() =>
+  import('./pages/sections/ReimbursementsPage').then((m) => ({ default: m.ReimbursementsPage })),
+)
+const ItemsPage = lazy(() =>
+  import('./pages/sections/ItemsPage').then((m) => ({ default: m.ItemsPage })),
+)
 const ImportPage = lazy(() =>
   import('./pages/sections/ImportPage').then((m) => ({ default: m.ImportPage })),
 )
@@ -251,6 +272,62 @@ function AppRoutes() {
           element={
             <Suspense fallback={<RouteFallback />}>
               <TagsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="members"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <MembersPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="contacts"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ContactsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="loans"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <LoansPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="deposits"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <DepositsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="saving-plans"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <SavingPlansPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="reimbursements"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ReimbursementsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="items"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <ItemsPage />
             </Suspense>
           }
         />

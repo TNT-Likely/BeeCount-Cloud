@@ -1,4 +1,5 @@
 import { SettingsProfileAppearanceSection } from '../../components/sections/SettingsProfileAppearanceSection'
+import { LockSettingsSection } from '../../components/sections/LockSettingsSection'
 
 /**
  * 账号 / 外观设置页(同时挂 `/app/settings/profile` 和 `/app/settings/appearance`
@@ -7,5 +8,10 @@ import { SettingsProfileAppearanceSection } from '../../components/sections/Sett
  * 数据完全来自 useAuth().profileMe,无自己的 state / fetch。
  */
 export function SettingsProfilePage() {
-  return <SettingsProfileAppearanceSection />
+  return (
+    <div className="space-y-4">
+      <LockSettingsSection />
+      <SettingsProfileAppearanceSection />
+    </div>
+  )
 }

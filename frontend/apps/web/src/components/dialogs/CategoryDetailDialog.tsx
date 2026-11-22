@@ -15,7 +15,7 @@ import {
   useT,
 } from '@beecount/ui'
 import { Amount, CategoryIcon, periodLabel, TransactionList } from '@beecount/web-features'
-import { ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
+import { ArrowLeftRight, ArrowRight, Edit3, TrendingDown, TrendingUp } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
 import { formatCompactTick } from '../../i18n/format'
@@ -194,6 +194,8 @@ export function CategoryDetailDialog({
                   <TrendingDown className="h-3 w-3" />
                 ) : category?.kind === 'income' ? (
                   <TrendingUp className="h-3 w-3" />
+                ) : category?.kind === 'transfer' ? (
+                  <ArrowLeftRight className="h-3 w-3" />
                 ) : null}
                 <span>{kindLabel}</span>
                 {category?.parent_name ? (

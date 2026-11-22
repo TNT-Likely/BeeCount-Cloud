@@ -17,6 +17,8 @@ from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
 from ..models import User, UserProfile
 from ..schemas import (
+    LockSettingsOut,
+    LockSettingsPatchRequest,
     UserProfileAvatarUploadOut,
     UserProfileOut,
     UserProfilePatchRequest,
@@ -130,6 +132,49 @@ def _dump_appearance_json(value: dict | None) -> str | None:
     if value is None or not isinstance(value, dict) or not value:
         return None
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+@router.get("/lock", response_model=LockSettingsOut)
+def get_lock_settings(
+    _scopes: set[str] = Depends(_READ_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+) -> LockSettingsOut:
+    """用户级锁账配置(0067)。"""
+    return LockSettingsOut(
+        is_locked=bool(current_user.is_locked), lock_date=current_user.lock_date
+    )
+
+
+@router.patch("/lock", response_model=LockSettingsOut)
+async def patch_lock_settings(
+    req: LockSettingsPatchRequest,
+    request: Request,
+    _scopes: set[str] = Depends(_PATCH_SCOPE_DEP),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> LockSettingsOut:
+    """设置/解除锁账。开启锁账必须先有销账日期；日期保留,便于反复开关。"""
+    next_locked = req.is_locked if req.is_locked is not None else bool(current_user.is_locked)
+    next_date = req.lock_date if req.lock_date is not None else current_user.lock_date
+    if next_locked and next_date is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先设置销账日期")
+
+    changed = False
+    if bool(current_user.is_locked) != next_locked:
+        current_user.is_locked = next_locked
+        changed = True
+    if req.lock_date is not None and current_user.lock_date != next_date:
+        current_user.lock_date = next_date
+        changed = True
+    if changed:
+        db.commit()
+        db.refresh(current_user)
+        await _broadcast_profile_change(
+            request,
+            user_id=current_user.id,
+            payload={"lock": {"is_locked": next_locked, "lock_date": next_date.isoformat() if next_date else None}},
+        )
+    return LockSettingsOut(is_locked=bool(current_user.is_locked), lock_date=current_user.lock_date)
 
 
 @router.get("/me", response_model=UserProfileOut)

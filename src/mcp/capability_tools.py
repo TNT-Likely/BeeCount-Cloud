@@ -39,7 +39,7 @@ class AccountFields(Fields):
     billing_day: int | None = Field(default=None, ge=1, le=31)
     payment_due_day: int | None = Field(default=None, ge=1, le=31)
     bank_name: str | None = None
-    card_last_four: str | None = Field(default=None, max_length=8)
+    card_last_four: str | None = Field(default=None, max_length=23)
     hidden: bool | None = None
 
 

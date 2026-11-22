@@ -16,6 +16,52 @@ const pkg = JSON.parse(
 const appVersion = process.env.VITE_APP_VERSION || pkg.version
 
 export default defineConfig({
+  // dev-only:注销历史 PWA Service Worker + 清掉它缓存的 Vite 模块。
+  // 旧版 main.tsx 在 dev 也注册 /sw.js,而 sw.js 对静态资源是 cache-first 且
+  // CACHE_VERSION 固定,会把 /src/* 与 /node_modules/.vite/deps/react.js?v=HASH
+  // 永久缓存。改了 main.tsx 也可能拿到 SW 缓存里的旧 main.tsx 本身,所以清理
+  // 必须放在 index.html 的内联脚本里 —— 导航请求是 network-first,能拿到新
+  // HTML。不这么做的话 Vite 重启/改 config 后新旧 react.js?v= 混用 → 两份
+  // React → Invalid hook call → 白屏,且 Ctrl+F5 清不掉(caches.match 不看请求头)。
+  plugins: [
+    {
+      name: 'beecount-dev-sw-cleanup',
+      apply: 'serve',
+      transformIndexHtml(html: string) {
+        return {
+          html,
+          tags: [
+            {
+              tag: 'script',
+              injectTo: 'head-prepend' as const,
+              children: `(function () {
+  if (!('serviceWorker' in navigator)) return
+  var KEY = 'beecount-dev-sw-cleaned'
+  try {
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      var tasks = regs.map(function (r) { return r.unregister() })
+      if (window.caches) {
+        tasks.push(caches.keys().then(function (keys) {
+          return Promise.all(keys.filter(function (k) {
+            return k.indexOf('beecount-web-') === 0 || k.indexOf('beecount-share-target-') === 0
+          }).map(function (k) { return caches.delete(k) }))
+        }))
+      }
+      return Promise.all(tasks)
+    }).then(function () {
+      if (navigator.serviceWorker.controller && !sessionStorage.getItem(KEY)) {
+        sessionStorage.setItem(KEY, '1')
+        location.reload()
+      }
+    }).catch(function () {})
+  } catch (e) {}
+})()`
+            }
+          ]
+        }
+      }
+    }
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
     // 本地 dev 时 process.env.VITE_APP_VERSION 为空,Vite 自动注入也拿不到值。
@@ -28,21 +74,29 @@ export default defineConfig({
       '@beecount/api-client': path.resolve(__dirname, '../../packages/api-client/src'),
       '@beecount/ui': path.resolve(__dirname, '../../packages/ui/src'),
       '@beecount/web-features': path.resolve(__dirname, '../../packages/web-features/src'),
-      // 强制 react / react-dom 走 web app 自己的 node_modules,避免
-      // react-router-dom (7.x) 经由 pnpm 链接到另一份 react 实例,
-      // 触发 "Cannot read properties of null (reading 'useState')" /
+      // 强制 react / react-dom 走 web app 自己的 node_modules，避免
+      // react-router-dom (7.x) 经由 pnpm 链接到另一份 react 实例，
+      // 触发 "Cannot read properties of null (reading 'useContext')" /
       // "Invalid hook call" 错误。
       react: path.resolve(__dirname, 'node_modules/react'),
       'react-dom': path.resolve(__dirname, 'node_modules/react-dom')
     },
-    dedupe: ['react', 'react-dom', 'react/jsx-runtime']
+    // 注意:不要 dedupe / prebundle 'react-router'。pnpm 严格隔离下它不是 web
+    // app 的 direct dependency,只作为 react-router-dom 的 transitive 存在;
+    // dedupe 会把它(含子路径 'react-router/dom')重定向到 root 解析 → 找不到,
+    // 生产构建报 Rollup failed to resolve import "react-router/dom"。
+    // React 多实例修复由上面 react / react-dom 的 alias + 下面 dedupe 保证。
+    dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react-router-dom']
+  },
+  optimizeDeps: {
+    include: ['react', 'react-dom', 'react-router-dom']
   },
   server: {
     port: 5173,
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://127.0.0.1:8080',
         changeOrigin: true
       }
     }

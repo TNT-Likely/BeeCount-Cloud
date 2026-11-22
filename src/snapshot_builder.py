@@ -22,8 +22,10 @@ from .models import (
     SyncChange,
     UserAccountProjection,
     UserCategoryProjection,
+    UserMemberProjection,
     UserTagProjection,
 )
+from .party_profile import decode_profile
 
 
 def _to_iso_utc(dt) -> str | None:
@@ -73,6 +75,24 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         ReadTxProjection.native_amount,
         ReadTxProjection.exclude_from_stats,
         ReadTxProjection.exclude_from_budget,
+        # 转账手续费/优惠(0022)
+        ReadTxProjection.transfer_fee_amount,
+        ReadTxProjection.transfer_discount_amount,
+        ReadTxProjection.transfer_fee_account_sync_id,
+        ReadTxProjection.transfer_fee_account_name,
+        ReadTxProjection.transfer_fee_tx_sync_id,
+        ReadTxProjection.transfer_discount_tx_sync_id,
+        # 支出优惠(0023)
+        ReadTxProjection.discount_amount,
+        # 成员关联/分摊(0024)
+        ReadTxProjection.member_sync_ids_json,
+        ReadTxProjection.member_names_csv,
+        ReadTxProjection.member_splits_json,
+        # 退款(0025)
+        ReadTxProjection.is_refund,
+        ReadTxProjection.refund_of_sync_id,
+        # 支出组合付款(0028)
+        ReadTxProjection.payment_splits_json,
     ).where(ReadTxProjection.ledger_id == ledger_id).order_by(
         ReadTxProjection.happened_at.desc(),
         ReadTxProjection.tx_index.desc(),
@@ -85,7 +105,13 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
          to_sid, to_name,
          tags_csv, tag_ids_json, attachments_json,
          tx_index, created_by,
-         currency_code, native_amount, exclude_from_stats, exclude_from_budget) = row
+         currency_code, native_amount, exclude_from_stats, exclude_from_budget,
+         transfer_fee_amount, transfer_discount_amount,
+         transfer_fee_account_sync_id, transfer_fee_account_name,
+         transfer_fee_tx_sync_id, transfer_discount_tx_sync_id,
+         discount_amount,
+         member_sync_ids_json, member_names_csv, member_splits_json,
+         is_refund, refund_of_sync_id, payment_splits_json) = row
         item: dict[str, Any] = {
             "syncId": sync_id,
             "type": tx_type,
@@ -139,6 +165,53 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             item["currencyCode"] = currency_code
         if native_amount is not None:
             item["nativeAmount"] = native_amount
+        # 转账手续费/优惠(0022)
+        if transfer_fee_amount is not None:
+            item["transferFeeAmount"] = transfer_fee_amount
+        if transfer_discount_amount is not None:
+            item["transferDiscountAmount"] = transfer_discount_amount
+        if transfer_fee_account_sync_id:
+            item["transferFeeAccountId"] = transfer_fee_account_sync_id
+        if transfer_fee_account_name:
+            item["transferFeeAccountName"] = transfer_fee_account_name
+        if transfer_fee_tx_sync_id:
+            item["transferFeeTxId"] = transfer_fee_tx_sync_id
+        if transfer_discount_tx_sync_id:
+            item["transferDiscountTxId"] = transfer_discount_tx_sync_id
+        # 支出优惠(0023)
+        if discount_amount is not None:
+            item["discountAmount"] = discount_amount
+        # 成员关联/分摊(0024):从 3 个投影列还原成 camelCase 快照字段。
+        if member_sync_ids_json:
+            try:
+                parsed_ids = json.loads(member_sync_ids_json)
+                if isinstance(parsed_ids, list) and parsed_ids:
+                    item["memberIds"] = [str(x) for x in parsed_ids]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if member_names_csv:
+            item["memberNames"] = member_names_csv
+        if member_splits_json:
+            try:
+                parsed_splits = json.loads(member_splits_json)
+                if isinstance(parsed_splits, list) and parsed_splits:
+                    item["memberSplits"] = parsed_splits
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 退款(0025):透传 isRefund / refundOfSyncId。refund 交易必须有这两个 key;
+        # 普通交易不写 key(老数据 is_refund 默认 0)。
+        if is_refund:
+            item["isRefund"] = bool(is_refund)
+        if refund_of_sync_id:
+            item["refundOfSyncId"] = refund_of_sync_id
+        # 支出组合付款(0028)
+        if payment_splits_json:
+            try:
+                ps = json.loads(payment_splits_json)
+                if isinstance(ps, list) and ps:
+                    item["paymentSplits"] = ps
+            except (json.JSONDecodeError, TypeError):
+                pass
         items.append(item)
 
     # Accounts —— user-global per-user 表,按 user_id 取。snapshot 内仍把全用户
@@ -157,6 +230,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         UserAccountProjection.payment_due_day,
         UserAccountProjection.bank_name,
         UserAccountProjection.card_last_four,
+        UserAccountProjection.icon_key,
+        UserAccountProjection.icon_type,
+        UserAccountProjection.background_key,
         UserAccountProjection.hidden,
     ).where(UserAccountProjection.user_id == user_id)
     for (
@@ -171,6 +247,9 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         payment_due_day,
         bank_name,
         card_last_four,
+        icon_key,
+        icon_type,
+        background_key,
         hidden,
     ) in db.execute(acc_stmt).all():
         acc: dict[str, Any] = {"syncId": sid, "name": name or ""}
@@ -192,6 +271,12 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             acc["bankName"] = bank_name
         if card_last_four:
             acc["cardLastFour"] = card_last_four
+        if icon_key:
+            acc["iconKey"] = icon_key
+        if icon_type:
+            acc["iconType"] = icon_type
+        if background_key:
+            acc["backgroundKey"] = background_key
         # 账户隐藏(issue #240):无条件输出(不像其它扩展字段那样"有值才带
         # key"),与 App serializeAccount 无条件发 hidden 对齐,保 /sync/full
         # 重装 / 新设备首次同步时隐藏标记不丢(03-tech-design-cloud.md §二 (B))。
@@ -255,6 +340,25 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
             t["color"] = color
         tags.append(t)
 
+    # Members(0024) —— user-global per-user,跟 tags 同构。
+    members: list[dict[str, Any]] = []
+    member_stmt = select(
+        UserMemberProjection.sync_id,
+        UserMemberProjection.name,
+        UserMemberProjection.color,
+        UserMemberProjection.profile_json,
+    ).where(UserMemberProjection.user_id == user_id).order_by(
+        UserMemberProjection.name.asc()
+    )
+    for sid, name, color, profile_json in db.execute(member_stmt).all():
+        m: dict[str, Any] = {"syncId": sid, "name": name or ""}
+        if color:
+            m["color"] = color
+        profile = decode_profile(profile_json)
+        if profile:
+            m["profile"] = profile
+        members.append(m)
+
     # Budgets
     # mobile sync_engine._applyBudgetChange 用 payload['ledgerSyncId'] 解析本地
     # ledger int id(不像 tx 用 change.ledger_id 字段),所以 budget snapshot 必
@@ -297,6 +401,7 @@ def build(db: Session, ledger: Ledger) -> dict[str, Any]:
         "accounts": accounts,
         "categories": categories,
         "tags": tags,
+        "members": members,
         "budgets": budgets,
     }
 

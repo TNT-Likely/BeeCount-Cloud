@@ -11,7 +11,7 @@ import {
   type ReadLedger,
 } from '@beecount/api-client'
 import { usePrimaryColor } from '@beecount/ui'
-import type { AppSection } from '@beecount/web-features'
+import { FlowIconsProvider, type AppSection } from '@beecount/web-features'
 
 import { AboutDialog } from '../components/AboutDialog'
 import { PwaInstallBanner } from '../components/PwaInstallBanner'
@@ -25,7 +25,9 @@ import { LogsDialog } from '../components/LogsDialog'
 import { MobileBottomNav } from '../components/MobileBottomNav'
 import { AttachmentPreviewProvider } from '../context/AttachmentPreviewContext'
 import { AttachmentCacheProvider, useAttachmentCache } from '../context/AttachmentCacheContext'
-import { AuthProvider } from '../context/AuthContext'
+import { AuthProvider, useAuth } from '../context/AuthContext'
+import { LockProvider, useLock } from '../context/LockContext'
+
 import { LedgersProvider } from '../context/LedgersContext'
 import { SharedLedgerResourcesProvider } from '../context/SharedLedgerResourcesContext'
 import { PageDataCacheProvider } from '../context/PageDataCacheContext'
@@ -203,7 +205,10 @@ export function AppShell({ token, onLogout }: Props) {
         setActiveLedgerId={setActiveLedgerId}
         refreshLedgers={refreshLedgers}
       >
+        <FlowIconsBridge>
         <SyncSocketProvider>
+        <LockProvider>
+        <LockSyncReactor />
         <PageDataCacheProvider>
         <AttachmentCacheProvider>
         <AttachmentPreviewProvider>
@@ -228,6 +233,7 @@ export function AppShell({ token, onLogout }: Props) {
             <MobileBottomNav
               activeSection={currentSection}
               onNavigate={handleSectionNavigate}
+              isAdminUser={isAdmin}
             />
           </AppLayout>
           <LogsDialog token={token} open={logsOpen} onOpenChange={setLogsOpen} />
@@ -243,7 +249,9 @@ export function AppShell({ token, onLogout }: Props) {
         </AttachmentPreviewProvider>
         </AttachmentCacheProvider>
         </PageDataCacheProvider>
+        </LockProvider>
         </SyncSocketProvider>
+        </FlowIconsBridge>
       </LedgersProvider>
     </AuthProvider>
   )
@@ -252,6 +260,22 @@ export function AppShell({ token, onLogout }: Props) {
 function applyIncomeColorScheme(incomeIsRed: boolean) {
   if (typeof document === 'undefined') return
   document.documentElement.dataset.incomeColor = incomeIsRed ? 'red' : 'green'
+}
+
+/**
+ * 把 user profile 的 appearance.flow_icons / flow_icon_colors 注入 FlowIconsProvider。
+ * 必须放在 AuthProvider 内部才能用 useAuth()。profileMe 尚未加载时传空对象,
+ * 渲染立刻回落默认图标 / 默认色,等 profile 到位后自动重渲染成用户自定义。
+ */
+function FlowIconsBridge({ children }: { children: React.ReactNode }) {
+  const { profileMe } = useAuth()
+  const flowIcons = profileMe?.appearance?.flow_icons
+  const flowIconColors = profileMe?.appearance?.flow_icon_colors
+  return (
+    <FlowIconsProvider value={flowIcons} colors={flowIconColors}>
+      {children}
+    </FlowIconsProvider>
+  )
 }
 
 /**
@@ -298,6 +322,15 @@ function CategoryIconPrefetcher({ token }: { token: string }) {
  * 这个组件放在 SyncSocketProvider + AuthProvider 内部才能拿到 context,所以
  * 独立抽出来 —— 父组件体里调 hooks 不方便穿过 Provider 边界。
  */
+/** 订阅 profile_change 中的 lock 字段,跨标签页/移动端改锁账后即时刷新。 */
+function LockSyncReactor() {
+  const { refresh } = useLock()
+  useSyncEvent('profile_change', (payload) => {
+    if ((payload as { lock?: unknown }).lock) void refresh()
+  })
+  return null
+}
+
 function AppShellSyncReactor({
   refreshLedgers,
   refreshProfile,

@@ -138,3 +138,25 @@ export function formatIsoDateTimeLocal(
 export function formatLedgerLabel(ledger: ReadLedger, roleLabel: string): string {
   return `${ledger.ledger_name} [${roleLabel}]`
 }
+
+/**
+ * datetime-local 输入值,精确到秒。datetime-local 的 step 默认 60(分钟),
+ * 若只输出 HH:mm,保存后秒数会被强制成 :00 —— 同一分钟内新增/追加的
+ * 多笔借款时间完全相同,列表与往来时间轴无法区分先后。回填已有时间时
+ * 也必须保留秒,否则编辑一次就把原时间截断了。
+ */
+export function toLocalDateTimeInput(iso?: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/** datetime-local(含秒,按本地时区解析) → ISO 8601 UTC;空值/非法值返回 null。 */
+export function fromLocalDateTimeInput(value: string): string | null {
+  if (!value) return null
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString()
+}

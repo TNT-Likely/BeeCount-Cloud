@@ -125,6 +125,18 @@ class UserProfilePatchRequest(BaseModel):
         return normalized
 
 
+class LockSettingsOut(BaseModel):
+    """用户级锁账配置(0067)。lock_date 为 UTC 日期时间,前端按本地日历展示。"""
+
+    is_locked: bool
+    lock_date: datetime | None = None
+
+
+class LockSettingsPatchRequest(BaseModel):
+    is_locked: bool | None = None
+    lock_date: datetime | None = None
+
+
 class UserProfileAvatarUploadOut(BaseModel):
     avatar_url: str
     avatar_version: int
@@ -525,6 +537,37 @@ class ReadTransactionOut(BaseModel):
     # native_amount=折账本本位币快照(null 时前端 fallback 用 amount)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 转账手续费/优惠(0022)
+    transfer_fee_amount: float | None = None
+    transfer_discount_amount: float | None = None
+    transfer_fee_account_id: str | None = None
+    transfer_fee_account_name: str | None = None
+    transfer_fee_tx_id: str | None = None
+    transfer_discount_tx_id: str | None = None
+    # 支出优惠金额(0023,仅 tx_type=expense)
+    discount_amount: float | None = None
+    # 该笔交易发生后账户余额(读时计算,不落库;见 tx_running_balance.py)。
+    # primary = expense/income 的 account、transfer 的 from_account;
+    # counter = transfer 的 to_account。账户缺失时为 None。
+    account_balance_after: float | None = None
+    counter_account_balance_after: float | None = None
+    # 成员(0024):income/expense 可关联或分摊给成员。member_splits 元素形如
+    # {"member_id","name","amount"},金额之和 = amount;单成员时只有 1 项。
+    member_ids: list[str] = Field(default_factory=list)
+    member_names: str | None = None
+    member_splits: list[dict[str, Any]] = Field(default_factory=list)
+    # 支出组合付款(0028):一笔 expense 由多个账户分摊支付。
+    # payment_splits 元素形如 {"account_id","account_name","amount"},
+    # 金额之和 = amount。非空时账户余额按拆分扣减,总额只计一次。
+    payment_splits: list[dict[str, Any]] = Field(default_factory=list)
+    # 退款(0025):is_refund=该笔是否退款交易;refund_of_sync_id=关联原单 sync_id;
+    # refunded_amount=读时聚合的「该原单已被退款总额」(仅原交易返回,退款交易为 None)。
+    is_refund: bool = False
+    refund_of_sync_id: str | None = None
+    refunded_amount: float | None = None
+    # 合并还款(0039):一笔实际收付款同时结清多笔借款时,交易流水只有一条,
+    # 这里给出被合并的各笔借款本金流水 sync_id 列表,前端可据此展示「查看原单」。
+    merged_from_sync_ids: list[str] = Field(default_factory=list)
     last_change_id: int
     ledger_id: str | None = None
     ledger_name: str | None = None
@@ -557,10 +600,24 @@ class ReadAccountOut(BaseModel):
     # web 编辑也能完整保存):
     note: str | None = None
     credit_limit: float | None = None
-    billing_day: int | None = None
-    payment_due_day: int | None = None
+    # 信用卡账单日/还款日: ISO 8601 datetime string(秒精确)，mobile 与 web 同步
+    billing_day: datetime | None = None
+    payment_due_day: datetime | None = None
+    # 账单周期锚点日:按 billing_day 自动划分的账期起始日(本地日期)
+    billing_cycle_start: datetime | None = None
+    # 账单状态:0=未出账 / 1=已出账 / 2=已还款 / 3=部分还款 / 4=已逾期
+    bill_status: int = 0
+    # 本期应还 / 最低还款 / 已还 / 剩余待还(均为原币金额)
+    bill_amount_due: float | None = None
+    bill_minimum_amount: float | None = None
+    bill_paid_amount: float | None = None
+    bill_remaining_amount: float | None = None
     bank_name: str | None = None
     card_last_four: str | None = None
+    # 账户图标/背景(issue #icon)。icon_key 对应公共图标库键；icon_type 标识图标类型(bank|card|custom)；background_key 对应背景键(渐变/纯色/自定义)
+    icon_key: str | None = None
+    icon_type: str | None = None
+    background_key: str | None = None
     # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
     # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
     hidden: bool = False
@@ -591,6 +648,21 @@ class ReadTagOut(BaseModel):
     name: str
     color: str | None
     last_change_id: int
+    ledger_id: str | None = None
+    ledger_name: str | None = None
+    created_by_user_id: str | None = None
+    created_by_email: str | None = None
+
+
+class ReadMemberOut(BaseModel):
+    """消费/收入成员(0024)。user-global 实体,与共享账本协作者无关。"""
+
+    id: str
+    name: str
+    color: str | None
+    last_change_id: int
+    # 关联人资料(头像 / 多联系方式 / 多银行卡)，与 contacts 共用结构。
+    profile: dict | None = None
     ledger_id: str | None = None
     ledger_name: str | None = None
     created_by_user_id: str | None = None
@@ -708,6 +780,15 @@ class WorkspaceAnalyticsCategoryRankOut(BaseModel):
     tx_count: int
 
 
+class WorkspaceAnalyticsMemberRankOut(BaseModel):
+    """成员统计维度(0024):按 member_splits 里的分摊金额聚合。"""
+
+    member_id: str
+    member_name: str
+    total: float
+    tx_count: int
+
+
 class WorkspaceAnalyticsAnomalyAttributionOut(BaseModel):
     """异常月份的归因 — 某分类在该月超出"该分类其他月份中位数"的部分。"""
 
@@ -749,6 +830,8 @@ class WorkspaceAnalyticsOut(BaseModel):
     summary: WorkspaceAnalyticsSummaryOut
     series: list[WorkspaceAnalyticsSeriesItemOut] = Field(default_factory=list)
     category_ranks: list[WorkspaceAnalyticsCategoryRankOut] = Field(default_factory=list)
+    # 成员维度排行(0024):按交易分摊到各成员的金额聚合,口径与 category_ranks 一致。
+    member_ranks: list[WorkspaceAnalyticsMemberRankOut] = Field(default_factory=list)
     # 仅在 scope=year 填;月份数 < 3 时返回空 list(baseline 不稳)。
     anomaly_months: list[WorkspaceAnalyticsAnomalyMonthOut] = Field(default_factory=list)
     range: WorkspaceAnalyticsRangeOut
@@ -790,8 +873,24 @@ class WriteLedgerMetaUpdateRequest(WriteBaseRequest):
     month_start_day: int | None = Field(default=None, ge=1, le=28)
 
 
+class MemberSplitIn(BaseModel):
+    """一笔收支在某个成员名下的分摊金额(0024)。"""
+
+    member_id: str = Field(min_length=1, max_length=255)
+    name: str | None = None
+    amount: float = Field(gt=0)
+
+
+class PaymentSplitIn(BaseModel):
+    """支出组合付款中的单个支付渠道(0028)。"""
+
+    account_id: str = Field(min_length=1, max_length=255)
+    account_name: str | None = None
+    amount: float = Field(gt=0)
+
+
 class WriteTransactionCreateRequest(WriteBaseRequest):
-    tx_type: Literal["expense", "income", "transfer"] = "expense"
+    tx_type: Literal["expense", "income", "transfer", "refund"] = "expense"
     amount: float
     happened_at: datetime
     note: str | None = None
@@ -814,11 +913,40 @@ class WriteTransactionCreateRequest(WriteBaseRequest):
     # 折账本本位币快照(前端按汇率算好传入)。不传 → item 不产生字段(旧行为)。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 转账手续费/优惠(0022,仅 tx_type=transfer 有效)
+    transfer_fee_amount: float | None = Field(default=None, ge=0)
+    transfer_discount_amount: float | None = Field(default=None, ge=0)
+    transfer_fee_account_id: str | None = None
+    transfer_fee_account_name: str | None = None
+    # 关联流水由服务端生成/维护,创建/更新时忽略客户端传入
+    transfer_fee_tx_id: str | None = None
+    transfer_discount_tx_id: str | None = None
+    # 支出优惠(0023,仅 tx_type=expense 有效;null/0 = 无优惠)
+    discount_amount: float | None = Field(default=None, ge=0)
+    # 成员关联/分摊(0024,仅 expense/income 有效)。null/[] = 不关联成员;
+    # 单成员时传 1 项且 amount = 交易金额;多成员时各项金额之和必须 = amount。
+    member_splits: list[MemberSplitIn] | None = None
+    # 支出组合付款(0028,仅 expense 有效)。null/[] = 非组合付款(走单一账户);
+    # 至少 2 项,各项金额之和必须 = 交易金额,且账户不可重复。
+    payment_splits: list[PaymentSplitIn] | None = None
+    # 退款(0025,仅 tx_type=refund 有效)。refund_of_sync_id 指向被退款的原交易
+    # sync_id;退款从该原交易的分类支出中冲减,退回接收账户(account_id),不计收入。
+    refund_of_sync_id: str | None = None
+    # 报销(0035)：新建账单标记"需报销"→ 自动登记为待报销项。
+    # 标记后服务端会强制 exclude_from_stats/exclude_from_budget=True。
+    is_reimbursement: bool = False
+    # 报销公司维度(0037)：is_reimbursement=True 时必填公司 id，
+    # 服务端校验公司存在并用档案名回填 company_name（不信任客户端传名）。
+    reimbursement_company_id: str | None = None
+    reimbursement_company_name: str | None = None
+    # 关联物品(0044)：新建账单时选一件物品，该交易成为它的支出/收入流水。
+    # 传 null/"" 表示不关联。服务端校验物品存在且属于该账本。
+    item_id: str | None = None
 
 
 class WriteTransactionUpdateRequest(WriteBaseRequest):
     expected_revision: int | None = Field(default=None, ge=0)
-    tx_type: Literal["expense", "income", "transfer"] | None = None
+    tx_type: Literal["expense", "income", "transfer", "refund"] | None = None
     amount: float | None = None
     happened_at: datetime | None = None
     note: str | None = None
@@ -840,6 +968,25 @@ class WriteTransactionUpdateRequest(WriteBaseRequest):
     # 交易级多币种(0018):显式传入优先(mutator 不再联动);None = 不变。
     currency_code: str | None = None
     native_amount: float | None = None
+    # 转账手续费/优惠(0022,仅 tx_type=transfer 有效;不传=不变,传 null/0 表示清除)
+    transfer_fee_amount: float | None = Field(default=None, ge=0)
+    transfer_discount_amount: float | None = Field(default=None, ge=0)
+    transfer_fee_account_id: str | None = None
+    transfer_fee_account_name: str | None = None
+    # 支出优惠(0023,仅 tx_type=expense;不传=不变,传 null/0 表示清除)
+    discount_amount: float | None = Field(default=None, ge=0)
+    # 成员关联/分摊(0024):不传=不变,传 null/[] 表示清除。
+    member_splits: list[MemberSplitIn] | None = None
+    # 支出组合付款(0028):不传=不变,传 null/[] 表示清除(恢复单一账户支付)。
+    payment_splits: list[PaymentSplitIn] | None = None
+    # 报销(0025/0035)：编辑退款/报销标记所需字段。
+    refund_of_sync_id: str | None = None
+    is_reimbursement: bool | None = None
+    reimbursement_company_id: str | None = None
+    reimbursement_company_name: str | None = None
+    # 关联物品(0044)：传 id = 该交易挂到这件物品；传 null/"" = 解除关联。
+    # 不传(None) = 不变。
+    item_id: str | None = None
 
 
 
@@ -859,10 +1006,14 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     # 扩展字段:跟 mobile lib/data/db.dart Account 表对齐,跨端可编辑。
     note: str | None = None
     credit_limit: float | None = None
-    billing_day: int | None = Field(default=None, ge=1, le=31)
-    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    billing_day: datetime | None = None
+    payment_due_day: datetime | None = None
     bank_name: str | None = None
-    card_last_four: str | None = Field(default=None, max_length=8)
+    card_last_four: str | None = Field(default=None, max_length=23)
+    # 账户图标/背景(issue #icon)。写路径接线是 Task 4,本字段暂不生效。
+    icon_key: str | None = None
+    icon_type: str | None = None
+    background_key: str | None = None
     # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
     # (mutator / write handler)是 Task 4,本字段暂不生效。
     hidden: bool = False
@@ -875,10 +1026,14 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     initial_balance: float | None = None
     note: str | None = None
     credit_limit: float | None = None
-    billing_day: int | None = Field(default=None, ge=1, le=31)
-    payment_due_day: int | None = Field(default=None, ge=1, le=31)
+    billing_day: datetime | None = None
+    payment_due_day: datetime | None = None
     bank_name: str | None = None
-    card_last_four: str | None = Field(default=None, max_length=8)
+    card_last_four: str | None = Field(default=None, max_length=23)
+    # 账户图标/背景(issue #icon)。None = 不改(PATCH exclude_unset)。
+    icon_key: str | None = None
+    icon_type: str | None = None
+    background_key: str | None = None
     # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
     hidden: bool | None = None
 
@@ -937,6 +1092,19 @@ class WriteTagCreateRequest(WriteBaseRequest):
 class WriteTagUpdateRequest(WriteBaseRequest):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     color: str | None = None
+
+
+class WriteMemberCreateRequest(WriteBaseRequest):
+    name: str = Field(min_length=1, max_length=255)
+    color: str | None = None
+    # 关联人资料；None = 未提供，{} = 清空。
+    profile: dict | None = None
+
+
+class WriteMemberUpdateRequest(WriteBaseRequest):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    color: str | None = None
+    profile: dict | None = None
 
 
 class AdminDeviceOut(BaseModel):

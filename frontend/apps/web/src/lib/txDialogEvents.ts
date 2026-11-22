@@ -1,8 +1,9 @@
-import type {
-  WorkspaceAccount,
-  WorkspaceCategory,
-  WorkspaceTag,
-  WorkspaceTransaction,
+import {
+  fetchWorkspaceTransactions,
+  type WorkspaceAccount,
+  type WorkspaceCategory,
+  type WorkspaceTag,
+  type WorkspaceTransaction,
 } from '@beecount/api-client'
 
 /**
@@ -51,6 +52,38 @@ export function dispatchOpenEditTx(tx: WorkspaceTransaction) {
 
 export function dispatchOpenDetailTx(tx: WorkspaceTransaction) {
   window.dispatchEvent(new CustomEvent(DETAIL_TX_EVENT, { detail: tx }))
+}
+
+/**
+ * 按交易的 sync_id 拉取完整交易并打开全局交易详情弹窗。
+ *
+ * 业务实体(借款/存单/物品等)的详情弹窗里,明细行只持有 sync_id 摘要,
+ * 用这个 helper 拉全量后复用 dispatchOpenDetailTx —— 这样从明细可跳到
+ * 「原流水单子」进行查看/编辑/复制/删除,与交易流水页点开完全一致。
+ *
+ * 反向(流水 → 业务实体)由 GlobalEntityDialogs 的 flowLinks 处理。
+ */
+export function openTxDetailBySyncId(
+  token: string,
+  syncId: string | null | undefined,
+  ledgerId?: string,
+  onBeforeOpen?: () => void,
+) {
+  if (!token || !syncId) return
+  void fetchWorkspaceTransactions(token, {
+    ledgerId: ledgerId || undefined,
+    txSyncId: syncId,
+    limit: 1,
+  })
+    .then((page) => {
+      const tx = page.items[0]
+      if (tx) {
+        // 先关闭来源实体弹窗(如存单/借款详情),避免两个弹窗叠加。
+        onBeforeOpen?.()
+        dispatchOpenDetailTx(tx)
+      }
+    })
+    .catch(() => undefined)
 }
 
 export function hasEditTxHandler(): boolean {
@@ -220,4 +253,116 @@ export function onOpenEditCategory(
 
 export function hasEditCategoryHandler(): boolean {
   return editCategoryHandlerCount > 0
+}
+
+// ========== Loan / Deposit (流水详情「关联记录」跳回业务实体) ==========
+// 交易详情的 flowLinks 跳回借款/存单时用 URL 参数 + 本事件双通道:
+//   跨页面 → 目标页挂载后由 URL 参数 effect 打开;
+//   同页面 → 组件不重挂载、URL 参数 effect 的 ref guard 会拦截,靠本事件打开。
+const OPEN_DETAIL_LOAN_EVENT = 'bee:open-detail-loan'
+const OPEN_DETAIL_DEPOSIT_EVENT = 'bee:open-detail-deposit'
+const OPEN_DETAIL_CONTACT_EVENT = 'bee:open-detail-contact'
+const OPEN_DETAIL_MEMBER_EVENT = 'bee:open-detail-member'
+
+export function dispatchOpenDetailLoan(loanId: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_DETAIL_LOAN_EVENT, { detail: loanId }))
+}
+
+export function onOpenDetailLoan(handler: (loanId: string) => void): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(OPEN_DETAIL_LOAN_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_LOAN_EVENT, wrapped)
+}
+
+export function dispatchOpenDetailDeposit(depositId: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_DETAIL_DEPOSIT_EVENT, { detail: depositId }))
+}
+
+export function onOpenDetailDeposit(handler: (depositId: string) => void): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(OPEN_DETAIL_DEPOSIT_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_DEPOSIT_EVENT, wrapped)
+}
+
+/** 交易详情「关联记录」跳回联系人详情弹窗(0047)。 */
+export function dispatchOpenDetailContact(contactId: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_DETAIL_CONTACT_EVENT, { detail: contactId }))
+}
+
+export function onOpenDetailContact(handler: (contactId: string) => void): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(OPEN_DETAIL_CONTACT_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_CONTACT_EVENT, wrapped)
+}
+
+/** 交易详情「关联记录」跳回成员详情弹窗(0055)。 */
+export function dispatchOpenDetailMember(memberId: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_DETAIL_MEMBER_EVENT, { detail: memberId }))
+}
+
+export function onOpenDetailMember(handler: (memberId: string) => void): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(OPEN_DETAIL_MEMBER_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_MEMBER_EVENT, wrapped)
+}
+
+/**
+ * 交易详情「关联记录」跳回报销详情弹窗(0056)。
+ * kind='reimbursement' → 报销单；kind='item' → 待报销项。
+ */
+export type ReimbursementDetailTarget =
+  | { kind: 'reimbursement'; id: string }
+  | { kind: 'item'; id: string }
+
+const OPEN_DETAIL_REIMBURSEMENT_EVENT = 'bee:open-detail-reimbursement'
+
+export function dispatchOpenDetailReimbursement(target: ReimbursementDetailTarget) {
+  window.dispatchEvent(
+    new CustomEvent<ReimbursementDetailTarget>(OPEN_DETAIL_REIMBURSEMENT_EVENT, { detail: target }),
+  )
+}
+
+export function onOpenDetailReimbursement(
+  handler: (target: ReimbursementDetailTarget) => void,
+): () => void {
+  const wrapped = (e: Event) => {
+    const target = (e as CustomEvent<ReimbursementDetailTarget>).detail
+    if (target && target.id) handler(target)
+  }
+  window.addEventListener(OPEN_DETAIL_REIMBURSEMENT_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_REIMBURSEMENT_EVENT, wrapped)
+}
+
+/**
+ * 交易详情「关联记录」跳回储蓄罐详情弹窗。
+ *
+ * 与联系人同款双通道:URL 参数(跨页/可分享)+ 事件(同页兜底)。
+ * 储蓄罐详情弹窗里点「查看流水」打开交易详情,交易详情的关联记录再能跳回来,
+ * 形成互相跳转闭环。
+ */
+const OPEN_DETAIL_SAVING_PLAN_EVENT = 'bee:open-detail-saving-plan'
+
+export function dispatchOpenDetailSavingPlan(planId: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_DETAIL_SAVING_PLAN_EVENT, { detail: planId }))
+}
+
+export function onOpenDetailSavingPlan(handler: (planId: string) => void): () => void {
+  const wrapped = (e: Event) => {
+    const id = (e as CustomEvent<string>).detail
+    if (id) handler(id)
+  }
+  window.addEventListener(OPEN_DETAIL_SAVING_PLAN_EVENT, wrapped)
+  return () => window.removeEventListener(OPEN_DETAIL_SAVING_PLAN_EVENT, wrapped)
 }

@@ -16,6 +16,7 @@ import {
   TagsPanel,
   tagDefaults,
   type TagForm,
+  SectionPageHeader,
 } from '@beecount/web-features'
 
 import { dispatchOpenDetailTag } from '../../lib/txDialogEvents'
@@ -127,6 +128,7 @@ export function TagsPage() {
 
   return (
     <>
+      <SectionPageHeader section="tags" title={t('tags.title')} />
       <TagsPanel
         form={form}
         rows={rows}

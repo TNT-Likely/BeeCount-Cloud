@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -20,16 +21,27 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from .attachment_paths import resolve_storage_path
+from .lock_guard import (
+    assert_account_initial_balance_mutable,
+    assert_tx_delete_mutable,
+    assert_tx_mutable,
+)
 from .models import (
     AttachmentFile,
+    Contact,
+    Deposit,
     Ledger,
     ReadBudgetProjection,
     ReadTxProjection,
     UserAccountProjection,
     UserCategoryProjection,
     UserExchangeRateProjection,
+    UserMemberProjection,
     UserTagProjection,
 )
+from .member_splits import normalize_splits, projection_values
+from .party_profile import encode_profile
 from .transaction_normalization import normalize_transaction_accounts
 
 logger = logging.getLogger(__name__)
@@ -92,6 +104,7 @@ def _as_bool(v: Any, default: bool = True) -> bool:
 
 def _parse_happened_at(raw: Any):
     """happenedAt 通常是 ISO 8601 字符串,偶见 datetime 对象。"""
+
     from datetime import datetime, timezone
 
     if raw is None:
@@ -108,6 +121,29 @@ def _parse_happened_at(raw: Any):
         except ValueError:
             return datetime.now(timezone.utc)
     return datetime.now(timezone.utc)
+
+
+def _parse_optional_datetime(raw: Any):
+    """ISO 8601 字符串 → datetime | None。缺失/空串时返回 None。
+
+    用于 billing_day / payment_due_day 等可选日期字段:非信用卡账户
+    不应写入当前时间,而应保持 NULL。
+    """
+    from datetime import datetime, timezone
+
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +224,11 @@ def upsert_tx(
     source_change_id: int,
     payload: dict[str, Any],
 ) -> None:
+    # 锁账(0067):所有交易写入的统一卡点。happenedAt 缺失时按"当期"处理,
+    # 不误伤没有时间字段的历史 payload。
+    assert_tx_mutable(
+        db, user_id, _parse_happened_at(payload.get("happenedAt") or payload.get("happened_at"))
+    )
     payload = normalize_transaction_accounts(payload)
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
@@ -270,8 +311,76 @@ def upsert_tx(
         # 插入且旧 payload 无字段 → NULL(统计端 COALESCE 回退 amount)。
         "currency_code": _as_str(payload.get("currencyCode")),
         "native_amount": _as_float_or_none(payload.get("nativeAmount")),
+        # 转账手续费/优惠(0022)
+        "transfer_fee_amount": _as_float_or_none(payload.get("transferFeeAmount")),
+        "transfer_discount_amount": _as_float_or_none(payload.get("transferDiscountAmount")),
+        "transfer_fee_account_sync_id": _as_str(payload.get("transferFeeAccountId")),
+        "transfer_fee_account_name": _as_str(payload.get("transferFeeAccountName")),
+        "transfer_fee_tx_sync_id": _as_str(payload.get("transferFeeTxId")),
+        "transfer_discount_tx_sync_id": _as_str(payload.get("transferDiscountTxId")),
+        # 支出优惠(0023)
+        "discount_amount": _as_float_or_none(payload.get("discountAmount")),
+        # 退款(0025):isRefund 优先于 is_refund;缺键落 0(绝不 NULL,避免覆盖既有标记)。
+        "is_refund": _as_int(payload.get("isRefund"))
+        if payload.get("isRefund") is not None
+        else _as_int(payload.get("is_refund")) if payload.get("is_refund") is not None else 0,
+        "refund_of_sync_id": _as_str(payload.get("refundOfSyncId"))
+        or _as_str(payload.get("refund_of_sync_id")),
         "source_change_id": source_change_id,
     }
+
+    # 成员关联/分摊(0024):旧客户端(mobile)做部分更新时 payload 可能完全不带
+    # memberSplits —— 不能当成「清除」，否则改个备注就把成员归属抹掉了。
+    # 缺键时保留 projection 既有值；带键(null/[])才是显式清除。
+    if "memberSplits" in payload or "member_splits" in payload:
+        raw_splits = payload.get("memberSplits", payload.get("member_splits"))
+        values.update(
+            projection_values(
+                normalize_splits(
+                    raw_splits,
+                    tx_type=tx_type,
+                    amount=_as_float(payload.get("amount")),
+                )
+            )
+        )
+    else:
+        prev_member = db.execute(
+            select(
+                ReadTxProjection.member_sync_ids_json,
+                ReadTxProjection.member_names_csv,
+                ReadTxProjection.member_splits_json,
+            ).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id == sync_id,
+            )
+        ).first()
+        values.update({
+            "member_sync_ids_json": prev_member[0] if prev_member else None,
+            "member_names_csv": prev_member[1] if prev_member else None,
+            "member_splits_json": prev_member[2] if prev_member else None,
+        })
+
+    # 支出组合付款(0028):缺键保留既有值;带键(null/[])显式清除。
+    if "paymentSplits" in payload or "payment_splits" in payload:
+        from . import payment_splits as _payment_splits
+        raw_ps = payload.get("paymentSplits", payload.get("payment_splits"))
+        values.update(
+            _payment_splits.projection_values(
+                _payment_splits.normalize_splits(
+                    raw_ps,
+                    tx_type=tx_type,
+                    amount=_as_float(payload.get("amount")),
+                )
+            )
+        )
+    else:
+        prev_ps = db.scalar(
+            select(ReadTxProjection.payment_splits_json).where(
+                ReadTxProjection.ledger_id == ledger_id,
+                ReadTxProjection.sync_id == sync_id,
+            )
+        )
+        values["payment_splits_json"] = prev_ps
 
     # #41:payload 只带名不带 id 时(老 web / 前端映射 miss),按名唯一反查补全。
     # 三组 account 字段各自独立处理;同名多账户保持 NULL,宁缺勿错。
@@ -303,6 +412,8 @@ def upsert_account(
     payload: dict[str, Any],
 ) -> None:
     """user-global account upsert。PK=(user_id, sync_id),跟账本无关。"""
+    # 锁账(0067):账户是用户级实体,锁定后禁止改动已有账户的初始金额。
+    assert_account_initial_balance_mutable(db, user_id, _as_str(payload.get("syncId")) or "", payload)
     sync_id = _as_str(payload.get("syncId"))
     if sync_id is None:
         return
@@ -334,10 +445,23 @@ def upsert_account(
         "initial_balance": _as_float(payload.get("initialBalance")),
         "note": _as_str(payload.get("note")),
         "credit_limit": _opt_float(payload.get("creditLimit")),
-        "billing_day": _opt_int(payload.get("billingDay")),
-        "payment_due_day": _opt_int(payload.get("paymentDueDay")),
+        # billingDay / paymentDueDay: ISO 8601 字符串 → datetime | None,
+        # SQLite DateTime 列只接受 Python datetime/date 对象。
+        "billing_day": _parse_optional_datetime(payload.get("billingDay")),
+        "payment_due_day": _parse_optional_datetime(payload.get("paymentDueDay")),
+        # 信用卡账单字段(新增)
+        "billing_cycle_start": _parse_optional_datetime(payload.get("billingCycleStart")),
+        "bill_status": _as_int(payload.get("billStatus"), default=0),
+        "bill_amount_due": _opt_float(payload.get("billAmountDue")),
+        "bill_minimum_amount": _opt_float(payload.get("billMinimumAmount")),
+        "bill_paid_amount": _opt_float(payload.get("billPaidAmount")),
+        "bill_remaining_amount": _opt_float(payload.get("billRemainingAmount")),
         "bank_name": _as_str(payload.get("bankName")),
         "card_last_four": _as_str(payload.get("cardLastFour")),
+        # 账户图标/背景(issue #icon)。
+        "icon_key": _as_str(payload.get("iconKey")),
+        "icon_type": _as_str(payload.get("iconType")),
+        "background_key": _as_str(payload.get("backgroundKey")),
         # 账户隐藏(issue #240)。merge_with_existing_user 已把缺键的 hidden
         # 从旧行补齐,这里直接取 merged payload 的值;全新 insert 首次缺失时给
         # False(未隐藏)。
@@ -486,6 +610,8 @@ def delete_entity(
 
 
 def delete_tx(db: Session, *, ledger_id: str, sync_id: str) -> None:
+    # 锁账(0067):从投影行反查日期后校验,锁定期内交易不可删除。
+    assert_tx_delete_mutable(db, ledger_id, sync_id)
     delete_entity(db, ReadTxProjection, ledger_id=ledger_id, sync_id=sync_id)
 
 
@@ -517,6 +643,95 @@ def delete_tag(db: Session, *, user_id: str, sync_id: str) -> None:
             UserTagProjection.sync_id == sync_id,
         )
     )
+
+
+def upsert_member(
+    db: Session,
+    *,
+    user_id: str,
+    source_change_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """user-global 成员 upsert(0024)。PK=(user_id, sync_id)。"""
+    sync_id = _as_str(payload.get("syncId"))
+    if sync_id is None:
+        return
+    values = {
+        "user_id": user_id,
+        "sync_id": sync_id,
+        "name": _as_str(payload.get("name")),
+        "color": _as_str(payload.get("color")),
+        "source_change_id": source_change_id,
+    }
+    # payload 不带 profile 时保留投影里已有的资料(老客户端 / 只改名的 change)，
+    # 只有显式携带才覆盖；显式传空对象则清空。
+    if "profile" in payload:
+        values["profile_json"] = encode_profile(payload.get("profile"))
+    _upsert(db, UserMemberProjection, ("user_id", "sync_id"), values)
+
+
+def delete_member(db: Session, *, user_id: str, sync_id: str) -> None:
+    db.execute(
+        delete(UserMemberProjection).where(
+            UserMemberProjection.user_id == user_id,
+            UserMemberProjection.sync_id == sync_id,
+        )
+    )
+
+
+def rename_cascade_member(
+    db: Session,
+    *,
+    user_id: str,
+    member_sync_id: str,
+    new_name: str,
+) -> None:
+    """成员改名后，刷该用户所有交易里 member_splits_json 的 name + member_names_csv。
+
+    只按 syncId 精确匹配(不按旧名字模糊匹配)，避免两个成员同名时误伤。
+    """
+    import json as _json
+
+    if not member_sync_id or not new_name:
+        return
+    like_pat = f'%"{member_sync_id}"%'
+    rows = db.scalars(
+        select(ReadTxProjection).where(
+            ReadTxProjection.user_id == user_id,
+            ReadTxProjection.member_sync_ids_json.like(like_pat),
+        )
+    ).all()
+    for row in rows:
+        try:
+            splits = _json.loads(row.member_splits_json or "[]")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(splits, list):
+            continue
+        changed = False
+        for entry in splits:
+            if isinstance(entry, dict) and str(
+                entry.get("memberId") or entry.get("member_id") or ""
+            ) == member_sync_id:
+                if entry.get("name") != new_name:
+                    entry["name"] = new_name
+                    changed = True
+        if not changed:
+            continue
+        from .member_splits import ids_and_names
+
+        normalized = [
+            {
+                "memberId": str(e.get("memberId") or e.get("member_id") or ""),
+                "name": str(e.get("name") or ""),
+                "amount": float(e.get("amount") or 0),
+            }
+            for e in splits
+            if isinstance(e, dict)
+        ]
+        _ids, names = ids_and_names(normalized)
+        row.member_splits_json = _json.dumps(normalized, ensure_ascii=False)
+        row.member_names_csv = names
 
 
 def delete_budget(db: Session, *, ledger_id: str, sync_id: str) -> None:
@@ -852,7 +1067,50 @@ def _fileid_still_referenced(db: Session, *, user_id: str, file_id: str) -> bool
             UserCategoryProjection.icon_cloud_file_id == file_id,
         )
     )
-    return bool(cat_hit)
+    if cat_hit:
+        return True
+
+    # 联系人 / 成员的头像也可能引用同一个 attachment file。删除交易附件时
+    # 触发的 GC 不能把仍作为头像使用的 blob 一起清掉。profile_json 里头像
+    # 键是 avatarFileId(encode_profile 用无空格分隔符)。
+    avatar_pat = f'%"avatarFileId":"{file_id}"%'
+    contact_hit = db.scalar(
+        select(func.count())
+        .select_from(Contact)
+        .where(
+            Contact.user_id == user_id,
+            or_(
+                Contact.avatar_file_id == file_id,
+                Contact.profile_json.like(avatar_pat),
+            ),
+        )
+    )
+    if contact_hit:
+        return True
+    member_hit = db.scalar(
+        select(func.count())
+        .select_from(UserMemberProjection)
+        .where(
+            UserMemberProjection.user_id == user_id,
+            UserMemberProjection.profile_json.like(avatar_pat),
+        )
+    )
+    if member_hit:
+        return True
+
+    # 定期存单照片(deposits.certificate_file_ids_json 是 JSON 字符串数组,
+    # 元素是裸 file id)。存单可能未关联账户 → 没生成流水,删交易附件触发
+    # 的 GC 不能把仍挂在存单上的照片误删。
+    deposit_pat = f'%"{file_id}"%'
+    deposit_hit = db.scalar(
+        select(func.count())
+        .select_from(Deposit)
+        .where(
+            Deposit.user_id == user_id,
+            Deposit.certificate_file_ids_json.like(deposit_pat),
+        )
+    )
+    return bool(deposit_hit)
 
 
 def _fileid_still_referenced_in_ledger(
@@ -882,7 +1140,29 @@ def _fileid_still_referenced_in_ledger(
             ),
         )
     )
-    return bool(tx_hit)
+    if tx_hit:
+        return True
+    # 头像资料是 user-global 的，不绑 ledger；共享账本里删交易附件时也不能
+    # 把仍作为联系人 / 成员头像的 blob 清掉。这里保守地不限 user 检查。
+    avatar_pat = f'%"avatarFileId":"{file_id}"%'
+    party_hit = db.scalar(
+        select(func.count())
+        .select_from(Contact)
+        .where(
+            or_(
+                Contact.avatar_file_id == file_id,
+                Contact.profile_json.like(avatar_pat),
+            ),
+        )
+    )
+    if party_hit:
+        return True
+    member_hit = db.scalar(
+        select(func.count())
+        .select_from(UserMemberProjection)
+        .where(UserMemberProjection.profile_json.like(avatar_pat))
+    )
+    return bool(member_hit)
 
 
 def gc_orphan_attachments_for_ledger(
@@ -933,7 +1213,7 @@ def gc_orphan_attachments_for_ledger(
         db.delete(att)
 
         try:
-            p = Path(storage_path)
+            p = resolve_storage_path(storage_path)
             if p.exists():
                 p.unlink()
         except OSError as exc:
@@ -1000,7 +1280,7 @@ def gc_orphan_attachments(
         # Best-effort unlink。DB 提交失败时这里改不回来,但事务 rollback 后
         # AttachmentFile 行还在,下次 GC 再来。
         try:
-            p = Path(storage_path)
+            p = resolve_storage_path(storage_path)
             if p.exists():
                 p.unlink()
         except OSError as exc:

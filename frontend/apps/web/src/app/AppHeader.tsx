@@ -1,7 +1,13 @@
-import { CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
+import { Bell, CalendarDays, MoreHorizontal, Plus, ScrollText, Search } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
+import {
+  fetchDepositReminders,
+  fetchLoanReminders,
+  type DepositReminders,
+  type Reminders,
+} from '@beecount/api-client'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +22,7 @@ import {
   SelectValue,
   useT,
 } from '@beecount/ui'
-import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
+import { NAV_GROUPS, type AppSection, formatBalanceCompact, sectionIcon } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
 import { useAuth } from '../context/AuthContext'
@@ -33,6 +39,131 @@ const AnnualReportLauncher = lazy(() =>
 )
 import { useLedgers } from '../context/LedgersContext'
 import { parseRoute, routePath } from '../state/router'
+
+/**
+ * 借款 / 定期存款到期提醒铃铛 —— 拉取当前账本(未选账本则跨全部账本)的
+ * 临期 / 逾期借款与存单,顶部 icon 显示待办数量红点,点击展开清单,逐项
+ * 跳借款页 / 定期存款页。
+ */
+function LoanReminderBell({ token, ledgerId }: { token: string | null; ledgerId: string | null }) {
+  const t = useT()
+  const navigate = useNavigate()
+  const [reminders, setReminders] = useState<Reminders | null>(null)
+  const [depositReminders, setDepositReminders] = useState<DepositReminders | null>(null)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!token) {
+      setReminders(null)
+      setDepositReminders(null)
+      return
+    }
+    fetchLoanReminders(token, ledgerId || '')
+      .then(setReminders)
+      .catch(() => setReminders(null))
+    // 存单到期提醒与借款提醒并行;失败不影响借款部分。
+    fetchDepositReminders(token, ledgerId || '')
+      .then(setDepositReminders)
+      .catch(() => setDepositReminders(null))
+  }, [token, ledgerId])
+
+  const near = reminders?.near_due || []
+  const overdue = reminders?.overdue || []
+  const depNear = depositReminders?.near_due || []
+  const depOverdue = depositReminders?.overdue || []
+  const total = near.length + overdue.length + depNear.length + depOverdue.length
+
+  const goLoans = () => {
+    setOpen(false)
+    navigate('/app/loans')
+  }
+  const goDeposits = () => {
+    setOpen(false)
+    navigate('/app/deposits')
+  }
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title={t('reminders.bellTitle')}
+          aria-label={t('reminders.bellTitle')}
+          className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-primary/15 hover:text-primary"
+        >
+          <Bell className="h-4 w-4" />
+          {total > 0 ? (
+            <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+              {total}
+            </span>
+          ) : null}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80 rounded-xl border-border/60 bg-card/95 p-1.5">
+        <DropdownMenuLabel className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+          {t('reminders.title')}
+        </DropdownMenuLabel>
+        {!reminders || total === 0 ? (
+          <div className="px-2 py-4 text-center text-sm text-muted-foreground">{t('reminders.empty')}</div>
+        ) : (
+          <>
+            {overdue.map((r) => (
+              <DropdownMenuItem key={r.loan.id} className="rounded-lg px-2.5 py-2" onClick={goLoans}>
+                <div className="flex w-full items-center justify-between gap-2">
+                  <span className="truncate text-[12px]">
+                    {r.loan.contact_name || t('loans.title')} · {formatBalanceCompact(r.loan.amount, r.loan.currency_code || '')}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-red-600">
+                    {r.days_to_due != null ? t('reminders.overdueDays').replace('{days}', String(Math.abs(r.days_to_due))) : ''}
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+            {overdue.length > 0 && near.length > 0 ? <DropdownMenuSeparator /> : null}
+            {near.map((r) => (
+              <DropdownMenuItem key={r.loan.id} className="rounded-lg px-2.5 py-2" onClick={goLoans}>
+                <div className="flex w-full items-center justify-between gap-2">
+                  <span className="truncate text-[12px]">
+                    {r.loan.contact_name || t('loans.title')} · {formatBalanceCompact(r.loan.amount, r.loan.currency_code || '')}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-amber-600">
+                    {r.days_to_due != null ? t('reminders.daysToDue').replace('{days}', String(r.days_to_due)) : ''}
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+            {depOverdue.length + depNear.length > 0 ? <DropdownMenuSeparator /> : null}
+            {depOverdue.map((r) => (
+              <DropdownMenuItem key={r.deposit.id} className="rounded-lg px-2.5 py-2" onClick={goDeposits}>
+                <div className="flex w-full items-center justify-between gap-2">
+                  <span className="truncate text-[12px]">
+                    {t('deposits.title')} · {r.deposit.name} · {formatBalanceCompact(r.deposit.principal, r.deposit.currency_code || '')}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-red-600">
+                    {t('reminders.overdueDays').replace('{days}', String(Math.abs(r.days_to_maturity)))}
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+            {depOverdue.length > 0 && depNear.length > 0 ? <DropdownMenuSeparator /> : null}
+            {depNear.map((r) => (
+              <DropdownMenuItem key={r.deposit.id} className="rounded-lg px-2.5 py-2" onClick={goDeposits}>
+                <div className="flex w-full items-center justify-between gap-2">
+                  <span className="truncate text-[12px]">
+                    {t('deposits.title')} · {r.deposit.name} · {formatBalanceCompact(r.deposit.principal, r.deposit.currency_code || '')}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-amber-600">
+                    {t('reminders.daysToDue').replace('{days}', String(r.days_to_maturity))}
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
 interface Props {
   onOpenLogs: () => void
@@ -54,7 +185,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
-  const { profileMe, isAdmin, logout } = useAuth()
+  const { token, profileMe, isAdmin, logout } = useAuth()
   const { ledgers, activeLedgerId, setActiveLedgerId } = useLedgers()
   const [annualReportOpen, setAnnualReportOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -170,9 +301,10 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
             )}
           </div>
 
-          <nav className="hidden flex-1 items-center justify-center gap-1 md:flex">
+          <nav className="hidden flex-1 items-center justify-center gap-0.5 md:flex">
             {headerCoreItems.map((item) => {
               const active = currentSection === item.key
+              const { Icon, color } = sectionIcon(item.key)
               return (
                 <button
                   key={item.key}
@@ -188,12 +320,17 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                     }`}
                   />
                   <span
-                    className={`relative rounded-xl px-3.5 py-2 text-[13px] font-medium transition-all ${
+                    className={`relative flex items-center gap-1 rounded-xl px-2.5 py-2 text-[12px] font-medium transition-all whitespace-nowrap ${
                       active
                         ? 'text-foreground'
                         : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                     }`}
                   >
+                    <Icon
+                      className="h-3.5 w-3.5 shrink-0 transition-colors"
+                      style={active ? { color } : undefined}
+                      strokeWidth={active ? 2.2 : 1.9}
+                    />
                     {t(item.labelKey)}
                   </span>
                 </button>
@@ -223,16 +360,18 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
                       </DropdownMenuLabel>
                       {group.items.map((item) => {
                         const active = currentSection === item.key
+                        const { Icon, color } = sectionIcon(item.key)
                         return (
                           <DropdownMenuItem
                             key={item.key}
-                            className={`rounded-lg px-2.5 py-2 text-[12px] ${
+                            className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[12px] ${
                               active
                                 ? 'bg-primary/10 text-primary'
                                 : 'text-muted-foreground hover:bg-primary/15 hover:text-primary'
                             }`}
                             onClick={() => goToSection(item.key)}
                           >
+                            <Icon className="h-4 w-4 shrink-0" style={{ color }} strokeWidth={2} />
                             {t(item.labelKey)}
                           </DropdownMenuItem>
                         )
@@ -282,6 +421,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
             >
               <CalendarDays className="h-4 w-4" />
             </Link>
+            <LoanReminderBell token={token} ledgerId={activeLedgerId} />
             {isAdmin ? (
               <button
                 type="button"

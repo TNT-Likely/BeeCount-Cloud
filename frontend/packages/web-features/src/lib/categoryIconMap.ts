@@ -129,6 +129,8 @@ const KNOWN_NAMES: ReadonlySet<string> = new Set([
   'devices',
   'diamond',
   'dinner_dining',
+  'download',
+  'upload',
   'directions_bike',
   'directions_boat',
   'directions_bus',

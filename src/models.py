@@ -91,6 +91,12 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # 用户级锁账(0067):is_locked 打开后,lock_date 当天及之前的交易一律
+    # 禁止新建/修改/删除/变动;账户初始金额同样冻结(user-global,无账本维度)。
+    # 解锁只需关掉开关,日期保留,方便再次锁定。
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    lock_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class RecoveryCode(Base):
     """2FA 一次性恢复码。启用 2FA 时一次生成 10 个,sha256 hash 存库。"""
@@ -560,6 +566,38 @@ class ReadTxProjection(Base):
     # 统计端 COALESCE 回退 amount)。账本维度统计读 native_amount,账户维度仍 amount。
     currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     native_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 转账手续费/优惠(0022):仅 transfer 主交易使用。fee/discount 金额为原币金额;
+    # fee_account 指定手续费从哪个账户扣除(默认转出账户);fee/discount_tx 为关联生成的
+    # 支出/收入流水 sync_id,用于列表标识、明细与级联更新删除。
+    transfer_fee_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transfer_discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transfer_fee_account_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transfer_fee_account_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transfer_fee_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transfer_discount_tx_sync_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 支出优惠(0023):仅 tx_type=expense 使用,记录该笔消费享受的优惠/减免金额。
+    # 金额为交易原币金额;amount 仍是实际入账金额,优惠只作为明细与统计元数据。
+    discount_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 成员(0024):income/expense 可关联 1 个成员,也可按多个成员分摊。
+    # member_sync_ids_json = JSON 数组(便于按成员筛选/统计);
+    # member_names_csv = 反规范化姓名串(便于列表展示与 LIKE 搜索);
+    # member_splits_json = [{memberId,name,amount}] 分摊明细,金额之和 = amount。
+    # 三者都由写入链路从 memberIds/memberNames/memberSplits 快照字段同步维护。
+    member_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    member_names_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
+    member_splits_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 退款(0025):tx_type='refund' 的交易是一笔退款,必须关联原单。
+    # is_refund = 1 标记退款交易;refund_of_sync_id 指向被退款的原始交易 sync_id。
+    # 退款退回接收账户余额(account_sync_id)、冲减原交易分类支出,但不计入收入、
+    # 不污染月度收支(analytics 仅统计 income/expense,refund 被排除)。
+    is_refund: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    refund_of_sync_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 支出组合付款(0028):一笔 expense 由多个账户分摊支付。
+    # JSON 数组 [{accountId,accountName,amount}],金额之和=amount;
+    # 存在时账户余额/统计按拆分扣减(不计主 account),总额仅计一次。
+    payment_splits_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 Index(
@@ -638,16 +676,125 @@ class UserAccountProjection(Base):
     initial_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     credit_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    billing_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    payment_due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 信用卡：账单日/还款日(秒精确)。不设卡账户为 None。
+    billing_day: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_due_day: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 账单周期锚点日:按 billing_day 自动划分的账期起始日(本地日期)
+    billing_cycle_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 账单状态:未出账(0)/已出账(1)/已还款(2)/部分还款(3)/已逾期(4)
+    bill_status: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    # 本期应还/最低还款/已还/剩余待还(均为原币金额)
+    bill_amount_due: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
+    bill_minimum_amount: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=0.0
+    )
+    bill_paid_amount: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=0.0
+    )
+    bill_remaining_amount: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=0.0
+    )
     bank_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    card_last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    card_last_four: Mapped[str | None] = mapped_column(String(23), nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
     # 账户隐藏(issue #240)。default false:既有行升级后不隐藏,旧 App 不发该
     # 字段时保持 false。只影响前端选择器/列表呈现,服务端不做任何统计过滤(D1)。
     hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # 图标相关键：icon_key 对应公共图标库(如 bank-logos)的键；icon_type 标识图标类型(bank|card|custom)；background_key 对应自定义背景(渐变/纯色键)
+    icon_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    icon_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    background_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+# ============================================================================
+# 储蓄罐 / 存款计划。user-scope projection(Q-side)。
+# 两张表:savings_plan(计划本体)+ savings_deposit(每笔存入记录)。
+# 业务键 (user_id, sync_id),跟账本无关 —— 计划跨账本可见,存款记录
+# 关联到 plan 而非 ledger。
+# ============================================================================
+
+
+class UserSavingsPlanProjection(Base):
+    """储蓄计划。用户自定义目标(旅游/买房/电子产品等),跟踪进度。"""
+
+    __tablename__ = "user_savings_plan"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 关联储蓄账户的 sync_id(可空:不绑定具体账户,只做进度追踪)
+    account_sync_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    # 计划类型:free(自由储蓄) / fixed(定期定额) / wish(心愿储蓄)
+    plan_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="free", default="free"
+    )
+    # 当前已存金额(由 deposit 记录汇总得到,写入时同步更新)
+    current_amount: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0.0", default=0.0
+    )
+    # 状态:active(进行中) / completed(已完成) / abandoned(已放弃)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", default="active"
+    )
+    # 每月自动存款提醒金额(可空:None 表示不提醒)
+    monthly_reminder_amount: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class UserSavingsDepositProjection(Base):
+    """储蓄计划的每笔存入记录。金额从关联账户扣减(前端/客户端负责记一笔
+    对应支出交易;服务端只存 deposit 本身,不做账户余额联动 —— 余额由
+    ledger 的 tx 流水驱动,deposit 是"标记"层,不重复造余额逻辑)。"""
+
+    __tablename__ = "user_savings_deposit"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    savings_plan_sync_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    # 存入金额(原币)
+    amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 存入时间(秒精确)
+    deposited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    # 关联的 ledger 交易 sync_id(从已有交易"标记为储蓄"时填,手动存入时可空)
+    linked_tx_sync_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+Index(
+    "ix_savings_deposit_plan",
+    UserSavingsDepositProjection.user_id,
+    UserSavingsDepositProjection.savings_plan_sync_id,
+)
 
 
 class UserExchangeRateProjection(Base):
@@ -706,6 +853,26 @@ class UserTagProjection(Base):
     sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class UserMemberProjection(Base):
+    """消费/收入「成员」(0024),user-global 实体,跟 tag/category 同构。
+
+    与 `LedgerMember`(共享账本协作者,按 user 账号)完全不同:这里是用户自定义
+    的家庭/团队成员名单,用于给收支打归属、按人分摊,以及作为统计维度。
+    """
+
+    __tablename__ = "user_member_projection"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 关联人资料(头像 / 多联系方式 / 多银行卡)，与 contacts 共用结构。
+    profile_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_change_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
@@ -848,3 +1015,547 @@ class BackupRunTarget(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bytes_transferred: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ============================================================================
+# Contacts & Loans (Web-first feature, NOT part of the mobile sync layer)
+# ============================================================================
+#
+# 联系人(Contact)是 user-global 资源;借款(Loan)与还款(LoanRepayment)是
+# ledger-scoped 资源。它们**不**走 sync_changes / read projection 那套 CQRS,
+# 而是服务端直管的独立表 + 直连 REST CRUD(见 routers/contacts_loans.py)。
+# 理由:这是 web 端新增的资金往来管理,不要求移动端离线双向同步,且借款与
+# 账户/交易解耦(应收款/应付款是"虚拟账户",实时从贷款余额派生,不污染真实
+# 账户余额与交易列表)。
+
+
+class Contact(Base):
+    """记账涉及的自然人 / 商家对手方。user-global(跟 tag/member 同层级)。
+
+    - contact_tag:朋友/家人/同事/商家(friend/family/colleague/merchant),自由枚举。
+    - phone/wechat/alipay:可选联系方式。
+    - avatar_file_id:复用 attachment_files 的 id(存 user-global 头像)。
+    """
+
+    __tablename__ = "contacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    avatar_file_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # friend / family / colleague / merchant
+    contact_tag: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wechat: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    alipay: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 关联人资料(头像 / 多联系方式 / 多银行卡)的 camelCase JSON，见 party_profile。
+    profile_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0050+ 状态管理:
+    # - is_archived:归档。数据完整保留,但从默认列表/借款建议/排行榜中隐藏,
+    #   只能在「已归档」筛选里查看,可随时恢复。
+    # - is_active:停用。仍在列表可见(带「已停用」标记),但禁止新增借款与
+    #   新关联引用,历史数据不变;可随时重新启用。两者互相独立。
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    @property
+    def profile(self) -> dict | None:
+        """REST 读视图：profile_json 为空时用旧单值列合成，兼容历史数据。"""
+        from .party_profile import profile_with_legacy
+
+        return profile_with_legacy(
+            self.profile_json,
+            phone=self.phone,
+            wechat=self.wechat,
+            alipay=self.alipay,
+            avatar_file_id=self.avatar_file_id,
+        )
+
+    @profile.setter
+    def profile(self, value) -> None:
+        """REST 写视图：归一化后落 profile_json，并同步旧单值列。
+
+        value is None 表示「本次未提供」——不动旧列，避免老客户端只传 phone
+        时把单值清掉；显式传 {} / null 内容则视为清空，旧列一并归零。
+        """
+        from .party_profile import decode_profile, encode_profile, legacy_values
+
+        if value is None:
+            return
+        self.profile_json = encode_profile(value)
+        for key, legacy in legacy_values(decode_profile(self.profile_json)).items():
+            setattr(self, key, legacy)
+
+
+class Loan(Base):
+    """借入 / 借出记录。ledger-scoped(跟 transaction 同层级)。
+
+    direction:
+      - 'lend'  = 借出(别人欠我)→ 计入「应收款」
+      - 'borrow'= 借入(我欠别人)→ 计入「应付款」
+    status(实时派生,但落库便于查询/索引):
+      - 'unpaid'  未还清(未到期且 0 还款)
+      - 'partial' 部分还款(已还 > 0 且未到期且未结清)
+      - 'overdue' 已逾期(过了 due_at 且未结清)
+      - 'settled' 已结清(已还 >= 本金)
+    派生优先级:settled > overdue > partial > unpaid(逾期优先于部分还款,
+    因为逾期更紧急;详情页仍展示还款进度条)。
+    interest_type:none(无息)/ fixed(固定利息额)/ annual(年利率 %)。
+    voucher_file_ids_json:借款凭证图片 attachment file id 的 JSON 数组。
+    """
+
+    __tablename__ = "loans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    # 关联联系人(可为空:匿名借款也允许)。删除联系人时 SET NULL(由 REST 层
+    # 在有关联借款时拒绝删除,正常情况下不会触发)。
+    contact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 'lend' / 'borrow'
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'none' / 'fixed' / 'annual'
+    interest_type: Mapped[str] = mapped_column(String(16), default="none")
+    # annual 用:年利率百分比(如 5 表示 5%)
+    interest_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # fixed 用:固定利息金额(原币)
+    interest_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    voucher_file_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="unpaid", index=True)
+    # 借款关联的**真实账户**(扣款/到款账户)。借出=扣款账户(钱从此出);
+    # 借入=到款账户(钱入此账)。用于生成对应流水并影响账户余额。
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 本笔借款自动生成的真实交易流水 syncId(排除统计的 expense/income),
+    # 用于编辑/删除借款时联动维护这笔流水。None 表示未生成(如未选账户)。
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class LoanRepayment(Base):
+    """单笔还款记录(支持分期)。ledger-scoped,级联删除归属 loan。
+
+    attachment_file_ids_json:还款凭证图片 attachment file id 的 JSON 数组,
+    与 Loan.voucher_file_ids_json 同形态;生成还款流水时会转成 AttachmentRef
+    写进交易的 attachments_json,让交易详情也能看到这些凭证。
+
+    利息(0033):借出收回时利息为 income「借款利息」,借入偿还时利息为 expense
+    「借款利息」,均 exclude_from_stats/budget；利息不计入本金结算,但与该笔还款关联。
+    """
+
+    __tablename__ = "loan_repayments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    loan_id: Mapped[str] = mapped_column(
+        ForeignKey("loans.id", ondelete="CASCADE"), index=True
+    )
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    repaid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 还款流水关联的真实账户(继承所属借款的账户)。
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 本笔还款自动生成的真实交易流水 syncId(排除统计的 income/expense)。
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 还款凭证附件 file id(JSON 数组)。旧行是 NULL,读取时按空数组处理。
+    attachment_file_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 利息:金额>0 时并入该笔还款流水的金额(不单独成流水、不影响本金结算)。
+    interest_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    interest_account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    interest_account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    interest_tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 合并组(0039):一次实际收付款覆盖多笔借款时,拆到各笔借款的还款行共享
+    # 同一个 group_id;组内**只有一行**持有 tx_sync_id(合并后的唯一一条本金流水),
+    # 其余行 tx_sync_id 为空,避免同一笔钱在交易流水里出现多条。
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("loan_payment_groups.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LoanPaymentGroup(Base):
+    """一次实际收付款(可能合并结清多笔借款)(0039)。
+
+    场景:「张三 2025-01-01 借出 50+50+50,实际收到一笔 170 元(150 本金 + 20 利息)」。
+    真实银行流水只有**一笔**,所以交易流水里也应该只有**一条**本金流水(150),
+    而不是按 FIFO 拆成 3 条各 50。合并组记录这笔实际收付款的全貌:
+
+      - amount:本次本金合计(150);
+      - interest_amount:本次利息(20),>0 时并入还款流水金额并在备注注明;
+      - tx_sync_id:合并后的唯一一条本金流水;
+      - merged_from_sync_ids_json:被合并的各笔借款本金流水 syncId(JSON 数组),
+        供交易详情「查看原单」回溯到原始借款单。
+
+    借款本金结算仍按 loan_repayments 逐笔归集(每笔借款一行),两套账口径互不干扰。
+    """
+
+    __tablename__ = "loan_payment_groups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 'lend'(借出收回) / 'borrow'(借入偿还)
+    direction: Mapped[str] = mapped_column(String(16))
+    # 本次实际收付的本金合计(不含利息)。
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # 本次实际收付的利息(>0 时并入还款流水金额,备注注明含利息)。
+    interest_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    repaid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 合并本金流水的 syncId(一次实际收付款只生成一条本金流水)。
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    interest_tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 被合并的各笔借款本金流水 syncId(JSON 数组),供「查看原单」回溯。
+    merged_from_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachment_file_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ============================================================================
+# Fixed-term deposits (Web-first feature, NOT part of the mobile sync layer)
+# ============================================================================
+#
+# 定期存款(Deposit)管理银行定期存单 / 大额存单 / 结构性存款,ledger-scoped,
+# 跟 loans 一样走「服务端直管表 + REST CRUD + 借 snapshot_mutator 生成真实流水」
+# 的模式:
+#   - 存入 → 生成一笔 transfer 流水(活期账户 → 虚拟「定期存款」账户),
+#     转账不进收支统计,总资产不变(活期 -X,定期存款虚拟账户 +X)。
+#   - 支取 → 本金 transfer 转回活期 + 利息 income 流水(计入统计)。
+#   - 周期结息(零存整取/按月按季)→ 单独结息记录 + income 流水。
+# 「定期存款」虚拟账户总额由 Deposit 记录实时派生(见 routers/deposits.py
+# /summary),跟应收款/应付款同一思路。
+
+
+class Deposit(Base):
+    """一张定期存单。ledger-scoped(跟 transaction 同层级)。
+
+    - deposit_type: fixed(整存整取)/ installment(零存整取)/ cd(大额存单)/
+      structured(结构性存款)。
+    - term_months:存期月数(3/6/12/24/36/60 或自定义)。
+    - annual_rate:年利率百分比(如 2.75 表示 2.75%)。
+    - interest_override:手动覆盖的到期利息;None = 按公式算
+      (本金 × 年利率 × 存期月数 / 12)。
+    - maturity_at:到期日 = started_at + term_months 个月(秒级精度)。
+    - on_maturity:withdraw(到期支取)/ auto_renew(自动转存)。
+    - interest_settlement:maturity(到期一次性)/ monthly / quarterly,
+      settlement_day 为结息指定日(1..28)。
+    - status(读时派生,落库便于查询):holding(持有中)/ matured(已到期)/
+      withdrawn(已支取)/ renewed(已转存)。终态(withdrawn/renewed)一旦写入
+      不再派生;holding/matured 由到期日实时判定。
+    - certificate_file_ids_json:存单照片 attachment file id 的 JSON 数组。
+    - flow_tx_sync_id:存入划转流水(transfer);principal_return_tx_sync_id /
+      interest_tx_sync_id:支取时生成的本金转回 / 利息收入流水。
+    """
+
+    __tablename__ = "deposits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    # fixed / installment / cd / structured
+    deposit_type: Mapped[str] = mapped_column(String(32), default="fixed")
+    principal: Mapped[float] = mapped_column(Float, default=0.0)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    term_months: Mapped[int] = mapped_column(Integer, default=12)
+    # 年利率百分比,如 2.75 表示 2.75%
+    annual_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 手动覆盖的到期利息(None = 按公式自动计算)
+    interest_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    maturity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # withdraw(到期支取) / auto_renew(自动转存)
+    on_maturity: Mapped[str] = mapped_column(String(16), default="withdraw")
+    # maturity(到期一次性) / monthly / quarterly
+    interest_settlement: Mapped[str] = mapped_column(String(16), default="maturity")
+    # 结息指定日(1..28),仅 monthly/quarterly 有意义
+    settlement_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # holding / matured / withdrawn / renewed
+    status: Mapped[str] = mapped_column(String(16), default="holding", index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 存单照片 attachment file id 的 JSON 数组
+    certificate_file_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 关联银行账户(活期)。存入划转 / 支取转回都经它。
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 存入划转流水(transfer:活期 → 虚拟定期存款账户)
+    flow_tx_sync_id: Mapped[str] = mapped_column(String(36), nullable=True, index=True)
+    # 支取:本金转回流水(transfer)
+    principal_return_tx_sync_id: Mapped[str] = mapped_column(String(36), nullable=True, index=True)
+    # 支取:利息收入流水(income,计入统计)
+    interest_tx_sync_id: Mapped[str] = mapped_column(String(36), nullable=True, index=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 支取时实际拿到的利息(记录用)
+    withdrawn_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 转存链:本存单转存出的新存单 / 来源存单
+    renewed_to_deposit_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    parent_deposit_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class DepositInterestPayment(Base):
+    """定期存款的周期结息记录(按月/按季指定日结息)。
+
+    级联删除归属 deposit。每次结息生成一笔 income 流水(计入统计),
+    tx_sync_id 用于编辑/删除时联动维护流水。
+    """
+
+    __tablename__ = "deposit_interest_payments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), index=True
+    )
+    deposit_id: Mapped[str] = mapped_column(
+        ForeignKey("deposits.id", ondelete="CASCADE"), index=True
+    )
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    settled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tx_sync_id: Mapped[str] = mapped_column(String(36), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SavingPlan(Base):
+    """储蓄罐 / 存款计划。ledger-scoped, Web-first。"""
+    __tablename__ = "saving_plans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # free / fixed / wish
+    plan_type: Mapped[str] = mapped_column(String(16), default="free")
+    monthly_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # active / completed / abandoned
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class SavingContribution(Base):
+    """存款记录。每次存入一笔。"""
+    __tablename__ = "saving_contributions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("saving_plans.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 关联已有交易(可选):标记为储蓄时填入 / 扣款账户生成的支出交易
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 扣款账户快照(可选):选中则生成支出交易
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 收款账户快照(可选):选中则生成收入交易(例如把钱转入储蓄账户)
+    receive_account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    receive_account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    receive_tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 交易级元数据(随存入生成的一笔/两笔交易共用)
+    category_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    native_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exclude_from_stats: Mapped[bool] = mapped_column(Boolean, default=False)
+    exclude_from_budget: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReimbursementItem(Base):
+    """报销项：一笔被标记为"需报销"的交易流水（多为支出）。
+
+    Web-first, ledger-scoped。status=pending 显示在"待报销"；
+    status=reimbursed 关联到某张报销单，显示在"已报"。
+    """
+    __tablename__ = "reimbursement_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    # 关联原始交易(writer 层生成的 tx sync_id)
+    tx_sync_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 报销公司维度(0037)：公司档案快照，user 级公司档案可编辑/删除，历史记录保留快照。
+    company_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    company_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # pending / reimbursed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reimbursement_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Reimbursement(Base):
+    """报销单 / 报销流水：把多笔报销项合并报销后生成的一笔记录。"""
+    __tablename__ = "reimbursements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Material Symbols ligature，可设置
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 收款账户（报销到账）
+    receive_account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    receive_account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 报销公司维度(0037)：合并报销时从报销项继承的公司快照。
+    company_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    company_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 报销生成的收入交易（可选）
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Company(Base):
+    """报销公司档案（0037）：用户级可编辑管理，报销项/报销单保存公司名快照。
+
+    Web-first, user-scoped。公司不属于单个账本，跨账本复用；删除公司档案不影响
+    已产生的报销项/报销单（它们保留 company_name 快照）。
+    """
+    __tablename__ = "companies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Item(Base):
+    """物品（0038）：用户拥有的物品档案，ledger-scoped。
+
+    价格/购入时间/渠道/分类/存储位置为物品属性；关联账单有三种模式：
+    - new: 新建物品时生成一笔支出交易（扣款账户选填）
+    - existing: 关联一笔已有交易(tx_sync_id)
+    - none: 不关联交易
+    均值计算(average_mode)/目标成本(target_cost_mode)：none/daily_avg/per_day，
+    为展示层的派生计算配置。
+    """
+    __tablename__ = "items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    purchase_channel: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    location: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # new / existing / none
+    link_mode: Mapped[str] = mapped_column(String(16), default="none", index=True)
+    # 关联的**全部**交易流水 syncId(JSON 数组,0040)。一件物品的购入可能由多笔
+    # 账单组成(定金/尾款/多平台),所以 existing 模式支持关联多笔。
+    # tx_sync_id 单值列保留:存第一个关联(向后兼容旧客户端与旧数据)。
+    tx_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 新建关联账单时的账户快照
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # none / daily_avg / per_day
+    average_mode: Mapped[str] = mapped_column(String(16), default="none")
+    target_cost_mode: Mapped[str] = mapped_column(String(16), default="none")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ItemFlow(Base):
+    """物品流水（0038）：某件物品产生的收益或支出。
+
+    flow_type=income（如出租、顺风车带客）/ expense（如保养、维修、税、装修）。
+    可选关联一笔交易：提供 account_id 时生成对应 income/expense 交易，
+    或关联已有交易(tx_sync_id)；都不填则仅作记录。
+    """
+    __tablename__ = "item_flows"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    ledger_id: Mapped[str] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    # income / expense
+    flow_type: Mapped[str] = mapped_column(String(16), default="expense", index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    category_name: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # new / existing / none
+    link_mode: Mapped[str] = mapped_column(String(16), default="none", index=True)
+    # 关联的**全部**交易流水 syncId(JSON 数组,0040);单笔时长度为 1。
+    tx_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tx_sync_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

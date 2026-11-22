@@ -11,11 +11,12 @@ import {
   DialogTitle,
   useT
 } from '@beecount/ui'
-import { TransactionList, creditCardAmounts } from '@beecount/web-features'
+import { creditCardAmounts } from '@beecount/web-features'
 import { Banknote, Calendar as CalendarIcon, CreditCard } from 'lucide-react'
 
 import { useAuth } from '../../context/AuthContext'
 import type { DetailScope } from '../../lib/txDialogEvents'
+import { CreditCardFlowGroups } from './CreditCardFlowGroups'
 import { DetailScopeToggle } from './DetailScopeToggle'
 
 type AccountWithStats = ReadAccount & {
@@ -34,8 +35,10 @@ interface Props {
   offset: number
   loading: boolean
   tags: WorkspaceTag[]
+  currency: string
   onClose: () => void
   onLoadMore: (accountName: string, offset: number) => void
+  onSelect?: (row: WorkspaceTransaction) => void
   onPreviewAttachment?: (refs: AttachmentRef[], startIndex: number) => Promise<void>
   resolveAttachmentPreviewUrl?: (att: AttachmentRef) => Promise<string | null>
 }
@@ -50,14 +53,17 @@ export function AccountDetailDialog({
   offset,
   loading,
   tags,
+  currency,
   onClose,
   onLoadMore,
+  onSelect,
   onPreviewAttachment,
   resolveAttachmentPreviewUrl,
 }: Props) {
   const t = useT()
   const { profileMe } = useAuth()
   const noteDisplayMode = profileMe?.appearance?.note_display_mode ?? 'category'
+  const isCreditCard = (account?.account_type || '') === 'credit_card'
   return (
     <Dialog open={Boolean(account)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
@@ -79,24 +85,20 @@ export function AccountDetailDialog({
                 账单日 / 还款日 + 倒计时。普通账户类型不渲染。 */}
             <AccountCardInfo account={account} t={t} />
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <TransactionList
-                items={transactions}
-                tags={tags}
-                variant="compact"
-                loading={loading}
-                hasMore={transactions.length < total}
-                onLoadMore={() => {
-                  if (!loading) onLoadMore(account.name, offset)
-                }}
-                onPreviewAttachment={onPreviewAttachment as never}
-                resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl as never}
-                emptyTitle={t('transactions.empty.forAccount.title')}
-                showLedger={scope === 'all'}
-                noteDisplayMode={noteDisplayMode}
-                currentAccountId={account.id}
-              />
-            </div>
+            {/* 所有账户统一按「按月分组」查看流水;信用卡额外支持「按账期」
+                切换。每组带支出/收入/结余汇总,默认展开最近一组。 */}
+            <CreditCardFlowGroups
+              account={account}
+              transactions={transactions}
+              tags={tags}
+              currency={currency}
+              noteDisplayMode={noteDisplayMode}
+              showLedger={scope === 'all'}
+              allowCycle={isCreditCard}
+              onSelect={onSelect}
+              onPreviewAttachment={onPreviewAttachment}
+              resolveAttachmentPreviewUrl={resolveAttachmentPreviewUrl}
+            />
           </div>
         ) : null}
       </DialogContent>
@@ -194,8 +196,8 @@ function AccountCardInfo({
   const bankName = account.bank_name?.trim() || ''
   const cardLastFour = account.card_last_four?.trim() || ''
   const creditLimit = isCreditCard ? account.credit_limit : null
-  const billingDay = isCreditCard ? account.billing_day : null
-  const paymentDueDay = isCreditCard ? account.payment_due_day : null
+  const billingDay = isCreditCard ? extractDayOfMonth(account.billing_day) : null
+  const paymentDueDay = isCreditCard ? extractDayOfMonth(account.payment_due_day) : null
 
   // 信用卡已用额度 = -balance(余额为负表示欠款),剩余额度 = limit - used。
   // 这是粗略估算 — 没考虑账单周期,只看终身累计。但作为"大致还能刷多少"
@@ -308,6 +310,50 @@ function CardInfoItem({
       ) : null}
     </div>
   )
+}
+
+/**
+ * 账单日/还款日在后端可能以多种形态返回：数字日(1-31)或 ISO 日期时间字符串
+ * (如 "2026-01-05T00:00:00")。展示只需精确到“日”，统一提取为当月日号。
+ */
+function extractDayOfMonth(value: unknown): number | null {
+  if (value == null || value === '') return null
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const day = Math.trunc(value)
+    return day >= 1 && day <= 31 ? day : null
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    // 纯数字字符串
+    if (/^\d+$/.test(trimmed)) {
+      const day = Number(trimmed)
+      return day >= 1 && day <= 31 ? day : null
+    }
+    // ISO datetime/date: 取日期部分的"日"，避免时区偏移导致显示错一天
+    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (match) {
+      // 兼容历史脏数据:旧版把日号当 Unix 秒数写入 => 1970-01-01T00:00:20。
+      // 日期位是 01 但秒位是合法日号时,取秒位。
+      const legacy = trimmed.match(/^1970-01-01T00:00:(\d{1,2})/)
+      if (legacy) {
+        const legacyDay = Number(legacy[1])
+        if (legacyDay >= 1 && legacyDay <= 31) return legacyDay
+      }
+      const day = Number(match[3])
+      return day >= 1 && day <= 31 ? day : null
+    }
+    const parsed = new Date(trimmed)
+    if (!Number.isNaN(parsed.getTime())) {
+      const day = parsed.getDate()
+      return day >= 1 && day <= 31 ? day : null
+    }
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const day = value.getDate()
+    return day >= 1 && day <= 31 ? day : null
+  }
+  return null
 }
 
 /**

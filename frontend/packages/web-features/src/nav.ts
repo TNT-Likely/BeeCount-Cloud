@@ -6,6 +6,13 @@ export type AppSection =
   | 'accounts'
   | 'categories'
   | 'tags'
+  | 'members'
+  | 'contacts'
+  | 'loans'
+  | 'deposits'
+  | 'saving-plans'
+  | 'reimbursements'
+  | 'items'
   | 'budgets'
   | 'ledgers'
   | 'settings-profile'
@@ -41,7 +48,14 @@ export const NAV_GROUPS: NavGroup[] = [
       // 入口走 AppHeader 右上角图标 + ⌘K + AvatarDropdown 任一即可。
       { key: 'accounts', labelKey: 'nav.accounts' },
       { key: 'categories', labelKey: 'nav.categories' },
-      { key: 'tags', labelKey: 'nav.tags' }
+      { key: 'tags', labelKey: 'nav.tags' },
+      { key: 'members', labelKey: 'nav.members' },
+      { key: 'contacts', labelKey: 'nav.contacts' },
+      { key: 'loans', labelKey: 'nav.loans' },
+      { key: 'deposits', labelKey: 'nav.deposits' },
+      { key: 'saving-plans', labelKey: 'nav.savingPlans' },
+      { key: 'reimbursements', labelKey: 'nav.reimbursements' },
+      { key: 'items', labelKey: 'nav.items' },
       // 预算从顶部 bookkeeping 组移出,改放头像下拉的"工具"里 —— 用户
       // 场景下预算访问频率低于 tx/account/category,顶部 nav 保持瘦。
     ]

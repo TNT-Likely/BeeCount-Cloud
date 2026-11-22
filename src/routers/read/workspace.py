@@ -12,7 +12,10 @@ from pydantic import BaseModel
 from sqlalchemy import false as sa_false
 
 from ._shared import *  # noqa: F401,F403 — imports + helpers + router
-from ...models import ExchangeRateCache, UserExchangeRateProjection
+from ...member_splits import decode_row, stats_splits
+from ... import payment_splits as _payment_splits
+from ...models import ExchangeRateCache, UserExchangeRateProjection, UserMemberProjection
+from ...tx_running_balance import compute_running_balances
 
 # ---------------------------------------------------------------------------
 # 净值历史 — 响应 schema
@@ -40,6 +43,7 @@ def list_workspace_transactions(
     tag_sync_id: str | None = Query(default=None, description="按 tag syncId 精确过滤,不走模糊搜索"),
     category_sync_id: str | None = Query(default=None, description="按 category syncId 精确过滤"),
     account_sync_id: str | None = Query(default=None, description="按 account syncId 精确过滤(含 from/to)"),
+    member_sync_id: str | None = Query(default=None, description="按成员 syncId 精确过滤(含分摊)"),
     amount_min: float | None = Query(default=None, description="金额下限(含)。按 abs(amount) 比较以兼容 expense 负值"),
     amount_max: float | None = Query(default=None, description="金额上限(含)"),
     date_from: datetime | None = Query(default=None, description="happened_at >= date_from"),
@@ -87,9 +91,34 @@ def list_workspace_transactions(
         query = query.where(ReadTxProjection.sync_id == tx_sync_id)
     # Tag 精确过滤:用 tag_sync_ids_json LIKE 含引号形式 `"<sync_id>"`,确保是 JSON
     # 数组里那个 id(而不是 note/tags_csv 里的字符串误匹配)。前端标签弹窗走这个参数。
+    #
+    # 兼容历史导入数据:xlsx 导入的 tx 只写了 tags_csv(标签名),tag_sync_ids_json
+    # 为 NULL —— 此时按 sync_id 反查标签名,再用 tags_csv 的分段精确匹配兜底,
+    # 否则首页「热门标签 Top5」点开详情会查不到任何交易。跟
+    # list_workspace_tags 里统计 tx_count 时的 tags_csv 回退口径保持一致。
     if tag_sync_id:
+        tag_conds = [ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')]
+        target_user_id = current_user.id if not (is_admin and user_id) else user_id
+        tag_name = db.scalar(
+            select(UserTagProjection.name).where(
+                UserTagProjection.user_id == target_user_id,
+                UserTagProjection.sync_id == tag_sync_id,
+            )
+        )
+        if tag_name and tag_name.strip():
+            name_key = tag_name.strip().lower()
+            # tags_csv 是逗号分隔的标签名。用「首尾含逗号」的 LIKE 做分段精确
+            # 匹配,避免「银行」误命中「工商银行」;同时兼容大小写。
+            tag_conds.extend([
+                func.lower(ReadTxProjection.tags_csv) == name_key,
+                func.lower(ReadTxProjection.tags_csv).like(f'{name_key},%'),
+                func.lower(ReadTxProjection.tags_csv).like(f'%,{name_key}'),
+                func.lower(ReadTxProjection.tags_csv).like(f'%,{name_key},%'),
+            ])
+        query = query.where(or_(*tag_conds))
+    if member_sync_id:
         query = query.where(
-            ReadTxProjection.tag_sync_ids_json.like(f'%"{tag_sync_id}"%')
+            ReadTxProjection.member_sync_ids_json.like(f'%"{member_sync_id}"%')
         )
     if category_sync_id:
         query = query.where(ReadTxProjection.category_sync_id == category_sync_id)
@@ -98,6 +127,8 @@ def list_workspace_transactions(
             ReadTxProjection.account_sync_id == account_sync_id,
             ReadTxProjection.from_account_sync_id == account_sync_id,
             ReadTxProjection.to_account_sync_id == account_sync_id,
+            # 组合付款(0028):账户可能出现在拆分明细中
+            ReadTxProjection.payment_splits_json.like(f'%"{account_sync_id}"%'),
         ))
     if q:
         pattern = f"%{q}%"
@@ -133,6 +164,58 @@ def list_workspace_transactions(
     ).offset(offset).limit(limit)
     rows = db.scalars(query).all()
 
+    # 退款(0025):读时聚合「原单已退金额」。一次 SQL 把结果集中被退款指向的
+    # 原交易 sync_id → 退款总额算出来,回填到对应原交易的 refunded_amount。
+    target_ids = [r.sync_id for r in rows if r.sync_id]
+    refunded_map: dict[str, float] = {}
+    if target_ids:
+        refund_rows = db.execute(
+            select(
+                ReadTxProjection.refund_of_sync_id,
+                func.coalesce(func.sum(ReadTxProjection.amount), 0.0),
+            )
+            .where(
+                ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+                ReadTxProjection.is_refund == 1,
+                ReadTxProjection.refund_of_sync_id.in_(target_ids),
+            )
+            .group_by(ReadTxProjection.refund_of_sync_id)
+        ).all()
+        for refund_of_id, refund_total in refund_rows:
+            if refund_of_id:
+                refunded_map[refund_of_id] = float(refund_total or 0.0)
+
+    # 合并还款(0039):一笔实际收付款同时结清多笔借款时,交易流水只有一条。
+    # 这里按 tx_sync_id 反查合并组,取出被合并的各笔借款本金流水 sync_id 列表,
+    # 前端据此展示「查看原单」(与退款的 refund_of_sync_id 同一套跳转机制)。
+    merged_from_map: dict[str, list[str]] = {}
+    if target_ids:
+        group_rows = db.execute(
+            select(
+                LoanPaymentGroup.tx_sync_id,
+                LoanPaymentGroup.merged_from_sync_ids_json,
+            ).where(
+                LoanPaymentGroup.ledger_id.in_(ledger_internal_ids),
+                LoanPaymentGroup.tx_sync_id.in_(target_ids),
+            )
+        ).all()
+        for tx_sync_id, raw_json in group_rows:
+            if not tx_sync_id:
+                continue
+            ids: list[str] = []
+            try:
+                parsed = json.loads(raw_json or "[]")
+                if isinstance(parsed, list):
+                    ids = [str(x) for x in parsed if str(x)]
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            if ids:
+                merged_from_map[tx_sync_id] = ids
+
+    # 每笔流水后的账户余额:基于所有可见账本的全量交易时间线,不受本页
+    # filter / 分页影响(账户是 user-global,跨账本按 sync_id 归并)。
+    balance_after_map = compute_running_balances(db, ledger_ids=ledger_internal_ids)
+
     # §7 共享账本:per-tx 创建者/编辑者头像 + name 用。从 projection 收集
     # 所有出现过的 user_id,一次查 User + UserProfile,O(N) → O(distinct users)。
     # 必须放 rows 之后(原 commit 顺序错了导致 UnboundLocalError)。
@@ -155,6 +238,11 @@ def list_workspace_transactions(
 
     out_items: list[WorkspaceTransactionOut] = []
     for row in rows:
+        member_ids, member_names, member_splits = decode_row(
+            row.member_sync_ids_json, row.member_names_csv, row.member_splits_json
+        )
+        payment_splits = _payment_splits.decode_row(getattr(row, "payment_splits_json", None))
+        balance_after = balance_after_map.get(row.sync_id, (None, None))
         led_ext_id, led_name = ledger_meta.get(row.ledger_id, ("", ""))
         change_id = change_id_by_ledger.get(row.ledger_id, 0)
         owner_info = owner_map.get(led_ext_id) or (None, None)
@@ -208,6 +296,23 @@ def list_workspace_transactions(
                 exclude_from_budget=bool(row.exclude_from_budget),
                 currency_code=row.currency_code,
                 native_amount=row.native_amount,
+                transfer_fee_amount=row.transfer_fee_amount,
+                transfer_discount_amount=row.transfer_discount_amount,
+                transfer_fee_account_id=row.transfer_fee_account_sync_id,
+                transfer_fee_account_name=row.transfer_fee_account_name,
+                transfer_fee_tx_id=row.transfer_fee_tx_sync_id,
+                transfer_discount_tx_id=row.transfer_discount_tx_sync_id,
+                discount_amount=row.discount_amount,
+                is_refund=bool(row.is_refund),
+                refund_of_sync_id=row.refund_of_sync_id,
+                refunded_amount=refunded_map.get(row.sync_id),
+                merged_from_sync_ids=merged_from_map.get(row.sync_id) or [],
+                account_balance_after=balance_after[0],
+                counter_account_balance_after=balance_after[1],
+                member_ids=member_ids,
+                member_names=member_names,
+                member_splits=member_splits,
+                payment_splits=payment_splits,
                 last_change_id=change_id,
                 ledger_id=led_ext_id,
                 ledger_name=led_name,
@@ -566,6 +671,8 @@ def list_workspace_accounts(
     from sqlalchemy import case as sa_case
 
     # Main account stats: income + expense,按 account_sync_id 聚合
+    # 支出组合付款(0028):split 行的主 account 为空,各渠道在 payment_splits_json 里,
+    # 需排除 split 支出后再单独按拆分累加,避免漏计或重复计总额。
     main_stats = db.execute(
         select(
             ReadTxProjection.account_sync_id,
@@ -574,7 +681,13 @@ def list_workspace_accounts(
                 (ReadTxProjection.tx_type == "income", ReadTxProjection.amount),
                 else_=0.0)), 0.0).label("income"),
             func.coalesce(func.sum(sa_case(
-                (ReadTxProjection.tx_type == "expense", ReadTxProjection.amount),
+                (
+                    and_(
+                        ReadTxProjection.tx_type == "expense",
+                        ReadTxProjection.payment_splits_json.is_(None),
+                    ),
+                    ReadTxProjection.amount,
+                ),
                 else_=0.0)), 0.0).label("expense"),
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
@@ -612,6 +725,25 @@ def list_workspace_accounts(
     for acc, cnt, inc, exp in main_stats:
         stats[acc] = {"count": int(cnt), "income": float(inc),
                       "expense": float(exp), "balance": float(inc) - float(exp)}
+    # 组合付款(0028):每笔 split 支出按各渠道金额分别计入,总额只计一次。
+    split_rows = db.execute(
+        select(ReadTxProjection.payment_splits_json).where(
+            ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+            ReadTxProjection.tx_type == "expense",
+            ReadTxProjection.payment_splits_json.is_not(None),
+        )
+    ).all()
+    for (ps_json,) in split_rows:
+        for s in _payment_splits.decode_row(ps_json):
+            acc = s.get("account_id")
+            amt = float(s.get("amount") or 0)
+            if not acc or amt <= 0:
+                continue
+            bucket = stats.setdefault(acc,
+                                       {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
+            bucket["count"] = int(bucket["count"]) + 1
+            bucket["expense"] = float(bucket["expense"]) + amt
+            bucket["balance"] = float(bucket["balance"]) - amt
     for acc, cnt, amt in transfer_from:
         bucket = stats.setdefault(acc,
                                    {"count": 0, "income": 0.0, "expense": 0.0, "balance": 0.0})
@@ -1003,6 +1135,11 @@ def workspace_analytics(
     expense_total = 0.0
     series_map: dict[str, dict[str, float]] = {}
     category_map: dict[str, dict[str, float]] = {}
+    # 退款(0025):收集 (原单 sync_id, 退款折算额),循环结束后按原交易分类冲减支出。
+    refund_for_category: list[tuple[str, float]] = []
+    # 成员维度(0024):memberId → {name, income, expense, count}。
+    # 金额按每位成员的分摊占比，把该笔的本位币折算额切分过去。
+    member_map: dict[str, dict[str, Any]] = {}
     # bucket → category → expense 总额。仅 scope=year anomaly 归因用,其它 scope
     # 也写入(开销可忽略),只在 endpoint 末尾按 scope 决定是否用。
     category_by_bucket: dict[str, dict[str, float]] = {}
@@ -1017,6 +1154,12 @@ def workspace_analytics(
             func.coalesce(ReadTxProjection.native_amount, ReadTxProjection.amount),
             ReadTxProjection.happened_at,
             ReadTxProjection.category_name,
+            # 成员维度(0024):原币金额用于把本位币折算额按分摊占比切给各成员。
+            ReadTxProjection.amount,
+            ReadTxProjection.member_splits_json,
+            # 退款(0025):is_refund / refund_of_sync_id 用于把退款冲减原交易分类支出。
+            ReadTxProjection.is_refund,
+            ReadTxProjection.refund_of_sync_id,
         ).where(
             ReadTxProjection.ledger_id.in_(ledger_internal_ids),
             # exclude_from_stats=True 的交易不计入收支统计(D1);该端点所有
@@ -1034,12 +1177,20 @@ def workspace_analytics(
         # 本地 0-8 点记的笔会被算到前一天的 distinct_days,跟日历视图不一致。
         from datetime import timedelta as _td
 
-        for tx_type_val, amount, happened_at_raw, cat_name in db.execute(tx_query).all():
+        for (tx_type_val, amount, happened_at_raw, cat_name,
+             raw_amount, member_splits_json, is_refund_val,
+             refund_of_sync_id) in db.execute(tx_query).all():
             if happened_at_raw is None:
                 continue
             happened_at = _to_utc(happened_at_raw)
             amt = float(amount or 0.0)
+            original_amount = float(raw_amount or 0.0)
             transaction_count += 1
+            # 退款(0025):不计入收入、不污染月度收支;仅用于冲减原交易分类支出。
+            if is_refund_val:
+                if refund_of_sync_id:
+                    refund_for_category.append((refund_of_sync_id, amt))
+                continue
             local_for_day = happened_at + _td(minutes=tz_offset_minutes)
             distinct_days_set.add(local_for_day.strftime("%Y-%m-%d"))
             if first_tx_at is None or happened_at < first_tx_at:
@@ -1068,6 +1219,39 @@ def workspace_analytics(
                 bucket_cat = category_by_bucket.setdefault(bucket, {})
                 bucket_cat[category] = bucket_cat.get(category, 0.0) + amt
 
+            # 成员统计维度:按分摊占比把该笔折算额切给各成员。单成员时占比
+            # 100%,等于整笔金额;多成员时各拿自己那份。
+            for split_id, split_name, split_amount in stats_splits(member_splits_json):
+                share = (
+                    amt * (split_amount / original_amount)
+                    if original_amount > 0
+                    else amt
+                )
+                slot_m = member_map.setdefault(
+                    split_id,
+                    {"name": split_name, "income": 0.0, "expense": 0.0, "count": 0.0},
+                )
+                if split_name and not slot_m["name"]:
+                    slot_m["name"] = split_name
+                slot_m["count"] += 1.0
+                slot_m["income" if tx_type_val == "income" else "expense"] += share
+
+    # 成员排行:跟 category_ranks 同 metric 口径(income / expense)。
+    member_ranks: list[WorkspaceAnalyticsMemberRankOut] = []
+    if metric != "balance":
+        metric_key = "income" if metric == "income" else "expense"
+        member_ranks = [
+            WorkspaceAnalyticsMemberRankOut(
+                member_id=member_id,
+                member_name=str(values["name"]) or member_id,
+                total=float(values[metric_key]),
+                tx_count=int(values["count"]),
+            )
+            for member_id, values in member_map.items()
+            if float(values[metric_key]) > 0
+        ]
+        member_ranks.sort(key=lambda row: (-row.total, row.member_name))
+
     series = [
         WorkspaceAnalyticsSeriesItemOut(
             bucket=bucket,
@@ -1077,6 +1261,31 @@ def workspace_analytics(
         )
         for bucket, slot in sorted(series_map.items(), key=lambda x: x[0])
     ]
+
+    # 退款(0025):按原交易分类冲减支出。退款本身不计入收支,只把对应原分类的
+    # 支出金额减去,使「分类支出排行 / 月度分类支出」反映退款后的净额。
+    if refund_for_category:
+        orig_ids = list({rid for rid, _ in refund_for_category})
+        orig_rows = db.execute(
+            select(
+                ReadTxProjection.sync_id,
+                ReadTxProjection.category_name,
+            ).where(
+                ReadTxProjection.ledger_id.in_(ledger_internal_ids),
+                ReadTxProjection.sync_id.in_(orig_ids),
+            )
+        ).all()
+        orig_cat_by_id: dict[str, str] = {}
+        for sid, cat in orig_rows:
+            orig_cat_by_id[sid] = (cat or "").strip() or "Uncategorized"
+        for rid, amt in refund_for_category:
+            cat_name_ref = orig_cat_by_id.get(rid)
+            if not cat_name_ref:
+                continue
+            slot = category_map.get(cat_name_ref)
+            if slot is None:
+                continue
+            slot["expense"] = max(0.0, slot["expense"] - amt)
 
     category_ranks: list[WorkspaceAnalyticsCategoryRankOut] = []
     if metric != "balance":
@@ -1111,6 +1320,7 @@ def workspace_analytics(
         ),
         series=series,
         category_ranks=category_ranks,
+        member_ranks=member_ranks,
         anomaly_months=anomaly_months,
         range=WorkspaceAnalyticsRangeOut(
             scope=scope,

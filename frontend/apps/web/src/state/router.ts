@@ -17,6 +17,13 @@ export const APP_SECTIONS: AppSection[] = [
   'accounts',
   'categories',
   'tags',
+  'members',
+  'contacts',
+  'loans',
+  'deposits',
+  'saving-plans',
+  'reimbursements',
+  'items',
   'budgets',
   'ledgers',
   'overview',
@@ -44,6 +51,8 @@ function parseWorkspaceSection(parts: string[]): AppSection {
       return 'categories'
     case 'tags':
       return 'tags'
+    case 'members':
+      return 'members'
     case 'budgets':
       return 'budgets'
     default:
@@ -86,6 +95,20 @@ function parseRootSection(parts: string[]): AppSection {
       return 'categories'
     case 'tags':
       return 'tags'
+    case 'members':
+      return 'members'
+    case 'contacts':
+      return 'contacts'
+    case 'loans':
+      return 'loans'
+    case 'deposits':
+      return 'deposits'
+    case 'saving-plans':
+      return 'saving-plans'
+    case 'reimbursements':
+      return 'reimbursements'
+    case 'items':
+      return 'items'
     case 'budgets':
       return 'budgets'
     case 'ledgers':
@@ -127,6 +150,20 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
       return 'categories'
     case 'tags':
       return 'tags'
+    case 'members':
+      return 'members'
+    case 'contacts':
+      return 'contacts'
+    case 'loans':
+      return 'loans'
+    case 'deposits':
+      return 'deposits'
+    case 'saving-plans':
+      return 'saving-plans'
+    case 'reimbursements':
+      return 'reimbursements'
+    case 'items':
+      return 'items'
     case 'budgets':
       return 'budgets'
     case 'overview':
@@ -182,6 +219,9 @@ export function parseRoute(pathname: string): AppRoute {
     parts[1] === 'accounts' ||
     parts[1] === 'categories' ||
     parts[1] === 'tags' ||
+    parts[1] === 'members' ||
+    parts[1] === 'contacts' ||
+    parts[1] === 'loans' ||
     parts[1] === 'budgets' ||
     parts[1] === 'overview'
   ) {
@@ -216,6 +256,20 @@ export function routePath(route: AppRoute): string {
       return '/app/categories'
     case 'tags':
       return '/app/tags'
+    case 'members':
+      return '/app/members'
+    case 'contacts':
+      return '/app/contacts'
+    case 'loans':
+      return '/app/loans'
+    case 'deposits':
+      return '/app/deposits'
+    case 'saving-plans':
+      return '/app/saving-plans'
+    case 'reimbursements':
+      return '/app/reimbursements'
+    case 'items':
+      return '/app/items'
     case 'budgets':
       return '/app/budgets'
     case 'ledgers':

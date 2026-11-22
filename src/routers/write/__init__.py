@@ -19,6 +19,7 @@ from . import (
     categories,
     exchange_rate_overrides,
     ledgers,
+    members,
     tags,
     transactions,
     transactions_batch,
@@ -34,4 +35,5 @@ router.include_router(accounts.router)
 router.include_router(budgets.router)
 router.include_router(categories.router)
 router.include_router(tags.router)
+router.include_router(members.router)
 router.include_router(exchange_rate_overrides.router)

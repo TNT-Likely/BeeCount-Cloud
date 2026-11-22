@@ -53,6 +53,7 @@ from .models import (
     UserAccountProjection,
     UserCategoryProjection,
     UserExchangeRateProjection,
+    UserMemberProjection,
     UserTagProjection,
 )
 from .services.category_icon import resolve_icon_by_name
@@ -60,11 +61,13 @@ from .services.category_icon import resolve_icon_by_name
 
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
 # 比如 ``ledger_snapshot`` 是 sync_changes 里的元数据行,不走这条路径)。
-INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "budget", "ledger", "exchange_rate_override"}
+INDIVIDUAL_ENTITY_TYPES = {"transaction", "account", "category", "tag", "member", "budget", "ledger", "exchange_rate_override"}
 
 # user-global entity 类型白名单 —— 跟 mobile lib/cloud/sync/change_tracker.dart
 # 的 userGlobalEntityTypes 保持一致。push 路径按这个集合分流到 user-scope 应用。
-USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag", "exchange_rate_override"}
+# member(0024) 是 web 新增的 user-global 实体；老客户端不认识该 entity_type 时
+# 会忽略对应 change，不影响既有同步。
+USER_GLOBAL_ENTITY_TYPES = {"account", "category", "tag", "member", "exchange_rate_override"}
 
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +133,10 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("paymentDueDay", "payment_due_day"),
         ("bankName", "bank_name"),
         ("cardLastFour", "card_last_four"),
+        # 账户图标/背景(issue #icon):
+        ("iconKey", "icon_key"),
+        ("iconType", "icon_type"),
+        ("backgroundKey", "background_key"),
         # 账户隐藏(issue #240):payload 键 hidden(camelCase 同名,跟 App
         # serializeAccount 对齐)。缺键时 _merge_from_spec 从 existing 行补齐,
         # 不被 partial-update 冲成 False(merge 契约测试见
@@ -161,6 +168,14 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         ("syncId", "sync_id"),
         ("name", "name"),
         ("color", "color"),
+    ]),
+    "member": _MergeSpec(UserMemberProjection, [
+        ("syncId", "sync_id"),
+        ("name", "name"),
+        ("color", "color"),
+        # 老客户端不认识 profile 时，merge 从 existing 补回旧资料，避免
+        # 移动端一次改名就把头像 / 联系方式 / 银行卡全清掉。
+        ("profile", "profile_json", _json_loads_safe),
     ]),
 }
 
@@ -208,6 +223,22 @@ _LEDGER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # _sync_native_amount_after_merge。
         ("currencyCode", "currency_code"),
         ("nativeAmount", "native_amount"),
+        # 转账手续费/优惠(0022) + 支出优惠(0023):缺键时保留 projection 既有值,
+        # 避免旧客户端同步把主交易上的这些元数据抹掉。
+        ("transferFeeAmount", "transfer_fee_amount"),
+        ("transferDiscountAmount", "transfer_discount_amount"),
+        ("transferFeeAccountId", "transfer_fee_account_sync_id"),
+        ("transferFeeAccountName", "transfer_fee_account_name"),
+        ("transferFeeTxId", "transfer_fee_tx_sync_id"),
+        ("transferDiscountTxId", "transfer_discount_tx_sync_id"),
+        ("discountAmount", "discount_amount"),
+        # 成员关联/分摊(0024):缺键时从既有行补齐，避免旧客户端部分更新抹掉归属。
+        ("memberIds", "member_sync_ids_json", _json_loads_safe),
+        ("memberNames", "member_names_csv"),
+        ("memberSplits", "member_splits_json", _json_loads_safe),
+        # 退款(0025):缺键时从既有行补齐，避免旧客户端部分更新把退款标记清掉。
+        ("isRefund", "is_refund"),
+        ("refundOfSyncId", "refund_of_sync_id"),
     ]),
 }
 
@@ -217,6 +248,7 @@ _USER_UPSERT_DISPATCH: dict[str, Callable] = {
     "account": projection.upsert_account,
     "category": projection.upsert_category,
     "tag": projection.upsert_tag,
+    "member": projection.upsert_member,
     "exchange_rate_override": projection.upsert_exchange_rate_override,
 }
 
@@ -330,6 +362,13 @@ def _delete_user_tag(db: Session, user_id: str, sync_id: str) -> None:
     )
 
 
+def _delete_user_member(db: Session, user_id: str, sync_id: str) -> None:
+    projection.delete_member(db, user_id=user_id, sync_id=sync_id)
+    _compact_entity_upsert_events(
+        db, user_id=user_id, entity_type="member", entity_sync_id=sync_id,
+    )
+
+
 def _delete_user_exchange_rate_override(db: Session, user_id: str, sync_id: str) -> None:
     projection.delete_exchange_rate_override(db, user_id=user_id, sync_id=sync_id)
     _compact_entity_upsert_events(
@@ -347,6 +386,7 @@ _USER_DELETE_DISPATCH: dict[str, Callable[[Session, str, str], None]] = {
     "account": _delete_user_account,
     "category": _delete_user_category,
     "tag": _delete_user_tag,
+    "member": _delete_user_member,
     "exchange_rate_override": _delete_user_exchange_rate_override,
 }
 

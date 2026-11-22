@@ -223,6 +223,46 @@ app.include_router(invites_router.router, prefix=settings.api_prefix, tags=["inv
 app.include_router(members_router.router, prefix=settings.api_prefix, tags=["members"])
 app.include_router(shared_resources_router.router, prefix=settings.api_prefix, tags=["shared-resources"])
 app.include_router(member_stats_router.router, prefix=settings.api_prefix, tags=["member-stats"])
+# 联系人 / 借款(Web-first,不走 sync 层)
+from .routers import contacts_loans as contacts_loans_router  # noqa: E402
+
+app.include_router(
+    contacts_loans_router.contacts_router, prefix=f"{settings.api_prefix}/contacts", tags=["contacts"]
+)
+app.include_router(
+    contacts_loans_router.loans_router, prefix=f"{settings.api_prefix}/loans", tags=["loans"]
+)
+# 流水关联反查(0043):按流水 syncId 查出所有引用它的业务实体,供交易详情
+# 展示「关联记录」跳转入口。挂在 /read 下(纯读)。
+from .routers import flow_links as flow_links_router  # noqa: E402
+
+app.include_router(
+    flow_links_router.links_router,
+    prefix=f"{settings.api_prefix}/read",
+    tags=["flow-links"],
+)
+# 定期存款(Web-first,不走 sync 层;复用借款流水引擎)
+from .routers import deposits as deposits_router  # noqa: E402
+from .routers import saving_plans as saving_plans_router  # noqa: E402
+from .routers import reimbursements as reimbursements_router  # noqa: E402
+from .routers import companies as companies_router  # noqa: E402
+from .routers import items as items_router  # noqa: E402
+
+app.include_router(
+    deposits_router.deposits_router, prefix=f"{settings.api_prefix}/deposits", tags=["deposits"]
+)
+app.include_router(
+    saving_plans_router.sp_router, prefix=f"{settings.api_prefix}/saving-plans", tags=["saving-plans"]
+)
+app.include_router(
+    reimbursements_router.rr_router, prefix=f"{settings.api_prefix}/reimbursements", tags=["reimbursements"]
+)
+app.include_router(
+    companies_router.company_router, prefix=f"{settings.api_prefix}/companies", tags=["companies"]
+)
+app.include_router(
+    items_router.items_router, prefix=f"{settings.api_prefix}/items", tags=["items"]
+)
 
 
 # ============================================================================

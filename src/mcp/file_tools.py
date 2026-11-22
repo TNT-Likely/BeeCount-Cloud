@@ -16,6 +16,7 @@ from mcp.types import CallToolResult, ImageContent, ResourceLink, TextContent
 from pydantic import Field
 from sqlalchemy import select
 
+from ..attachment_paths import resolve_storage_path
 from ..config import get_settings
 from ..models import AttachmentFile, ReadTxProjection, User
 from .capability_tools import Fields, require_ledger
@@ -56,7 +57,7 @@ def attachment_bytes(user, file_id):
             raise ValueError("Attachment not found")
         require_ledger(db, user, ledger.external_id)
         root = Path(get_settings().attachment_storage_dir).expanduser().resolve()
-        path = Path(row.storage_path).resolve()
+        path = resolve_storage_path(row.storage_path).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             raise ValueError("Attachment storage unavailable")
         if path.stat().st_size > get_settings().attachment_max_upload_bytes:

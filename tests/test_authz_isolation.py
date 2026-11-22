@@ -236,4 +236,33 @@ def test_register_disabled_returns_403() -> None:
             os.environ["REGISTRATION_ENABLED"] = prior
         get_settings.cache_clear()
         importlib.reload(auth_router)
+        # 关键:reload 只换了模块里的函数对象,src.main.app 上注册的路由仍指向
+        # reload 前的旧闭包(捕获着 registration_enabled=False 的 settings),
+        # 会让后续所有测试的 /auth/register 都变成 403。这里重建 app 的路由表,
+        # 让恢复后的注册开关真正生效。
+        _rebuild_app_routes(main_app, auth_router)
         _ = main_app  # silence
+
+
+def _rebuild_app_routes(main_app, auth_router) -> None:
+    """把 main_app 上 /auth/register 路由重新指向 auth_router 的当前实现。
+
+    importlib.reload(auth_router) 会创建新的函数对象,但 main_app 里的
+    APIRoute 仍持有旧函数引用(旧闭包捕获着旧的 settings)。这里替换掉,
+    保证配置恢复后注册开关行为正确。
+    """
+    from fastapi.routing import APIRoute
+
+    for route in main_app.routes:
+        if isinstance(route, APIRoute) and route.path.endswith("/auth/register"):
+            # 用当前模块里的端点函数重建这条路由(保留 path/methods/name)。
+            fresh = next(
+                r
+                for r in auth_router.router.routes
+                if isinstance(r, APIRoute) and r.path.endswith("/auth/register")
+            )
+            route.endpoint = fresh.endpoint
+            route.dependant = fresh.dependant
+            route.app = fresh.app
+            route.methods = fresh.methods
+            break

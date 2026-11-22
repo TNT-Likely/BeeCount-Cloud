@@ -6,18 +6,23 @@ import {
   createCategory,
   createTransaction,
   deleteAccount,
+  fetchDepositSummary,
   fetchExchangeRateOverrides,
   fetchExchangeRates,
   fetchNetWorthHistory,
+  fetchVirtualAccounts,
   fetchWorkspaceAccounts,
   fetchWorkspaceCategories,
   fetchWorkspaceTags,
   fetchWorkspaceTransactions,
+  uploadAttachment,
   updateAccount,
+  type DepositSummary,
   type ExchangeRateOverride,
   type ExchangeRatesResponse,
   type NetWorthHistory,
   type ReadAccount,
+  type VirtualAccounts,
   type WorkspaceAccount,
   type WorkspaceTag,
   type WorkspaceTransaction,
@@ -46,11 +51,13 @@ import {
   computeCurrencySummary,
   computeTypeGroups,
   effectiveRateToBase,
+  formatBalanceCompact,
   mergeGroupsToBase,
   resolveCurrencyFields,
   splitByCurrency,
   type AccountForm,
   type CurrencyBucket,
+  SectionPageHeader,
 } from '@beecount/web-features'
 
 import { NetWorthTrend } from '../../components/dashboard/NetWorthTrend'
@@ -58,6 +65,8 @@ import { ASSET_VIEW_KEY, type AssetView } from '../../lib/assetViewPrefs'
 import { routePath } from '../../state/router'
 import { dispatchOpenDetailAccount } from '../../lib/txDialogEvents'
 import { useAuth } from '../../context/AuthContext'
+import { useLock } from '../../context/LockContext'
+import { useAttachmentCache } from '../../context/AttachmentCacheContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { usePageCache } from '../../context/PageDataCacheContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
@@ -75,6 +84,17 @@ type BalanceAdjustmentDraft = {
   difference: number | null
   step: 'input' | 'choice'
   overpayment: boolean
+}
+
+/**
+ * 日号(1-31) -> ISO datetime 字符串。server 的 billing_day/payment_due_day 是
+ * datetime 类型,必须把日号放在"日期位"才是正确语义:20 号 -> 2020-01-20T00:00:00。
+ * 用 2020 年 1 月做载体(31 天都合法),读取端统一按 ISO 日期位取日号。
+ */
+function dayToIso(day: number | null): string | null {
+  if (day === null || !Number.isInteger(day) || day < 1 || day > 31) return null
+  const dd = String(day).padStart(2, '0')
+  return `2020-01-${dd}T00:00:00`
 }
 
 // 资产汇总卡内「构成 / 走势」tab 的设备级持久化(key/类型见 assetViewPrefs)。
@@ -103,6 +123,7 @@ export function AccountsPage() {
   const navigate = useNavigate()
   const { token, profileMe } = useAuth()
   const { activeLedgerId, ledgers } = useLedgers()
+  const { isAccountFrozen } = useLock()
   const { retryOnConflict, isWriteConflict } = useLedgerWrite()
 
   const base = profileMe?.primary_currency || ''
@@ -111,6 +132,25 @@ export function AccountsPage() {
   // rows 用 WorkspaceAccount(包含 tx_count / balance 等聚合字段),删除前需要
   // 看 tx_count 决定是否提示用户(对齐 mobile account_edit_page._delete)。
   const [rows, setRows] = usePageCache<WorkspaceAccount[]>('accounts:rows', [])
+  // 自定义账户图标:预取 blob URL + 上传回调(走已有附件接口)。
+  const { previewMap: attachmentPreviews, ensureLoadedMany, resolvePreview } = useAttachmentCache()
+  useEffect(() => {
+    const ids = rows
+      .filter((row) => row.icon_type === 'custom' && (row.icon_key || '').trim())
+      .map((row) => row.icon_key as string)
+    if (ids.length) ensureLoadedMany(ids)
+  }, [rows, ensureLoadedMany])
+  const accountIconPreviewMap = attachmentPreviews
+  const uploadAccountIcon = useCallback(
+    async (file: File): Promise<string> => {
+      if (!token || !activeLedgerId) throw new Error(t('notice.error'))
+      const res = await uploadAttachment(token, { ledger_id: activeLedgerId, file })
+      // 触发下载,让新上传的图标立刻出现在选择器/卡片。
+      await resolvePreview(res.file_id)
+      return res.file_id
+    },
+    [token, activeLedgerId, resolvePreview, t],
+  )
   const [tags, setTags] = usePageCache<WorkspaceTag[]>('accounts:tags', [])
   const [form, setForm] = useState<AccountForm>(accountDefaults())
   // 删除前的待确认账户。null = 无 pending。WorkspaceAccount 带 tx_count 字段,
@@ -154,6 +194,30 @@ export function AccountsPage() {
     'accounts:netWorthHistory',
     null,
   )
+
+  // 借款虚拟账户(应收款 / 应付款)—— 实时从当前账本未结清借款余额派生,非真实账户。
+  const [virtualAccounts, setVirtualAccounts] = useState<VirtualAccounts | null>(null)
+  useEffect(() => {
+    if (!token || !activeLedgerId) {
+      setVirtualAccounts(null)
+      return
+    }
+    fetchVirtualAccounts(token, activeLedgerId)
+      .then(setVirtualAccounts)
+      .catch(() => setVirtualAccounts(null))
+  }, [token, activeLedgerId])
+
+  // 定期存款虚拟账户 —— 持有中 + 已到期存单的本金总额,点击跳定期存款页。
+  const [depositSummary, setDepositSummary] = useState<DepositSummary | null>(null)
+  useEffect(() => {
+    if (!token || !activeLedgerId) {
+      setDepositSummary(null)
+      return
+    }
+    fetchDepositSummary(token, activeLedgerId)
+      .then(setDepositSummary)
+      .catch(() => setDepositSummary(null))
+  }, [token, activeLedgerId])
 
   // detail 弹窗已迁到 GlobalEntityDialogs(AppShell 顶层),本页只负责
   // dispatch openDetailAccount 事件,弹窗在全局渲染。
@@ -211,6 +275,38 @@ export function AccountsPage() {
   useSyncRefresh(() => {
     void refresh()
   })
+
+  const toDayString = (value: unknown): string => {
+    if (value == null || value === '') return ''
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const day = Math.trunc(value)
+      return day >= 1 && day <= 31 ? String(day) : ''
+    }
+    const text = String(value).trim()
+    if (!text) return ''
+    if (/^\d+$/.test(text)) {
+      const day = Number(text)
+      return day >= 1 && day <= 31 ? String(day) : ''
+    }
+    const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (isoMatch) {
+      const day = Number(isoMatch[3])
+      // 兼容历史脏数据:旧版把日号当 Unix 秒数写入,存成 1970-01-01T00:00:20
+      // (20 号)。这种 1970-01-01 且秒位是合法日号时,取秒位。
+      const legacyMatch = text.match(/^1970-01-01T00:00:(\d{1,2})/)
+      if (legacyMatch) {
+        const legacyDay = Number(legacyMatch[1])
+        if (legacyDay >= 1 && legacyDay <= 31) return String(legacyDay)
+      }
+      return day >= 1 && day <= 31 ? String(day) : ''
+    }
+    const parsed = new Date(text)
+    if (!Number.isNaN(parsed.getTime())) {
+      const day = parsed.getDate()
+      return day >= 1 && day <= 31 ? String(day) : ''
+    }
+    return ''
+  }
 
   const onSave = async (): Promise<boolean> => {
     if (!activeLedgerId) {
@@ -274,17 +370,31 @@ export function AccountsPage() {
         name: trimmedName,
         account_type: form.account_type || null,
         currency: form.currency || null,
-        ...(!form.editingId || VALUATION_ACCOUNT_TYPES.has(form.account_type) ? { initial_balance: form.account_type === 'credit_card' && form.credit_balance_state === 'debt' ? -initialBalanceNum : initialBalanceNum } : {}),
+        initial_balance:
+          form.account_type === 'credit_card' && form.credit_balance_state === 'debt'
+            ? -initialBalanceNum
+            : initialBalanceNum,
         // 扩展字段:non-credit_card 类型显式传 null 清空 server 上残留的值;
         // bank_card / credit_card 才有 bank_name / card_last_four。
         note: form.note.trim() || null,
         credit_limit: isCreditCard ? creditLimitNum : null,
-        billing_day: isCreditCard ? billingDayNum : null,
-        payment_due_day: isCreditCard ? paymentDueDayNum : null,
+        // 账单日/还款日:server 字段是 datetime,必须传 ISO 字符串且把"日号"
+        // 放在日期位(如 20 号 -> 2020-01-20T00:00:00),这样读取端按 ISO 日期
+        // 取日号才能得到 20。直接传数字 20 会被 pydantic 当 Unix 秒数转成
+        // 1970-01-01T00:00:20,日号就丢失了(历史脏数据即由此而来)。
+        billing_day: isCreditCard ? dayToIso(billingDayNum) : null,
+        payment_due_day: isCreditCard ? dayToIso(paymentDueDayNum) : null,
         bank_name: isBankOrCredit ? form.bank_name.trim() || null : null,
-        card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
+        // 卡号完整入库(后端约束已扩展到 23 字符)。
+        card_last_four: isBankOrCredit
+          ? (form.card_last_four.replace(/\D/g, '') || null)
+          : null,
         // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
         hidden: form.hidden,
+        // 账户图标/背景(issue #icon):空串归一为 null,统一"未设置"语义。
+        icon_key: form.icon_key.trim() || null,
+        icon_type: form.icon_type.trim() || null,
+        background_key: form.background_key.trim() || null,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -428,6 +538,10 @@ export function AccountsPage() {
           }),
         )
       } else {
+        if (isAccountFrozen) {
+          toast.error(t('settings.lock.accountFrozen'), t('notice.error'))
+          return
+        }
         const initial = row.initial_balance ?? 0
         const newInitialBalance = target - (current - initial)
         await retryOnConflict(activeLedgerId, (base) =>
@@ -534,6 +648,7 @@ export function AccountsPage() {
 
   return (
     <>
+      <SectionPageHeader section="accounts" title={t('accounts.title')} className="mb-4" />
       {/* 资产汇总卡(统一折算视图)—— 四态:
           - converted===null(无账户):不出卡,账户空态由 AccountsPanel 内部引导。
           - converted.needsBase(多币种未设主币种):出「设置主币种」引导卡,按钮跳设置页。
@@ -683,38 +798,96 @@ export function AccountsPage() {
           </CardContent>
         </Card>
       )}
+      {/* 借款虚拟账户(应收款 / 应付款)—— 实时从当前账本未结清借款派生,点击跳借款页。 */}
+      {virtualAccounts ? (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'loans' }))}
+            className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-left transition-colors hover:border-emerald-500/60"
+          >
+            <div className="text-xs text-emerald-600/80 dark:text-emerald-400/80">{t('accounts.receivable')}</div>
+            <div className="mt-1 text-lg font-semibold text-emerald-600">{formatBalanceCompact(virtualAccounts.receivable, base)}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{t('accounts.virtualHint')}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'loans' }))}
+            className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 text-left transition-colors hover:border-rose-500/60"
+          >
+            <div className="text-xs text-rose-600/80 dark:text-rose-400/80">{t('accounts.payable')}</div>
+            <div className="mt-1 text-lg font-semibold text-rose-600">{formatBalanceCompact(virtualAccounts.payable, base)}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{t('accounts.virtualHint')}</div>
+          </button>
+        </div>
+      ) : null}
+      {/* 定期存款虚拟账户 —— 持有中 + 已到期存单本金总额,点击跳定期存款页。 */}
+      {depositSummary ? (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'deposits' }))}
+            className="rounded-xl border border-primary/30 bg-primary/5 p-4 text-left transition-colors hover:border-primary/60"
+          >
+            <div className="text-xs text-primary/80">{t('accounts.deposits')}</div>
+            <div className="mt-1 text-lg font-semibold text-primary">{formatBalanceCompact(depositSummary.total_principal, base)}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{t('accounts.depositsHint')}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate(routePath({ kind: 'app', ledgerId: '', section: 'deposits' }))}
+            className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-left transition-colors hover:border-emerald-500/60"
+          >
+            <div className="text-xs text-emerald-600/80 dark:text-emerald-400/80">{t('accounts.depositsInterest')}</div>
+            <div className="mt-1 text-lg font-semibold text-emerald-600">{formatBalanceCompact(depositSummary.total_interest_expected, base)}</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{t('accounts.depositsHint')}</div>
+          </button>
+        </div>
+      ) : null}
       <AccountsPanel
         form={form}
         rows={rows}
         canManage
         hideCurrencyCards
+        initialBalanceFrozen={isAccountFrozen}
+        accountIconPreviewMap={accountIconPreviewMap}
+        onUploadAccountIcon={uploadAccountIcon}
         onFormChange={setForm}
         onSave={onSave}
         onReset={() => setForm(accountDefaults())}
         onEdit={(row) => {
+          const currentRow = rows.find((a) => a.id === row.id) || (row as WorkspaceAccount)
+          const initial = currentRow.initial_balance ?? 0
           setForm({
             editingId: row.id,
             editingOwnerUserId: row.created_by_user_id || '',
             name: row.name,
             account_type: row.account_type || '',
             currency: row.currency || '',
-            initial_balance: String(row.account_type === 'credit_card'
-              ? Math.abs(rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0)
-              : rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0),
-            credit_balance_state: (rows.find((a) => a.id === row.id)?.balance ?? row.initial_balance ?? 0) > 0 ? 'overpayment' : 'debt',
+            // 信用卡:初始金额取绝对值展示,正负由 credit_balance_state 决定。
+            // 状态必须按 **initial_balance 的符号** 推导(不能用当前余额)——
+            // 否则「开卡时欠款 1000、后来还清变成正数」的卡片,编辑时会被标成
+            // 「溢缴款」,保存后把 initial_balance 写成正数,欠款凭空翻正。
+            initial_balance: String(
+              row.account_type === 'credit_card' ? Math.abs(initial) : initial,
+            ),
+            credit_balance_state:
+              row.account_type === 'credit_card'
+                ? (initial > 0 ? 'overpayment' : 'debt')
+                : 'debt',
             note: row.note ?? '',
-            credit_limit: row.credit_limit !== null && row.credit_limit !== undefined
-              ? String(row.credit_limit)
-              : '',
-            billing_day: row.billing_day !== null && row.billing_day !== undefined
-              ? String(row.billing_day)
-              : '',
-            payment_due_day: row.payment_due_day !== null && row.payment_due_day !== undefined
-              ? String(row.payment_due_day)
-              : '',
+            credit_limit:
+              row.credit_limit !== null && row.credit_limit !== undefined
+                ? String(row.credit_limit)
+                : '',
+            billing_day: toDayString(row.billing_day),
+            payment_due_day: toDayString(row.payment_due_day),
             bank_name: row.bank_name ?? '',
             card_last_four: row.card_last_four ?? '',
             hidden: row.hidden ?? false,
+            icon_key: row.icon_key ?? '',
+            icon_type: row.icon_type ?? '',
+            background_key: row.background_key ?? '',
           })
         }}
         onRestore={(row) => void onRestore(row)}

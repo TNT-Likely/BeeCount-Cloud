@@ -46,7 +46,7 @@ import {
   dispatchOpenSharedJoin,
   dispatchOpenSharedManage,
 } from '../lib/sharedLedgerEvents'
-import { currentMonthRange, yearRange } from '@beecount/web-features'
+import { currentMonthRange, yearRange, sectionIcon } from '@beecount/web-features'
 import { useLocale, useT, useTheme, useToast } from '@beecount/ui'
 import { VoiceInputButton } from './cmdk-ai/VoiceInputButton'
 
@@ -631,18 +631,39 @@ export function CommandPalette({ open, onClose, onOpenAnnualReport }: CommandPal
             </Group>
           )}
 
-          {/* === 5. 页面导航 === */}
+          {/* === 5. 页面导航 ===
+              统一走 sectionIcons 注册表:分类/成员/标签/联系人/借款/定期/
+              储蓄罐/报销/资产/物品等所有业务模块图标与顶部导航、页面头一致。 */}
           <Group heading={t('cmdk.group.navigation')}>
-            <Item icon={<LayoutDashboard className="h-4 w-4" />} label={t('nav.overview')} onSelect={() => goto('overview')} />
-            <Item icon={<Receipt className="h-4 w-4" />} label={t('nav.transactions')} onSelect={() => goto('transactions')} />
-            <Item icon={<Receipt className="h-4 w-4" />} label={t('attachments.title')} onSelect={() => goto('attachments')} />
-            <Item icon={<CalendarDays className="h-4 w-4" />} label={t('nav.calendar')} onSelect={() => goto('calendar')} />
-            <Item icon={<Wallet className="h-4 w-4" />} label={t('nav.accounts')} onSelect={() => goto('accounts')} />
-            <Item icon={<FolderTree className="h-4 w-4" />} label={t('nav.categories')} onSelect={() => goto('categories')} />
-            <Item icon={<Tag className="h-4 w-4" />} label={t('nav.tags')} onSelect={() => goto('tags')} />
-            <Item icon={<FileBarChart2 className="h-4 w-4" />} label={t('nav.budgets')} onSelect={() => goto('budgets')} />
-            <Item icon={<BookOpen className="h-4 w-4" />} label={t('nav.ledgers')} onSelect={() => goto('ledgers')} />
-            <Item icon={<Settings className="h-4 w-4" />} label={t('nav.profile')} onSelect={() => goto('settings-profile')} />
+            {([
+              ['overview', 'nav.overview'],
+              ['transactions', 'nav.transactions'],
+              ['attachments', 'attachments.title'],
+              ['calendar', 'nav.calendar'],
+              ['accounts', 'nav.accounts'],
+              ['categories', 'nav.categories'],
+              ['tags', 'nav.tags'],
+              ['members', 'nav.members'],
+              ['contacts', 'nav.contacts'],
+              ['loans', 'nav.loans'],
+              ['deposits', 'nav.deposits'],
+              ['saving-plans', 'nav.savingPlans'],
+              ['reimbursements', 'nav.reimbursements'],
+              ['items', 'nav.items'],
+              ['budgets', 'nav.budgets'],
+              ['ledgers', 'nav.ledgers'],
+              ['settings-profile', 'nav.profile'],
+            ] as Array<[AppSection, string]>).map(([section, labelKey]) => {
+              const { Icon, color } = sectionIcon(section)
+              return (
+                <Item
+                  key={section}
+                  icon={<Icon className="h-4 w-4" style={{ color }} strokeWidth={2} />}
+                  label={t(labelKey)}
+                  onSelect={() => goto(section)}
+                />
+              )
+            })}
             {isAdmin && (
               <Item icon={<Settings className="h-4 w-4" />} label={t('nav.users')} onSelect={() => goto('admin-users')} />
             )}

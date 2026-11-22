@@ -9,6 +9,7 @@ import type {
   ReadCategory,
   ReadLedger,
   ReadLedgerDetail,
+  ReadMember,
   ReadTag,
   ReadTransaction,
   SharedResourcesBundle,
@@ -63,6 +64,11 @@ export async function fetchReadCategories(token: string, ledgerId: string): Prom
 
 export async function fetchReadTags(token: string, ledgerId: string): Promise<ReadTag[]> {
   return authedGet<ReadTag[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/tags`, token)
+}
+
+/** 消费/收入成员名单(0024)。 */
+export async function fetchReadMembers(token: string, ledgerId: string): Promise<ReadMember[]> {
+  return authedGet<ReadMember[]>(`/read/ledgers/${encodeURIComponent(ledgerId)}/members`, token)
 }
 
 export async function fetchReadBudgets(token: string, ledgerId: string): Promise<ReadBudget[]> {
@@ -135,6 +141,8 @@ export async function fetchWorkspaceTransactions(
     tagSyncId?: string
     categorySyncId?: string
     accountSyncId?: string
+    /** 按成员 syncId 精确过滤(含分摊)。 */
+    memberSyncId?: string
     /** 金额下限(含),按 abs 比较 */
     amountMin?: number
     /** 金额上限(含) */
@@ -157,6 +165,7 @@ export async function fetchWorkspaceTransactions(
   if (options?.tagSyncId) query.set('tag_sync_id', options.tagSyncId)
   if (options?.categorySyncId) query.set('category_sync_id', options.categorySyncId)
   if (options?.accountSyncId) query.set('account_sync_id', options.accountSyncId)
+  if (options?.memberSyncId) query.set('member_sync_id', options.memberSyncId)
   if (typeof options?.amountMin === 'number') query.set('amount_min', `${options.amountMin}`)
   if (typeof options?.amountMax === 'number') query.set('amount_max', `${options.amountMax}`)
   if (options?.dateFrom) query.set('date_from', options.dateFrom)

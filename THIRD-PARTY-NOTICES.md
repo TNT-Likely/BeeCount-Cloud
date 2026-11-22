@@ -53,4 +53,18 @@ psycopg（PostgreSQL 驱动）采用 LGPL-3.0 协议。本项目**未修改** ps
 
 ---
 
+## 静态图标资源（vendored assets）
+
+下列图标以 SVG 文件形式随仓库分发（`frontend/apps/web/public/icons/`），不属于"构建期拉取的依赖"，故单独声明：
+
+| 资源 | 来源 | 协议 |
+|---|---|---|
+| 国际卡组织 / 支付品牌图标（`icons/banks/intl/*.svg`） | [aaronfagan/svg-credit-card-payment-icons](https://github.com/aaronfagan/svg-credit-card-payment-icons)（logo 风格，经 jsDelivr 获取） | Apache-2.0 |
+| 中国银行图标（`icons/banks/cn/*.svg`） | GitHub 开源银行 logo 集合 | 各品牌商标，仅作识别用途 |
+| 账户 / 充值卡图标（`icons/account/*.svg`） | 项目自绘（Lucide 风格） | 随本项目许可 |
+
+各品牌 logo 商标权归其所有者；本项目仅用于账户类型识别，不主张任何权利。详见 `icons/banks/intl/NOTICE.md`。
+
+---
+
 如发现本清单与上游实际协议不符，以上游为准，并欢迎提 Issue 指正。

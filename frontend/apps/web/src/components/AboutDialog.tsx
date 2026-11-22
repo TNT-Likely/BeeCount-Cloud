@@ -4,7 +4,7 @@ import {
   BookOpen,
   CheckCircle2,
   Cloud,
-  Github,
+  GitBranch,
   Handshake,
   Smartphone,
   Sparkles,
@@ -298,7 +298,7 @@ export function AboutDialog({ open, onOpenChange }: Props) {
         {/* 项目仓库 —— 三栏卡片,点击外链 */}
         <div className="mt-3">
           <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <Github className="h-3 w-3" />
+            <GitBranch className="h-3 w-3" />
             {t('about.reposHeader')}
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

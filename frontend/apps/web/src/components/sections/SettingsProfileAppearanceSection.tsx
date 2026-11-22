@@ -8,6 +8,7 @@ import {
   MoonStar,
   Palette,
   Pencil,
+  RotateCcw,
   Sun,
   Sunrise,
   X,
@@ -41,6 +42,16 @@ import {
 
 import { patchProfileMe, uploadProfileAvatar } from '@beecount/api-client'
 
+import { CategoryIcon } from '@beecount/web-features'
+import {
+  DEFAULT_FLOW_ICONS,
+  FLOW_ICON_KEYS,
+  INCOME_ICON_GROUPS,
+  resolveFlowIcon,
+  resolveFlowIconColor,
+  type FlowIconKey,
+} from '@beecount/web-features'
+
 import { useAuth } from '../../context/AuthContext'
 import {
   HEADER_SKINS,
@@ -55,6 +66,30 @@ import { SettingsExchangeRatesSection } from './SettingsExchangeRatesSection'
 
 const AVATAR_MAX_BYTES = 4 * 1024 * 1024 // 4 MB,跟 server 限制一致
 const DISPLAY_NAME_MAX = 60
+
+/** 特殊流水图标可选用的图标集合 —— 复用收入分组的 stored 值(Material Symbols),
+ *  覆盖金融/流向语义(savings / swap_horiz / trending_up 等),足够表达七类流水。 */
+const FLOW_ICON_CHOICES: { key: string; label: string }[] = INCOME_ICON_GROUPS.flatMap(
+  (g) => g.icons,
+)
+
+/** 特殊流水图标可选用的底色(十六进制)。首项跟随各自默认色,其余为常用区分色。 */
+const FLOW_ICON_COLOR_CHOICES: readonly string[] = [
+  '#10b981', '#0ea5e9', '#14b8a6', '#f97316', '#f59e0b', '#a855f7',
+  '#ef4444', '#ec4899', '#8b5cf6', '#6366f1', '#06b6d4', '#84cc16',
+  '#64748b', '#d97706', '#059669', '#dc2626',
+]
+
+/** 七类特殊流水的展示名 i18n key(与 flowIcons.ts 的 FlowIconKey 一一对齐)。 */
+const FLOW_ICON_LABEL_KEYS: Record<FlowIconKey, string> = {
+  deposit_interest: 'profile.sync.flowIcon.type.depositInterest',
+  transfer: 'profile.sync.flowIcon.type.transfer',
+  loan_lend: 'profile.sync.flowIcon.type.loanLend',
+  loan_borrow: 'profile.sync.flowIcon.type.loanBorrow',
+  loan_collect: 'profile.sync.flowIcon.type.loanCollect',
+  loan_repay: 'profile.sync.flowIcon.type.loanRepay',
+  refund: 'profile.sync.flowIcon.type.refund',
+}
 
 // 主币种候选列表 —— 跟 mobile prefs `baseCurrency` 常见取值对齐。当前值不在列表时
 // 会在下方动态补进去,保证旧值也能正常展示 / 选中。
@@ -207,6 +242,8 @@ export function SettingsProfileAppearanceSection() {
   const headerSkin = appearance.header_skin ?? 'none'
   const compactAmount = appearance.compact_amount ?? false
   const showTransactionTime = appearance.show_transaction_time ?? false
+  const calendarLunarEnabled = appearance.calendar_lunar_enabled ?? true
+  const calendarHolidayEnabled = appearance.calendar_holiday_enabled ?? true
   // 动态皮肤默认播放动效;关掉后 mobile 那边皮肤停在静态帧(省电)
   const skinAnimation = appearance.skin_animation ?? true
   const noteDisplayMode = appearance.note_display_mode ?? 'category'
@@ -230,6 +267,35 @@ export function SettingsProfileAppearanceSection() {
     } finally {
       setAppearanceSaving(false)
     }
+  }
+
+  // ── 特殊流水图标 / 颜色自定义 ──────────────────────────────────────────
+  // 转账 / 借款四态 / 退款 / 存款利息这些流水没有可编辑分类,图标此前硬编码,
+  // 现允许用户在 appearance.flow_icons / appearance.flow_icon_colors 里逐项自定义。
+  // 改任一项都走 saveAppearance 整体替换语义,写回 server 后 FlowIconsBridge 广播到全部渲染点。
+  const flowIcons = appearance.flow_icons ?? {}
+  const flowIconColors = appearance.flow_icon_colors ?? {}
+  // 当前正在编辑图标 / 颜色的 flow key(null = 未打开选择器)
+  const [flowIconPicker, setFlowIconPicker] = useState<FlowIconKey | null>(null)
+  const [flowColorPicker, setFlowColorPicker] = useState<FlowIconKey | null>(null)
+
+  const saveFlowIcon = (key: FlowIconKey, iconName: string) => {
+    void saveAppearance({ flow_icons: { ...flowIcons, [key]: iconName } })
+    setFlowIconPicker(null)
+  }
+  const resetFlowIcon = (key: FlowIconKey) => {
+    const next = { ...flowIcons }
+    delete next[key]
+    void saveAppearance({ flow_icons: next })
+  }
+  const saveFlowColor = (key: FlowIconKey, color: string) => {
+    void saveAppearance({ flow_icon_colors: { ...flowIconColors, [key]: color } })
+    setFlowColorPicker(null)
+  }
+  const resetFlowColor = (key: FlowIconKey) => {
+    const next = { ...flowIconColors }
+    delete next[key]
+    void saveAppearance({ flow_icon_colors: next })
   }
 
   // 切换皮肤。自带配色的皮肤(如周年蛋糕)在 mobile 上会把主题色
@@ -597,6 +663,56 @@ export function SettingsProfileAppearanceSection() {
                 />
               </button>
             </div>
+            {/* 日历农历显示 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.calendarLunar')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={calendarLunarEnabled}
+                aria-label={t('profile.sync.calendarLunar') as string}
+                disabled={appearanceSaving}
+                onClick={() =>
+                  void saveAppearance({ calendar_lunar_enabled: !calendarLunarEnabled })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  calendarLunarEnabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    calendarLunarEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* 日历节假日显示 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {t('profile.sync.calendarHoliday')}
+              </p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={calendarHolidayEnabled}
+                aria-label={t('profile.sync.calendarHoliday') as string}
+                disabled={appearanceSaving}
+                onClick={() =>
+                  void saveAppearance({ calendar_holiday_enabled: !calendarHolidayEnabled })
+                }
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  calendarHolidayEnabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    calendarHolidayEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
             {/* 皮肤动效:关掉后 mobile 的动态皮肤停在静态帧 —— 那些皮肤是持续
                 重绘的,长时间用会发烫,这是给用户的省电出口。web 不渲染皮肤,
                 这里只负责把开关写回 server。 */}
@@ -657,8 +773,174 @@ export function SettingsProfileAppearanceSection() {
               </div>
             </div>
           </div>
+
+          {/* 特殊流水图标 —— 转账/借款四态/退款/存款利息可逐项自定义图标与底色。
+              写回 appearance.flow_icons / flow_icon_colors,FlowIconsBridge 广播到所有渲染点。 */}
+          <div className="rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <div className="mb-3">
+              <p className="text-sm font-medium">{t('profile.sync.flowIcon.title')}</p>
+              <p className="text-xs text-muted-foreground">
+                {t('profile.sync.flowIcon.hint')}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {FLOW_ICON_KEYS.map((key) => {
+                const iconName = resolveFlowIcon(key, flowIcons)
+                const color = resolveFlowIconColor(key, flowIconColors)
+                const isDefault =
+                  iconName === DEFAULT_FLOW_ICONS[key] &&
+                  color === resolveFlowIconColor(key, {})
+                return (
+                  <div
+                    key={key}
+                    className="flex items-center gap-2 rounded-md border border-border/40 bg-background/40 px-2.5 py-2"
+                  >
+                    <span
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+                      style={{ backgroundColor: `${color}26`, color }}
+                    >
+                      <CategoryIcon icon={iconName} iconType="material" size={18} color={color} />
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-xs font-medium"
+                      title={t(FLOW_ICON_LABEL_KEYS[key]) as string}
+                    >
+                      {t(FLOW_ICON_LABEL_KEYS[key])}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setFlowIconPicker(key)}
+                        disabled={appearanceSaving}
+                      >
+                        {t('profile.sync.flowIcon.change')}
+                      </Button>
+                      <button
+                        type="button"
+                        onClick={() => setFlowColorPicker(key)}
+                        disabled={appearanceSaving}
+                        className="h-7 w-7 shrink-0 rounded-full border border-border/60 shadow-sm transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60"
+                        style={{ backgroundColor: color }}
+                        title={t('profile.sync.flowIcon.color') as string}
+                        aria-label={t('profile.sync.flowIcon.color') as string}
+                      />
+                      {!isDefault ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 px-0 text-xs text-muted-foreground"
+                          onClick={() => {
+                            resetFlowIcon(key)
+                            resetFlowColor(key)
+                          }}
+                          disabled={appearanceSaving}
+                          title={t('profile.sync.flowIcon.reset') as string}
+                          aria-label={t('profile.sync.flowIcon.reset') as string}
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         </CardContent>
       </Card>
+
+      {/* 图标选择器 —— 复用收入分组图标网格(Material Symbols)。 */}
+      <Dialog
+        open={flowIconPicker !== null}
+        onOpenChange={(open) => {
+          if (!open) setFlowIconPicker(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {flowIconPicker ? t(FLOW_ICON_LABEL_KEYS[flowIconPicker]) : ''} ·{' '}
+              {t('profile.sync.flowIcon.change')}
+            </DialogTitle>
+            <DialogDescription>{t('profile.sync.flowIcon.changeHint')}</DialogDescription>
+          </DialogHeader>
+          <div className="grid max-h-[50vh] grid-cols-6 gap-2 overflow-y-auto sm:grid-cols-8">
+            {FLOW_ICON_CHOICES.map((item) => {
+              const active = flowIconPicker
+                ? resolveFlowIcon(flowIconPicker, flowIcons) === item.key
+                : false
+              const color = flowIconPicker
+                ? resolveFlowIconColor(flowIconPicker, flowIconColors)
+                : undefined
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  title={item.label}
+                  onClick={() => {
+                    if (flowIconPicker) saveFlowIcon(flowIconPicker, item.key)
+                  }}
+                  className={`flex aspect-square items-center justify-center rounded-md border transition ${
+                    active
+                      ? 'border-primary bg-primary/10'
+                      : 'border-border/60 hover:bg-muted'
+                  }`}
+                  style={active && color ? { color } : undefined}
+                >
+                  <CategoryIcon
+                    icon={item.key}
+                    iconType="material"
+                    size={20}
+                    color={active && color ? color : undefined}
+                  />
+                </button>
+              )
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 颜色选择器 —— 常用区分色网格。 */}
+      <Dialog
+        open={flowColorPicker !== null}
+        onOpenChange={(open) => {
+          if (!open) setFlowColorPicker(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {flowColorPicker ? t(FLOW_ICON_LABEL_KEYS[flowColorPicker]) : ''} ·{' '}
+              {t('profile.sync.flowIcon.color')}
+            </DialogTitle>
+            <DialogDescription>{t('profile.sync.flowIcon.colorHint')}</DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-8 gap-2">
+            {FLOW_ICON_COLOR_CHOICES.map((c) => {
+              const active = flowColorPicker
+                ? resolveFlowIconColor(flowColorPicker, flowIconColors) === c
+                : false
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => {
+                    if (flowColorPicker) saveFlowColor(flowColorPicker, c)
+                  }}
+                  className={`h-8 w-8 rounded-full border-2 transition ${
+                    active ? 'scale-110 border-foreground' : 'border-border/60 hover:scale-105'
+                  }`}
+                  style={{ backgroundColor: c }}
+                  title={c}
+                  aria-label={c}
+                />
+              )
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 汇率管理小节 —— 主币种未设置时内部渲染空态、不发请求 */}
       <SettingsExchangeRatesSection />

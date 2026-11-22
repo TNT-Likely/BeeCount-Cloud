@@ -13,6 +13,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..attachment_paths import resolve_storage_path
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes
@@ -320,7 +321,7 @@ def download_attachment(
                     detail="Attachment access forbidden",
                 )
 
-    path = Path(row.storage_path)
+    path = resolve_storage_path(row.storage_path)
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment file missing")
 

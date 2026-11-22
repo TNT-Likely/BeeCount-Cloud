@@ -18,6 +18,75 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 import { dispatchOpenDetailTx, dispatchOpenNewTx } from '../../lib/txDialogEvents'
 
 // ============================================================================
+// 农历 + 法定节假日(调休班)支持 — lunar-javascript(纯前端,无网络请求)
+// ============================================================================
+// - 农历:Solar → Lunar,取 day 中文名(初一/十五/除夕),月初显示月名(正月/腊月…)
+// - 节假日:LunarUtil.FESTIVAL(公历/农历节日)+ 中国法定节假日表(holidayName + 调休「班」)
+//   法定假日表按年份维护,未覆盖年份自动回退到周末标记
+// - 开关:profileMe.appearance.calendar_lunar_enabled / calendar_holiday_enabled,
+//   与移动端共享,设置页可切
+
+import { Solar, Lunar, HolidayUtil } from 'lunar-javascript'
+
+/** 中国法定节假日表(含调休上班日)。key = YYYY-MM-DD,value = 名称;上班调休用「班」前缀。 */
+function buildHolidayTable(year: number): Map<string, { name: string; isWorkday: boolean }> {
+  const map = new Map<string, { name: string; isWorkday: boolean }>()
+  // HolidayUtil.getFestivals() 返回 { 'YYYY-MM-DD': Holiday },Holiday.getName() 形如 '元旦'/'国庆节',
+  // 调休上班日 name 为 '班'(target 为补班日期)。lunar-javascript 内置 2025 前后多年数据。
+  try {
+    const festivals = HolidayUtil.getFestivals() as Record<string, unknown>
+    for (const [k, v] of Object.entries(festivals || {})) {
+      const y = Number(k.slice(0, 4))
+      if (y !== year) continue
+      const name = String((v as { getName?: () => string }).getName?.() ?? '')
+      if (!name) continue
+      if (name === '班' || name.includes('班')) {
+        map.set(k, { name: '班', isWorkday: true })
+      } else {
+        map.set(k, { name, isWorkday: false })
+      }
+    }
+  } catch {
+    // 数据缺失年份静默降级:只显示周末,不显示法定节假日
+  }
+  return map
+}
+
+/** 取某月每天的农历文本与节假日标记。 */
+function buildLunarMonthData(
+  monthKey: string,
+): { lunar: Map<string, string>; holiday: Map<string, { name: string; isWorkday: boolean }> } {
+  const { year } = parseMonth(monthKey)
+  const holiday = buildHolidayTable(year)
+  const lunar = new Map<string, string>()
+  try {
+    for (const dateKey of gridDateKeysOfMonth(monthKey)) {
+      const [y, m, d] = dateKey.split('-').map(Number)
+      const lunarDay = Solar.fromYmd(y, m, d).getLunar()
+      // 初一显示月名(如「正月初一」太长,用「正月」),其他显示「初五/十五/廿三」
+      const dayName = lunarDay.getDayInChinese()
+      const label = dayName === '初一' ? lunarDay.getMonthInChinese() + '月' : dayName
+      lunar.set(dateKey, label)
+    }
+  } catch {
+    // lunar-javascript 解析失败静默降级
+  }
+  return { lunar, holiday }
+}
+
+/** 与 buildMonthGrid 相同逻辑但只取当月日期 key(用于批量算农历)。 */
+function gridDateKeysOfMonth(monthKey: string): string[] {
+  const { year, month } = parseMonth(monthKey)
+  const lastDay = new Date(year, month, 0).getDate()
+  const keys: string[] = []
+  for (let i = 1; i <= lastDay; i++) {
+    keys.push(`${year}-${String(month).padStart(2, '0')}-${String(i).padStart(2, '0')}`)
+  }
+  return keys
+}
+
+
+// ============================================================================
 // 日历视图 — 见 .docs/web-calendar-view-design.md
 // ============================================================================
 // 关键决策:
@@ -137,7 +206,7 @@ function aggregateByDay(series: WorkspaceAnalyticsSeriesItem[]): Map<string, Day
 
 export function CalendarPage() {
   const t = useT()
-  const { token } = useAuth()
+  const { token, profileMe } = useAuth()
   const { activeLedgerId, currency } = useLedgers()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -263,6 +332,13 @@ export function CalendarPage() {
     () => buildMonthGrid(focusedMonth, weekStartsOn),
     [focusedMonth, weekStartsOn],
   )
+
+  // ====== 农历 / 节假日(开关来自 profileMe.appearance,设置页可切)======
+  const lunarEnabled = profileMe?.appearance?.calendar_lunar_enabled ?? true
+  const holidayEnabled = profileMe?.appearance?.calendar_holiday_enabled ?? true
+  const lunarHoliday = useMemo(() => buildLunarMonthData(focusedMonth), [focusedMonth])
+  const lunarCacheKey = `calendar-lunar:${focusedMonth}`
+  const [lunarMonthCache] = usePageCache<typeof lunarHoliday>(lunarCacheKey, lunarHoliday)
 
   // ====== 选中日汇总(从 dayBuckets 取或从 dayTxs 算)======
   const selectedDayBucket = selectedDate ? dayBuckets.get(selectedDate) : undefined
@@ -488,6 +564,8 @@ export function CalendarPage() {
                       setFocusedMonth(dateKey.slice(0, 7))
                     }
                   }}
+                  lunarLabel={lunarEnabled ? lunarHoliday.lunar.get(dateKey) : undefined}
+                  holiday={holidayEnabled ? lunarHoliday.holiday.get(dateKey) : undefined}
                 />
               ))}
             </div>
@@ -553,6 +631,8 @@ type DayCellProps = {
   isSelected: boolean
   monthMaxAbsNet: number
   currency: string
+  lunarLabel?: string
+  holiday?: { name: string; isWorkday: boolean }
   onSelect: () => void
 }
 
@@ -563,6 +643,9 @@ function DayCell({
   isToday,
   isSelected,
   monthMaxAbsNet,
+  currency,
+  lunarLabel,
+  holiday,
   onSelect,
 }: DayCellProps) {
   const { locale } = useLocale()
@@ -629,20 +712,39 @@ function DayCell({
         >
           {dayNum}
         </span>
-        {/* 角标:今日(无交易)用脉冲圆点 / 有交易用净值色圆点 */}
-        {bucket && !isToday && (
-          <span
-            className="h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: `rgb(var(${colorVar}))` }}
-            aria-hidden
-          />
-        )}
-        {isToday && !bucket && (
-          <span
-            className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary/60"
-            aria-hidden
-          />
-        )}
+        {/* 农历 + 节假日 */}
+      {(lunarLabel || holiday) && inFocusedMonth && (
+        <div className="mt-0.5 flex items-center gap-1 text-[9px] leading-none">
+          {holiday && (
+            <span
+              className={
+                holiday.isWorkday
+                  ? 'rounded-sm bg-amber-500/15 px-1 text-amber-600'
+                  : 'rounded-sm bg-rose-500/15 px-1 text-rose-600'
+              }
+            >
+              {holiday.name}
+            </span>
+          )}
+          {lunarLabel && (
+            <span className="text-muted-foreground/70">{lunarLabel}</span>
+          )}
+        </div>
+      )}
+      {/* 角标:今日(无交易)用脉冲圆点 / 有交易用净值色圆点 */}
+      {bucket && !isToday && (
+        <span
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ backgroundColor: `rgb(var(${colorVar}))` }}
+          aria-hidden
+        />
+      )}
+      {isToday && !bucket && (
+        <span
+          className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary/60"
+          aria-hidden
+        />
+      )}
       </div>
 
       {/* 净值数字 — 弱化样式,主视觉是整格 tint */}

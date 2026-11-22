@@ -1,3 +1,5 @@
+import type { PartyProfile } from './partyProfile'
+
 export type LoginResponse = {
   /** 2FA 已启用且未验证时为 true,其余字段除 challenge_token / available_methods 外都 undefined */
   requires_2fa?: boolean
@@ -48,6 +50,19 @@ export type ProfileAppearance = {
   skin_animation?: boolean
   /** 明细行第一行显示方式:'category'(默认,分类+备注括号) | 'note'(备注优先) */
   note_display_mode?: 'category' | 'note'
+  /** 日历是否显示农历(默认 true,中文场景开) */
+  calendar_lunar_enabled?: boolean
+  /** 日历是否显示节假日(默认 true) */
+  calendar_holiday_enabled?: boolean
+  /** 特殊流水(转账/借款四态/退款/存款利息)的功能图标偏好 overrides。
+   *  key 与 web-features flowIcons.ts 的 FlowIconKey 对齐,value 为
+   *  Material Symbols stored 名;缺失时回落到该模块的内置默认图标。 */
+  flow_icons?: Record<string, string>
+  /** 特殊流水功能图标的底色偏好 overrides(与 flow_icons 同 key)。
+   *  value 为十六进制色值(如 '#10b981');缺失时回落到内置默认配色。
+   *  跟 flow_icons 分成两个 map,是为了让「换图标」和「换颜色」可以独立
+   *  恢复默认,也避免动图标时不慎清掉用户调好的颜色。 */
+  flow_icon_colors?: Record<string, string>
 }
 
 /**
@@ -170,7 +185,7 @@ export type ReadLedgerDetail = ReadLedger & {
 export type ReadTransaction = {
   id: string
   tx_index: number
-  tx_type: 'expense' | 'income' | 'transfer'
+  tx_type: 'expense' | 'income' | 'transfer' | 'refund'
   amount: number
   happened_at: string
   note: string | null
@@ -195,6 +210,36 @@ export type ReadTransaction = {
   currency_code?: string | null
   /** 折账本本位币的金额快照(记账时汇率,保存即定)。null 时 fallback 用 amount。 */
   native_amount?: number | null
+  /** 转账手续费/优惠(0022,仅 transfer)。 */
+  transfer_fee_amount?: number | null
+  transfer_discount_amount?: number | null
+  transfer_fee_account_id?: string | null
+  transfer_fee_account_name?: string | null
+  transfer_fee_tx_id?: string | null
+  transfer_discount_tx_id?: string | null
+  /** 支出优惠金额(0023,仅 expense)。 */
+  discount_amount?: number | null
+  /** 该笔交易发生后账户余额(读接口按账户时间线现算,不落库)。
+   *  expense/income = 交易账户;transfer = 转出账户。账户缺失时为 null。 */
+  account_balance_after?: number | null
+  /** transfer 专用:转入账户在该笔交易之后的余额。 */
+  counter_account_balance_after?: number | null
+  /** 退款(0025):该笔交易是否为一笔退款。 */
+  is_refund?: boolean
+  /** 退款(0025):本退款关联的原单交易 sync_id(refund 类型才有)。 */
+  refund_of_sync_id?: string | null
+  /** 退款(0025):原单已被退总额(读接口按 refund_of_sync_id 现聚合,不落库)。
+   *  原单 expense 上展示"已退 N";refund 自身为 null。 */
+  refunded_amount?: number | null
+  /** 合并还款(0039):一笔实际收付款同时结清多笔借款时,交易流水只有一条,
+   *  这里给出被合并的各笔借款本金流水 sync_id 列表,供详情页「查看原单」回溯。 */
+  merged_from_sync_ids?: string[]
+  /** 成员关联/分摊(0024):member_splits 各项金额之和 = amount。 */
+  member_ids?: string[]
+  member_names?: string | null
+  member_splits?: MemberSplit[]
+  /** 支出组合付款(0028):各项金额之和 = amount,非空时按拆分扣减各账户。 */
+  payment_splits?: PaymentSplit[]
   last_change_id: number
   ledger_id?: string | null
   ledger_name?: string | null
@@ -227,10 +272,18 @@ export type ReadAccount = {
   note?: string | null
   /** 信用额度,仅 credit_card。 */
   credit_limit?: number | null
-  /** 账单日(1-31),仅 credit_card。 */
-  billing_day?: number | null
-  /** 还款日(1-31),仅 credit_card。 */
-  payment_due_day?: number | null
+  /** 账单日(ISO datetime),仅 credit_card。 */
+  billing_day?: string | null
+  /** 还款日(ISO datetime),仅 credit_card。 */
+  payment_due_day?: string | null
+  /** 账单周期起始日(ISO datetime)。 */
+  billing_cycle_start?: string | null
+  /** 账单状态:0未出账/1已出账/2已还款/3部分还款/4已逾期。 */
+  bill_status?: number
+  bill_amount_due?: number | null
+  bill_minimum_amount?: number | null
+  bill_paid_amount?: number | null
+  bill_remaining_amount?: number | null
   /** 开户行,bank_card / credit_card 元信息。 */
   bank_name?: string | null
   /** 卡号后四位,bank_card / credit_card。 */
@@ -239,6 +292,10 @@ export type ReadAccount = {
    *  退场收进「已隐藏」分区;但仍计入净资产/资产/收支(D1,服务端不做统计过滤)。
    *  缺省 false(旧接口未提供该字段时视为未隐藏)。 */
   hidden?: boolean
+  /** 账户图标/背景(issue #icon):icon_key 对应公共图标库键；icon_type 标识图标类型(bank|card|custom)；background_key 对应背景键。 */
+  icon_key?: string | null
+  icon_type?: string | null
+  background_key?: string | null
 }
 
 export type ReadCategory = {
@@ -270,6 +327,41 @@ export type ReadTag = {
   ledger_name?: string | null
   created_by_user_id?: string | null
   created_by_email?: string | null
+}
+
+/** 消费/收入成员(0024)。user-global 实体，与共享账本协作者无关。 */
+export type ReadMember = {
+  id: string
+  name: string
+  color: string | null
+  last_change_id: number
+  ledger_id?: string | null
+  ledger_name?: string | null
+  created_by_user_id?: string | null
+  created_by_email?: string | null
+  /** 关联人资料(头像 / 多联系方式 / 多银行卡)。 */
+  profile?: PartyProfile | null
+}
+
+/** 一笔收支在某个成员名下的分摊金额。 */
+export type MemberSplit = {
+  member_id: string
+  name?: string | null
+  amount: number
+}
+
+/** 支出组合付款中的单个支付渠道(0028)。 */
+export type PaymentSplit = {
+  account_id: string
+  account_name?: string | null
+  amount: number
+}
+
+export type MemberPayload = {
+  name: string
+  color?: string | null
+  /** 关联人资料；传空对象表示清空。 */
+  profile?: PartyProfile | null
 }
 
 export type ReadBudget = {
@@ -371,6 +463,14 @@ export type WorkspaceAnalyticsCategoryRank = {
   tx_count: number
 }
 
+/** 成员统计维度(0024):按分摊到该成员的金额聚合。 */
+export type WorkspaceAnalyticsMemberRank = {
+  member_id: string
+  member_name: string
+  total: number
+  tx_count: number
+}
+
 export type WorkspaceAnalyticsAnomalyAttribution = {
   category_name: string
   amount: number
@@ -404,6 +504,8 @@ export type WorkspaceAnalytics = {
   summary: WorkspaceAnalyticsSummary
   series: WorkspaceAnalyticsSeriesItem[]
   category_ranks: WorkspaceAnalyticsCategoryRank[]
+  /** 成员维度排行(0024)。 */
+  member_ranks?: WorkspaceAnalyticsMemberRank[]
   /** 仅 scope=year 时填,已发生月份 < 3 时为空。 */
   anomaly_months: WorkspaceAnalyticsAnomalyMonth[]
   range: WorkspaceAnalyticsRange
@@ -567,7 +669,7 @@ export type AdminBackupRestoreResponse = {
 }
 
 export type TxPayload = {
-  tx_type: 'expense' | 'income' | 'transfer'
+  tx_type: 'expense' | 'income' | 'transfer' | 'refund'
   amount: number
   happened_at: string
   /** 交易级多币种(0018):原币种;不传 = 账本本位币(不产生字段)。 */
@@ -591,6 +693,26 @@ export type TxPayload = {
   exclude_from_stats?: boolean | null
   /** 不计入预算用量(仅 expense 有意义)。 */
   exclude_from_budget?: boolean | null
+  /** 转账手续费/优惠(0022,仅 transfer) */
+  transfer_fee_amount?: number | null
+  transfer_discount_amount?: number | null
+  transfer_fee_account_id?: string | null
+  transfer_fee_account_name?: string | null
+  /** 支出优惠金额(0023,仅 expense);null / 0 = 无优惠。 */
+  discount_amount?: number | null
+  /** 成员关联/分摊(0024,仅 expense/income):空数组 = 清除成员。 */
+  member_splits?: MemberSplit[] | null
+  /** 支出组合付款(0028,仅 expense):空数组 = 清除组合付款,恢复单一账户。 */
+  payment_splits?: PaymentSplit[] | null
+  /** 退款(0025,仅 refund):关联的原单交易 sync_id。必须指向一笔已存在的 expense。 */
+  refund_of_sync_id?: string | null
+  /** 报销(0035,仅 expense):标记该账单为待报销。服务端会强制不记收支/不记预算。 */
+  is_reimbursement?: boolean | null
+  /** 报销公司维度(0037):勾选报销时必填公司 id，服务端按档案回填公司名。 */
+  reimbursement_company_id?: string | null
+  reimbursement_company_name?: string | null
+  /** 关联物品(0044):该交易挂到这件物品(成为它的一条支出/收入流水)。 */
+  item_id?: string | null
 }
 
 export type BudgetCreatePayload = {
@@ -618,10 +740,15 @@ export type AccountPayload = {
   initial_balance?: number | null
   note?: string | null
   credit_limit?: number | null
-  billing_day?: number | null
-  payment_due_day?: number | null
+  /** 账单日。存 ISO datetime(日号落在日期位,如 2020-01-20T00:00:00),与 server datetime 契约一致。 */
+  billing_day?: string | null
+  payment_due_day?: string | null
   bank_name?: string | null
   card_last_four?: string | null
+  /** 账户图标/背景(issue #icon)。create/update 可选;不传 = 不改。 */
+  icon_key?: string | null
+  icon_type?: string | null
+  background_key?: string | null
   /** 账户隐藏(issue #240)。create 缺省 false;update 不传 = 不改(服务端
    *  merge 缺键保留,见 snapshot_mutator._apply_account_optional_fields)。 */
   hidden?: boolean | null
@@ -719,8 +846,8 @@ export type SharedAccountItem = {
   initial_balance: number | null
   note: string | null
   credit_limit: number | null
-  billing_day: number | null
-  payment_due_day: number | null
+  billing_day: string | null
+  payment_due_day: string | null
   bank_name: string | null
   card_last_four: string | null
 }

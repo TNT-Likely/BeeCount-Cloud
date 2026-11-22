@@ -15,11 +15,12 @@ import { useSyncRefresh } from '../../context/SyncSocketContext'
 // SettingsHealthSection 现仅被 SettingsHealthPage 使用。
 // SettingsProfileAppearanceSection 现仅被 SettingsProfilePage 使用。
 import { useAuth } from '../../context/AuthContext'
+import { useLock, lockDayToIso } from '../../context/LockContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useSharedLedgerResources } from '../../context/SharedLedgerResourcesContext'
 import { bundleToReadResources } from '../../lib/shared-ledger-mappers'
 
-import { CheckSquare, Download, SlidersHorizontal } from 'lucide-react'
+import { CheckSquare, Download, SlidersHorizontal, Lock } from 'lucide-react'
 
 import {
   useToast,
@@ -45,26 +46,37 @@ import {
   useLocale,
   useT
 } from '@beecount/ui'
+import { DatePicker } from '../../components/DatePicker'
 
 import {
   ApiError,
   batchDeleteTransactions,
   downloadAttachment,
   type AttachmentRef,
+  type Company,
+  type Item,
   type ReadAccount,
   type ReadCategory,
   type ReadLedger,
+  type ReadMember,
   type ReadTag,
   type ReadTransaction,
   type WorkspaceTag,
   type ProfileMe,
   deleteLedger,
+  createReimbursementItem,
   createTransaction,
+  deleteReimbursementItem,
   deleteTransaction,
   downloadWorkspaceTransactionsCsv,
   fetchAdminUsers,
+  fetchCompanies,
+  fetchItems,
+  fetchFlowLinks,
+  fetchReimbursementItemByTx,
   fetchReadLedgerDetail,
   fetchReadLedgers,
+  fetchReadMembers,
   type WorkspaceAccount,
   type WorkspaceCategory,
   type WorkspaceTransaction,
@@ -89,6 +101,10 @@ import {
   canManageLedger,
   canWriteTransactions,
   txDefaults,
+  buildMemberSplits,
+  memberSplitsValid,
+  buildPaymentSplits,
+  paymentSplitsValid,
   type TxForm
 } from '@beecount/web-features'
 
@@ -98,7 +114,8 @@ import { BatchDeleteDialog } from '../../components/tx-batch/BatchDeleteDialog'
 import { SelectionToolbar } from '../../components/tx-batch/SelectionToolbar'
 import { localizeError } from '../../i18n/errors'
 import { consumePendingShareText } from '../../lib/pwa-intake'
-import { dispatchOpenDetailTx } from '../../lib/txDialogEvents'
+import { dispatchOpenDetailTx, dispatchOpenEditTx } from '../../lib/txDialogEvents'
+import { onTxRefresh } from '../../lib/txRefreshEvents'
 // AppLayout 已搬到 AppShell。
 import type { AppSection } from '../../state/router'
 
@@ -264,6 +281,7 @@ export function TransactionsPage() {
     []
   )
   const { token, logout: onLogout } = useAuth()
+  const { isLocked: bookLocked, lockDay } = useLock()
   const t = useT()
   const { locale } = useLocale()
   // mobile 推过来的主题色偏好:本地没 override 时跟随 server。
@@ -330,6 +348,7 @@ export function TransactionsPage() {
   const [txDictionaryAccounts, setTxDictionaryAccounts] = useState<ReadAccount[]>([])
   const [txDictionaryCategories, setTxDictionaryCategories] = useState<ReadCategory[]>([])
   const [txDictionaryTags, setTxDictionaryTags] = useState<ReadTag[]>([])
+  const [txDictionaryMembers, setTxDictionaryMembers] = useState<ReadMember[]>([])
   // 标签详情弹窗：点击标签卡片时打开，内部用 TransactionList 无限滚动加载
   // 该标签关联的交易。
   // tagDetail * state + TAG_DETAIL_PAGE_SIZE 已迁到 TagsPage。
@@ -341,6 +360,11 @@ export function TransactionsPage() {
   // 只取一次初值(search param 同步由 App 内部 setListQuery 自己走),避免
   // 每次 listQuery 改都跟 URL 双向拉扯。
   const [searchParams, setSearchParams] = useSearchParams()
+  // 成员统计维度深链：成员页点卡片跳 /app/transactions?member=<syncId>&memberName=<name>。
+  // URL 是唯一数据源，不写进 localStorage 的 TxFilter —— 刷新仍保留筛选，
+  // 但换个账本 / 重进页面不会被旧成员条件悄悄锁住。
+  const urlMemberSyncId = searchParams.get('member') || ''
+  const urlMemberName = searchParams.get('memberName') || ''
   const [listQuery, setListQueryRaw] = useState(() => searchParams.get('q') || '')
   const setListQuery = useCallback(
     (next: string) => {
@@ -393,8 +417,16 @@ export function TransactionsPage() {
   // 同级渲染(filter dialog z-index 之外),避免嵌套 dialog 导致 portal 抖动。
   const [txFilterCategoryPickerOpen, setTxFilterCategoryPickerOpen] = useState(false)
   const [txFilterTagPickerOpen, setTxFilterTagPickerOpen] = useState(false)
+  // 成员筛选值不进 TxFilter（URL 驱动），但弹窗里需要一份可编辑的 draft。
+  const [txFilterMemberDraft, setTxFilterMemberDraft] = useState('')
 
   const [txForm, setTxForm] = useState<TxForm>(txDefaults)
+  // 报销(0035)：本地编辑弹窗对应的报销项 id
+  const [txRbItemId, setTxRbItemId] = useState<string | null>(null)
+  // 报销公司维度(0037)：用户级公司档案，勾选报销时必选
+  const [companies, setCompanies] = useState<Company[]>([])
+  // 0044:可选关联的物品(账单表单里的「关联物品」下拉)。
+  const [itemOptions, setItemOptions] = useState<Item[]>([])
   // tx dialog 显隐 lift 到 page,这样"新建交易"按钮可以跟搜索/筛选放同一
   // 行(panel 自己不再渲染按钮 + dialog state)。编辑流程通过 onEdit 回调
   // 设 form 后 page 这里 setOpen(true)。
@@ -636,6 +668,7 @@ export function TransactionsPage() {
           accountName: txFilterApplied.accountName || undefined,
           categorySyncId: txFilterApplied.categorySyncId || undefined,
           tagSyncId: txFilterApplied.tagSyncId || undefined,
+          memberSyncId: urlMemberSyncId || undefined,
           amountMin: Number.isFinite(minNum) && txFilterApplied.amountMin ? minNum : undefined,
           amountMax: Number.isFinite(maxNum) && txFilterApplied.amountMax ? maxNum : undefined,
           dateFrom: dateFromIso,
@@ -926,12 +959,25 @@ export function TransactionsPage() {
     listUserFilter,
     listQuery,
     txFilterApplied,
+    urlMemberSyncId,
     route.section,
     isAdminUser,
     activeLedgerId,
     txPage,
     txPageSize
   ])
+
+  // 退款(0025)等写操作完成后,GlobalEntityDialogs 派发 beecount:tx-refresh,
+  // 这里监听并刷新基础账本 + 当前 section 数据。交易页会重拉列表,反映新增的
+  // 退款行与原单 refunded_amount 置灰;其它 section 也会顺带刷新保持新鲜。
+  useEffect(() => {
+    return onTxRefresh(() => {
+      const ledgerId = activeLedgerId
+      if (!ledgerId) return
+      void loadLedgerBase(ledgerId)
+      void refreshSectionData(ledgerId, route.section)
+    })
+  }, [activeLedgerId, route.section, loadLedgerBase, refreshSectionData])
 
   useEffect(() => {
     if (route.section !== 'transactions') return
@@ -996,7 +1042,8 @@ export function TransactionsPage() {
     // 交给下面 useMemo（同币种 + 非估值账户）。
     setTxDictionaryLoading(true)
     try {
-      const [accountRows, categoryRows, tagRows] = await Promise.all([
+      const memberLedgerId = txWriteLedgerId || activeLedgerId || ''
+      const [accountRows, categoryRows, tagRows, memberRows, companyRows, itemRows] = await Promise.all([
         fetchWorkspaceAccounts(token, {
           userId: targetUserId,
           limit: 2000
@@ -1008,11 +1055,22 @@ export function TransactionsPage() {
         fetchWorkspaceTags(token, {
           userId: targetUserId,
           limit: 2000
-        })
+        }),
+        // 成员是 user-global,任取一个可见账本即可;拉不到不阻断主流程。
+        memberLedgerId
+          ? fetchReadMembers(token, memberLedgerId).catch(() => [] as ReadMember[])
+          : Promise.resolve([] as ReadMember[]),
+        // 公司档案是 user-global，拉不到不阻断主流程。
+        fetchCompanies(token).catch(() => [] as Company[]),
+        // 物品(0044):按当前账本拉,拉不到不阻断主流程。
+        fetchItems(token, memberLedgerId).catch(() => [] as Item[])
       ])
       setTxDictionaryAccounts(accountRows)
       setTxDictionaryCategories(categoryRows)
       setTxDictionaryTags(tagRows)
+      setTxDictionaryMembers(memberRows)
+      setCompanies(companyRows)
+      setItemOptions(itemRows)
     } finally {
       setTxDictionaryLoading(false)
     }
@@ -1106,7 +1164,8 @@ export function TransactionsPage() {
     Number(Boolean(txFilterApplied.dateFrom)) +
     Number(Boolean(txFilterApplied.dateTo)) +
     Number(Boolean(txFilterApplied.categorySyncId)) +
-    Number(Boolean(txFilterApplied.tagSyncId))
+    Number(Boolean(txFilterApplied.tagSyncId)) +
+    Number(Boolean(urlMemberSyncId))
 
   const onOpenTxFilter = () => {
     // draft 必须 mirror 全部 applied 字段(原版只搬 q/txType/accountName,
@@ -1116,7 +1175,26 @@ export function TransactionsPage() {
       ...txFilterApplied,
       q: listQuery || txFilterApplied.q,
     })
+    setTxFilterMemberDraft(urlMemberSyncId)
     setTxFilterOpen(true)
+  }
+
+  /** 成员筛选写在 URL 上（见 urlMemberSyncId），apply / reset 时同步读写。 */
+  const syncMemberUrlParam = (memberId: string) => {
+    const next = new URLSearchParams(searchParams)
+    // q 由 listQuery state 接管，统一在这里清掉，避免和"用户输入时删 q"
+    // 的 effect 同时调用 setSearchParams 互相覆盖掉 member 参数。
+    next.delete('q')
+    if (memberId) {
+      next.set('member', memberId)
+      const name = txDictionaryMembers.find((m) => m.id === memberId)?.name || ''
+      if (name) next.set('memberName', name)
+      else next.delete('memberName')
+    } else {
+      next.delete('member')
+      next.delete('memberName')
+    }
+    setSearchParams(next, { replace: true })
   }
 
   const onApplyTxFilter = () => {
@@ -1125,6 +1203,7 @@ export function TransactionsPage() {
     setTxFilterApplied(next)
     setListQuery(next.q)
     setTxPage(1)
+    syncMemberUrlParam(txFilterMemberDraft)
     setTxFilterOpen(false)
   }
 
@@ -1132,8 +1211,10 @@ export function TransactionsPage() {
     const next = defaultTxFilter()
     setTxFilterDraft(next)
     setTxFilterApplied(next)
+    setTxFilterMemberDraft('')
     setListQuery('')
     setTxPage(1)
+    syncMemberUrlParam('')
     setTxFilterOpen(false)
   }
 
@@ -1208,11 +1289,60 @@ export function TransactionsPage() {
       setErrorNotice(t('transactions.error.amountInvalid'))
       return false
     }
+    // 支出优惠(0023):必须 >=0 且不超过交易金额(amount 为实付/入账金额)。
+    const expenseDiscountAmount = txForm.tx_type === 'expense' && txForm.discount_amount.trim() !== ''
+      ? Number(txForm.discount_amount.trim())
+      : null
+    if (expenseDiscountAmount !== null && (!Number.isFinite(expenseDiscountAmount) || expenseDiscountAmount < 0 || expenseDiscountAmount > amountNum)) {
+      setErrorNotice(t('transactions.error.discountInvalid'))
+      return false
+    }
+    // 成员分摊(0024):合计必须等于交易金额,且每行都得选成员。
+    const memberNameById = new Map(
+      txDictionaryMembers.map((m) => [m.id, m.name] as const)
+    )
+    const memberSplits = buildMemberSplits(txForm, memberNameById)
+    if (txForm.split_enabled && txForm.tx_type !== 'transfer') {
+      if (txForm.member_splits.some((row) => !row.member_id || Number(row.amount) <= 0)) {
+        setErrorNotice(t('members.error.splitIncomplete'))
+        return false
+      }
+      if (!memberSplitsValid(memberSplits, amountNum)) {
+        setErrorNotice(t('members.error.splitMismatch'))
+        return false
+      }
+    }
+
+    // 支出组合付款(0028):仅 expense,≥2 渠道且账户不重复,金额>0,合计=总额。
+    const accountNameById = new Map(
+      txWriteAccounts.map((a) => [a.id, a.name] as const)
+    )
+    const paymentSplits = buildPaymentSplits(txForm, accountNameById)
+    if (txForm.payment_split_enabled && txForm.tx_type === 'expense') {
+      if (txForm.payment_splits.some((row) => !row.account_id || Number(row.amount) <= 0)) {
+        setErrorNotice(t('paymentSplit.error.incomplete'))
+        return false
+      }
+      const ids = txForm.payment_splits.map((r) => r.account_id).filter(Boolean)
+      if (new Set(ids).size !== ids.length) {
+        setErrorNotice(t('paymentSplit.error.duplicateAccount'))
+        return false
+      }
+      if (paymentSplits.length < 2 || !paymentSplitsValid(paymentSplits, amountNum)) {
+        setErrorNotice(t('paymentSplit.error.mismatch'))
+        return false
+      }
+    }
     // 非转账交易必须选分类(transfer 自动归虚拟"转账"分类,server 处理)。
     // mobile 端 transaction_editor_page 也强制必选,跨端一致避免 ungrouped tx
     // 污染分类统计。
     if (txForm.tx_type !== 'transfer' && !txForm.category_name.trim()) {
       setErrorNotice(t('transactions.error.categoryRequired'))
+      return false
+    }
+    // 报销公司维度(0037)：勾选报销必须选择公司。
+    if (txForm.tx_type === 'expense' && txForm.is_reimbursement && !txForm.reimbursement_company_id) {
+      setErrorNotice(t('txFlagReimbursementCompanyRequired'))
       return false
     }
     if (txForm.tx_type === 'transfer') {
@@ -1278,6 +1408,13 @@ export function TransactionsPage() {
         }
       }
 
+      const transferFeeAmount = isTransfer && txForm.transfer_fee_amount.trim() !== ''
+        ? Number(txForm.transfer_fee_amount)
+        : null
+      const transferDiscountAmount = isTransfer && txForm.transfer_discount_amount.trim() !== ''
+        ? Number(txForm.transfer_discount_amount)
+        : null
+      const feeAccountName = isTransfer ? txForm.transfer_fee_account_name.trim() : ''
       const payload = {
         tx_type: txForm.tx_type,
         amount: Number(txForm.amount || 0),
@@ -1298,6 +1435,33 @@ export function TransactionsPage() {
         // §三 标记按 type 条件落库:转账两者都 false;收入只允许 stats;支出两者都允许。
         exclude_from_stats: isTransfer ? false : txForm.exclude_from_stats,
         exclude_from_budget: txForm.tx_type === 'expense' ? txForm.exclude_from_budget : false,
+        // 报销(0035)：仅支出可标记；新建时后端自动登记待报销项
+        is_reimbursement: txForm.tx_type === 'expense' ? txForm.is_reimbursement : false,
+        ...(txForm.tx_type === 'expense' && txForm.is_reimbursement
+          ? {
+              reimbursement_company_id: txForm.reimbursement_company_id || null,
+              reimbursement_company_name: txForm.reimbursement_company_name || null,
+            }
+          : {}),
+        ...(isTransfer
+          ? {
+              transfer_fee_amount: Number.isFinite(transferFeeAmount as number) && (transferFeeAmount as number) > 0 ? transferFeeAmount : null,
+              transfer_discount_amount: Number.isFinite(transferDiscountAmount as number) && (transferDiscountAmount as number) > 0 ? transferDiscountAmount : null,
+              transfer_fee_account_name: feeAccountName || null,
+              transfer_fee_account_id: feeAccountName ? (accountByName.get(feeAccountName.toLowerCase()) || null) : null,
+            }
+          : {}),
+        // 支出优惠(0023):总是传,非 expense 传 null 以清除编辑时的旧值。
+        discount_amount: expenseDiscountAmount !== null && expenseDiscountAmount > 0 ? expenseDiscountAmount : null,
+        // 成员关联/分摊(0024):空数组表示「不关联 / 清除」。
+        member_splits: memberSplits,
+        // 支出组合付款(0028):空数组表示「不使用 / 清除」。
+        payment_splits: paymentSplits,
+        // 关联物品(0044):仅支出/收入可关联;空串表示「不关联 / 清除」。
+        item_id:
+          txForm.tx_type === 'expense' || txForm.tx_type === 'income'
+            ? txForm.item_id || ''
+            : '',
         ...currencyFields
       }
       // eslint-disable-next-line no-console
@@ -1323,6 +1487,31 @@ export function TransactionsPage() {
         setBaseChangeId(res.new_change_id)
       }
       const editingTxId = txForm.editingId
+      // 报销(0035)：编辑模式后端 update 不处理报销标记，这里显式同步
+      if (editingTxId) {
+        const wanted = txForm.tx_type === 'expense' && txForm.is_reimbursement
+        try {
+          if (wanted) {
+            await createReimbursementItem(token, {
+              ledger_id: ledgerId,
+              tx_sync_id: editingTxId,
+              amount: Number(txForm.amount || 0),
+              happened_at: txForm.happened_at,
+              note: txForm.note || null,
+              category_name: txForm.category_name || null,
+              account_id: accountByName.get((txForm.account_name || '').trim().toLowerCase()) || null,
+              account_name: txForm.account_name || null,
+              currency_code: txForm.currency || null,
+              attachments: payload.attachments,
+              company_id: txForm.reimbursement_company_id,
+              company_name: txForm.reimbursement_company_name,
+            })
+          } else if (txRbItemId) {
+            await deleteReimbursementItem(token, txRbItemId)
+          }
+        } catch { /* 报销同步失败不阻断交易保存 */ }
+      }
+      setTxRbItemId(null)
       setTxForm(txDefaults())
       const refreshLedger = activeLedgerId || ledgerId
       await refreshSectionData(refreshLedger, 'transactions')
@@ -1603,6 +1792,12 @@ export function TransactionsPage() {
         <div className="space-y-4 pb-20 md:pb-0">
           {/* overview 已迁出到 OverviewPage */}
 
+          {bookLocked && lockDay ? (
+            <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <Lock className="h-4 w-4 shrink-0" />
+              <span>{t('settings.lock.banner').replace('{date}', lockDay)}</span>
+            </div>
+          ) : null}
           {route.section === 'transactions' ? (
             <div className="space-y-3">
               {/* 交易搜索简化：keyword + 可选 filter 按钮，去掉 Card 包裹与
@@ -1637,6 +1832,26 @@ export function TransactionsPage() {
                     </div>
                   ) : null}
                 </div>
+                {/* 成员深链筛选的可视化 chip：点 × 直接清掉 URL 上的 member 参数。 */}
+                {urlMemberSyncId ? (
+                  <span className="inline-flex h-9 max-w-[240px] items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 text-xs">
+                    <span className="shrink-0 text-muted-foreground">{t('shell.filter.member')}:</span>
+                    <span className="truncate">{urlMemberName || urlMemberSyncId}</span>
+                    <button
+                      type="button"
+                      className="ml-1 shrink-0 rounded px-1 text-muted-foreground hover:bg-primary/20 hover:text-foreground"
+                      aria-label={t('common.remove')}
+                      onClick={() => {
+                        const next = new URLSearchParams(searchParams)
+                        next.delete('member')
+                        next.delete('memberName')
+                        setSearchParams(next, { replace: true })
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ) : null}
                 <div className="ml-auto flex items-center gap-2">
                 {/* 「批量选择」入口 — 桌面端独占,小屏完全不渲染。点击进选择
                     模式,toolbar 出现,行首加 checkbox。设计:.docs/web-tx-batch-actions.md */}
@@ -1759,6 +1974,9 @@ export function TransactionsPage() {
                 categories={txWriteCategories}
                 iconPreviewUrlByFileId={categoryIconPreviewByFileId}
                 tags={txWriteTags}
+                members={txDictionaryMembers}
+                companies={companies}
+                items={itemOptions}
                 ledgerOptions={txWriteLedgerOptions}
                 writeLedgerId={txWriteLedgerId}
                 onWriteLedgerIdChange={setTxWriteLedgerId}
@@ -1768,6 +1986,7 @@ export function TransactionsPage() {
                   setTxPage(1)
                 }}
                 canWrite={Boolean(canWriteTx)}
+                lockCutoff={bookLocked && lockDay ? lockDayToIso(lockDay) : null}
                 // §7 共享账本:tx 列表当前 ledger 若是共享账本,每行尾巴
                 // 显示"XX 创建 · YY 编辑"chip(server 已注入 created_by_* +
                 // last_edited_by_* 字段)。currentUserId 用来过滤"全是自己"
@@ -1794,8 +2013,35 @@ export function TransactionsPage() {
                 onReload={onRefresh}
                 onPreviewAttachment={onPreviewTxAttachment}
                 resolveAttachmentPreviewUrl={resolveTxAttachmentPreviewUrl}
-                onEdit={(tx) => {
+                onEdit={async (tx) => {
+                  // 退款(0025)走全局编辑弹窗(已支持 refund_of_sync_id 回传),
+                  // 不走本地通用编辑表单,避免缺原单关联被后端拒。
+                  if (tx.tx_type === 'refund') {
+                    dispatchOpenEditTx(tx as WorkspaceTransaction)
+                    return
+                  }
+                  // 报销(0035)：查是否已登记为报销项
+                  let rbItemId: string | null = null
+                  let rbCompanyId = ''
+                  let rbCompanyName = ''
+                  try {
+                    const rb = await fetchReimbursementItemByTx(token, tx.id)
+                    rbItemId = rb?.id ?? null
+                    rbCompanyId = rb?.company_id || ''
+                    rbCompanyName = rb?.company_name || ''
+                  } catch { /* ignore */ }
+                  setTxRbItemId(rbItemId)
                   setTxWriteLedgerId(tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || '')
+                  // 0044:回填该笔账单已关联的物品(流水 → 物品的反查)。
+                  let linkedItemId = ''
+                  try {
+                    const links = await fetchFlowLinks(
+                      token,
+                      tx.id,
+                      tx.ledger_id || txWriteLedgerOptions[0]?.ledger_id || ''
+                    )
+                    linkedItemId = links.links.find((l) => l.kind === 'item')?.target.item_id || ''
+                  } catch { /* ignore */ }
                   setTxDialogOpen(true)
                   setTxForm({
                     editingId: tx.id,
@@ -1803,6 +2049,7 @@ export function TransactionsPage() {
                     tx_type: tx.tx_type,
                     amount: String(tx.amount),
                     happened_at: tx.happened_at,
+                    item_id: linkedItemId,
                     note: tx.note || '',
                     category_name: tx.category_name || '',
                     category_kind: (tx.category_kind as TxForm['category_kind']) || 'expense',
@@ -1824,7 +2071,31 @@ export function TransactionsPage() {
                             .filter((value) => value.length > 0),
                     attachments: normalizeAttachmentRefs(tx.attachments),
                     exclude_from_stats: Boolean(tx.exclude_from_stats),
-                    exclude_from_budget: Boolean(tx.exclude_from_budget)
+                    exclude_from_budget: Boolean(tx.exclude_from_budget),
+                    is_reimbursement: rbItemId !== null,
+                    reimbursement_company_id: rbCompanyId,
+                    reimbursement_company_name: rbCompanyName,
+                    transfer_fee_amount: tx.transfer_fee_amount != null && tx.transfer_fee_amount > 0 ? String(tx.transfer_fee_amount) : '',
+                    transfer_discount_amount: tx.transfer_discount_amount != null && tx.transfer_discount_amount > 0 ? String(tx.transfer_discount_amount) : '',
+                    transfer_fee_account_name: tx.transfer_fee_account_name || '',
+                    discount_amount: tx.discount_amount != null && tx.discount_amount > 0 ? String(tx.discount_amount) : '',
+                    member_id: tx.member_splits && tx.member_splits.length === 1 ? tx.member_splits[0].member_id : '',
+                    split_enabled: Boolean(tx.member_splits && tx.member_splits.length > 1),
+                    member_splits: (tx.member_splits || []).length > 1
+                      ? (tx.member_splits || []).map((s) => ({
+                          member_id: s.member_id,
+                          name: s.name || '',
+                          amount: String(s.amount)
+                        }))
+                      : [],
+                    payment_split_enabled: Boolean(tx.payment_splits && tx.payment_splits.length >= 2),
+                    payment_splits: (tx.payment_splits || []).length >= 2
+                      ? (tx.payment_splits || []).map((s) => ({
+                          account_id: s.account_id,
+                          account_name: s.account_name || '',
+                          amount: String(s.amount)
+                        }))
+                      : []
                   })
                 }}
                 onDelete={(row) =>
@@ -1943,22 +2214,18 @@ export function TransactionsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label>{t('shell.filter.dateFrom')}</Label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={txFilterDraft.dateFrom}
-                  onChange={(event) =>
-                    setTxFilterDraft((prev) => ({ ...prev, dateFrom: event.target.value }))
-                  }
+                  onChange={(v) => setTxFilterDraft((prev) => ({ ...prev, dateFrom: v }))}
+                  label={t('shell.filter.dateFrom')}
                 />
               </div>
               <div className="space-y-1">
                 <Label>{t('shell.filter.dateTo')}</Label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={txFilterDraft.dateTo}
-                  onChange={(event) =>
-                    setTxFilterDraft((prev) => ({ ...prev, dateTo: event.target.value }))
-                  }
+                  onChange={(v) => setTxFilterDraft((prev) => ({ ...prev, dateTo: v }))}
+                  label={t('shell.filter.dateTo')}
                 />
               </div>
             </div>
@@ -2060,6 +2327,30 @@ export function TransactionsPage() {
                   </Button>
                 ) : null}
               </div>
+            </div>
+
+            {/* 成员维度筛选（0024）。含分摊的交易也会被命中，server 按
+                member_sync_id 同时查 member_sync_ids_json / member_splits_json。 */}
+            <div className="space-y-1">
+              <Label>{t('shell.filter.member')}</Label>
+              <Select
+                value={txFilterMemberDraft || '__all__'}
+                onValueChange={(value) =>
+                  setTxFilterMemberDraft(value === '__all__' ? '' : value)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t('shell.filter.all')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">{t('shell.filter.all')}</SelectItem>
+                  {txDictionaryMembers.map((member) => (
+                    <SelectItem key={member.id} value={member.id}>
+                      {member.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

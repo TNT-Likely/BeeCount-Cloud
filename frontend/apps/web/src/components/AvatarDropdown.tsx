@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Activity,
   Images,
@@ -76,13 +77,20 @@ export function AvatarDropdown({
   const t = useT()
   const { locale, setLocale } = useLocale()
   const { mode: themeMode, setMode: setThemeMode } = useTheme()
+  // 触屏设备没有 hover,点击头像也要能开合菜单(pinned 状态);桌面仍保留 hover。
+  const [pinned, setPinned] = useState(false)
 
   const avatarSrc = withAvatarCacheBust(profileMe.avatar_url, profileMe.avatar_version)
+  const closeMenu = () => setPinned(false)
+  const go = (section: AppSection) => { closeMenu(); onNavigate(section) }
 
   return (
     <div className="group relative" tabIndex={-1}>
       <button
         type="button"
+        data-testid="avatar-menu-trigger"
+        aria-expanded={pinned}
+        onClick={() => setPinned((v) => !v)}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
         title={profileMe.display_name || profileMe.email}
       >
@@ -101,8 +109,17 @@ export function AvatarDropdown({
           </div>
         )}
       </button>
-      {/* 悬浮面板 —— 默认透明不接收指针,hover/focus 状态打开 */}
-      <div className="invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+      {/* 触屏点击头像打开后,点外部区域关闭 */}
+      {pinned ? (
+        <button
+          type="button"
+          aria-label={t('avatar.closeMenu')}
+          className="fixed inset-0 z-40 cursor-default"
+          onClick={closeMenu}
+        />
+      ) : null}
+      {/* 悬浮面板 —— hover/focus 或点击头像(pinned)时打开 */}
+      <div className={`invisible absolute right-0 top-full z-50 w-60 pt-2 opacity-0 transition-[opacity,visibility] duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 ${pinned ? 'visible opacity-100' : ''}`}>
         <div className="rounded-xl border border-border/60 bg-card/95 p-1.5 shadow-xl backdrop-blur">
           {/* 头部:角色标识 + email。display_name 跟 email 重复已删;
               admin/user 用 ShieldCheck/UserRound 区分 + tooltip 显示完整角色名。 */}
@@ -132,19 +149,19 @@ export function AvatarDropdown({
           <MenuButton
             icon={Wallet}
             active={currentSection === 'budgets'}
-            onClick={() => onNavigate('budgets')}
+            onClick={() => go('budgets')}
           >
             {t('nav.budgets')}
           </MenuButton>
           <MenuButton
             icon={BookOpen}
             active={currentSection === 'ledgers'}
-            onClick={() => onNavigate('ledgers')}
+            onClick={() => go('ledgers')}
           >
             {t('nav.ledgers')}
           </MenuButton>
-          <MenuButton icon={Images} active={currentSection === 'attachments'} onClick={() => onNavigate('attachments')}>{t('attachments.title')}</MenuButton>
-          <MenuButton icon={Sparkles} onClick={onOpenAnnualReport}>
+          <MenuButton icon={Images} active={currentSection === 'attachments'} onClick={() => go('attachments')}>{t('attachments.title')}</MenuButton>
+          <MenuButton icon={Sparkles} onClick={() => { closeMenu(); onOpenAnnualReport() }}>
             {t('nav.annualReport')}
           </MenuButton>
 
@@ -157,7 +174,7 @@ export function AvatarDropdown({
               key={item.key}
               icon={SETTINGS_ICONS[item.key]}
               active={currentSection === item.key}
-              onClick={() => onNavigate(item.key)}
+              onClick={() => go(item.key)}
             >
               {t(item.labelKey)}
             </MenuButton>
@@ -171,21 +188,21 @@ export function AvatarDropdown({
               <MenuButton
                 icon={Users}
                 active={currentSection === 'admin-users'}
-                onClick={() => onNavigate('admin-users')}
+                onClick={() => go('admin-users')}
               >
                 {t('nav.users')}
               </MenuButton>
               <MenuButton
                 icon={Archive}
                 active={currentSection === 'admin-backup'}
-                onClick={() => onNavigate('admin-backup')}
+                onClick={() => go('admin-backup')}
               >
                 {t('nav.backup')}
               </MenuButton>
               <MenuButton
                 icon={Brush}
                 active={currentSection === 'admin-data-cleanup'}
-                onClick={() => onNavigate('admin-data-cleanup')}
+                onClick={() => go('admin-data-cleanup')}
               >
                 {t('nav.dataCleanup')}
               </MenuButton>
@@ -195,7 +212,7 @@ export function AvatarDropdown({
           {/* Info 组:关于 —— 合并旧的「更新日志」+「GitHub 仓库」两条菜单 */}
           <Divider />
           <GroupLabel>{t('avatar.group.info')}</GroupLabel>
-          <MenuButton icon={Info} onClick={onOpenAbout}>
+          <MenuButton icon={Info} onClick={() => { closeMenu(); onOpenAbout() }}>
             {t('avatar.about')}
           </MenuButton>
 
@@ -252,7 +269,7 @@ export function AvatarDropdown({
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-destructive hover:bg-destructive/10"
-            onClick={onLogout}
+            onClick={() => { closeMenu(); onLogout() }}
           >
             <LogOut className="h-3.5 w-3.5" />
             {t('shell.logout')}

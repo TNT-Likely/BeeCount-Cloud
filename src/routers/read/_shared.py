@@ -32,12 +32,14 @@ from ...models import (
     AttachmentFile,
     Ledger,
     LedgerMember,
+    LoanPaymentGroup,
     ReadBudgetProjection,
     ReadTxProjection,
     SyncChange,
     User,
     UserAccountProjection,
     UserCategoryProjection,
+    UserMemberProjection,
     UserProfile,
     UserTagProjection,
 )
@@ -51,6 +53,7 @@ from ...schemas import (
     ReadCategoryOut,
     ReadLedgerDetailOut,
     ReadLedgerOut,
+    ReadMemberOut,
     ReadSummaryOut,
     ReadTagOut,
     ReadTransactionOut,
@@ -58,6 +61,7 @@ from ...schemas import (
     WorkspaceAnalyticsAnomalyAttributionOut,
     WorkspaceAnalyticsAnomalyMonthOut,
     WorkspaceAnalyticsCategoryRankOut,
+    WorkspaceAnalyticsMemberRankOut,
     WorkspaceAnalyticsOut,
     WorkspaceAnalyticsRangeOut,
     WorkspaceAnalyticsSeriesItemOut,
@@ -282,7 +286,13 @@ def _visible_workspace_ledgers(
     """
     conditions: list[Any] = []
     if ledger_id:
-        conditions.append(Ledger.external_id == ledger_id)
+        # 正常传的是 external_id;同时兼容 internal id —— localStorage 里可能
+        # 残留旧版缓存的 uuid,前端 current scope 会把它当 ledgerId 传进来,
+        # 只认 external_id 会让所有交易查询返回空。跟 saving_plans 的
+        # _require_ledger 口径保持一致。
+        conditions.append(
+            or_(Ledger.external_id == ledger_id, Ledger.id == ledger_id)
+        )
     if is_admin:
         if user_id:
             conditions.append(Ledger.user_id == user_id)
@@ -652,10 +662,12 @@ __all__ = [
     'AttachmentFile',
     'Ledger',
     'LedgerMember',
+    'LoanPaymentGroup',
     'ReadBudgetProjection',
     'ReadTxProjection',
     'UserAccountProjection',
     'UserCategoryProjection',
+    'UserMemberProjection',
     'UserTagProjection',
     'SyncChange',
     'User',
@@ -669,6 +681,7 @@ __all__ = [
     'ReadCategoryOut',
     'ReadLedgerDetailOut',
     'ReadLedgerOut',
+    'ReadMemberOut',
     'ReadSummaryOut',
     'ReadTagOut',
     'ReadTransactionOut',
@@ -676,6 +689,7 @@ __all__ = [
     'WorkspaceAnalyticsAnomalyAttributionOut',
     'WorkspaceAnalyticsAnomalyMonthOut',
     'WorkspaceAnalyticsCategoryRankOut',
+    'WorkspaceAnalyticsMemberRankOut',
     'WorkspaceAnalyticsOut',
     'WorkspaceAnalyticsRangeOut',
     'WorkspaceAnalyticsSeriesItemOut',

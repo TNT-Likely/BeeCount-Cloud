@@ -27,3 +27,23 @@ node_modules/
 
 # Agent 的本地设计与执行计划，不属于项目交付物。
 docs/superpowers/
+
+# ===== 本地二次开发：真实账本数据与临时产物，绝不入库 =====
+# 工作区/分析/测试缓存
+.workbuddy/
+_analysis/
+_pytest_tmp/
+# Vite 临时配置
+frontend/apps/web/vite.config.ts.timestamp-*.mjs
+# 真实账本数据导入/修复脚本（含私人姓名、金额、账户、用户 UUID）
+scripts/import_*.py
+scripts/loan_importer.py
+scripts/fix_*.py
+scripts/merge_*.py
+scripts/backfill_*.py
+scripts/seed_test_data.py
+scripts/smoke_*.py
+scripts/upgrade_import_scripts.py
+# QA 验证脚本与截图（含测试口令、真实账本界面截图）
+scripts/qa/*.py
+scripts/qa/*.png
