@@ -24,7 +24,7 @@ from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
 from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
-from .routers import admin_backup, mcp_calls, two_factor
+from .routers import admin_backup, mcp_calls, notifications, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
 from .routers import invites as invites_router
@@ -195,6 +195,7 @@ app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["rea
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
+app.include_router(notifications.router, prefix=f"{settings.api_prefix}/notifications", tags=["notifications"])
 app.include_router(pats.router, prefix=f"{settings.api_prefix}/profile/pats", tags=["pats"])
 app.include_router(
     mcp_calls.router,
