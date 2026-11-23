@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from ...concurrency import lock_sqlite_writer
+from ...models import TransactionMoveRetirement
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
 
 @router.post("/push", response_model=SyncPushResponse)
@@ -44,6 +46,37 @@ async def push_changes(
     # 是否触动 user-global —— 触动了就额外给 owner 广播一条 __user_global__
     # 通道的 sync_change(让其他设备拉这一份)。
     touched_user_global = False
+
+    requested_ledgers = {
+        change.ledger_id for change in req.changes
+        if change.entity_type not in USER_GLOBAL_ENTITY_TYPES and change.ledger_id is not None
+    }
+    locked_ids: set[str] = set()
+    preloaded_ids: set[str] = set()
+    retired_transactions: set[tuple[str, str]] = set()
+    if requested_ledgers:
+        lock_sqlite_writer(db)
+        ledger_ids = sorted(
+            ledger.id for ledger in list_accessible_ledgers(db, user_id=current_user.id)
+            if ledger.external_id in requested_ledgers
+        )
+        for ledger_id in ledger_ids:
+            lock_ledger_for_materialize(db, ledger_id)
+            locked_ids.add(ledger_id)
+        preloaded_ids.update(ledger_ids)
+
+        tx_ids = list({
+            change.entity_sync_id for change in req.changes if change.entity_type == "transaction"
+        })
+        for start in range(0, len(tx_ids), 500):
+            rows = db.execute(
+                select(TransactionMoveRetirement.ledger_id, TransactionMoveRetirement.sync_id)
+                .where(
+                    TransactionMoveRetirement.ledger_id.in_(ledger_ids),
+                    TransactionMoveRetirement.sync_id.in_(tx_ids[start:start + 500]),
+                )
+            )
+            retired_transactions.update((row.ledger_id, row.sync_id) for row in rows)
 
     for change in req.changes:
         is_user_global = change.entity_type in USER_GLOBAL_ENTITY_TYPES
@@ -110,6 +143,32 @@ async def push_changes(
                     )
                     rejected += 1
                     continue
+
+        if ledger is not None and ledger.id not in locked_ids:
+            lock_ledger_for_materialize(db, ledger.id)
+            locked_ids.add(ledger.id)
+
+        if (
+            ledger is not None
+            and change.entity_type == "transaction"
+            and (
+                (ledger.id, change.entity_sync_id) in retired_transactions
+                or (
+                    ledger.id not in preloaded_ids
+                    and db.get(TransactionMoveRetirement, (ledger.id, change.entity_sync_id)) is not None
+                )
+            )
+        ):
+            rejected += 1
+            conflict_count += 1
+            if len(conflict_samples) < 20:
+                conflict_samples.append({
+                    "reason": "transaction_moved",
+                    "ledgerId": change.ledger_id,
+                    "entityType": "transaction",
+                    "entitySyncId": change.entity_sync_id,
+                })
+            continue
 
         # Clamp incoming updated_at to the server clock to neutralize client
         # clock skew. Without this, a mobile device whose local clock is ahead
@@ -301,8 +360,6 @@ async def push_changes(
             db.flush()
             # 方案 B:projection 随 push 同事务刷新。不再写 ledger_snapshot 行。
             if change.entity_type in INDIVIDUAL_ENTITY_TYPES:
-                # lock 一次/账本,避免两个 push 并发走同个 ledger 的 cascade
-                lock_ledger_for_materialize(db, ledger.id)
                 try:
                     apply_change_to_projection(
                         db,
