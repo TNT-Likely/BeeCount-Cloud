@@ -4,6 +4,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
+def lock_sqlite_writer(db: Session) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name == "sqlite":
+        connection = db.connection()
+        if not connection.connection.driver_connection.in_transaction:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def lock_ledger_for_materialize(db: Session, ledger_id: str) -> None:
     """Serialize snapshot materialization per ledger.
 
