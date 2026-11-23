@@ -4,12 +4,11 @@ import { useNavigate } from 'react-router-dom'
 
 import { fetchNotifications, markNotificationsRead, type CloudNotification } from '@beecount/api-client'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
   Skeleton,
   useT,
   useToast,
@@ -37,6 +36,7 @@ function PersonalNotifications({ token }: { token: string }) {
   const announced = useRef(new Set<string>())
   const hintTimer = useRef<number | undefined>(undefined)
   const latestRequest = useRef(0)
+  const closeButton = useRef<HTMLButtonElement>(null)
   const unreadIds = items.filter((item) => item.unread).map((item) => item.id)
   const unreadCount = unreadIds.length
 
@@ -84,6 +84,7 @@ function PersonalNotifications({ token }: { token: string }) {
   useEffect(() => () => window.clearTimeout(hintTimer.current), [])
 
   const markAllRead = async () => {
+    closeButton.current?.focus()
     setSaving(true)
     try {
       await markNotificationsRead(token, unreadIds)
@@ -97,14 +98,14 @@ function PersonalNotifications({ token }: { token: string }) {
 
   return (
     <div className="relative flex">
-      <DropdownMenu open={open} modal={false} onOpenChange={(next) => {
+      <Dialog open={open} modal={false} onOpenChange={(next) => {
         setOpen(next)
         if (next) {
           setShowHint(false)
           void refresh()
         }
       }}>
-        <DropdownMenuTrigger asChild>
+        <DialogTrigger asChild>
           <button
             type="button"
             title={t('notifications.title')}
@@ -114,27 +115,30 @@ function PersonalNotifications({ token }: { token: string }) {
             <Bell className="h-4 w-4" aria-hidden="true" />
             {unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0 top-0 min-w-3.5 rounded-full bg-amber-700 px-0.5 text-center text-[9px] font-bold leading-[14px] text-white">{unreadCount}</span> : null}
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={10} collisionPadding={8}
-          className="z-[60] w-[min(24rem,calc(100vw-1rem))] max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto rounded-xl bg-card p-0">
+        </DialogTrigger>
+        <DialogContent showCloseButton={false} aria-describedby={undefined}
+          onOpenAutoFocus={(event) => { event.preventDefault(); closeButton.current?.focus() }}
+          className="left-2 right-2 top-[4.25rem] z-[60] block max-h-[calc(100dvh-5rem)] w-auto max-w-none translate-x-0 translate-y-0 overflow-y-auto p-0 sm:left-auto sm:right-6 sm:w-96 md:top-[4.5rem]">
           <div className="flex items-center justify-between gap-2 px-3 py-2">
-            <DropdownMenuLabel className="text-base font-semibold">{t('notifications.title')}</DropdownMenuLabel>
+            <DialogTitle className="px-2">{t('notifications.title')}</DialogTitle>
             <div className="flex items-center gap-1">
               {items.length > 0 ? (
-                <DropdownMenuItem
-                  className="text-xs text-foreground"
+                <button type="button"
+                  className="rounded-md px-2 py-1.5 text-xs text-foreground hover:bg-primary/10 disabled:opacity-50"
                   disabled={unreadCount === 0 || saving || status !== 'ready'}
-                  onSelect={(event) => { event.preventDefault(); void markAllRead() }}
-                >{t('notifications.markAllRead')}</DropdownMenuItem>
+                  onClick={() => { void markAllRead() }}
+                >{t('notifications.markAllRead')}</button>
               ) : null}
-              <DropdownMenuItem className="h-8 w-8 justify-center p-0" aria-label={t('notifications.close')}>
-                <X className="h-4 w-4" aria-hidden="true" />
-              </DropdownMenuItem>
+              <DialogClose asChild>
+                <button type="button" ref={closeButton} className="grid h-8 w-8 place-items-center rounded-md hover:bg-primary/10" aria-label={t('notifications.close')}>
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </DialogClose>
             </div>
           </div>
-          <DropdownMenuSeparator className="m-0" />
-          <div className="space-y-2 p-3">
+          <div className="space-y-2 border-t border-border p-3">
             <NotificationState status={status} hasItems={items.length > 0} onRetry={() => {
+              closeButton.current?.focus()
               setStatus('loading')
               void refresh()
             }} />
@@ -158,15 +162,18 @@ function PersonalNotifications({ token }: { token: string }) {
                     ))}
                   </ul>
                   {item.count > item.categories.length ? <p className="mt-1 text-xs text-muted-foreground">{t('notifications.moreCategories', { count: item.count - item.categories.length })}</p> : null}
-                  <DropdownMenuItem className="mt-1 w-fit gap-1 px-1 text-xs font-medium text-primary" onSelect={() => navigate('/app/categories')}>
+                  <button type="button" className="mt-2 inline-flex items-center gap-1 rounded px-1 py-1 text-xs font-medium text-amber-800 hover:bg-primary/10 dark:text-amber-300" onClick={() => {
+                    setOpen(false)
+                    navigate('/app/categories')
+                  }}>
                     {t('notifications.openCategories')}<ArrowRight className="h-3 w-3" aria-hidden="true" />
-                  </DropdownMenuItem>
+                  </button>
                 </div>
               </div>
             ))}
           </div>
-        </DropdownMenuContent>
-      </DropdownMenu>
+        </DialogContent>
+      </Dialog>
       {!open && showHint && unreadCount > 0 ? (
         <div role="status" className="pointer-events-none absolute right-0 top-full z-50 mt-3 w-max max-w-[calc(100vw-2rem)] rounded-lg border border-amber-600/25 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-soft dark:bg-amber-950 dark:text-amber-100">
           {t('notifications.arrival', { count: unreadCount })}
@@ -183,13 +190,13 @@ function NotificationState({ status, hasItems, onRetry }: {
 }) {
   const t = useT()
   const retry = (
-    <DropdownMenuItem
-      className="shrink-0 gap-1.5 rounded-lg bg-amber-100 px-2.5 text-xs font-medium text-amber-950 focus:bg-amber-200 focus:text-amber-950 dark:bg-amber-900 dark:text-amber-100 dark:focus:bg-amber-800 dark:focus:text-amber-50"
-      onSelect={(event) => { event.preventDefault(); onRetry() }}
+    <button type="button"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-amber-100 px-2.5 py-1.5 text-xs font-medium text-amber-950 hover:bg-amber-200 dark:bg-amber-900 dark:text-amber-100 dark:hover:bg-amber-800"
+      onClick={onRetry}
     >
       <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
       {t('notifications.retry')}
-    </DropdownMenuItem>
+    </button>
   )
 
   if (hasItems) {
