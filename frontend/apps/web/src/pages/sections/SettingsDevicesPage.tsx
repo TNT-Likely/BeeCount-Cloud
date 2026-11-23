@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   fetchAdminDevices,
@@ -21,6 +22,8 @@ import { OpsDevicesPanel } from '@beecount/web-features'
 import { useAuth } from '../../context/AuthContext'
 import { localizeError } from '../../i18n/errors'
 
+import { DeviceSyncDetails } from './DeviceSyncDetails'
+
 type WindowDays = '30' | 'all'
 
 /**
@@ -28,6 +31,17 @@ type WindowDays = '30' | 'all'
  * "窗口" 下拉控制 active_within_days(默认 30 天,全部 = 0 传给后端)。
  */
 export function SettingsDevicesPage() {
+  const [params, setParams] = useSearchParams()
+  const id = params.get('device')
+  if (!id) return <DevicesList />
+  return <DeviceSyncDetails key={id} deviceId={id} onBack={() => {
+    const next = new URLSearchParams(params)
+    next.delete('device')
+    setParams(next, { replace: true })
+  }} />
+}
+
+function DevicesList() {
   const t = useT()
   const toast = useToast()
   const { token, isAdmin, isAdminResolved } = useAuth()

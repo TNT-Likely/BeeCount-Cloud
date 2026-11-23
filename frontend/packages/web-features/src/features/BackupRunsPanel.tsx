@@ -21,6 +21,8 @@ type LiveProgress = {
 }
 
 type Props = {
+  focusedRun?: BackupRun | null
+  onCloseFocus?: () => void
   runs: BackupRun[]
   liveProgress: LiveProgress | null
   onDownloadConfig: () => Promise<void>
@@ -59,13 +61,16 @@ function fmtDuration(start: string, end: string | null): string {
 }
 
 export function BackupRunsPanel({
+  focusedRun,
+  onCloseFocus,
   runs,
   liveProgress,
   onDownloadConfig,
   onRestoreRun,
 }: Props) {
   const t = useT()
-  const [detailRun, setDetailRun] = useState<BackupRun | null>(null)
+  const [openedRun, setDetailRun] = useState<BackupRun | null>(null)
+  const detailRun = focusedRun ?? openedRun
 
   return (
     <div className="space-y-4">
@@ -217,7 +222,11 @@ export function BackupRunsPanel({
 
       <Dialog
         open={detailRun !== null}
-        onOpenChange={(v) => !v && setDetailRun(null)}
+        onOpenChange={(open) => {
+          if (open) return
+          setDetailRun(null)
+          if (focusedRun) onCloseFocus?.()
+        }}
       >
         <DialogContent className="max-w-2xl">
           <DialogHeader>

@@ -1,6 +1,5 @@
-import { AlertTriangle, ArrowRight, Bell, CircleAlert, Inbox, RotateCw, X } from 'lucide-react'
+import { Bell, CircleAlert, Inbox, RotateCw, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
 import { fetchNotifications, markNotificationsRead, type CloudNotification } from '@beecount/api-client'
 import {
@@ -16,18 +15,19 @@ import {
 
 import { useAuth } from '../context/AuthContext'
 import { useSyncEvent, type SyncChangeBatchPayload } from '../context/SyncSocketContext'
+import { NotificationCard, supportsNotification } from './NotificationCard'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 
 export function NotificationCenter() {
   const { token, sessionUserId } = useAuth()
-  return <PersonalNotifications key={sessionUserId ?? token} token={token} />
+  return <PersonalNotifications key={sessionUserId ?? token} />
 }
 
-function PersonalNotifications({ token }: { token: string }) {
+function PersonalNotifications() {
+  const { token, isAdmin, isAdminResolved } = useAuth()
   const t = useT()
   const toast = useToast()
-  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CloudNotification[]>([])
   const [status, setStatus] = useState<LoadStatus>('loading')
@@ -45,7 +45,7 @@ function PersonalNotifications({ token }: { token: string }) {
     try {
       const notices = await fetchNotifications(token)
       if (request !== latestRequest.current) return
-      setItems(notices)
+      setItems(notices.filter(supportsNotification))
       setStatus('ready')
     } catch {
       if (request === latestRequest.current) setStatus('error')
@@ -55,9 +55,12 @@ function PersonalNotifications({ token }: { token: string }) {
   useEffect(() => {
     void refresh()
     const onFocus = () => { void refresh() }
+    // Missed cron deadlines and sync failures may have no WebSocket event.
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh() }, 60_000)
     window.addEventListener('focus', onFocus)
     return () => {
       latestRequest.current++
+      window.clearInterval(timer)
       window.removeEventListener('focus', onFocus)
     }
   }, [refresh])
@@ -70,6 +73,7 @@ function PersonalNotifications({ token }: { token: string }) {
       void refresh()
     }
   })
+  useSyncEvent('backup_status', () => { void refresh() })
   useSyncEvent('backup_restore', () => { void refresh() })
 
   useEffect(() => {
@@ -143,33 +147,7 @@ function PersonalNotifications({ token }: { token: string }) {
               void refresh()
             }} />
             {items.map((item) => (
-              <div key={item.id} className={`flex items-start gap-2.5 rounded-xl border p-3 ${item.unread ? 'border-amber-500/25 bg-amber-500/5' : 'border-border'}`}>
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold">{t('notifications.categoryTitle')}</h2>
-                    {item.unread ? <span aria-label={t('notifications.unread')} className="h-2 w-2 rounded-full bg-amber-600" /> : null}
-                  </div>
-                  <p className="mb-2 mt-1 text-xs text-muted-foreground">{t('notifications.categorySummary', { count: item.count })}</p>
-                  <ul className="divide-y divide-border rounded-lg border border-border bg-card">
-                    {item.categories.map((category) => (
-                      <li key={category.id} className="break-words px-2.5 py-2 text-xs">
-                        <div className="font-medium">{category.name || t('notifications.unnamedCategory')}</div>
-                        {category.parent_name ? <div className="mt-0.5 text-muted-foreground">{t('notifications.parentName', { name: category.parent_name })}</div> : null}
-                      </li>
-                    ))}
-                  </ul>
-                  {item.count > item.categories.length ? <p className="mt-1 text-xs text-muted-foreground">{t('notifications.moreCategories', { count: item.count - item.categories.length })}</p> : null}
-                  <button type="button" className="mt-2 inline-flex items-center gap-1 rounded px-1 py-1 text-xs font-medium text-amber-800 hover:bg-primary/10 dark:text-amber-300" onClick={() => {
-                    setOpen(false)
-                    navigate('/app/categories')
-                  }}>
-                    {t('notifications.openCategories')}<ArrowRight className="h-3 w-3" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
+              <NotificationCard key={item.id} item={item} admin={isAdminResolved ? isAdmin : null} />
             ))}
           </div>
         </DialogContent>

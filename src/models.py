@@ -283,6 +283,19 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DeviceSyncFailure(Base):
+    """One pending failure streak per authenticated device and direction."""
+    __tablename__ = "device_sync_failures"
+
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    direction: Mapped[str] = mapped_column(String(4), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String(36))
+    failure_count: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(32))
+    first_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Ledger(Base):
     __tablename__ = "ledgers"
     __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_ledgers_user_external"),)
@@ -809,6 +822,8 @@ class BackupSchedule(Base):
     name: Mapped[str] = mapped_column(String(128))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     cron_expr: Mapped[str] = mapped_column(String(64))  # 5-field crontab
+    # Scheduler reloads and ordinary metadata edits must not move the first expected run.
+    cron_effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
     retention_days: Mapped[int] = mapped_column(Integer, default=30)
     include_attachments: Mapped[bool] = mapped_column(Boolean, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

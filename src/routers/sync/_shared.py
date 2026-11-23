@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ... import snapshot_builder, snapshot_cache
 from ...concurrency import lock_ledger_for_materialize
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
@@ -47,24 +48,18 @@ from ...schemas import (
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_READ
 from ...sync_applier import (
-    apply_change_to_projection,
-    apply_user_change_to_projection,
     INDIVIDUAL_ENTITY_TYPES,
     USER_GLOBAL_ENTITY_TYPES,
+    apply_change_to_projection,
+    apply_user_change_to_projection,
 )
-from ... import snapshot_builder, snapshot_cache
+from ...time_utils import as_utc as _to_utc
 
 logger = logging.getLogger(__name__)
 
 # Router 在这里创建一次,各 endpoint 子模块 `from ._shared import *` 拉到
 # 同一个实例,装饰器挂在同一个 router 上。__init__.py re-export。
 router = APIRouter()
-
-
-def _to_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def _max_cursor_for_ledgers(db: Session, ledger_ids: list[str]) -> int:

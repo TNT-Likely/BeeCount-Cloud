@@ -10,8 +10,36 @@ from __future__ import annotations
 
 from sqlalchemy import and_, or_
 
-from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
-
+from ...schemas import SyncAction
+from ...services.sync_health import observe_server_errors, record_recovery
+from ._shared import (
+    SCOPE_APP_WRITE,
+    SCOPE_WEB_READ,
+    Depends,
+    Device,
+    HTTPException,
+    Ledger,
+    Query,
+    ReadTxProjection,
+    Session,
+    SyncChange,
+    SyncChangeOut,
+    SyncCursor,
+    SyncPullResponse,
+    User,
+    cast,
+    datetime,
+    get_current_user,
+    get_db,
+    list_accessible_ledgers,
+    logger,
+    metrics,
+    require_any_scopes,
+    router,
+    select,
+    status,
+    timezone,
+)
 
 # user-scope change 在 pull 响应里的 ledger_id 用这个 sentinel 标识。mobile 端
 # 用同一字符串当 sync_cursors 的 ledger_external_id key,实现独立 cursor 跟踪。
@@ -28,7 +56,6 @@ def pull_changes(
     db: Session = Depends(get_db),
 ) -> SyncPullResponse:
     metrics.inc("beecount_sync_pull_requests_total")
-    heartbeat_updated = False
     if device_id:
         device = db.scalar(
             select(Device).where(
@@ -41,8 +68,14 @@ def pull_changes(
             metrics.inc("beecount_sync_pull_failed_total")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device")
         device.last_seen_at = datetime.now(timezone.utc)
-        heartbeat_updated = True
 
+    with observe_server_errors(db, device_id, "pull"):
+        return _pull_for_device(since, limit, device_id, current_user, db)
+
+
+def _pull_for_device(
+    since: int, limit: int, device_id: str | None, current_user: User, db: Session,
+) -> SyncPullResponse:
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
     # 无任何 ledger 的用户仍可能有 user-scope changes(场景理论上不存在,但
@@ -110,7 +143,7 @@ def pull_changes(
                 ledger_id=out_ledger_id,
                 entity_type=change.entity_type,
                 entity_sync_id=change.entity_sync_id,
-                action=cast("Any", change.action),
+                action=cast(SyncAction, change.action),
                 payload=change.payload_json,
                 updated_at=change.updated_at,
                 updated_by_device_id=change.updated_by_device_id,
@@ -141,8 +174,8 @@ def pull_changes(
                         updated_at=now,
                     )
                 )
-        db.commit()
-    elif heartbeat_updated:
+    if device_id:
+        record_recovery(db, device_id, "pull")
         db.commit()
 
     if changes:
