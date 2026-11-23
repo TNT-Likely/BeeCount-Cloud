@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +29,6 @@ from src.services.data_cleanup import (
     clean,
     scan_all,
 )
-
 
 # ─────────────────────── fixtures ───────────────────────
 
@@ -102,6 +100,95 @@ def _add_category(db, sync_id, *, user_id="U1"):
 def _add_account(db, sync_id, *, user_id="U1"):
     db.add(UserAccountProjection(user_id=user_id, sync_id=sync_id, name="acc"))
     db.flush()
+
+
+def _category_orphans(db):
+    return [r for r in scan_all(db).db_orphans if r.type == OrphanType.CATEGORY_MISSING_PARENT]
+
+
+def _add_category_orphan(db, user_id="U1"):
+    child = UserCategoryProjection(
+        user_id=user_id, sync_id="child", name="旧子分类", kind="expense", level=2,
+        parent_sync_id="parent", parent_name="旧父分类",
+    )
+    db.add(child)
+    db.add(SyncChange(
+        user_id=user_id, scope="user", entity_type="category", entity_sync_id="parent",
+        action="delete", payload_json={}, updated_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+    return child
+
+
+@pytest.mark.parametrize("reference", ["transaction", "legacy_transaction", "budget", "child"])
+def test_category_cleanup_rechecks_references_across_ledgers(session_factory, reference):
+    with session_factory() as db:
+        _seed_user_ledger(db)
+        db.add(Ledger(id="L2", user_id="U1", external_id="ext-L2", name="另一本"))
+        child = _add_category_orphan(db)
+        db.commit()
+        [record] = _category_orphans(db)
+        assert record.can_clean
+
+        if reference in ("transaction", "legacy_transaction"):
+            _add_tx(db, ledger_id="L2", category_sync_id=child.sync_id if reference == "transaction" else None)
+            db.get(ReadTxProjection, ("L2", "tx-1")).category_name = child.name
+        elif reference == "budget":
+            db.add(ReadBudgetProjection(
+                ledger_id="L2", user_id="U1", sync_id="b1", category_sync_id=child.sync_id,
+            ))
+        else:
+            db.add(UserCategoryProjection(
+                user_id="U1", sync_id="grandchild", name="另一个分类", kind="expense", level=2,
+                parent_sync_id=child.sync_id,
+            ))
+        db.commit()
+
+        updated = next(r for r in _category_orphans(db) if r.sync_id == child.sync_id)
+        assert updated.can_clean is False
+        assert clean(db, [record]).success_count == 0
+        assert db.get(UserCategoryProjection, ("U1", "child")) is not None
+        assert db.query(SyncChange).filter_by(entity_sync_id="child").count() == 0
+
+
+def test_category_scan_distinguishes_unresolved_links_and_owner(session_factory):
+    with session_factory() as db:
+        _seed_user_ledger(db)
+        _seed_user_ledger(db, user_id="U2", ledger_id="L2")
+        _add_category_orphan(db)
+        db.add_all([
+            UserCategoryProjection(user_id="U2", sync_id="parent", name="旧父分类", kind="expense", level=1),
+            UserCategoryProjection(user_id="U2", sync_id="child", kind="expense", level=2, parent_name="旧父分类"),
+            UserCategoryProjection(user_id="U2", sync_id="unknown", kind="expense", level=2, parent_sync_id="never-uploaded"),
+            UserCategoryProjection(user_id="U1", sync_id="legacy", kind="expense", level=2, parent_name="旧父分类"),
+        ])
+        db.commit()
+
+        found = {(r.user_id, r.sync_id): r for r in _category_orphans(db)}
+        assert {key: r.can_clean for key, r in found.items()} == {
+            ("U1", "child"): True, ("U1", "legacy"): False, ("U2", "unknown"): False,
+        }
+        assert clean(db, [found[("U2", "unknown")], found[("U1", "legacy")]]).success_count == 0
+        assert clean(db, [found[("U1", "child")]]).success_count == 1
+        assert db.get(UserCategoryProjection, ("U2", "child")) is not None
+        assert db.get(UserCategoryProjection, ("U1", "legacy")) is not None
+
+
+def test_category_cleanup_rejects_a_scan_after_parent_is_restored(session_factory):
+    with session_factory() as db:
+        _seed_user_ledger(db)
+        _add_category_orphan(db)
+        db.commit()
+        [record] = _category_orphans(db)
+
+        db.add(UserCategoryProjection(
+            user_id="U1", sync_id="parent", name="改名后的父分类", kind="expense", level=1,
+        ))
+        db.commit()
+
+        assert clean(db, [record]).success_count == 0
+        assert db.get(UserCategoryProjection, ("U1", "child")) is not None
+        assert _category_orphans(db) == []
 
 
 # ─────────────────────── A 类 ───────────────────────

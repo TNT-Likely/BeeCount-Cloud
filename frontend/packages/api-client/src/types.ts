@@ -475,6 +475,7 @@ export type DataCleanupOrphanType =
   | 'tx_missing_from_account'
   | 'tx_missing_to_account'
   | 'budget_missing_category'
+  | 'category_missing_parent'
   | 'sync_change_missing_entity'
   | 'attachment_no_ref'
   | 'attachment_file_missing'
@@ -490,6 +491,7 @@ export type DataCleanupRecord = {
   sync_id?: string | null
   file_path?: string | null
   size_bytes?: number | null
+  can_clean?: boolean
   extra?: Record<string, unknown> | null
 }
 

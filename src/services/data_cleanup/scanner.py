@@ -23,6 +23,7 @@ from ...models import (
     UserCategoryProjection,
     UserTagProjection,
 )
+from .category_orphans import scan_categories_missing_parent
 from .models import OrphanRecord, OrphanType, ScanReport
 
 
@@ -39,6 +40,7 @@ def scan_all(db: Session, *, attachments_root: Path | None = None) -> ScanReport
         *_scan_tx_missing_from_account(db),
         *_scan_tx_missing_to_account(db),
         *_scan_budget_missing_category(db),
+        *scan_categories_missing_parent(db),
     ]
     file_orphans = [
         *_scan_attachment_no_ref(db),

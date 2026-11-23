@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
-
-from src.main import app
-from src.models import UserCategoryProjection
 from test_category_delete_validation import _latest_change_id, _login_web, _register, _seed_ledger
 from test_user_global_sync import _make_client
+
+from src.main import app
+from src.models import SyncChange, User, UserCategoryProjection
 
 
 @pytest.fixture
@@ -57,16 +57,58 @@ def full_snapshot(ws):
     return json.loads(response.json()["snapshot"]["payload"]["content"])
 
 
-def push(ws, sync_id, payload):
+def push(ws, sync_id, payload, *, action="upsert"):
     client, _, owner, _, _ = ws
     response = client.post("/api/v1/sync/push",
         headers={"Authorization": f"Bearer {owner['access_token']}"},
         json={"device_id": owner["device_id"], "changes": [{
             "ledger_id": "__user_global__", "scope": "user", "entity_type": "category",
-            "entity_sync_id": sync_id, "action": "upsert", "payload": {"syncId": sync_id, **payload},
+            "entity_sync_id": sync_id, "action": action, "payload": {"syncId": sync_id, **payload},
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }]})
     assert response.status_code == 200, response.text
+    assert response.json()["accepted"] == 1, response.text
+    return response.json()["server_cursor"]
+
+
+def test_parent_only_mobile_delete_leaves_child_detected_by_admin_cleanup(workspace):
+    client, web_token, owner, ledger, sessions = workspace
+    parent = create(workspace, "测试父分类")
+    child = create(workspace, "测试子分类", level=2, parent_sync_id=parent)
+    with sessions() as db:
+        db.get(User, owner["user"]["id"]).is_admin = True
+        db.commit()
+    web_headers = {"Authorization": f"Bearer {web_token}"}
+    full_snapshot(workspace)  # Warm the snapshot cache before each delete.
+    parent_delete_cursor = push(workspace, parent, {}, action="delete")
+
+    assert [(r["syncId"], r["parentSyncId"]) for r in full_snapshot(workspace)["categories"]] == [
+        (child, parent),
+    ]
+    stats = client.get(f"/api/v1/read/ledgers/{ledger}/stats", headers=web_headers)
+    assert stats.json()["category_total"] == 1
+    scan = client.get("/api/v1/admin/data-cleanup/scan", headers=web_headers)
+    assert scan.status_code == 200, scan.text
+    [orphan] = [r for r in scan.json()["db_orphans"] if r["type"] == "category_missing_parent"]
+    assert orphan["sync_id"] == child and orphan["can_clean"] and "测试子分类" in orphan["title"]
+
+    clean = client.post("/api/v1/admin/data-cleanup/clean", headers=web_headers, json={"records": [orphan]})
+    assert clean.status_code == 200, clean.text
+    assert clean.json() == {"success_count": 1, "failures": []}
+    assert full_snapshot(workspace)["categories"] == []
+    stats = client.get(f"/api/v1/read/ledgers/{ledger}/stats", headers=web_headers)
+    assert stats.json()["category_total"] == 0
+
+    # The original App's next device-filtered pull must receive the child deletion.
+    pull = client.get("/api/v1/sync/pull", headers={"Authorization": f"Bearer {owner['access_token']}"},
+                      params={"device_id": owner["device_id"], "since": parent_delete_cursor})
+    assert pull.status_code == 200, pull.text
+    [change] = pull.json()["changes"]
+    assert (change["scope"], change["entity_sync_id"], change["action"]) == ("user", child, "delete")
+    assert change["change_id"] > parent_delete_cursor
+    with sessions() as db:
+        assert db.get(UserCategoryProjection, (owner["user"]["id"], child)) is None
+        assert db.scalars(select(SyncChange.action).where(SyncChange.entity_sync_id == child)).all() == ["delete"]
 
 
 def test_web_rename_keeps_children_and_blocks_parent_delete(workspace):

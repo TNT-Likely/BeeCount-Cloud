@@ -512,6 +512,7 @@ def _orphan_to_schema(r: data_cleanup_svc.OrphanRecord) -> DataCleanupRecord:
         sync_id=r.sync_id,
         file_path=r.file_path,
         size_bytes=r.size_bytes,
+        can_clean=r.can_clean,
         extra=r.extra,
     )
 
@@ -564,7 +565,7 @@ def data_cleanup_clean(
     records = [_schema_to_orphan(r) for r in payload.records]
     # cleaner 内部每条 record commit / rollback,避免长事务持锁阻塞其他请求
     # (生产 SQLite + observability 中间件场景下尤其重要)。这里不再外层包事务。
-    result = data_cleanup_svc.clean(db, records)
+    result = data_cleanup_svc.clean(db, records, actor_user_id=_admin_user.id)
     return DataCleanupResult(
         success_count=result.success_count,
         failures=[
