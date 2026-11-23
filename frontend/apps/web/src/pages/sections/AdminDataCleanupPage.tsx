@@ -66,17 +66,18 @@ export function AdminDataCleanupPage() {
     void refresh()
   }, [isAdminResolved, isAdmin, refresh])
 
-  const allRecords = useMemo<DataCleanupRecord[]>(() => {
+  const cleanableRecords = useMemo<DataCleanupRecord[]>(() => {
     if (!report) return []
     return [...report.db_orphans, ...report.file_orphans, ...report.sync_orphans]
+      .filter((r) => r.can_clean !== false)
   }, [report])
 
   const recordKey = (r: DataCleanupRecord) =>
     `${r.type}:${r.row_id || r.sync_id || r.file_path || ''}`
 
   const selectedRecords = useMemo(
-    () => allRecords.filter((r) => selected.has(recordKey(r))),
-    [allRecords, selected],
+    () => cleanableRecords.filter((r) => selected.has(recordKey(r))),
+    [cleanableRecords, selected],
   )
 
   const toggleOne = useCallback((r: DataCleanupRecord) => {
@@ -277,8 +278,8 @@ export function AdminDataCleanupPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => toggleGroup(allRecords, selectedRecords.length === 0)}
-                disabled={cleaning}
+                onClick={() => toggleGroup(cleanableRecords, selectedRecords.length === 0)}
+                disabled={cleaning || cleanableRecords.length === 0}
               >
                 {selectedRecords.length === 0
                   ? t('admin.dataCleanup.selectAll')
@@ -328,7 +329,8 @@ function GroupCard(props: {
   const { title, records, selected, recordKey, toggleOne, toggleGroup, onDeleteOne, cleaning, t } =
     props
   if (records.length === 0) return null
-  const allSelected = records.every((r) => selected.has(recordKey(r)))
+  const cleanableRecords = records.filter((r) => r.can_clean !== false)
+  const allSelected = cleanableRecords.every((r) => selected.has(recordKey(r)))
   return (
     <Card className="bc-panel">
       <CardContent className="space-y-2 py-4">
@@ -339,8 +341,8 @@ function GroupCard(props: {
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => toggleGroup(records, !allSelected)}
-            disabled={cleaning}
+            onClick={() => toggleGroup(cleanableRecords, !allSelected)}
+            disabled={cleaning || cleanableRecords.length === 0}
           >
             {allSelected
               ? t('admin.dataCleanup.deselectAll')
@@ -350,7 +352,8 @@ function GroupCard(props: {
         <div className="divide-y divide-border/60">
           {records.map((r) => {
             const key = recordKey(r)
-            const isChecked = selected.has(key)
+            const canClean = r.can_clean !== false
+            const isChecked = canClean && selected.has(key)
             return (
               <div
                 key={key}
@@ -361,7 +364,7 @@ function GroupCard(props: {
                   className="h-4 w-4 cursor-pointer accent-primary"
                   checked={isChecked}
                   onChange={() => toggleOne(r)}
-                  disabled={cleaning}
+                  disabled={cleaning || !canClean}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{r.title}</p>
@@ -375,7 +378,7 @@ function GroupCard(props: {
                   variant="ghost"
                   className="h-8 w-8 shrink-0"
                   onClick={() => onDeleteOne(r)}
-                  disabled={cleaning}
+                  disabled={cleaning || !canClean}
                   title={t('admin.dataCleanup.deleteOne')}
                 >
                   <Trash2 className="h-4 w-4" />

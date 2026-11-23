@@ -21,6 +21,7 @@ from ...models import (
     ReadTxProjection,
     SyncChange,
 )
+from .category_orphans import delete_orphan_category
 from .models import CleanFailure, CleanResult, OrphanRecord, OrphanType
 
 logger = logging.getLogger("beecount.data_cleanup")
@@ -68,7 +69,9 @@ def _remove_empty_parents(file_path: str, stop_at: Path | None = None) -> None:
         parent = parent_resolved.parent
 
 
-def clean(db: Session, records: Iterable[OrphanRecord]) -> CleanResult:
+def clean(
+    db: Session, records: Iterable[OrphanRecord], *, actor_user_id: str | None = None,
+) -> CleanResult:
     """逐条 dispatch 删除。失败收集到 failures,不阻断其余。
 
     caller 负责 commit / rollback。文件删失败只 warn。
@@ -82,7 +85,7 @@ def clean(db: Session, records: Iterable[OrphanRecord]) -> CleanResult:
     for record in records:
         pending_file_ops: list[callable] = []  # type: ignore[type-arg]
         try:
-            _dispatch(db, record, pending_file_ops)
+            _dispatch(db, record, pending_file_ops, actor_user_id=actor_user_id)
             db.commit()
             success += 1
         except Exception as exc:  # noqa: BLE001
@@ -108,7 +111,7 @@ def clean(db: Session, records: Iterable[OrphanRecord]) -> CleanResult:
     return CleanResult(success_count=success, failures=failures)
 
 
-def _dispatch(db: Session, r: OrphanRecord, file_ops: list) -> None:
+def _dispatch(db: Session, r: OrphanRecord, file_ops: list, *, actor_user_id: str | None) -> None:
     """跑 record 类型对应的 DB 操作;文件 IO append 到 file_ops 列表,由
     caller 在 db.commit 之后跑(避免长事务持锁)。"""
     t = r.type
@@ -122,6 +125,8 @@ def _dispatch(db: Session, r: OrphanRecord, file_ops: list) -> None:
         _clear_tx_field(db, r, "to_account_sync_id", "to_account_name")
     elif t == OrphanType.BUDGET_MISSING_CATEGORY:
         _clear_budget_category(db, r)
+    elif t == OrphanType.CATEGORY_MISSING_PARENT:
+        delete_orphan_category(db, r, actor_user_id=actor_user_id)
     elif t == OrphanType.SYNC_CHANGE_MISSING_ENTITY:
         _delete_sync_change(db, r)
     elif t == OrphanType.ATTACHMENT_NO_REF:

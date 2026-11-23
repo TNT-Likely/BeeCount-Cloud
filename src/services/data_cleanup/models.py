@@ -24,6 +24,7 @@ class OrphanType(str, Enum):
     TX_MISSING_FROM_ACCOUNT = "tx_missing_from_account"
     TX_MISSING_TO_ACCOUNT = "tx_missing_to_account"
     BUDGET_MISSING_CATEGORY = "budget_missing_category"
+    CATEGORY_MISSING_PARENT = "category_missing_parent"
     SYNC_CHANGE_MISSING_ENTITY = "sync_change_missing_entity"
 
     # B 类:附件 / 文件
@@ -49,6 +50,7 @@ class OrphanRecord(BaseModel):
     sync_id: str | None = None
     file_path: str | None = None  # B 类
     size_bytes: int | None = None
+    can_clean: bool = True
     extra: dict[str, Any] | None = None  # cleaner 内部用
 
     @property

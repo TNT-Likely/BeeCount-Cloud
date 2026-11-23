@@ -462,6 +462,7 @@ class DataCleanupRecord(BaseModel):
     sync_id: str | None = None
     file_path: str | None = None
     size_bytes: int | None = None
+    can_clean: bool = True
     extra: dict[str, Any] | None = None
 
 
