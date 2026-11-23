@@ -8,7 +8,45 @@ from __future__ import annotations
 
 from ...concurrency import lock_sqlite_writer
 from ...models import TransactionMoveRetirement
-from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
+from ...services.sync_health import observe_server_errors, record_failure, record_recovery
+from ._shared import (
+    INDIVIDUAL_ENTITY_TYPES,
+    SCOPE_APP_WRITE,
+    USER_GLOBAL_ENTITY_TYPES,
+    Any,
+    AuditLog,
+    Depends,
+    Device,
+    HTTPException,
+    Ledger,
+    LedgerMember,
+    ReadTxProjection,
+    Request,
+    Session,
+    SyncChange,
+    SyncPushRequest,
+    SyncPushResponse,
+    User,
+    _max_cursor_for_ledgers,
+    _to_utc,
+    apply_change_to_projection,
+    apply_user_change_to_projection,
+    datetime,
+    get_accessible_ledger_by_external_id,
+    get_current_user,
+    get_db,
+    list_accessible_ledgers,
+    lock_ledger_for_materialize,
+    logger,
+    metrics,
+    require_scopes,
+    router,
+    select,
+    status,
+    timedelta,
+    timezone,
+)
+
 
 @router.post("/push", response_model=SyncPushResponse)
 async def push_changes(
@@ -30,6 +68,13 @@ async def push_changes(
         metrics.inc("beecount_sync_push_failed_total")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device")
 
+    with observe_server_errors(db, device.id, "push"):
+        return await _push_for_device(req, request, current_user, device, db)
+
+
+async def _push_for_device(
+    req: SyncPushRequest, request: Request, current_user: User, device: Device, db: Session,
+) -> SyncPushResponse:
     now = datetime.now(timezone.utc)
     device.last_seen_at = now
 
@@ -400,6 +445,10 @@ async def push_changes(
         accessible = list_accessible_ledgers(db, user_id=current_user.id)
         max_cursor = _max_cursor_for_ledgers(db, [lg.id for lg in accessible])
 
+    if rejected > conflict_count:
+        record_failure(db, req.device_id, "push", "changes_rejected")
+    elif accepted:
+        record_recovery(db, req.device_id, "push")
     db.commit()
 
     if touched_ledgers:
@@ -438,8 +487,10 @@ async def push_changes(
         # 共享账本 fan-out:对 caller 作为 owner 的所有共享账本,推该事件给
         # 非 owner member。Editor 收到后更新本地 SharedLedger* 镜像。
         ws_manager = request.app.state.ws_manager
-        from ...models import Ledger as _L, LedgerMember as _LM
         from sqlalchemy import func as _func
+
+        from ...models import Ledger as _L
+        from ...models import LedgerMember as _LM
         rows = db.execute(
             select(_L.id, _L.external_id)
             .join(_LM, _LM.ledger_id == _L.id)

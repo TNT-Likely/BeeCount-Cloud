@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   createBackupRemote,
@@ -8,6 +9,7 @@ import {
   deleteBackupSchedule,
   downloadRcloneConfig,
   getBackupRestore,
+  getBackupRun,
   listBackupRemotes,
   listBackupRuns,
   listBackupSchedules,
@@ -43,6 +45,7 @@ import {
   BackupSchedulesPanel,
 } from '@beecount/web-features'
 
+import { NotificationTarget, TargetStatus } from '../../components/NotificationTarget'
 import { useAuth } from '../../context/AuthContext'
 import { useSyncEvent } from '../../context/SyncSocketContext'
 import { localizeError } from '../../i18n/errors'
@@ -68,7 +71,10 @@ export function AdminBackupPage() {
   // tab 选中状态本地持久化 — 用户在 schedules 配完任务后切到 runs 看进度,
   // 切去别的 page 再回来期望停在 runs 而不是 reset。
   const TAB_STORAGE_KEY = 'beecount.web.adminBackup.tab'
-  const [tab, setTabRaw] = useState<Tab>(() => {
+  const [params, setParams] = useSearchParams()
+  const runId = params.get('run')
+  const scheduleId = params.get('schedule')
+  const [preferredTab, setTabRaw] = useState<Tab>(() => {
     if (typeof window === 'undefined') return 'runs'
     const saved = window.localStorage.getItem(TAB_STORAGE_KEY)
     if (saved === 'runs' || saved === 'schedules' || saved === 'remotes') {
@@ -76,7 +82,14 @@ export function AdminBackupPage() {
     }
     return 'runs'
   })
+  const tab = runId ? 'runs' : scheduleId ? 'schedules' : preferredTab
   const setTab = (next: Tab) => {
+    if (runId || scheduleId) {
+      const nextParams = new URLSearchParams(params)
+      nextParams.delete('run')
+      nextParams.delete('schedule')
+      setParams(nextParams, { replace: true })
+    }
     setTabRaw(next)
     try {
       window.localStorage.setItem(TAB_STORAGE_KEY, next)
@@ -85,6 +98,7 @@ export function AdminBackupPage() {
     }
   }
   const [remotes, setRemotes] = useState<BackupRemote[]>([])
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [schedules, setSchedules] = useState<BackupSchedule[]>([])
   const [runs, setRuns] = useState<BackupRun[]>([])
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null)
@@ -104,6 +118,7 @@ export function AdminBackupPage() {
     toast.success(msg, t('notice.success'))
 
   const loadAll = useCallback(async () => {
+    setLoadState('loading')
     try {
       const [r, s, runResult] = await Promise.all([
         listBackupRemotes(token),
@@ -113,7 +128,9 @@ export function AdminBackupPage() {
       setRemotes(r)
       setSchedules(s)
       setRuns(runResult.items)
+      setLoadState('ready')
     } catch (err) {
+      setLoadState('error')
       notifyError(err)
     }
   }, [token])
@@ -356,6 +373,20 @@ export function AdminBackupPage() {
     }
   }
 
+  const focusedSchedules = scheduleId ? schedules.filter(s => String(s.id) === scheduleId) : schedules
+  const loadRun = useCallback(() => getBackupRun(token, Number(runId)), [token, runId])
+
+  const renderRuns = (focusedRun: BackupRun | null) => (
+    <BackupRunsPanel
+      runs={runs}
+      focusedRun={focusedRun}
+      onCloseFocus={() => setTab('runs')}
+      liveProgress={liveProgress}
+      onDownloadConfig={onDownloadConfig}
+      onRestoreRun={(run) => void onRestoreRun(run)}
+    />
+  )
+
   return (
     <Card className="bc-panel">
       <CardHeader>
@@ -382,24 +413,27 @@ export function AdminBackupPage() {
           </TabsList>
           {tab === 'runs' ? (
             <TabsContent>
-              <BackupRunsPanel
-                runs={runs}
-                liveProgress={liveProgress}
-                onDownloadConfig={onDownloadConfig}
-                onRestoreRun={(run) => void onRestoreRun(run)}
-              />
+              {runId ? <NotificationTarget key={runId} load={loadRun}>
+                {run => renderRuns(run)}
+              </NotificationTarget> : renderRuns(null)}
             </TabsContent>
           ) : null}
           {tab === 'schedules' ? (
             <TabsContent>
-              <BackupSchedulesPanel
-                schedules={schedules}
+              {scheduleId && <div className="mb-3 flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">{t('notifications.focusSchedule')}</span>
+                <button type="button" className="text-xs underline" onClick={() => setTab('schedules')}>{t('notifications.allSchedules')}</button>
+              </div>}
+              {scheduleId && (loadState !== 'ready' || focusedSchedules.length === 0) ? (
+                <TargetStatus state={loadState === 'ready' ? 'missing' : loadState} retry={() => void loadAll()} />
+              ) : <BackupSchedulesPanel
+                schedules={focusedSchedules}
                 remotes={remotes}
                 onCreate={onCreateSchedule}
                 onUpdate={onUpdateSchedule}
                 onDelete={onDeleteSchedule}
                 onRunNow={onRunNow}
-              />
+              />}
             </TabsContent>
           ) : null}
           {tab === 'remotes' ? (

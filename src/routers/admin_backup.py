@@ -49,7 +49,7 @@ from ..services.backup.rclone_config import (
     SENSITIVE_FIELDS,
     sanitize_config_summary,
 )
-from ..services.backup.runner import run_backup_to_remotes
+from ..services.backup.runner import run_backup
 from ..services.backup.scheduler import get_scheduler
 
 
@@ -651,6 +651,8 @@ def update_schedule(
     s = db.get(BackupSchedule, schedule_id)
     if s is None or s.user_id != admin_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="schedule not found")
+    if (req.enabled and not s.enabled) or (req.cron_expr is not None and req.cron_expr != s.cron_expr):
+        s.cron_effective_at = _now()
     if req.name is not None:
         s.name = req.name
     if req.cron_expr is not None:
@@ -755,12 +757,7 @@ def run_schedule_now(
 
     user_id = admin_user.id
 
-    def _bg(
-        user_id: str = user_id,
-        remote_ids: list[int] = remote_ids,
-        retention_days: int = s.retention_days,
-        include_attachments: bool = s.include_attachments,
-    ) -> None:
+    def _bg() -> None:
         ws_manager = request.app.state.ws_manager
 
         def _push(event: dict[str, Any]) -> None:
@@ -777,13 +774,7 @@ def run_schedule_now(
             except Exception:
                 logger.exception("ws push failed")
 
-        run_backup_to_remotes(
-            user_id=user_id,
-            remote_ids=remote_ids,
-            include_attachments=include_attachments,
-            retention_days=retention_days,
-            on_progress=_push,
-        )
+        run_backup(user_id=user_id, schedule_id=schedule_id, on_progress=_push)
 
     # 用普通 thread 跑 — 不是 APScheduler,因为这是用户主动触发,跟 cron 队列无关
     t = threading.Thread(target=_bg, daemon=True)

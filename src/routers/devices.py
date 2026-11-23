@@ -3,15 +3,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_any_scopes, require_scopes
-from ..models import Device, RefreshToken, User
+from ..models import Device, DeviceSyncFailure, RefreshToken, User
 from ..schemas import DeviceOut
-from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE
+from ..security import SCOPE_APP_WRITE, SCOPE_OPS_WRITE, SCOPE_WEB_READ
+from ..services.sync_health import SyncFailureDetail
 
 router = APIRouter()
 settings = get_settings()
@@ -92,6 +94,31 @@ def list_devices(
         )
     deduped.sort(key=lambda item: item.last_seen_at, reverse=True)
     return deduped
+
+
+class DeviceSyncHealth(BaseModel):
+    device_id: str
+    device_name: str
+    failures: list[SyncFailureDetail]
+
+
+@router.get("/{device_id}/sync-health", response_model=DeviceSyncHealth)
+def device_sync_health(
+    device_id: str,
+    _scopes: set[str] = Depends(require_scopes(SCOPE_WEB_READ)),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DeviceSyncHealth:
+    device = db.scalar(select(Device).where(
+        Device.id == device_id, Device.user_id == current_user.id, Device.revoked_at.is_(None),
+    ))
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    streaks = db.scalars(select(DeviceSyncFailure).where(
+        DeviceSyncFailure.device_id == device.id,
+    ).order_by(DeviceSyncFailure.direction))
+    return DeviceSyncHealth(device_id=device.id, device_name=device.name,
+                            failures=[SyncFailureDetail.from_row(row) for row in streaks])
 
 
 @router.post("/{device_id}/revoke")
