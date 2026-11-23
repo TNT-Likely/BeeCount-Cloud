@@ -92,6 +92,15 @@ class User(Base):
     )
 
 
+class UserNotificationRead(Base):
+    __tablename__ = "user_notification_reads"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    notification_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+
 class RecoveryCode(Base):
     """2FA 一次性恢复码。启用 2FA 时一次生成 10 个,sha256 hash 存库。"""
 

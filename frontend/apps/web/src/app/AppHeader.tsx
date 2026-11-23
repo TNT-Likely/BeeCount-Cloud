@@ -19,6 +19,7 @@ import {
 import { NAV_GROUPS, type AppSection } from '@beecount/web-features'
 
 import { AvatarDropdown } from '../components/AvatarDropdown'
+import { NotificationCenter } from '../components/NotificationCenter'
 import { useAuth } from '../context/AuthContext'
 
 // CommandPalette + AnnualReportLauncher 都不在首屏关键路径,只在用户主动
@@ -270,7 +271,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
             </button>
             {/* 日历视图入口 — 主导航不放(避免跟 transactions 重复语义),走 header 图标。
              *  方案 C 调整(`web-feature-gap-2026-05.md`):header 留 Search / Calendar /
-             *  Logs(admin) / Avatar 四个,Theme / Language 这两个 set-once 偏好下沉到
+             *  Notifications / Logs(admin) / Avatar,Theme / Language 这两个 set-once 偏好下沉到
              *  AvatarDropdown(inline segmented 切换,不嵌子菜单)。
              *  尺寸统一 h-8 w-8(32px),跟 avatar 一致;桌面 gap-0 让 icon 互相紧贴,
              *  避免方形 icon 之间的视觉间距比 icon↔avatar 大。 */}
@@ -282,6 +283,7 @@ export function AppHeader({ onOpenLogs, onOpenAbout }: Props) {
             >
               <CalendarDays className="h-4 w-4" />
             </Link>
+            <NotificationCenter />
             {isAdmin ? (
               <button
                 type="button"

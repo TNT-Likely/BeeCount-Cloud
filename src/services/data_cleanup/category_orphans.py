@@ -1,8 +1,10 @@
 """检测旧版 App 删除父分类后留下的分类及其它无有效父分类的子分类。"""
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session, aliased
 
 from ...models import ReadBudgetProjection, ReadTxProjection, SyncChange, UserCategoryProjection
@@ -10,7 +12,7 @@ from ...sync_applier import _compact_entity_upsert_events
 from .models import OrphanRecord, OrphanType
 
 
-def _orphan_categories(key: tuple[str, str] | None = None):
+def _orphan_categories(*, user_id: str | None = None, sync_id: str | None = None):
     child = aliased(UserCategoryProjection)
     parent = aliased(UserCategoryProjection)
     parent_id = func.nullif(func.trim(child.parent_sync_id), "")
@@ -93,12 +95,28 @@ def _orphan_categories(key: tuple[str, str] | None = None):
         child.source_change_id,
         parent_id.label("parent_id"),
         parent_name.label("parent_name"),
+        latest_parent_event.label("parent_event_id"),
         parent_deleted.label("parent_deleted"),
         referenced.label("referenced"),
     ).where(or_(child.level == 2, parent_id.is_not(None), parent_name.is_not(None)), ~valid_parent)
-    if key is not None:
-        stmt = stmt.where(child.user_id == key[0], child.sync_id == key[1])
+    if user_id is not None:
+        stmt = stmt.where(child.user_id == user_id)
+    if sync_id is not None:
+        stmt = stmt.where(child.sync_id == sync_id)
     return stmt
+
+
+def list_category_parent_issues(db: Session, *, user_id: str) -> Sequence[Row]:
+    categories = _orphan_categories(user_id=user_id).subquery()
+    return db.execute(
+        select(
+            categories.c.sync_id,
+            categories.c.name,
+            categories.c.parent_id,
+            categories.c.parent_name,
+            categories.c.parent_event_id,
+        ).order_by(categories.c.sync_id)
+    ).all()
 
 
 def scan_categories_missing_parent(db: Session) -> list[OrphanRecord]:
@@ -133,7 +151,7 @@ def delete_orphan_category(db: Session, record: OrphanRecord, *, actor_user_id: 
         raise ValueError("分类清理缺少扫描版本，请重新扫描")
 
     key = (record.user_id, record.sync_id)
-    candidate = _orphan_categories(key).subquery()
+    candidate = _orphan_categories(user_id=key[0], sync_id=key[1]).subquery()
     category = UserCategoryProjection
     # DELETE 自身复核依赖关系和扫描版本，避免用过期的扫描结果删掉已修复的分类。
     deleted = db.execute(
