@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowRight, Bell, CircleAlert, Inbox, RotateCw, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 
 import { fetchNotifications, markNotificationsRead, type CloudNotification } from '@beecount/api-client'
 import {
@@ -16,18 +16,19 @@ import {
 
 import { useAuth } from '../context/AuthContext'
 import { useSyncEvent, type SyncChangeBatchPayload } from '../context/SyncSocketContext'
+import { routePath } from '../state/router'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 
 export function NotificationCenter() {
   const { token, sessionUserId } = useAuth()
-  return <PersonalNotifications key={sessionUserId ?? token} token={token} />
+  return <PersonalNotifications key={sessionUserId ?? token} />
 }
 
-function PersonalNotifications({ token }: { token: string }) {
+function PersonalNotifications() {
+  const { token, isAdmin, isAdminResolved } = useAuth()
   const t = useT()
   const toast = useToast()
-  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CloudNotification[]>([])
   const [status, setStatus] = useState<LoadStatus>('loading')
@@ -162,12 +163,20 @@ function PersonalNotifications({ token }: { token: string }) {
                     ))}
                   </ul>
                   {item.count > item.categories.length ? <p className="mt-1 text-xs text-muted-foreground">{t('notifications.moreCategories', { count: item.count - item.categories.length })}</p> : null}
-                  <button type="button" className="mt-2 inline-flex items-center gap-1 rounded px-1 py-1 text-xs font-medium text-amber-800 hover:bg-primary/10 dark:text-amber-300" onClick={() => {
-                    setOpen(false)
-                    navigate('/app/categories')
-                  }}>
-                    {t('notifications.openCategories')}<ArrowRight className="h-3 w-3" aria-hidden="true" />
-                  </button>
+                  {isAdminResolved ? (
+                    isAdmin ? (
+                      <DialogClose asChild>
+                        <Link
+                          to={routePath({ kind: 'app', ledgerId: '', section: 'admin-data-cleanup' })}
+                          className="mt-2 inline-flex items-center gap-1 rounded px-1 py-1 text-xs font-medium text-amber-800 hover:bg-primary/10 dark:text-amber-300"
+                        >
+                          {t('notifications.openDataCleanup')}<ArrowRight className="h-3 w-3" aria-hidden="true" />
+                        </Link>
+                      </DialogClose>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">{t('notifications.contactAdmin')}</p>
+                    )
+                  ) : null}
                 </div>
               </div>
             ))}

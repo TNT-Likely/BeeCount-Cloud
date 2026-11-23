@@ -121,7 +121,8 @@ const zhCN = {
   'notifications.parentName': '原父分类 · {name}',
   'notifications.unnamedCategory': '未命名的子分类',
   'notifications.moreCategories': '还有 {count} 个分类受影响',
-  'notifications.openCategories': '查看分类',
+  'notifications.openDataCleanup': '前往数据清理',
+  'notifications.contactAdmin': '请将异常分类名称提供给管理员，由管理员在「数据清理」中核对。',
 
   // 头像下拉组标题
   'avatar.group.account': '账户',

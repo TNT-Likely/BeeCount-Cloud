@@ -591,7 +591,8 @@ const en = {
   'notifications.parentName': 'Previous parent · {name}',
   'notifications.unnamedCategory': 'Unnamed subcategory',
   'notifications.moreCategories': '{count} more affected categories',
-  'notifications.openCategories': 'View categories',
+  'notifications.openDataCleanup': 'Go to Data Cleanup',
+  'notifications.contactAdmin': 'Share the affected category names with your administrator so they can review them in Data Cleanup.',
 
   'avatar.group.account': 'Account',
   'avatar.group.actions': 'Actions',

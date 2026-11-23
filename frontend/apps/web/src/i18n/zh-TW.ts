@@ -557,7 +557,8 @@ const zhTW = {
   'notifications.parentName': '原父分類 · {name}',
   'notifications.unnamedCategory': '未命名的子分類',
   'notifications.moreCategories': '還有 {count} 個分類受影響',
-  'notifications.openCategories': '查看分類',
+  'notifications.openDataCleanup': '前往資料清理',
+  'notifications.contactAdmin': '請將異常分類名稱提供給管理員，由管理員在「資料清理」中核對。',
 
   'avatar.group.account': '帳戶',
   'avatar.group.actions': '操作',
