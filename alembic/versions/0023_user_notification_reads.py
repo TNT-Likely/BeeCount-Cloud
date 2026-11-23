@@ -1,14 +1,14 @@
 """Persist personal Cloud notification read receipts.
 
-Revision ID: 0022_user_notification_reads
-Revises: 0021_mcp_workflows
+Revision ID: 0023_user_notification_reads
+Revises: 0022_transaction_ledger_moves
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0022_user_notification_reads"
-down_revision = "0021_mcp_workflows"
+revision = "0023_user_notification_reads"
+down_revision = "0022_transaction_ledger_moves"
 branch_labels = None
 depends_on = None
 

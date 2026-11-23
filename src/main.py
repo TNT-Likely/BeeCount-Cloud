@@ -73,7 +73,11 @@ app = FastAPI(
 # 状态下(登录页)也可能想告诉用户 server 版本。
 @app.get(f"{settings.api_prefix}/version")
 def public_version() -> dict:
-    return {"name": _beecount_cloud_name, "version": _beecount_cloud_version}
+    return {
+        "name": _beecount_cloud_name,
+        "version": _beecount_cloud_version,
+        "capabilities": ["transaction_move_v1"],
+    }
 
 
 @app.get(f"{settings.api_prefix}/web-config")

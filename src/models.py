@@ -428,6 +428,26 @@ class SyncPushIdempotency(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class TransactionMoveReceipt(Base):
+    __tablename__ = "transaction_move_receipts"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    operation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[dict] = mapped_column(JSON)
+
+
+class TransactionMoveRetirement(Base):
+    __tablename__ = "transaction_move_retirements"
+
+    ledger_id: Mapped[str] = mapped_column(
+        ForeignKey("ledgers.id", ondelete="CASCADE"), primary_key=True
+    )
+    sync_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+
 class BackupSnapshot(Base):
     __tablename__ = "backup_snapshots"
 

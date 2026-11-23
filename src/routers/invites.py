@@ -426,7 +426,7 @@ async def accept_invite(
             detail="Invalid or expired invite",
         )
 
-    ledger = db.scalar(select(Ledger).where(Ledger.id == invite.ledger_id))
+    ledger = db.scalar(select(Ledger).where(Ledger.id == invite.ledger_id).with_for_update())
     if ledger is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
