@@ -8,10 +8,39 @@ mobile 按 scope 决定 apply 路径(写主表),不再借车依附任何 ledger�
 """
 from __future__ import annotations
 
+from typing import Any, cast
+
 from sqlalchemy import and_, or_
 
-from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
-
+from ...models import UserCategoryProjection
+from ...services.category_icon import resolve_icon_by_name
+from ._shared import (
+    SCOPE_APP_WRITE,
+    SCOPE_WEB_READ,
+    Depends,
+    Device,
+    HTTPException,
+    Ledger,
+    Query,
+    ReadTxProjection,
+    Session,
+    SyncChange,
+    SyncChangeOut,
+    SyncCursor,
+    SyncPullResponse,
+    User,
+    datetime,
+    get_current_user,
+    get_db,
+    list_accessible_ledgers,
+    logger,
+    metrics,
+    require_any_scopes,
+    router,
+    select,
+    status,
+    timezone,
+)
 
 # user-scope change 在 pull 响应里的 ledger_id 用这个 sentinel 标识。mobile 端
 # 用同一字符串当 sync_cursors 的 ledger_external_id key,实现独立 cursor 跟踪。
@@ -76,9 +105,15 @@ def pull_changes(
         .limit(limit + 1)
     )
     if device_id:
-        query = query.where(SyncChange.updated_by_device_id != device_id)
+        # Category replay must include this device's newer edits: otherwise an
+        # older remote event can overwrite its local icon permanently.
+        query = query.where(or_(
+            SyncChange.entity_type == "category",
+            SyncChange.updated_by_device_id.is_(None),
+            SyncChange.updated_by_device_id != device_id,
+        ))
 
-    rows = db.execute(query).all()
+    rows = list(db.execute(query).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
 
@@ -88,6 +123,7 @@ def pull_changes(
     # 数据 sync_applier 历史就一直写对)按 (ledger_id, sync_id) 批量回填,
     # 单次查询覆盖整批,开销可忽略。enrichment 返新列表,不动原 ORM 对象。
     rows = _enrich_tx_payloads_with_user_ids(db, rows)
+    rows = _enrich_legacy_category_icons(db, rows)
 
     changes: list[SyncChangeOut] = []
     server_cursor = since
@@ -110,10 +146,18 @@ def pull_changes(
                 ledger_id=out_ledger_id,
                 entity_type=change.entity_type,
                 entity_sync_id=change.entity_sync_id,
-                action=cast("Any", change.action),
+                action=cast(Any, change.action),
                 payload=change.payload_json,
                 updated_at=change.updated_at,
-                updated_by_device_id=change.updated_by_device_id,
+                # BeeCount 3.8 also skips its own device ID client-side. Mark
+                # only these category echoes as server reconciliation on the
+                # wire; the original author remains untouched in sync_changes.
+                updated_by_device_id=(
+                    None if device_id
+                    and change.entity_type == "category"
+                    and change.updated_by_device_id == device_id
+                    else change.updated_by_device_id
+                ),
                 scope=change.scope,
             )
         )
@@ -155,6 +199,51 @@ def pull_changes(
             has_more,
         )
     return SyncPullResponse(changes=changes, server_cursor=server_cursor, has_more=has_more)
+
+
+def _enrich_legacy_category_icons(db, rows: list) -> list:
+    """Fill empty legacy Material icons without modifying stored sync events.
+
+    Old category events predate the icon backfill. Replaying them on newer
+    clients clears the icon, whose renderer now uses the generic category
+    shape. Prefer the currently saved Material icon, then the legacy name map.
+    Custom image events and explicit icon choices keep their original payload.
+    """
+    pending = []
+    for idx, (change, _external_id) in enumerate(rows):
+        payload = change.payload_json
+        if change.entity_type != "category" or change.action != "upsert":
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("iconType") not in (None, "", "material"):
+            continue
+        icon = payload.get("icon")
+        if icon is None or (isinstance(icon, str) and not icon.strip()):
+            pending.append((change.user_id, change.entity_sync_id, idx))
+    if not pending:
+        return rows
+
+    current = db.execute(select(
+        UserCategoryProjection.user_id,
+        UserCategoryProjection.sync_id,
+        UserCategoryProjection.icon,
+        UserCategoryProjection.icon_type,
+    ).where(
+        UserCategoryProjection.user_id.in_({uid for uid, _, _ in pending}),
+        UserCategoryProjection.sync_id.in_({sid for _, sid, _ in pending}),
+    )).all()
+    icons = {
+        (uid, sid): icon for uid, sid, icon, kind in current
+        if kind in (None, "", "material") and isinstance(icon, str) and icon.strip()
+    }
+    enriched = list(rows)
+    for uid, sid, idx in pending:
+        change, ext_id = rows[idx]
+        payload = dict(change.payload_json)
+        payload["icon"] = icons.get((uid, sid)) or resolve_icon_by_name(payload.get("name"))
+        enriched[idx] = (_ChangeWithOverride(change, payload), ext_id)
+    return enriched
 
 
 def _enrich_tx_payloads_with_user_ids(
@@ -238,5 +327,3 @@ class _ChangeWithOverride:
 
     def __getattr__(self, name: str):
         return getattr(self._change, name)
-
-
