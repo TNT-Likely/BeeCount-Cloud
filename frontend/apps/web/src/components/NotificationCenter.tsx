@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Bell, X } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Bell, CircleAlert, Inbox, RotateCw, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -10,12 +10,15 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Skeleton,
   useT,
   useToast,
 } from '@beecount/ui'
 
 import { useAuth } from '../context/AuthContext'
 import { useSyncEvent, type SyncChangeBatchPayload } from '../context/SyncSocketContext'
+
+type LoadStatus = 'loading' | 'ready' | 'error'
 
 export function NotificationCenter() {
   const { token, sessionUserId } = useAuth()
@@ -28,7 +31,7 @@ function PersonalNotifications({ token }: { token: string }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CloudNotification[]>([])
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [status, setStatus] = useState<LoadStatus>('loading')
   const [saving, setSaving] = useState(false)
   const [showHint, setShowHint] = useState(false)
   const announced = useRef(new Set<string>())
@@ -117,29 +120,26 @@ function PersonalNotifications({ token }: { token: string }) {
           <div className="flex items-center justify-between gap-2 px-3 py-2">
             <DropdownMenuLabel className="text-base font-semibold">{t('notifications.title')}</DropdownMenuLabel>
             <div className="flex items-center gap-1">
-              <DropdownMenuItem
-                className="text-xs text-primary"
-                disabled={unreadCount === 0 || saving}
-                onSelect={(event) => { event.preventDefault(); void markAllRead() }}
-              >{t('notifications.markAllRead')}</DropdownMenuItem>
-              <DropdownMenuItem aria-label={t('notifications.close')}><X className="h-4 w-4" aria-hidden="true" /></DropdownMenuItem>
+              {items.length > 0 ? (
+                <DropdownMenuItem
+                  className="text-xs text-foreground"
+                  disabled={unreadCount === 0 || saving || status !== 'ready'}
+                  onSelect={(event) => { event.preventDefault(); void markAllRead() }}
+                >{t('notifications.markAllRead')}</DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem className="h-8 w-8 justify-center p-0" aria-label={t('notifications.close')}>
+                <X className="h-4 w-4" aria-hidden="true" />
+              </DropdownMenuItem>
             </div>
           </div>
           <DropdownMenuSeparator className="m-0" />
           <div className="space-y-2 p-3">
-            {status === 'error' ? (
-              <div className="space-y-2 px-2 py-5 text-sm text-muted-foreground">
-                <p>{t('notifications.loadFailed')}</p>
-                <DropdownMenuItem onSelect={(event) => { event.preventDefault(); setStatus('loading'); void refresh() }}>
-                  {t('notifications.retry')}
-                </DropdownMenuItem>
-              </div>
-            ) : status === 'loading' || items.length === 0 ? (
-              <p role="status" className="px-2 py-6 text-center text-sm text-muted-foreground">
-                {t(status === 'loading' ? 'notifications.loading' : 'notifications.empty')}
-              </p>
-            ) : items.map((item) => (
-              <div key={item.id} className={`flex items-start gap-2.5 rounded-xl border border-border p-3 ${item.unread ? 'bg-accent/35' : ''}`}>
+            <NotificationState status={status} hasItems={items.length > 0} onRetry={() => {
+              setStatus('loading')
+              void refresh()
+            }} />
+            {items.map((item) => (
+              <div key={item.id} className={`flex items-start gap-2.5 rounded-xl border p-3 ${item.unread ? 'border-amber-500/25 bg-amber-500/5' : 'border-border'}`}>
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                   <AlertTriangle className="h-4 w-4" aria-hidden="true" />
                 </span>
@@ -172,6 +172,64 @@ function PersonalNotifications({ token }: { token: string }) {
           {t('notifications.arrival', { count: unreadCount })}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function NotificationState({ status, hasItems, onRetry }: {
+  status: LoadStatus
+  hasItems: boolean
+  onRetry: () => void
+}) {
+  const t = useT()
+  const retry = (
+    <DropdownMenuItem
+      className="shrink-0 gap-1.5 rounded-lg bg-amber-100 px-2.5 text-xs font-medium text-amber-950 focus:bg-amber-200 focus:text-amber-950 dark:bg-amber-900 dark:text-amber-100 dark:focus:bg-amber-800 dark:focus:text-amber-50"
+      onSelect={(event) => { event.preventDefault(); onRetry() }}
+    >
+      <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
+      {t('notifications.retry')}
+    </DropdownMenuItem>
+  )
+
+  if (hasItems) {
+    if (status === 'ready') return null
+    return status === 'error' ? (
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
+        <p role="status">{t('notifications.stale')}</p>
+        {retry}
+      </div>
+    ) : <p role="status" className="px-1 py-1.5 text-xs text-muted-foreground">{t('notifications.loading')}</p>
+  }
+
+  if (status === 'loading') {
+    return (
+      <div role="status" className="min-h-40 px-0.5 py-2">
+        <p className="mb-2.5 text-xs text-muted-foreground">{t('notifications.loading')}</p>
+        <div aria-hidden="true" className="flex gap-2.5 rounded-xl border border-border p-3">
+          <Skeleton className="h-8 w-8 shrink-0 rounded-lg motion-reduce:animate-none" />
+          <div className="flex-1 space-y-2.5 pt-0.5">
+            <Skeleton className="h-3 w-2/5 motion-reduce:animate-none" />
+            <Skeleton className="h-2.5 w-3/4 motion-reduce:animate-none" />
+            <Skeleton className="h-11 w-full rounded-lg motion-reduce:animate-none" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const failed = status === 'error'
+  const Icon = failed ? CircleAlert : Inbox
+  return (
+    <div className="flex min-h-44 flex-col items-center justify-center gap-1.5 px-3 py-4 text-center">
+      <span className={`mb-1 grid h-11 w-11 place-items-center rounded-xl ${failed ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' : 'bg-muted text-muted-foreground'}`}>
+        <Icon className="h-5 w-5" aria-hidden="true" />
+      </span>
+      <div role="status">
+        <h2 className="text-sm font-semibold">{t(failed ? 'notifications.loadFailed' : 'notifications.empty')}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">{t(failed ? 'notifications.loadFailedHint' : 'notifications.emptyHint')}</p>
+      </div>
+      {failed ? <div className="mt-1.5">{retry}</div> : null}
     </div>
   )
 }
