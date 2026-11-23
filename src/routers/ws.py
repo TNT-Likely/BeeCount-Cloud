@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Query, WebSocket
 from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
 
 from ..database import SessionLocal
 from ..models import User
@@ -10,6 +11,11 @@ from ..security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE, decode_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _user_exists(user_id: str) -> bool:
+    with SessionLocal() as db:
+        return db.scalar(select(User.id).where(User.id == user_id)) is not None
 
 
 @router.websocket("/ws")
@@ -39,10 +45,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(default=""
         await websocket.close(code=1008)
         return
 
-    db = SessionLocal()
-    user = db.scalar(select(User).where(User.id == user_id))
-    db.close()
-    if user is None:
+    if not await run_in_threadpool(_user_exists, user_id):
         await websocket.close(code=1008)
         return
 

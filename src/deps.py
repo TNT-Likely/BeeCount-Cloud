@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from threading import Lock
 
 from fastapi import Depends, HTTPException, Request, status
@@ -7,11 +8,10 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .database import SessionLocal, get_db
+from .database import DEVICE_ACTIVITY_AFTER_CLOSE, SessionLocal, get_db
 from .ledger_access import get_accessible_ledger_by_external_id
 from .models import Device, Ledger, PersonalAccessToken, User
 from .security import (
-    PAT_PREFIX,
     decode_token,
     looks_like_pat,
     verify_pat_hash,
@@ -26,8 +26,7 @@ _BUMP_THRESHOLD = timedelta(seconds=60)
 
 
 def _bump_device_last_seen(device_id: str, user_id: str) -> None:
-    """在独立 session 更新 Device.last_seen_at,**不动请求主事务**,失败静默。
-    调用点:`get_current_user` 鉴权通过后,如果请求带了 `X-Device-ID` header。"""
+    """请求连接归还后，在独立事务更新 Device.last_seen_at。"""
     now = datetime.now(timezone.utc)
     with _BUMP_LOCK:
         last = _BUMP_CACHE.get(device_id)
@@ -322,7 +321,9 @@ def get_current_user(
     # 每次鉴权请求 bump 对应 device 的 last_seen_at(仅 JWT 路径,PAT 不绑 device)
     device_id = request.headers.get("X-Device-ID") or request.headers.get("x-device-id")
     if device_id:
-        _bump_device_last_seen(device_id.strip(), user.id)
+        db.info[DEVICE_ACTIVITY_AFTER_CLOSE] = partial(
+            _bump_device_last_seen, device_id.strip(), user.id
+        )
     return user
 
 

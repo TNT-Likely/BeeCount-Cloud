@@ -41,6 +41,7 @@ if settings.database_url.startswith("sqlite"):
 
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+DEVICE_ACTIVITY_AFTER_CLOSE = "device_activity_after_close"
 
 
 class Base(DeclarativeBase):
@@ -53,3 +54,7 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+        # 刷新设备活跃时间使用独立事务，先归还业务请求占用的连接。
+        update_device_activity = db.info.pop(DEVICE_ACTIVITY_AFTER_CLOSE, None)
+        if update_device_activity is not None:
+            update_device_activity()
