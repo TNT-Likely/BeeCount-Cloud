@@ -22,7 +22,6 @@ const zhTW = {
   "recurring.yearOn": "每年 {date}",
   "recurring.new": "新增週期帳單",
   "recurring.conflict": "規則已更新或正在入帳，請重新開啟後核對。",
-  "recurring.name": "名稱",
   "recurring.empty": "這個帳本還沒有雲端週期帳單",
   "recurring.disabled": "伺服器已停用自動記帳，請聯絡管理員。",
   "recurring.cloud": "Cloud 按期入帳，所有裝置共用這條規則。",

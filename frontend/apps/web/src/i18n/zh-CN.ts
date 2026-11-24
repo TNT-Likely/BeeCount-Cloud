@@ -22,7 +22,6 @@ const zhCN = {
   "recurring.yearOn": "每年 {date}",
   "recurring.new": "新建周期账单",
   "recurring.conflict": "规则已更新或正在入账，请重新打开后核对。",
-  "recurring.name": "名称",
   "recurring.empty": "这个账本还没有云端周期账单",
   "recurring.disabled": "服务器已停用自动记账，请联系管理员。",
   "recurring.cloud": "Cloud 按期入账，所有设备共享这条规则。",

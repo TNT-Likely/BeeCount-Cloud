@@ -22,7 +22,6 @@ const en = {
   "recurring.yearOn": "Yearly on {date}",
   "recurring.new": "New recurring bill",
   "recurring.conflict": "This rule changed or is being posted. Reopen it to review the latest version.",
-  "recurring.name": "Name",
   "recurring.empty": "This ledger has no Cloud recurring bills yet.",
   "recurring.disabled": "Automatic posting is disabled on this server.",
   "recurring.cloud": "Cloud posts each bill and shares the rule across devices.",

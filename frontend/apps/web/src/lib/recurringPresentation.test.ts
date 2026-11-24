@@ -4,6 +4,7 @@ import {
   initialRecurringView,
   lastPostingDate,
   perPeriodAmount,
+  recurringRuleTitle,
   recurringSubtitle,
   shortPostingDate,
 } from './recurringPresentation'
@@ -87,5 +88,26 @@ describe('bill subtitle', () => {
     expect(recurringSubtitle('租金', '住房', ' 租金 ')).toBe('住房')
     expect(recurringSubtitle('租金', ' 住房 ', '住房')).toBe('住房')
     expect(recurringSubtitle('租金', '租金', ' ')).toBe('')
+  })
+})
+
+describe('recurring rule title', () => {
+  const categories = [{ sync_id: 'rent', name: 'Housing', kind: 'expense' }]
+
+  it('uses a new bill’s note, category, or localized type', () => {
+    const transaction = { ...tx, category_id: 'rent' }
+    expect(recurringRuleTitle({ name: '', transaction: { ...transaction, note: '  November rent  ' } }, categories, 'Expense'))
+      .toBe('November rent')
+    expect(recurringRuleTitle({ name: '', transaction }, categories, 'Expense')).toBe('Housing')
+    expect(recurringRuleTitle({ name: '', transaction: tx }, categories, 'Expense')).toBe('Expense')
+    expect(recurringRuleTitle({ name: '', transaction: { ...transaction, tx_type: 'transfer' } }, categories, 'Transfer'))
+      .toBe('Transfer')
+  })
+
+  it('retains existing titles and limits derived titles without changing a long note', () => {
+    const transaction = { ...tx, note: '🐝'.repeat(260) }
+    expect(recurringRuleTitle({ name: 'Existing title', transaction }, categories, 'Expense')).toBe('Existing title')
+    expect(recurringRuleTitle({ name: '', transaction }, categories, 'Expense')).toBe('🐝'.repeat(255))
+    expect(transaction.note).toBe('🐝'.repeat(260))
   })
 })

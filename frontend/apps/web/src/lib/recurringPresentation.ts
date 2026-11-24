@@ -1,4 +1,4 @@
-import type { RecurringRuleRow, RecurringTransaction } from '@beecount/api-client'
+import type { RecurringRuleRow, RecurringTransaction, RuleConfig, SharedCategoryItem } from '@beecount/api-client'
 
 export const recurringViews = ['active', 'paused', 'completed'] as const
 export type RecurringView = (typeof recurringViews)[number]
@@ -14,6 +14,24 @@ export function initialRecurringView(items: RuleStatus[]): RecurringView {
 export function recurringSubtitle(name: string, category: string, note?: string | null) {
   const parts = [category.trim(), note?.trim()].filter((part) => part && part !== name.trim())
   return [...new Set(parts)].join(' · ')
+}
+
+export function recurringRuleTitle(
+  rule: Pick<RuleConfig, 'name' | 'transaction'>,
+  categories: Pick<SharedCategoryItem, 'sync_id' | 'kind' | 'name'>[],
+  typeLabel: string,
+): string {
+  if (rule.name.trim()) return rule.name
+  const tx = rule.transaction
+  let categoryTitle: string | undefined
+  if (tx.tx_type !== 'transfer') {
+    const category = categories.find((item) =>
+      item.kind === tx.tx_type && (tx.category_id ? item.sync_id === tx.category_id : item.name === tx.category),
+    )
+    categoryTitle = (category?.name || tx.category)?.trim()
+  }
+  // Count Unicode code points as the Cloud validator does. The transaction retains its full note.
+  return Array.from(tx.note?.trim() || categoryTitle || typeLabel).slice(0, 255).join('').trimEnd()
 }
 
 export function recurringCivilDate(instant: Date, timeZone: string): string {

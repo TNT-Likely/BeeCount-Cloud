@@ -8,6 +8,7 @@ import { RecurringScheduleList } from '../../components/RecurringScheduleList'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
+import { recurringRuleTitle } from '../../lib/recurringPresentation'
 
 const selectClass = 'h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
 type Tx = RuleConfig['transaction']
@@ -95,9 +96,12 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
     if (!draft || busy) return
     setBusy(true); setError('')
     try {
+      const name = recurringRuleTitle(
+        draft.rule, resources?.categories ?? [], t(`recurring.${draft.rule.transaction.tx_type}`),
+      )
       const result = await changeRecurringRule(token, ledger, {
         action: draft.row ? 'update' : 'create', client_id: draft.clientId, record_id: draft.row?.id,
-        expected_revision: draft.row?.revision, data: draft.rule, confirm: preview !== undefined,
+        expected_revision: draft.row?.revision, data: { ...draft.rule, name }, confirm: preview !== undefined,
       })
       if (!preview) setPreview(result.next_occurrences || [])
       else { setDraft(undefined); await refresh() }
@@ -147,7 +151,6 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
         <DialogHeader><DialogTitle>{t(draft?.row ? 'common.edit' : 'recurring.new')}</DialogTitle>
           <DialogDescription>{t('recurring.cloud')}</DialogDescription></DialogHeader>
         {config && tx && <form onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="grid grid-cols-2 gap-3">
-          <div className="col-span-2"><Field title={t('recurring.name')}><Input required maxLength={255} value={config.name} onChange={e => edit({name:e.target.value})}/></Field></div>
           <Field title={t('recurring.type')}><select className={selectClass} value={tx.tx_type} onChange={e => editTx({
             tx_type:e.target.value as Tx['tx_type'],category:null,category_id:null,account:null,account_id:null,
             from_account:null,from_account_id:null,to_account:null,to_account_id:null,
