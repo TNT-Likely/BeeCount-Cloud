@@ -268,11 +268,19 @@ async def _push_for_device(
                 latest_entity_change.updated_by_device_id or "",
             )
 
-        if existing_tuple is not None and existing_tuple > incoming_tuple:
+        restored_deleted_transaction = (
+            change.entity_type == "transaction"
+            and change.action != "delete"
+            and change.payload.get("restoredSnapshot") is True
+            and latest_entity_change is not None
+            and latest_entity_change.action == "delete"
+        )
+        if restored_deleted_transaction or (existing_tuple is not None and existing_tuple > incoming_tuple):
+            assert latest_entity_change is not None and existing_tuple is not None
             rejected += 1
             conflict_count += 1
             sample = {
-                "reason": "lww_rejected_older_change",
+                "reason": "restore_deleted_transaction" if restored_deleted_transaction else "lww_rejected_older_change",
                 "ledgerId": change.ledger_id,
                 "entityType": change.entity_type,
                 "entitySyncId": change.entity_sync_id,

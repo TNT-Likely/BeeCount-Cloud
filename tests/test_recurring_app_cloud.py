@@ -388,3 +388,120 @@ def test_replayed_receipt_does_not_reupload_a_deleted_occurrence(ledger):
     replay = submit(ledger, request)
     assert replay["required_uploads"] == [] and replay["deleted_transactions"] == [sid]
     assert push("upsert").status_code == 409
+
+
+def test_migration_preserves_several_postings_from_one_local_history(ledger):
+    postings = [
+        {"sync_id": str(uuid4()), "date": day}
+        for day in ("2030-01-05", "2030-01-12", "2030-01-12")
+    ]
+    change = sample(
+        migrate=True,
+        automatic=True,
+        consumed_through="2030-01-12",
+        local_transactions=postings,
+    )
+    expected = {tx["sync_id"]: tx["sync_id"] for tx in postings}
+    preview = submit(ledger, {**change, "confirm": False})
+    assert preview["local_transactions"] == expected
+    first = submit(ledger, {**change, "reviewed_mapping": preview["reviewed_mapping"]})
+    assert first["local_transactions"] == expected
+    assert set(first["required_uploads"]) == set(expected)
+    assert submit(ledger, change)["local_transactions"] == expected
+    assert first["next_occurrences"][0].startswith("2030-02-05")
+    ambiguous = {
+        **change,
+        "client_id": str(uuid4()),
+        "action": "update",
+        "record_id": first["id"],
+        "expected_revision": first["revision"],
+        "local_transactions": [{"sync_id": str(uuid4()), "date": "2030-01-12"}],
+        "confirm": False,
+    }
+    assert "HISTORY_CONFLICT" in submit(ledger, ambiguous, status=409)["detail"]
+
+
+def test_old_app_can_sync_with_existing_mcp_rules_and_delete_transactions(ledger):
+    mobile = app_session(ledger)
+    rule = sample()["data"]
+    run(
+        rules.manage_recurring_rule(
+            ledger.user, "create", ledger.ledger_id, rules.RecurringRule(**rule), confirm=True
+        )
+    )
+    sid = str(uuid4())
+
+    def push(action):
+        return ledger.client.post(
+            "/api/v1/sync/push",
+            headers=mobile,
+            json={
+                "device_id": mobile["X-Device-ID"],
+                "changes": [
+                    {
+                        "ledger_id": ledger.ledger_id,
+                        "entity_type": "transaction",
+                        "entity_sync_id": sid,
+                        "action": action,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "payload": {
+                            "syncId": sid,
+                            "type": "expense",
+                            "amount": 12,
+                            "happenedAt": "2030-01-05T00:00:00Z",
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert push("upsert").status_code == 200
+    modern = submit(ledger, sample())
+    assert push("upsert").status_code == 426
+    assert push("delete").status_code == 200
+    submit(
+        ledger,
+        {"action": "delete", "record_id": modern["id"], "expected_revision": modern["revision"], "confirm": True},
+    )
+    assert push("upsert").status_code == 426
+    assert read_tools.list_transactions(ledger.user)["total"] == 0
+
+
+def test_restore_cannot_revive_deleted_cloud_occurrence_or_drop_rest_of_batch(ledger):
+    created = submit(ledger, sample())
+    posted = run(rules.execute_due_rules(now=datetime(2030, 1, 7, tzinfo=timezone.utc)))
+    assert posted[0]["rule_id"] == created["id"]
+    (occurrence,) = posted[0]["operation"]["sync_ids"]
+    mobile = app_session(ledger)
+
+    def tx_change(sid, action, *, restore=False):
+        return {
+            "ledger_id": ledger.ledger_id,
+            "entity_type": "transaction",
+            "entity_sync_id": sid,
+            "action": action,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "syncId": sid,
+                "type": "expense",
+                "amount": 32,
+                "happenedAt": "2030-01-05T00:00:00Z",
+                **({"restoredSnapshot": True} if restore else {}),
+            },
+        }
+
+    def push(*changes):
+        response = ledger.client.post(
+            "/api/v1/sync/push",
+            headers={**mobile, "X-BeeCount-Recurring": "cloud-v1"},
+            json={"device_id": mobile["X-Device-ID"], "changes": changes},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    push(tx_change(occurrence, "delete"))
+    manual = str(uuid4())
+    result = push(tx_change(occurrence, "upsert", restore=True), tx_change(manual, "upsert", restore=True))
+    assert result["accepted"] == 1 and result["rejected"] == 1
+    assert result["conflict_samples"][0]["reason"] == "restore_deleted_transaction"
+    assert read_tools.list_transactions(ledger.user)["total"] == 1

@@ -1,10 +1,11 @@
 """Reserve the canonical transaction for each local period during a Cloud handoff."""
 
-from datetime import date, datetime, timezone
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from .models import (
     MCPSourceReference,
@@ -37,21 +38,10 @@ def receipt_id(ledger_id, user_id, client_id):
     return str(uuid5(NAMESPACE_URL, f"beecount:handoff:{ledger_id}:{user_id}:{client_id}"))
 
 
-def period_key(day, frequency):
-    if frequency == "yearly":
-        return str(day.year)
-    if frequency == "monthly":
-        return day.isoformat()[:7]
-    if frequency == "weekly":
-        year, week, _ = day.isocalendar()
-        return f"{year}-W{week:02}"
-    return day.isoformat()
-
-
 def source_rules(db, ledger_id, occurrences):
     """Only a shared transaction identity can prove two device copies have the same source."""
     ids = list({item["sync_id"] for item in occurrences})
-    matches = set()
+    matches: set[str] = set()
     for start in range(0, len(ids), 400):
         sources = db.scalars(
             select(MCPSourceReference.source_system)
@@ -89,25 +79,24 @@ def similar_schedule(incoming, existing):
 
 
 def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
-    """Two installations can hold different sync IDs for the same pre-Cloud period."""
+    """Resolve confirmed history using stable IDs and exact posting dates."""
     if not items:
         return {}
     source = RECURRING_SOURCE_PREFIX + rule_id
-
-    def period(day):
-        return period_key(day, config["frequency"])
-
-    canonical = {
-        r.source_id: r.tx_sync_id
-        for r in db.scalars(
-            select(MCPSourceReference).where(
-                MCPSourceReference.ledger_id == ledger.id,
-                MCPSourceReference.source_system == source,
-            )
+    candidates = defaultdict(set)
+    known = set()
+    for ref in db.scalars(
+        select(MCPSourceReference).where(
+            MCPSourceReference.ledger_id == ledger.id,
+            MCPSourceReference.source_system == source,
         )
-    }
-    # Pre-existing MCP schedules already have durable occurrence receipts, including deleted transactions.
+    ):
+        known.add(ref.tx_sync_id)
+        if day := ref.metadata_json.get("date"):
+            candidates[day].add(ref.tx_sync_id)
+    # Include completed Cloud occurrences even when their ordinary transaction was deleted.
     prefix = "recurring:" + rule_id + ":"
+    zone = ZoneInfo(config["time_zone"])
     for operation in db.scalars(
         select(MCPWriteOperation).where(
             MCPWriteOperation.ledger_id == ledger.id,
@@ -116,46 +105,55 @@ def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
         )
     ):
         instant = datetime.strptime(operation.request_key[len(prefix) :], "%Y%m%dT%H%M%SZ")
-        key = period(
-            instant.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(config["time_zone"])).date()
-        )
+        day = instant.replace(tzinfo=timezone.utc).astimezone(zone).date().isoformat()
         for result in operation.results_json or []:
             ids = result.get("created_sync_ids") or [result.get("entity_id")]
             if ids and ids[0]:
-                canonical[key] = ids[0]
+                known.add(ids[0])
+                candidates[day].add(ids[0])
+    by_id = {item["sync_id"]: item["date"] for item in items}
+    if len(by_id) != len(items):
+        raise ValueError("HISTORY_CONFLICT: duplicate transaction identities in local history")
+    counts = Counter(by_id.values())
     mappings = {}
-    for item in items:
-        sid, day = item["sync_id"], date.fromisoformat(item["date"])
-        key = period(day)
-        if key not in canonical:
-            canonical[key] = sid
+    for sid, day in by_id.items():
+        matches = candidates.get(day)
+        if sid in known:
+            mappings[sid] = sid
+        elif not matches:
+            mappings[sid] = sid
             if commit:
                 db.add(
                     MCPSourceReference(
                         ledger_id=ledger.id,
                         source_system=source,
-                        source_id=key,
+                        source_id="history:" + str(uuid5(NAMESPACE_URL, sid)),
                         tx_sync_id=sid,
                         created_by_user_id=user.id,
-                        metadata_json={"date": day.isoformat()},
+                        metadata_json={"date": day},
                     )
                 )
-        if canonical[key] != sid and db.scalar(
-            select(ReadTxProjection.sync_id).where(
-                ReadTxProjection.ledger_id == ledger.id, ReadTxProjection.sync_id == sid
-            )
-        ):
-            raise ValueError(
-                "Already synchronized copies for the same period must be reviewed in the ledger"
-            )
-        mappings[sid] = canonical[key]
+        else:
+            # Several entries in one local history, or several existing entries,
+            # may all be valid. Never pick one to replace the others.
+            if len(matches) != 1 or counts[day] != 1:
+                raise ValueError("HISTORY_CONFLICT: several transactions share this date")
+            if db.scalar(
+                select(ReadTxProjection.sync_id).where(
+                    ReadTxProjection.ledger_id == ledger.id, ReadTxProjection.sync_id == sid
+                )
+            ):
+                raise ValueError(
+                    "Already synchronized copies for the same period must be reviewed in the ledger"
+                )
+            mappings[sid] = next(iter(matches))
     return mappings
-
 
 def handoff_upload_state(db, ledger_id, mappings):
     """Read current admission on every retry, including deletions after a lost response."""
     candidates = sorted({sid for sid, canonical in mappings.items() if sid == canonical})
-    uploads, deleted = [], []
+    uploads: list[str] = []
+    deleted: list[str] = []
     for offset in range(0, len(candidates), 400):
         page = candidates[offset : offset + 400]
         present = set(
@@ -208,7 +206,9 @@ def check_mobile_push(db, ledger_ids, changes, protocol):
     from .models import Ledger
 
     financial = {
-        c.ledger_id for c in changes if c.entity_type in {"transaction", "ledger_snapshot"}
+        c.ledger_id
+        for c in changes
+        if c.action != "delete" and c.entity_type in {"transaction", "ledger_snapshot"}
     }
     if not financial:
         return
@@ -218,7 +218,15 @@ def check_mobile_push(db, ledger_ids, changes, protocol):
                 Ledger.id.in_(ledger_ids),
                 Ledger.external_id.in_(financial),
                 Ledger.id.in_(
-                    select(MCPStateRecord.ledger_id).where(MCPStateRecord.kind == "recurring_rule")
+                    select(MCPStateRecord.ledger_id).where(
+                        or_(
+                            MCPStateRecord.kind == "recurring_handoff",
+                            and_(
+                                MCPStateRecord.kind == "recurring_rule",
+                                MCPStateRecord.data_json["creation_hash"].as_string().is_not(None),
+                            ),
+                        )
+                    )
                 ),
             )
         ).all()
@@ -259,6 +267,9 @@ def check_mobile_push(db, ledger_ids, changes, protocol):
                     .limit(1)
                 )
                 if last_action == "delete":
+                    if change.entity_type == "transaction" and item.get("restoredSnapshot") is True:
+                        # The push loop rejects this stale restore without discarding its batch.
+                        continue
                     raise HTTPException(
                         409, "HISTORY_CONFLICT: this recurring transaction was deleted in Cloud"
                     )

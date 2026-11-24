@@ -7,12 +7,13 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.engine import CursorResult
 
 from ..config import get_settings
 from ..models import (
@@ -439,6 +440,7 @@ async def change_recurring_rule(
         elif action != "create":
             raise ValueError("record_id and expected_revision are required")
         db.expunge(ledger)
+    app_schedule = create_id is not None or bool((previous or {}).get("creation_hash"))
     if action in {"create", "update"}:
         if data is None:
             raise ValueError("data is required")
@@ -456,7 +458,8 @@ async def change_recurring_rule(
         body = await prepare_transaction(
             user, ledger, {**data.transaction.model_dump(), "happened_at": anchor.isoformat()}
         )
-        check_recurring_accounts(ledger, body)
+        if app_schedule:
+            check_recurring_accounts(ledger, body)
         payload = dict(
             **(previous or {}),
         )
@@ -483,9 +486,9 @@ async def change_recurring_rule(
                 "day_of_week",
             ]
         )
-        start_index = previous.get("next_index", 0) if same_schedule else 0
+        start_index = previous.get("next_index", 0) if previous and same_schedule else 0
         earliest = None if data.allow_backfill or same_schedule else datetime.now(timezone.utc)
-        if earliest is not None and len(data.starts_at) == 10:
+        if app_schedule and earliest is not None and len(data.starts_at) == 10:
             earliest = earliest.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
         if consumed_through:
             earliest = max(
@@ -509,9 +512,12 @@ async def change_recurring_rule(
         payload["next_index"] = index
         state = "active" if data.enabled and due else ("completed" if due is None else "paused")
     else:
+        assert previous is not None
         payload = dict(previous)
         earliest = (
-            datetime.now(timezone.utc) if action == "resume" and row.status == "paused" else None
+            datetime.now(timezone.utc)
+            if app_schedule and action == "resume" and row.status == "paused"
+            else None
         )
         index, due = next_occurrence(payload, payload["next_index"], earliest=earliest)
         payload["next_index"] = index
@@ -674,7 +680,7 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
         rules = db.scalars(query).all()
         for row in rules:
             db.expunge(row)
-    results = []
+    results: list[dict[str, Any]] = []
     for row in rules:
         try:
             with wt.SessionLocal() as db:
@@ -708,20 +714,21 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
                     .values(status="executing", updated_at=claim_time)
                 )
                 db.commit()
-                if not claim.rowcount:
+                if not cast("CursorResult[Any]", claim).rowcount:
                     continue
             raw = {**data["rule"]["transaction"], "happened_at": due.isoformat()}
             key = "recurring:" + row.id + ":" + due.strftime("%Y%m%dT%H%M%SZ")
             try:
-                with wt.SessionLocal() as db:
-                    started = db.scalar(
-                        select(MCPWriteOperation.id).where(
-                            MCPWriteOperation.user_id == user.id,
-                            MCPWriteOperation.request_key == key,
+                if data.get("creation_hash"):
+                    with wt.SessionLocal() as db:
+                        started = db.scalar(
+                            select(MCPWriteOperation.id).where(
+                                MCPWriteOperation.user_id == user.id,
+                                MCPWriteOperation.request_key == key,
+                            )
                         )
-                    )
-                if not started:
-                    check_recurring_accounts(ledger, await prepare_transaction(user, ledger, raw))
+                    if not started:
+                        check_recurring_accounts(ledger, await prepare_transaction(user, ledger, raw))
                 outcome = await wt.create_transactions(
                     user, ledger_id=ledger.external_id, transactions=[raw], idempotency_key=key
                 )

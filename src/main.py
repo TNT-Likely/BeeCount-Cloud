@@ -23,8 +23,7 @@ from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
-from .routers import recurring
-from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
+from .routers import admin, attachments, auth, devices, pats, profile, read, recurring, sync, write, ws
 from .routers import admin_backup, mcp_calls, notifications, two_factor
 from .routers import ai as ai_router
 from .routers import import_data as import_router
