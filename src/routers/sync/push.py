@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ...concurrency import lock_sqlite_writer
 from ...models import TransactionMoveRetirement
+from ...recurring_handoff import check_mobile_push
 from ...services.sync_health import observe_server_errors, record_failure, record_recovery
 from ._shared import (
     INDIVIDUAL_ENTITY_TYPES,
@@ -109,6 +110,8 @@ async def _push_for_device(
             lock_ledger_for_materialize(db, ledger_id)
             locked_ids.add(ledger_id)
         preloaded_ids.update(ledger_ids)
+
+        check_mobile_push(db, ledger_ids, req.changes, request.headers.get("X-BeeCount-Recurring"))
 
         tx_ids = list({
             change.entity_sync_id for change in req.changes if change.entity_type == "transaction"

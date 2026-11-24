@@ -23,6 +23,7 @@ from .logging_ring import install_ring_buffer
 from .metrics import metrics
 from .observability import configure_logging, install_request_middleware
 from .bootstrap_admin import ensure_admin
+from .routers import recurring
 from .routers import admin, attachments, auth, devices, pats, profile, read, sync, write, ws
 from .routers import admin_backup, mcp_calls, notifications, two_factor
 from .routers import ai as ai_router
@@ -76,7 +77,7 @@ def public_version() -> dict:
     return {
         "name": _beecount_cloud_name,
         "version": _beecount_cloud_version,
-        "capabilities": ["transaction_move_v1"],
+        "capabilities": ["transaction_move_v1", "recurring_rules_v1"],
     }
 
 
@@ -199,6 +200,7 @@ app.include_router(read.router, prefix=f"{settings.api_prefix}/read", tags=["rea
 app.include_router(write.router, prefix=f"{settings.api_prefix}/write", tags=["write"])
 app.include_router(attachments.router, prefix=f"{settings.api_prefix}/attachments", tags=["attachments"])
 app.include_router(profile.router, prefix=f"{settings.api_prefix}/profile", tags=["profile"])
+app.include_router(recurring.router, prefix=settings.api_prefix, tags=["recurring-rules"])
 app.include_router(notifications.router, prefix=f"{settings.api_prefix}/notifications", tags=["notifications"])
 app.include_router(pats.router, prefix=f"{settings.api_prefix}/profile/pats", tags=["pats"])
 app.include_router(

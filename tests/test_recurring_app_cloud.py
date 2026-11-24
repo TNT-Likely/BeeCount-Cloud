@@ -1,0 +1,266 @@
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import select
+from test_mcp_attachments import ledger as ledger
+from test_mcp_attachments import run
+
+from src.mcp import rule_tools as rules
+from src.mcp.tools import read_tools
+from src.models import MCPStateRecord, ReadTxProjection, SyncChange
+
+
+def route(ctx):
+    return f"/api/v1/ledgers/{ctx.ledger_id}/recurring-rules"
+
+
+def submit(ctx, payload, headers=None, status=200):
+    response = ctx.client.post(route(ctx), json=payload, headers=headers or ctx.headers)
+    assert response.status_code == status, response.text
+    return response.json()
+
+
+def sample(**kwargs):
+    return {
+        "action": "create",
+        "client_id": str(uuid4()),
+        "data": {
+            "name": "QA rent",
+            "transaction": {"amount": 32, "note": "rent"},
+            "frequency": "monthly",
+            "starts_at": "2030-01-01",
+            "day_of_month": 5,
+            "time_zone": "UTC",
+        },
+        "confirm": True,
+        **kwargs,
+    }
+
+
+def app_session(ctx, name="phone"):
+    res = ctx.client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "receipts@example.com",
+            "password": "private-unit-test",
+            "client_type": "app",
+            "device_name": name,
+        },
+    )
+    assert res.status_code == 200, res.text
+    auth = res.json()
+    return {"Authorization": f"Bearer {auth['access_token']}", "X-Device-ID": auth["device_id"]}
+
+
+def test_app_web_and_mcp_share_a_rule_and_check_revisions(ledger):
+    mobile = app_session(ledger)
+    draft = sample()
+    assert submit(ledger, {**draft, "confirm": False}, mobile)["next_occurrences"][0].startswith(
+        "2030-01-05"
+    )
+    assert ledger.client.get(route(ledger), headers=mobile).json()["items"] == []
+    first = submit(ledger, draft, mobile)
+    assert submit(ledger, draft, mobile)["id"] == first["id"]
+    submit(ledger, {**draft, "data": {**draft["data"], "name": "different"}}, mobile, 409)
+    (row,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+    assert row["id"] == first["id"] and row["can_edit"]
+    update = {
+        "action": "update",
+        "record_id": row["id"],
+        "expected_revision": row["revision"],
+        "data": {**draft["data"], "transaction": {"amount": 38}},
+        "confirm": True,
+    }
+    edited = submit(ledger, update)
+    submit(ledger, update, mobile, 409)
+    assert (
+        ledger.client.get(route(ledger), headers=mobile).json()["items"][0]["data"]["rule"][
+            "transaction"
+        ]["amount"]
+        == 38
+    )
+    paused = run(
+        rules.manage_recurring_rule(
+            ledger.user,
+            "pause",
+            ledger.ledger_id,
+            record_id=row["id"],
+            expected_revision=edited["revision"],
+            confirm=True,
+        )
+    )
+    assert paused["status"] == "paused"
+    removed = submit(
+        ledger,
+        {
+            "action": "delete",
+            "record_id": row["id"],
+            "expected_revision": paused["revision"],
+            "confirm": True,
+        },
+        mobile,
+    )
+    assert removed["status"] == "deleted"
+    assert submit(ledger, draft, mobile)["status"] == "deleted"
+    assert ledger.client.get(route(ledger), headers=ledger.headers).json()["items"] == []
+    _, _, unrelated = ledger.register("unrelated@example.com")
+    assert ledger.client.get(route(ledger), headers=unrelated).status_code == 404
+
+
+def test_cloud_occurrence_retries_emit_one_sync_transaction_and_move_the_next_month(ledger):
+    draft = sample()
+    row = submit(ledger, draft)
+    now = datetime(2030, 1, 10, tzinfo=timezone.utc)
+    result = run(rules.execute_due_rules(now=now))[0]["operation"]
+    assert result["created_count"] == 1
+    assert run(rules.execute_due_rules(now=now)) == []
+    (current,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+    new = submit(
+        ledger,
+        {
+            "action": "update",
+            "record_id": row["id"],
+            "expected_revision": current["revision"],
+            "data": {**draft["data"], "day_of_month": 15},
+            "confirm": True,
+        },
+    )
+    assert new["next_occurrences"][0].startswith("2030-02-15")
+    assert run(rules.execute_due_rules(now=datetime(2030, 1, 31, tzinfo=timezone.utc))) == []
+    with ledger.sessions() as db:
+        (tx,) = db.scalars(select(ReadTxProjection)).all()
+        changes = db.scalars(
+            select(SyncChange).where(
+                SyncChange.entity_type == "transaction", SyncChange.entity_sync_id == tx.sync_id
+            )
+        ).all()
+        assert len(changes) == 1 and tx.sync_id == result["sync_ids"][0]
+
+
+def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_receipt(ledger):
+    draft = sample()
+    first_id, second_id = str(uuid4()), str(uuid4())
+    handoff = {
+        **draft,
+        "migrate": True,
+        "consumed_through": "2030-01-05",
+        "local_transactions": [{"date": "2030-01-05", "sync_id": first_id}],
+    }
+    preview = submit(ledger, {**handoff, "confirm": False})
+    first = submit(ledger, {**handoff, "reviewed_mapping": preview["reviewed_mapping"]})
+    assert first["next_occurrences"][0].startswith("2030-02-05")
+    assert submit(ledger, handoff)["local_transactions"] == {first_id: first_id}
+    other = {
+        **handoff,
+        "client_id": str(uuid4()),
+        "local_transactions": [{"date": "2030-01-05", "sync_id": second_id}],
+    }
+    preview = submit(ledger, {**other, "confirm": False})
+    submit(ledger, {**other, "reviewed_mapping": preview["reviewed_mapping"]}, status=409)
+    link = {
+        **other,
+        "action": "update",
+        "record_id": first["id"],
+        "expected_revision": first["revision"],
+    }
+    preview = submit(ledger, {**link, "confirm": False})
+    assert preview["local_transactions"] == {second_id: first_id}
+    result = submit(ledger, {**link, "reviewed_mapping": preview["reviewed_mapping"]})
+    assert submit(ledger, {**other, "confirm": False})["id"] == result["id"]
+    assert run(rules.execute_due_rules(now=datetime(2030, 1, 31, tzinfo=timezone.utc))) == []
+    assert len(ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]) == 1
+
+
+def test_legacy_push_stays_pending_and_modern_manual_transactions_still_sync(ledger):
+    mobile = app_session(ledger)
+    row = submit(ledger, sample())
+    due = run(rules.execute_due_rules(now=datetime(2030, 1, 7, tzinfo=timezone.utc)))[0]
+    (canonical,) = due["operation"]["sync_ids"]
+    sid = str(uuid4())
+    change = {
+        "ledger_id": ledger.ledger_id,
+        "entity_type": "transaction",
+        "entity_sync_id": sid,
+        "action": "upsert",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "payload": {
+            "syncId": sid,
+            "type": "expense",
+            "amount": 32,
+            "happenedAt": "2030-01-05T00:00:00Z",
+            "localRecurringOrigin": True,
+        },
+    }
+
+    def push(headers, changes):
+        return ledger.client.post(
+            "/api/v1/sync/push",
+            headers=headers,
+            json={"device_id": mobile["X-Device-ID"], "changes": changes},
+        )
+
+    assert push(mobile, [change]).status_code == 426
+    modern = {**mobile, "X-BeeCount-Recurring": "cloud-v1"}
+    assert push(modern, [change]).status_code == 409
+    (current,) = ledger.client.get(route(ledger), headers=mobile).json()["items"]
+    link = {
+        **sample(),
+        "action": "update",
+        "record_id": row["id"],
+        "expected_revision": current["revision"],
+        "migrate": True,
+        "local_transactions": [{"date": "2030-01-05", "sync_id": sid}],
+        "consumed_through": "2030-01-05",
+    }
+    preview = submit(ledger, {**link, "confirm": False}, mobile)
+    assert preview["local_transactions"] == {sid: canonical}
+    submit(ledger, {**link, "reviewed_mapping": preview["reviewed_mapping"]}, mobile)
+    assert push(modern, [change]).status_code == 409
+    assert read_tools.list_transactions(ledger.user)["total"] == 1
+    manual = {**change, "payload": {**change["payload"], "localRecurringOrigin": False}}
+    response = push(modern, [manual])
+    assert response.status_code == 200, response.text
+    assert read_tools.list_transactions(ledger.user)["total"] == 2
+
+
+def test_worker_overlap_and_crash_after_post_recover_one_receipt(ledger, monkeypatch):
+    import asyncio
+    from datetime import timedelta
+
+    from src.mcp.tools import write_tools
+
+    row = submit(ledger, sample())
+    now = datetime(2030, 1, 7, tzinfo=timezone.utc)
+    real = write_tools.create_transactions
+
+    async def overlap():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def post(*args, **kwargs):
+            started.set()
+            await release.wait()
+            await real(*args, **kwargs)
+            raise RuntimeError("simulated worker exit after durable transaction")
+
+        monkeypatch.setattr(write_tools, "create_transactions", post)
+        first = asyncio.create_task(rules.execute_due_rules(now=now))
+        await started.wait()
+        try:
+            assert await rules.execute_due_rules(now=now) == []
+        finally:
+            release.set()
+        assert (await first)[0]["status"] == "failed"
+
+    run(overlap())
+    assert read_tools.list_transactions(ledger.user)["total"] == 1
+    with ledger.sessions() as db:
+        record = db.get(MCPStateRecord, row["id"])
+        assert record.status == "executing"
+        record.updated_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+        db.commit()
+    monkeypatch.setattr(write_tools, "create_transactions", real)
+    assert run(rules.execute_due_rules(now=now))[0]["operation"]["status"] == "created"
+    assert run(rules.execute_due_rules(now=now)) == []
+    assert read_tools.list_transactions(ledger.user)["total"] == 1
+    (current,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+    assert current["data"]["executed_count"] == 1

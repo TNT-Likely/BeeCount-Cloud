@@ -371,3 +371,11 @@ Agent 若已经错误添加 `Z`，服务端无法识别原始时间是否来自�
 
 - 每次会话先用 `get_bookkeeping_context` 获取候选，让用户选择后显式传 `ledger_id`。
 - 多账本写请求省略 `ledger_id` 会返回 `ledger_required`，不会自动选择。`get_active_ledger` 仅保留兼容查询行为，不代表 App 当前选中的账本。
+
+### 周期账单与 App、网页协同
+
+App、网页和 `manage_recurring_rule` 共用一个账本下的规则和 Cloud 调度器。打开网页的「周期账单」，或在已连接 BeeCount Cloud 的 App 中打开「周期账单」，即可预览、创建、修改、暂停及删除。调度器约每 30 秒检查到期规则，使用规则保存的 IANA 时区。管理员可用 `MCP_RECURRING_ENABLED=false` 暂停后台执行。设备断网期间，已确认的云规则继续按服务器配置运行。
+
+`GET /api/v1/ledgers/{ledger_id}/recurring-rules` 返回可见规则、版本、下一期和调度器状态。向同一路径 POST `action`、`data` 和 `confirm:false` 可预览，随后明确确认。新建时复用同一个 `client_id`，修改时带上 `record_id` 与 `expected_revision`。陈旧版本返回 409。App 与 Web 的修改权限遵循账本角色和规则创建者身份。客户端可在 `/api/v1/version` 查看 `recurring_rules_v1`。
+
+已有本机模板请在 App 选择「交给 Cloud」，核对已有规则或新建独立规则。迁移保留已记日期，使用持久交接凭据恢复中断的请求；同一期的本机副本会在确认前列出。仍有旧 App 的设备应先升级，在本机核对尚未同步的数据。已有云规则的账本会拒绝缺少新版标识的旧端交易或整账本快照。删除或暂停规则保留已有流水。纯本地模式继续由本机生成。

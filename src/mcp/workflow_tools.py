@@ -10,6 +10,7 @@ from pydantic import Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from ..concurrency import lock_ledger_for_materialize, lock_sqlite_writer
 from ..config import get_settings
 from ..models import (
     AuditLog,
@@ -81,8 +82,14 @@ def save_record(
     expected_revision=None,
     status="open",
     next_due_at=None,
+    create_id=None,
+    check_create=None,
+    after_save=None,
 ):
     with wt.SessionLocal() as db:
+        if kind == "recurring_rule":
+            lock_sqlite_writer(db)
+            lock_ledger_for_materialize(db, ledger.id)
         require_ledger(db, user, ledger.external_id, write=True)
         before = None
         if record_id:
@@ -96,9 +103,12 @@ def save_record(
                 raise ValueError(
                     "An executing/completed import plan cannot be edited; create a new preview"
                 )
+            predicates = [MCPStateRecord.id == record_id, MCPStateRecord.revision == expected_revision]
+            if kind == "recurring_rule":
+                predicates.append(MCPStateRecord.status != "executing")
             changed = db.execute(
                 update(MCPStateRecord)
-                .where(MCPStateRecord.id == record_id, MCPStateRecord.revision == expected_revision)
+                .where(*predicates)
                 .values(
                     data_json=data,
                     status=status,
@@ -112,8 +122,16 @@ def save_record(
             db.expire_all()
             row = db.get(MCPStateRecord, record_id)
         else:
+            if check_create is not None:
+                existing = check_create(db)
+                if existing is not None:
+                    replay = record_out(existing)
+                    if after_save:
+                        replay.update(after_save(db, existing))
+                        db.commit()
+                    return replay
             row = MCPStateRecord(
-                id=str(uuid4()),
+                id=create_id or str(uuid4()),
                 user_id=user.id,
                 ledger_id=ledger.id,
                 kind=kind,
@@ -125,6 +143,8 @@ def save_record(
             db.add(row)
             db.flush()
         out = record_out(row)
+        if after_save:
+            out.update(after_save(db, row))
         db.add(
             AuditLog(
                 user_id=user.id,

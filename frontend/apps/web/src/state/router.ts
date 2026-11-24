@@ -12,6 +12,7 @@ export type AppRoute =
 
 export const APP_SECTIONS: AppSection[] = [
   'transactions',
+  'recurring',
   'calendar',
   'attachments',
   'accounts',
@@ -36,6 +37,8 @@ export const DEFAULT_APP_SECTION: AppSection = 'transactions'
 function parseWorkspaceSection(parts: string[]): AppSection {
   if (parts.length === 0) return DEFAULT_APP_SECTION
   switch (parts.join('/')) {
+    case 'recurring':
+      return 'recurring'
     case 'transactions':
       return 'transactions'
     case 'accounts':
@@ -74,6 +77,8 @@ function parseRootSection(parts: string[]): AppSection {
   if (parts.length === 0) return DEFAULT_APP_SECTION
   const raw = parts.join('/')
   switch (raw) {
+    case 'recurring':
+      return 'recurring'
     case 'transactions':
       return 'transactions'
     case 'calendar':
@@ -115,6 +120,8 @@ function parseLegacyLedgerSection(parts: string[]): AppSection {
   if (parts.length === 0) return 'overview'
   const raw = parts.join('/')
   switch (raw) {
+    case 'recurring':
+      return 'recurring'
     case 'transactions':
       return 'transactions'
     case 'calendar':
@@ -177,6 +184,7 @@ export function parseRoute(pathname: string): AppRoute {
   }
   if (
     parts[1] === 'transactions' ||
+    parts[1] === 'recurring' ||
     parts[1] === 'calendar' ||
     parts[1] === 'attachments' ||
     parts[1] === 'accounts' ||
@@ -204,6 +212,8 @@ export function routePath(route: AppRoute): string {
     return '/login'
   }
   switch (route.section) {
+    case 'recurring':
+      return '/app/recurring'
     case 'transactions':
       return '/app/transactions'
     case 'calendar':
