@@ -1,5 +1,13 @@
 const zhTW = {
   "nav.recurring": "週期帳單",
+  "recurring.owner": "由 Cloud 按期記帳",
+  "recurring.inProgress": "進行中",
+  "recurring.perBill": "每期金額",
+  "recurring.emptyStatus": "暫無{status}的週期帳單",
+  "recurring.actions": "{name}的更多操作",
+  "recurring.monthOn": "每月 {day} 日",
+  "recurring.weekOn": "每週{day}",
+  "recurring.yearOn": "每年 {date}",
   "recurring.new": "新增週期帳單",
   "recurring.conflict": "規則已更新或正在入帳，請重新開啟後核對。",
   "recurring.name": "名稱",

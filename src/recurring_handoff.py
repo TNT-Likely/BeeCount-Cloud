@@ -30,6 +30,47 @@ def period_key(day, frequency):
     return day.isoformat()
 
 
+def source_rules(db, ledger_id, occurrences):
+    """Only a shared transaction identity can prove two device copies have the same source."""
+    prefix = "beecount.recurring."
+    ids = list({item["sync_id"] for item in occurrences})
+    matches = set()
+    for start in range(0, len(ids), 400):
+        sources = db.scalars(
+            select(MCPSourceReference.source_system)
+            .where(
+                MCPSourceReference.ledger_id == ledger_id,
+                MCPSourceReference.tx_sync_id.in_(ids[start : start + 400]),
+                MCPSourceReference.source_system.startswith(prefix),
+            )
+            .distinct()
+        )
+        matches.update(source[len(prefix) :] for source in sources)
+    return matches
+
+
+def migration_signature(rule):
+    tx = rule["transaction"]
+    return {
+        "name": rule["name"].strip().casefold(),
+        "type": tx.get("tx_type", "expense"),
+        "amount": tx["amount"],
+        "frequency": rule["frequency"],
+    }
+
+
+def similar_schedule(incoming, existing):
+    if incoming["type"] != existing["type"]:
+        return False
+    named_match = (
+        incoming["name"] not in {"", "expense", "income", "transfer"}
+        and incoming["name"] == existing["name"]
+    )
+    return named_match or (
+        incoming["amount"] == existing["amount"] and incoming["frequency"] == existing["frequency"]
+    )
+
+
 def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
     """Two installations can hold different sync IDs for the same pre-Cloud period."""
     if not items:
@@ -94,40 +135,49 @@ def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
     return mappings
 
 
-def required_uploads(db, ledger_id, mappings):
-    # A previous deletion still consumes the occurrence. A handoff must never resurrect it.
-    candidates = sorted({sid for sid, canonical_id in mappings.items() if sid == canonical_id})
-    result = []
+def handoff_upload_state(db, ledger_id, mappings):
+    """Read current admission on every retry, including deletions after a lost response."""
+    candidates = sorted({sid for sid, canonical in mappings.items() if sid == canonical})
+    uploads, deleted = [], []
     for offset in range(0, len(candidates), 400):
         page = candidates[offset : offset + 400]
-        seen = set(
+        present = set(
             db.scalars(
                 select(ReadTxProjection.sync_id).where(
                     ReadTxProjection.ledger_id == ledger_id, ReadTxProjection.sync_id.in_(page)
                 )
             )
         )
-        seen.update(
-            db.scalars(
-                select(SyncChange.entity_sync_id).where(
-                    SyncChange.ledger_id == ledger_id,
-                    SyncChange.entity_type == "transaction",
-                    SyncChange.entity_sync_id.in_(page),
-                )
+        missing = set(page) - present
+        latest = (
+            dict(
+                db.execute(
+                    select(SyncChange.entity_sync_id, SyncChange.action)
+                    .where(
+                        SyncChange.ledger_id == ledger_id,
+                        SyncChange.entity_type == "transaction",
+                        SyncChange.entity_sync_id.in_(missing),
+                    )
+                    .order_by(SyncChange.change_id)
+                ).all()
             )
+            if missing
+            else {}
         )
-        result.extend(sid for sid in page if sid not in seen)
-    return result
+        deleted.extend(sid for sid in page if latest.get(sid) == "delete")
+        uploads.extend(sid for sid in page if sid in missing and sid not in latest)
+    return {"required_uploads": uploads, "deleted_transactions": deleted}
 
 
 def receipt(db, key):
     prior = db.get(MCPStateRecord, key) if key else None
     if prior and prior.kind == "recurring_handoff":
+        mappings = prior.data_json["transactions"]
         return {
             "id": prior.data_json["rule_id"],
             "handoff_confirmed": True,
-            "local_transactions": prior.data_json["transactions"],
-            "required_uploads": prior.data_json.get("required_uploads", []),
+            "local_transactions": mappings,
+            **handoff_upload_state(db, prior.ledger_id, mappings),
         }
     return None
 
@@ -181,6 +231,20 @@ def check_mobile_push(db, ledger_ids, changes, protocol):
                 )
             )
             if not known:
+                last_action = db.scalar(
+                    select(SyncChange.action)
+                    .where(
+                        SyncChange.ledger_id == ledger_id,
+                        SyncChange.entity_type == "transaction",
+                        SyncChange.entity_sync_id == sid,
+                    )
+                    .order_by(SyncChange.change_id.desc())
+                    .limit(1)
+                )
+                if last_action == "delete":
+                    raise HTTPException(
+                        409, "HISTORY_CONFLICT: this recurring transaction was deleted in Cloud"
+                    )
                 known = db.scalar(
                     select(MCPSourceReference.id).where(
                         MCPSourceReference.ledger_id == ledger_id,

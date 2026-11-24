@@ -35,6 +35,7 @@ class RuleChange(BaseModel):
     client_id: UUID | None = None
     confirm: bool = False
     migrate: bool = False
+    automatic: bool = False
     consumed_through: date | None = None
     distinct: bool = False
     local_transactions: list[LocalOccurrence] = Field(default_factory=list, max_length=50000)
@@ -96,6 +97,7 @@ async def change_rule(ledger_id: str, change: RuleChange, user: User = Depends(g
             change.confirm,
             client_id=change.client_id,
             migration=change.migrate,
+            automatic=change.automatic,
             distinct=change.distinct,
             local_transactions=[v.model_dump(mode="json") for v in change.local_transactions]
             if change.migrate
@@ -108,7 +110,9 @@ async def change_rule(ledger_id: str, change: RuleChange, user: User = Depends(g
     except ValueError as exc:
         message = str(exc)
         code = 422
-        if message.startswith(("REVISION_CONFLICT", "SIMILAR_RULE")):
+        if message.startswith(
+            ("REVISION_CONFLICT", "SIMILAR_RULE", "HISTORY_CONFLICT", "Already synchronized copies")
+        ):
             code = 409
         elif message in {"Record not found", "Ledger not found"}:
             code = 404

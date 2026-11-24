@@ -10,6 +10,7 @@ import {
   Languages,
   LogOut,
   Moon,
+  Repeat2,
   Smartphone,
   Sparkles,
   Sun,
@@ -135,6 +136,9 @@ export function AvatarDropdown({
             onClick={() => onNavigate('budgets')}
           >
             {t('nav.budgets')}
+          </MenuButton>
+          <MenuButton icon={Repeat2} active={currentSection === 'recurring'} onClick={() => onNavigate('recurring')}>
+            {t('nav.recurring')}
           </MenuButton>
           <MenuButton
             icon={BookOpen}

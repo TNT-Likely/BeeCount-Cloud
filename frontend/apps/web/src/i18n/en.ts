@@ -1,5 +1,13 @@
 const en = {
   "nav.recurring": "Recurring bills",
+  "recurring.owner": "Posted by Cloud",
+  "recurring.inProgress": "Active",
+  "recurring.perBill": "Amount per bill",
+  "recurring.emptyStatus": "No bills in this view ({status}).",
+  "recurring.actions": "Actions for {name}",
+  "recurring.monthOn": "Monthly on day {day}",
+  "recurring.weekOn": "Every {day}",
+  "recurring.yearOn": "Yearly on {date}",
   "recurring.new": "New recurring bill",
   "recurring.conflict": "This rule changed or is being posted. Reopen it to review the latest version.",
   "recurring.name": "Name",

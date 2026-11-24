@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { Plus, Repeat2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { ApiError, changeRecurringRule, fetchRecurringRules, fetchSharedResources, type RecurringRuleList,
   type RecurringRuleRow, type RuleConfig, type SharedResourcesBundle } from '@beecount/api-client'
-import { Button, Card, CardContent, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription,
+import { Button, Dialog, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle, Input, useT } from '@beecount/ui'
+import { RecurringScheduleList } from '../../components/RecurringScheduleList'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
@@ -126,33 +127,20 @@ function LedgerRules({ ledger, currency }: { ledger: string; currency: string })
     </select></Field>
   }
   const errorText = error && <p role="alert" className="text-sm text-destructive">{error}</p>
-  return <Card className="bc-panel">
-    <CardHeader className="flex flex-row items-center justify-between gap-3">
-      <CardTitle>{t('nav.recurring')}</CardTitle>
+  return <section className="mx-auto max-w-5xl py-6">
+    <header className="mb-5 flex items-center justify-between gap-3">
+      <div><h1 className="text-3xl font-semibold tracking-tight">{t('nav.recurring')}</h1>
+        {list && <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground" role="status">
+          <span className={`h-2 w-2 rounded-full ${list.scheduler_enabled ? 'bg-emerald-600' : 'bg-amber-500'}`} />
+          {t(list.scheduler_enabled ? 'recurring.owner' : 'recurring.disabled')}
+        </p>}
+      </div>
       <Button disabled={!list?.can_create || busy} onClick={() => void open()}><Plus size={16} />{t('recurring.new')}</Button>
-    </CardHeader>
-    <CardContent className="space-y-4">
-      {!draft && !deleting && errorText}
-      {list && !list.scheduler_enabled && <p role="status">{t('recurring.disabled')}</p>}
-      {!list ? <p>{t('common.loading')}</p> : list.items.length === 0
-        ? <div className="grid justify-items-center gap-3 py-12 text-muted-foreground"><Repeat2 size={26}/><p>{t('recurring.empty')}</p></div>
-        : <ul className="divide-y">{list.items.map(row => {
-          const rule = row.data.rule
-          return <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
-            <div className="min-w-0"><strong>{rule.name}</strong>
-              <p className="text-sm text-muted-foreground">{t('recurring.every', { n:rule.interval, unit:t(`recurring.${rule.frequency}`) })} · {t(`recurring.${row.status}`)}</p>
-              {row.status === 'active' && <p className="text-sm">{t('recurring.next')} · {formatDue(row.next_due_at, rule.time_zone)} ({rule.time_zone})</p>}
-            </div><div className="flex flex-wrap items-center gap-1">
-              <strong className="mr-3 tabular-nums">{rule.transaction.amount} {rule.transaction.currency || currency}</strong>
-              {row.can_edit && row.status !== 'executing' && <>
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => void open(row)}>{t('common.edit')}</Button>
-                {row.status !== 'completed' && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void change(row,row.status === 'paused' ? 'resume' : 'pause')}>{t(row.status === 'paused' ? 'recurring.resume' : 'recurring.pause')}</Button>}
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => {setError('');setDeleting(row)}}>{t('common.delete')}</Button>
-              </>}
-            </div>
-          </li>
-        })}</ul>}
-    </CardContent>
+    </header>
+    {!draft && !deleting && errorText}
+    {list ? <RecurringScheduleList ledger={ledger} currency={currency} items={list.items} busy={busy}
+      onEdit={row => void open(row)} onToggle={row => void change(row,row.status === 'paused' ? 'resume' : 'pause')}
+      onDelete={row => {setError('');setDeleting(row)}} /> : !error && <p role="status">{t('common.loading')}</p>}
     <Dialog open={!!draft} onOpenChange={v => { if (!v && !busy) {setDraft(undefined);setError('')} }}>
       <DialogContent className="max-h-[88dvh] overflow-auto">
         <DialogHeader><DialogTitle>{t(draft?.row ? 'common.edit' : 'recurring.new')}</DialogTitle>
@@ -196,5 +184,5 @@ function LedgerRules({ ledger, currency }: { ledger: string; currency: string })
           <Button variant="destructive" disabled={busy} onClick={() => deleting && void change(deleting,'delete')}>{t('common.delete')}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
-  </Card>
+  </section>
 }

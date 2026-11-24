@@ -38,7 +38,6 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: 'overview', labelKey: 'nav.overview' },
       { key: 'transactions', labelKey: 'nav.transactions' },
-      { key: 'recurring', labelKey: 'nav.recurring' },
       // calendar 不放主导航(高频但不是"主视图"等级,跟 transactions 重复语义);
       // 入口走 AppHeader 右上角图标 + ⌘K + AvatarDropdown 任一即可。
       { key: 'accounts', labelKey: 'nav.accounts' },

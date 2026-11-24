@@ -23,14 +23,22 @@ from ..models import (
     User,
     UserAccountProjection,
 )
-from ..recurring_handoff import local_periods, receipt, receipt_id, required_uploads
+from ..recurring_handoff import (
+    handoff_upload_state,
+    local_periods,
+    migration_signature,
+    receipt,
+    receipt_id,
+    similar_schedule,
+    source_rules,
+)
 from .capability_tools import Fields, require_ledger, run_write
 from .query_context import date_boundary
 from .schemas import BatchTransactionItem
 from .tools import read_tools as rt
 from .tools import write_tools as wt
 from .transaction_service import dictionary_entry, prepare_transaction
-from .workflow_tools import load_record, save_record
+from .workflow_tools import load_record, record_out, save_record
 
 
 class ReviewItem(Fields):
@@ -352,6 +360,7 @@ async def change_recurring_rule(
     client_id=None,
     consumed_through=None,
     migration=False,
+    automatic=False,
     distinct=False,
     local_transactions=(),
     reviewed_mapping=None,
@@ -367,6 +376,22 @@ async def change_recurring_rule(
         committed = receipt(db, handoff_key)
         if committed:
             return committed
+        if migration and local_transactions:
+            known = source_rules(db, ledger.id, local_transactions)
+            if known and known != {record_id}:
+                if automatic and not record_id and len(known) == 1:
+                    linked = db.get(MCPStateRecord, next(iter(known)))
+                    if linked and linked.user_id == user.id and linked.status != "deleted":
+                        if linked.status == "executing":
+                            return dict(status="operation_pending")
+                        if confirm:
+                            raise ValueError(
+                                "REVISION_CONFLICT: another device adopted this schedule"
+                            )
+                        return {"matched_rule": {**record_out(linked), "can_edit": True}}
+                raise ValueError(
+                    "HISTORY_CONFLICT: some transactions belong to another recurring rule"
+                )
         previous = None
         if action == "create" and client_id and data is not None:
             create_id = str(
@@ -441,6 +466,8 @@ async def change_recurring_rule(
             execution_owner="cloud",
             executed_count=(previous or {}).get("executed_count", 0),
         )
+        if migration and action == "create":
+            payload["migration_origin"] = migration_signature(payload["rule"])
         if fingerprint:
             payload["creation_hash"] = fingerprint
         same_schedule = previous and all(
@@ -495,6 +522,7 @@ async def change_recurring_rule(
             "delete": "deleted",
         }[action]
     mapping = {}
+    deleted = []
 
     def mapping_hash(values):
         return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
@@ -504,6 +532,7 @@ async def change_recurring_rule(
             mapping = local_periods(
                 db, ledger, user, record_id or create_id, payload["rule"], local_transactions
             )
+            deleted = handoff_upload_state(db, ledger.id, mapping)["deleted_transactions"]
         if confirm and local_transactions and reviewed_mapping != mapping_hash(mapping):
             raise ValueError("REVISION_CONFLICT: review local transactions again")
 
@@ -514,7 +543,7 @@ async def change_recurring_rule(
         accepted = local_periods(
             db, ledger, user, row.id, payload["rule"], local_transactions, commit=True
         )
-        uploads = required_uploads(db, ledger.id, accepted)
+        admission = handoff_upload_state(db, ledger.id, accepted)
         if accepted != mapping:
             raise ValueError("REVISION_CONFLICT: another device handed off this period")
         db.add(
@@ -527,14 +556,14 @@ async def change_recurring_rule(
                 data_json={
                     "rule_id": row.id,
                     "transactions": accepted,
-                    "required_uploads": uploads,
+                    **admission,
                 },
             )
         )
         return {
             "handoff_confirmed": True,
             "local_transactions": accepted,
-            "required_uploads": uploads,
+            **admission,
         }
 
     preview = []
@@ -550,6 +579,7 @@ async def change_recurring_rule(
             status="confirmation_required",
             next_occurrences=preview,
             local_transactions=mapping,
+            deleted_transactions=deleted,
             reviewed_mapping=mapping_hash(mapping) if handoff_key else None,
             execution_owner="cloud",
             backfill=payload["rule"]["allow_backfill"],
@@ -562,6 +592,8 @@ async def change_recurring_rule(
         if prior is not None:
             replay_creation(prior, fingerprint)
             return prior
+        if migration and source_rules(db, ledger.id, local_transactions):
+            raise ValueError("REVISION_CONFLICT: another device adopted this schedule")
         if migration and not distinct:
             candidates = db.scalars(
                 select(MCPStateRecord).where(
@@ -571,11 +603,11 @@ async def change_recurring_rule(
                 )
             )
             for candidate in candidates:
-                other = candidate.data_json["rule"]
-                if (
-                    other["transaction"]["amount"] == data.transaction.amount
-                    and other["transaction"].get("tx_type", "expense") == data.transaction.tx_type
-                    and other["frequency"] == data.frequency
+                other = migration_signature(candidate.data_json["rule"])
+                origin = candidate.data_json.get("migration_origin") or other
+                if any(
+                    similar_schedule(payload["migration_origin"], signature)
+                    for signature in (other, origin)
                 ):
                     raise ValueError("SIMILAR_RULE: review existing rules before creating another")
         return None
@@ -597,8 +629,6 @@ async def change_recurring_rule(
 
 
 def replay_creation(row, fingerprint):
-    from .workflow_tools import record_out
-
     if row.data_json.get("creation_hash") != fingerprint:
         raise ValueError("REVISION_CONFLICT: creation key already used")
     return record_out(row)

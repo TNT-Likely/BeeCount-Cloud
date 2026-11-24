@@ -34,6 +34,7 @@ export type RecurringRuleRow = {
   id: string
   revision: number
   status: 'active' | 'paused' | 'completed' | 'executing'
+  next_local?: string | null
   next_due_at: string | null
   can_edit: boolean
   data: { rule: RuleConfig; executed_count: number; last_due_at?: string }

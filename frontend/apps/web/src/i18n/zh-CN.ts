@@ -1,5 +1,13 @@
 const zhCN = {
   "nav.recurring": "周期账单",
+  "recurring.owner": "由 Cloud 按期记账",
+  "recurring.inProgress": "进行中",
+  "recurring.perBill": "每期金额",
+  "recurring.emptyStatus": "暂无{status}的周期账单",
+  "recurring.actions": "{name}的更多操作",
+  "recurring.monthOn": "每月 {day} 日",
+  "recurring.weekOn": "每周{day}",
+  "recurring.yearOn": "每年 {date}",
   "recurring.new": "新建周期账单",
   "recurring.conflict": "规则已更新或正在入账，请重新打开后核对。",
   "recurring.name": "名称",

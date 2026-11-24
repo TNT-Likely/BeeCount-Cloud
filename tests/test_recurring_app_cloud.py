@@ -266,3 +266,107 @@ def test_worker_overlap_and_crash_after_post_recover_one_receipt(ledger, monkeyp
     assert read_tools.list_transactions(ledger.user)["total"] == 1
     (current,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
     assert current["data"]["executed_count"] == 1
+
+
+def test_automatic_adoption_uses_shared_transaction_identity_and_preserves_cloud_edits(ledger):
+    first_tx = str(uuid4())
+    first_phone = {
+        **sample(),
+        "automatic": True,
+        "migrate": True,
+        "consumed_through": "2030-01-05",
+        "local_transactions": [{"date": "2030-01-05", "sync_id": first_tx}],
+    }
+
+    def confirmed(change):
+        preview = submit(ledger, {**change, "confirm": False})
+        return submit(
+            ledger, {**change, "confirm": True, "reviewed_mapping": preview["reviewed_mapping"]}
+        )
+
+    created = confirmed(first_phone)
+    original = first_phone["data"]
+    edited = {
+        **original,
+        "name": "Updated rent",
+        "transaction": {**original["transaction"], "amount": 98},
+    }
+    current = submit(
+        ledger,
+        {
+            "action": "update",
+            "record_id": created["id"],
+            "expected_revision": created["revision"],
+            "data": edited,
+            "confirm": True,
+        },
+    )
+    other_phone = {**first_phone, "client_id": str(uuid4())}
+    matched = submit(ledger, {**other_phone, "confirm": False})["matched_rule"]
+    assert matched["id"] == current["id"] and matched["data"]["rule"]["transaction"]["amount"] == 98
+    linked = confirmed(
+        {
+            **other_phone,
+            "action": "update",
+            "record_id": matched["id"],
+            "expected_revision": matched["revision"],
+            "data": matched["data"]["rule"],
+        }
+    )
+    assert linked["id"] == created["id"] and linked["local_transactions"] == {first_tx: first_tx}
+    assert submit(ledger, {**other_phone, "confirm": False})["handoff_confirmed"]
+
+    # A separate install with the original fields, but no shared transaction ID,
+    # needs a human decision even after a web edit changed both amount and name.
+    ambiguous = {**first_phone, "client_id": str(uuid4()), "local_transactions": []}
+    assert "SIMILAR_RULE" in submit(ledger, ambiguous, status=409)["detail"]
+    assert len(ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]) == 1
+    separate = confirmed({**ambiguous, "distinct": True, "automatic": False})
+    assert separate["id"] != linked["id"]
+
+
+def test_replayed_receipt_does_not_reupload_a_deleted_occurrence(ledger):
+    sid = str(uuid4())
+    request = {
+        **sample(),
+        "migrate": True,
+        "automatic": True,
+        "consumed_through": "2030-01-05",
+        "local_transactions": [{"date": "2030-01-05", "sync_id": sid}],
+    }
+    preview = submit(ledger, {**request, "confirm": False})
+    first = submit(ledger, {**request, "reviewed_mapping": preview["reviewed_mapping"]})
+    assert first["required_uploads"] == [sid]
+    mobile = app_session(ledger)
+
+    def push(action):
+        return ledger.client.post(
+            "/api/v1/sync/push",
+            headers={**mobile, "X-BeeCount-Recurring": "cloud-v1"},
+            json={
+                "device_id": mobile["X-Device-ID"],
+                "changes": [
+                    {
+                        "ledger_id": ledger.ledger_id,
+                        "entity_type": "transaction",
+                        "entity_sync_id": sid,
+                        "action": action,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "payload": {
+                            "syncId": sid,
+                            "type": "expense",
+                            "amount": 10,
+                            "happenedAt": "2030-01-05T00:00:00Z",
+                            "localRecurringOrigin": True,
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert push("upsert").status_code == 200
+    assert submit(ledger, request)["required_uploads"] == []
+    assert push("delete").status_code == 200
+    replay = submit(ledger, request)
+    assert replay["required_uploads"] == [] and replay["deleted_transactions"] == [sid]
+    assert push("upsert").status_code == 409
