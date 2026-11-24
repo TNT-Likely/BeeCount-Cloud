@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { RecurringRuleRow, RecurringTransaction } from '@beecount/api-client'
-import { lastPostingDate, perPeriodAmount, shortPostingDate } from './recurringPresentation'
+import {
+  initialRecurringView,
+  lastPostingDate,
+  perPeriodAmount,
+  recurringSubtitle,
+  shortPostingDate,
+} from './recurringPresentation'
 
 const tx: RecurringTransaction = { tx_type: 'expense', amount: 8.99 }
 const row: RecurringRuleRow = {
@@ -60,5 +66,26 @@ describe('recurring currency', () => {
     )
     expect(value.original).toMatch(/^USD.*8\.99/)
     expect(value.converted).toBeNull()
+  })
+})
+
+describe('initial recurring filter', () => {
+  it('opens the first populated state when a ledger has no active bills', () => {
+    expect(initialRecurringView([{ status: 'completed' }])).toBe('completed')
+    expect(initialRecurringView([{ status: 'completed' }, { status: 'paused' }])).toBe('paused')
+  })
+
+  it('prefers active, including a posting in progress, and has a stable empty state', () => {
+    expect(initialRecurringView([{ status: 'paused' }, { status: 'executing' }])).toBe('active')
+    expect(initialRecurringView([])).toBe('active')
+  })
+})
+
+describe('bill subtitle', () => {
+  it('retains distinct category and note while omitting empty or repeated details', () => {
+    expect(recurringSubtitle('租金', '住房', '含物业费')).toBe('住房 · 含物业费')
+    expect(recurringSubtitle('租金', '住房', ' 租金 ')).toBe('住房')
+    expect(recurringSubtitle('租金', ' 住房 ', '住房')).toBe('住房')
+    expect(recurringSubtitle('租金', '租金', ' ')).toBe('')
   })
 })

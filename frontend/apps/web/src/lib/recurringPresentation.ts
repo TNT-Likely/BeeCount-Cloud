@@ -1,5 +1,21 @@
 import type { RecurringRuleRow, RecurringTransaction } from '@beecount/api-client'
 
+export const recurringViews = ['active', 'paused', 'completed'] as const
+export type RecurringView = (typeof recurringViews)[number]
+type RuleStatus = Pick<RecurringRuleRow, 'status'>
+
+export const recurringViewFor = (row: RuleStatus): RecurringView =>
+  row.status === 'executing' ? 'active' : row.status
+
+export function initialRecurringView(items: RuleStatus[]): RecurringView {
+  return recurringViews.find((view) => items.some((row) => recurringViewFor(row) === view)) ?? 'active'
+}
+
+export function recurringSubtitle(name: string, category: string, note?: string | null) {
+  const parts = [category.trim(), note?.trim()].filter((part) => part && part !== name.trim())
+  return [...new Set(parts)].join(' · ')
+}
+
 export function recurringCivilDate(instant: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('sv-SE', {
     year: 'numeric',

@@ -1,14 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  ArrowLeftRight,
-  BookOpen,
-  Check,
-  CircleDollarSign,
-  Ellipsis,
-  Pause,
-  ReceiptText,
-  Wallet,
-} from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeftRight, CircleDollarSign, Ellipsis, ReceiptText } from 'lucide-react'
 import type { RecurringRuleRow, RuleConfig } from '@beecount/api-client'
 import {
   DropdownMenu,
@@ -22,7 +13,12 @@ import { CategoryIcon } from '@beecount/web-features'
 import { useSharedLedgerResources } from '../context/SharedLedgerResourcesContext'
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
 import {
+  initialRecurringView,
   lastPostingDate,
+  recurringSubtitle,
+  recurringViewFor as viewFor,
+  recurringViews as views,
+  type RecurringView as View,
   perPeriodAmount,
   recurringCivilDate as civilDate,
   recurringUtcDay as utcDay,
@@ -30,16 +26,13 @@ import {
 } from '../lib/recurringPresentation'
 import './RecurringScheduleList.css'
 
-type View = 'active' | 'paused' | 'completed'
 const palette = [
   'bg-amber-500/10 text-amber-700 dark:text-amber-300',
   'bg-violet-500/10 text-violet-700 dark:text-violet-300',
   'bg-teal-500/10 text-teal-700 dark:text-teal-300',
   'bg-sky-500/10 text-sky-700 dark:text-sky-300',
 ]
-const views: View[] = ['active', 'paused', 'completed']
 const viewKey = (view: View) => (view === 'active' ? 'recurring.inProgress' : 'recurring.' + view)
-const viewFor = (row: RecurringRuleRow): View => (row.status === 'executing' ? 'active' : row.status)
 function period(rule: RuleConfig, t: ReturnType<typeof useT>, locale: string) {
   const anchor = utcDay(rule.starts_at.slice(0, 10))
   const day = rule.day_of_month ?? anchor.getUTCDate()
@@ -87,7 +80,8 @@ export function RecurringScheduleList({
   onDelete: (row: RecurringRuleRow) => void
 }) {
   const { locale, t } = useLocale()
-  const [view, setView] = useState<View>('active')
+  const [view, setView] = useState<View>(() => initialRecurringView(items))
+  const selectedFilter = useRef<HTMLButtonElement>(null)
   const { bundle } = useSharedLedgerResources(ledger)
   const { previewMap, ensureLoadedMany } = useAttachmentCache()
   useEffect(() => {
@@ -127,6 +121,7 @@ export function RecurringScheduleList({
           <button
             key={key}
             type="button"
+            ref={view === key ? selectedFilter : undefined}
             aria-pressed={view === key}
             onClick={() => setView(key)}
             className={
@@ -208,9 +203,6 @@ export function RecurringScheduleList({
                   : new Intl.RelativeTimeFormat(locale, {
                       numeric: Math.abs(delta) < 2 ? 'auto' : 'always',
                     }).format(delta, 'day')
-              const weekday =
-                date &&
-                new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(utcDay(date))
               const time =
                 row.next_due_at &&
                 rule.starts_at.length > 10 &&
@@ -238,42 +230,24 @@ export function RecurringScheduleList({
                   : tx.tx_type === 'income'
                     ? CircleDollarSign
                     : ReceiptText
-              const caption = [category, period(rule, t, locale)].join(' · ')
+              const subtitle = recurringSubtitle(rule.name, category, note)
+              const enabled = row.status === 'active' || row.status === 'executing'
               return (
-                <li key={row.id} className="flex min-w-0 flex-col py-3">
-                  <div className="recurring-entry-summary grid grid-cols-[34px_minmax(0,1fr)_auto_28px] items-center gap-1.5 sm:grid-cols-[50px_minmax(0,1fr)_auto_32px] sm:gap-3">
-                    <div
-                      className={
-                        'flex min-h-10 flex-col items-center justify-center border-r border-border leading-none ' +
-                        (view === 'active' && (delta === 0 || delta === 1)
-                          ? 'text-amber-700 dark:text-amber-300'
-                          : 'text-muted-foreground')
-                      }
-                      title={view === 'active' ? date + ' · ' + rule.time_zone : t(viewKey(view))}
-                    >
-                      {view === 'active' && date ? (
-                        <>
-                          <span className="text-xl font-semibold tabular-nums">{date.slice(-2)}</span>
-                          <span className="mt-1 text-[10px]">{weekday}</span>
-                        </>
-                      ) : view === 'paused' ? (
-                        <Pause size={16} />
-                      ) : view === 'completed' ? (
-                        <Check size={16} />
-                      ) : (
-                        <span>—</span>
-                      )}
-                    </div>
+                <li key={row.id} aria-label={rule.name} className="recurring-bill-card" data-state={row.status}>
+                  <div className="flex min-h-10 items-center gap-2.5 sm:gap-3">
                     <button
                       type="button"
                       disabled={!editing || busy}
+                      aria-label={editing ? t('recurring.editNamed', { name: rule.name }) : undefined}
                       onClick={() => onEdit(row)}
-                      className="flex min-w-0 items-center gap-2 text-left disabled:cursor-default sm:gap-3"
+                      className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default sm:gap-3"
                     >
                       <span
                         className={
-                          'hidden size-9 shrink-0 items-center justify-center rounded-xl sm:flex ' + tone
+                          'recurring-bill-badge grid size-9 shrink-0 place-items-center rounded-xl sm:size-10 ' +
+                          tone
                         }
+                        aria-hidden="true"
                       >
                         {cat?.icon || cat?.icon_cloud_file_id ? (
                           <CategoryIcon
@@ -281,92 +255,130 @@ export function RecurringScheduleList({
                             iconType={cat.icon_type}
                             iconCloudFileId={cat.icon_cloud_file_id}
                             iconPreviewUrlByFileId={previewMap}
-                            size={18}
+                            size={20}
                           />
                         ) : (
-                          <Icon size={17} />
+                          <Icon size={20} />
                         )}
                       </span>
                       <span className="min-w-0">
-                        <strong className="block truncate text-sm font-semibold sm:text-base" title={rule.name}>
+                        <strong
+                          className="block truncate text-[15px] font-semibold leading-snug sm:text-base"
+                          title={rule.name}
+                        >
                           {rule.name}
                         </strong>
-                        <span className="mt-0.5 block truncate text-xs text-muted-foreground" title={caption}>
-                          {caption}
-                        </span>
+                        {subtitle && (
+                          <span
+                            className="mt-0.5 line-clamp-2 break-words text-xs leading-snug text-muted-foreground"
+                            title={subtitle}
+                          >
+                            {subtitle}
+                          </span>
+                        )}
                       </span>
                     </button>
-                    <div className="text-right">
-                      <span className="block text-[11px] leading-tight text-muted-foreground">
-                        {amountLabel}
-                      </span>
-                      <strong
-                        className={
-                          'block whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base ' +
-                          (tx.tx_type === 'income' ? 'text-income' : '')
-                        }
-                      >
-                        {amount.original}
-                      </strong>
-                      {amount.converted && (
-                        <span className="block text-[11px] text-muted-foreground">≈ {amount.converted}</span>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      {row.status !== 'completed' && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={enabled}
+                          aria-label={t('recurring.toggleNamed', { name: rule.name })}
+                          disabled={!editing || busy}
+                          className="group grid h-9 w-10 shrink-0 place-items-center rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-60"
+                          onClick={(event) => {
+                            if (event.detail === 0) selectedFilter.current?.focus()
+                            onToggle(row)
+                          }}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="inline-flex h-[18px] w-8 items-center rounded-full bg-border p-0.5 transition-colors group-aria-checked:bg-primary"
+                          >
+                            <span className="size-3.5 rounded-full bg-card shadow-sm transition-transform group-aria-checked:translate-x-3.5" />
+                          </span>
+                        </button>
+                      )}
+                      {editing && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                              aria-label={t('recurring.actions', { name: rule.name })}
+                              disabled={busy}
+                            >
+                              <Ellipsis size={18} />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onSelect={() => onEdit(row)}>{t('common.edit')}</DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => onDelete(row)} className="text-destructive">
+                              {t('common.delete')}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       )}
                     </div>
-                    {editing && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted"
-                            aria-label={t('recurring.actions', { name: rule.name })}
-                            disabled={busy}
-                          >
-                            <Ellipsis size={17} />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => onEdit(row)}>{t('common.edit')}</DropdownMenuItem>
-                          {row.status !== 'completed' && (
-                            <DropdownMenuItem onSelect={() => onToggle(row)}>
-                              {t(row.status === 'paused' ? 'recurring.resume' : 'recurring.pause')}
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onSelect={() => onDelete(row)} className="text-destructive">
-                            {t('common.delete')}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
                   </div>
-                  {note && note !== rule.name.trim() && (
-                    <p className="mt-2 line-clamp-2 break-words text-xs text-muted-foreground" title={note}>
-                      {note}
-                    </p>
-                  )}
-                  <div className="mt-auto pt-2.5">
-                    <dl className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-border pt-2 text-xs">
-                      <div className="flex flex-wrap items-baseline gap-x-1.5">
-                        <dt className="text-muted-foreground">{t('recurring.nextPosting')}</dt>
-                        <dd title={view === 'active' && date ? date + ' · ' + rule.time_zone : undefined}>
-                          {view !== 'active' ? (
-                            t(viewKey(view))
-                          ) : date ? (
-                            <>
-                              <time dateTime={row.next_local || row.next_due_at || date}>
-                                {shortPostingDate(date, today, locale)}
-                                {time && ' ' + time}
-                              </time>
-                              {' · '}
+                  <dl className="recurring-bill-figures">
+                    <div>
+                      <dt className="text-xs text-muted-foreground">{amountLabel}</dt>
+                      <dd>
+                        <strong
+                          className={'recurring-bill-value ' + (tx.tx_type === 'income' ? 'text-income' : '')}
+                        >
+                          {amount.original}
+                        </strong>
+                        {amount.converted && (
+                          <small className="mt-0.5 block text-[11px] tabular-nums text-muted-foreground">
+                            ≈ {amount.converted}
+                          </small>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="recurring-bill-next">
+                      <dt className="text-xs text-muted-foreground">
+                        {t(enabled ? 'recurring.nextPosting' : 'recurring.postingStatus')}
+                        {enabled && (row.status === 'executing' || relative) && (
+                          <>
+                            {' · '}
+                            <span
+                              className={
+                                delta === 0 || delta === 1 ? 'text-amber-700 dark:text-amber-300' : undefined
+                              }
+                            >
                               {row.status === 'executing' ? t('recurring.executing') : relative}
-                            </>
-                          ) : row.status === 'executing' ? (
-                            t('recurring.executing')
-                          ) : (
-                            '—'
-                          )}
-                        </dd>
+                            </span>
+                          </>
+                        )}
+                      </dt>
+                      <dd
+                        className="recurring-bill-value recurring-bill-due"
+                        title={enabled && date ? date + ' · ' + rule.time_zone : undefined}
+                      >
+                        {enabled && date ? (
+                          <time dateTime={row.next_local || row.next_due_at || date}>
+                            {shortPostingDate(date, today, locale)}
+                            {time && ' ' + time}
+                          </time>
+                        ) : enabled ? (
+                          '—'
+                        ) : (
+                          t(viewKey(view))
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                  <footer className="mt-auto border-t border-border pt-2.5">
+                    <dl className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <div>
+                        <dt className="sr-only">{t('recurring.frequency')}</dt>
+                        <dd className="text-[13px] font-medium">{period(rule, t, locale)}</dd>
                       </div>
-                      <div className="flex flex-wrap items-baseline gap-x-1.5">
-                        <dt className="text-muted-foreground">{t('recurring.lastPosting')}</dt>
+                      <div className="flex items-baseline gap-1 text-xs text-muted-foreground">
+                        <dt className={previous ? undefined : 'sr-only'}>{t('recurring.lastPosting')}</dt>
                         <dd>
                           {previous ? (
                             <time dateTime={previous}>{shortPostingDate(previous, today, locale)}</time>
@@ -376,23 +388,10 @@ export function RecurringScheduleList({
                         </dd>
                       </div>
                     </dl>
-                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                      <span className="inline-flex min-w-0 items-center gap-1">
-                        <BookOpen size={12} className="shrink-0" aria-hidden="true" />
-                        <span className="break-words">
-                          <span className="sr-only">{t('nav.ledgers')} </span>
-                          {ledgerName} · {currency}
-                        </span>
-                      </span>
-                      <span className="inline-flex min-w-0 items-center gap-1">
-                        <Wallet size={12} className="shrink-0" aria-hidden="true" />
-                        <span className="break-words">
-                          <span className="sr-only">{t('recurring.account')} </span>
-                          {account}
-                        </span>
-                      </span>
-                    </div>
-                  </div>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">
+                      {[ledgerName, account, currency].join(' · ')}
+                    </p>
+                  </footer>
                 </li>
               )
             })}
