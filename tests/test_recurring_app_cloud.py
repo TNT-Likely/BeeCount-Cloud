@@ -149,6 +149,7 @@ def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_rece
     preview = submit(ledger, {**handoff, "confirm": False})
     first = submit(ledger, {**handoff, "reviewed_mapping": preview["reviewed_mapping"]})
     assert first["next_occurrences"][0].startswith("2030-02-05")
+    assert first["required_uploads"] == [first_id]
     assert submit(ledger, handoff)["local_transactions"] == {first_id: first_id}
     other = {
         **handoff,
@@ -167,6 +168,7 @@ def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_rece
     assert preview["local_transactions"] == {second_id: first_id}
     result = submit(ledger, {**link, "reviewed_mapping": preview["reviewed_mapping"]})
     assert submit(ledger, {**other, "confirm": False})["id"] == result["id"]
+    assert result["required_uploads"] == []
     assert run(rules.execute_due_rules(now=datetime(2030, 1, 31, tzinfo=timezone.utc))) == []
     assert len(ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]) == 1
 

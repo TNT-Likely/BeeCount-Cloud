@@ -6,7 +6,13 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from .models import MCPSourceReference, MCPStateRecord, MCPWriteOperation, ReadTxProjection
+from .models import (
+    MCPSourceReference,
+    MCPStateRecord,
+    MCPWriteOperation,
+    ReadTxProjection,
+    SyncChange,
+)
 
 
 def receipt_id(ledger_id, user_id, client_id):
@@ -88,6 +94,32 @@ def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
     return mappings
 
 
+def required_uploads(db, ledger_id, mappings):
+    # A previous deletion still consumes the occurrence. A handoff must never resurrect it.
+    candidates = sorted({sid for sid, canonical_id in mappings.items() if sid == canonical_id})
+    result = []
+    for offset in range(0, len(candidates), 400):
+        page = candidates[offset : offset + 400]
+        seen = set(
+            db.scalars(
+                select(ReadTxProjection.sync_id).where(
+                    ReadTxProjection.ledger_id == ledger_id, ReadTxProjection.sync_id.in_(page)
+                )
+            )
+        )
+        seen.update(
+            db.scalars(
+                select(SyncChange.entity_sync_id).where(
+                    SyncChange.ledger_id == ledger_id,
+                    SyncChange.entity_type == "transaction",
+                    SyncChange.entity_sync_id.in_(page),
+                )
+            )
+        )
+        result.extend(sid for sid in page if sid not in seen)
+    return result
+
+
 def receipt(db, key):
     prior = db.get(MCPStateRecord, key) if key else None
     if prior and prior.kind == "recurring_handoff":
@@ -95,6 +127,7 @@ def receipt(db, key):
             "id": prior.data_json["rule_id"],
             "handoff_confirmed": True,
             "local_transactions": prior.data_json["transactions"],
+            "required_uploads": prior.data_json.get("required_uploads", []),
         }
     return None
 

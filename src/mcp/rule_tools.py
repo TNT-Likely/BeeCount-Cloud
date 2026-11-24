@@ -23,7 +23,7 @@ from ..models import (
     User,
     UserAccountProjection,
 )
-from ..recurring_handoff import local_periods, receipt, receipt_id
+from ..recurring_handoff import local_periods, receipt, receipt_id, required_uploads
 from .capability_tools import Fields, require_ledger, run_write
 from .query_context import date_boundary
 from .schemas import BatchTransactionItem
@@ -514,6 +514,7 @@ async def change_recurring_rule(
         accepted = local_periods(
             db, ledger, user, row.id, payload["rule"], local_transactions, commit=True
         )
+        uploads = required_uploads(db, ledger.id, accepted)
         if accepted != mapping:
             raise ValueError("REVISION_CONFLICT: another device handed off this period")
         db.add(
@@ -523,10 +524,18 @@ async def change_recurring_rule(
                 user_id=user.id,
                 kind="recurring_handoff",
                 status="completed",
-                data_json={"rule_id": row.id, "transactions": accepted},
+                data_json={
+                    "rule_id": row.id,
+                    "transactions": accepted,
+                    "required_uploads": uploads,
+                },
             )
         )
-        return {"handoff_confirmed": True, "local_transactions": accepted}
+        return {
+            "handoff_confirmed": True,
+            "local_transactions": accepted,
+            "required_uploads": uploads,
+        }
 
     preview = []
     next_index = index
