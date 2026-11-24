@@ -18,9 +18,9 @@ from .models import (
 RECURRING_SOURCE_PREFIX = "beecount.recurring."
 
 
-def last_imported_dates(db, ledger_id):
+def last_imported_dates(db, ledger_id, *, rule_id=None):
     """Original local posting days survive transaction edits and deletion."""
-    rows = db.execute(
+    query = (
         select(
             MCPSourceReference.source_system,
             func.max(MCPSourceReference.metadata_json["date"].as_string()),
@@ -31,7 +31,13 @@ def last_imported_dates(db, ledger_id):
         )
         .group_by(MCPSourceReference.source_system)
     )
-    return {source.removeprefix(RECURRING_SOURCE_PREFIX): day for source, day in rows if day}
+    if rule_id is not None:
+        query = query.where(MCPSourceReference.source_system == RECURRING_SOURCE_PREFIX + rule_id)
+    return {
+        source.removeprefix(RECURRING_SOURCE_PREFIX): day
+        for source, day in db.execute(query)
+        if day
+    }
 
 
 def receipt_id(ledger_id, user_id, client_id):

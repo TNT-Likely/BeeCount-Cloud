@@ -21,6 +21,7 @@ from ..models import (
     SyncChange,
     User,
 )
+from ..time_utils import as_utc
 from .capability_tools import Fields, get_account_balances, require_ledger, run_write
 from .query_context import date_boundary, revision
 from .schemas import BatchTransactionItem
@@ -53,11 +54,9 @@ def record_out(row, *, include_data=True):
         revision=row.revision,
         status=row.status,
         data=row.data_json if include_data else None,
-        next_due_at=row.next_due_at.replace(tzinfo=timezone.utc).isoformat()
-        if row.next_due_at
-        else None,
-        created_at=row.created_at.replace(tzinfo=timezone.utc).isoformat(),
-        updated_at=row.updated_at.replace(tzinfo=timezone.utc).isoformat(),
+        next_due_at=as_utc(row.next_due_at).isoformat() if row.next_due_at else None,
+        created_at=as_utc(row.created_at).isoformat(),
+        updated_at=as_utc(row.updated_at).isoformat(),
     )
 
 

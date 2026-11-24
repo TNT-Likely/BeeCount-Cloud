@@ -8,7 +8,7 @@ import { RecurringScheduleList } from '../../components/RecurringScheduleList'
 import { useAuth } from '../../context/AuthContext'
 import { useLedgers } from '../../context/LedgersContext'
 import { useSyncRefresh } from '../../context/SyncSocketContext'
-import { recurringRuleTitle } from '../../lib/recurringPresentation'
+import { editRecurringTransaction, recurringFormCurrency, recurringRuleTitle, recurringStartDate } from '../../lib/recurringPresentation'
 
 const selectClass = 'h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
 type Tx = RuleConfig['transaction']
@@ -89,7 +89,10 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
     setDraft({ ...draft, rule: { ...draft.rule, ...value } })
   }
   function editTx(value: Partial<Tx>) {
-    if (draft) edit({ transaction: { ...draft.rule.transaction, ...value } })
+    if (!draft || !resources) return
+    edit({ transaction: editRecurringTransaction(
+      draft.rule.transaction, value, draft.row?.data.rule.transaction, currency, resources.accounts,
+    ) })
   }
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -118,16 +121,22 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
 
   const config = draft?.rule
   const tx = config?.transaction
+  const startsOn = config ? recurringStartDate(config, draft?.row?.data) : ''
+  const effectiveCurrency = tx && resources ? recurringFormCurrency(tx, currency, resources.accounts) : ''
   function resource(field: 'category' | 'account' | 'from_account' | 'to_account') {
     if (!tx || !resources) return null
     const id = `${field}_id` as const
     const rows = field === 'category' ? resources.categories.filter(r => r.kind === tx.tx_type) : resources.accounts
-    const value = tx[id] || rows.find(r => r.name === tx[field])?.sync_id || ''
+    const selectedId = tx[id] || (field === 'from_account' ? tx.account_id : null)
+    const selectedName = tx[field] || (field === 'from_account' ? tx.account : null)
+    const value = selectedId || (selectedName && rows.find(r => r.name === selectedName)?.sync_id) || ''
     return <Field title={t(`recurring.${field}`)}><select className={selectClass} value={value}
       required={field === 'from_account' || field === 'to_account'}
-      onChange={e => editTx({ [id]: e.target.value || null, [field]: null })}>
+      onChange={e => editTx({ [id]: e.target.value || null, [field]: null,
+        ...(field === 'from_account' ? { account_id: null, account: null } : {}),
+      })}>
       <option value="">—</option>
-      {value && !rows.some(r => r.sync_id === value) && <option value={value}>{tx[field] || value}</option>}
+      {value && !rows.some(r => r.sync_id === value) && <option value={value}>{selectedName || value}</option>}
       {rows.map(r => <option key={r.sync_id} value={r.sync_id}>{r.name}</option>)}
     </select></Field>
   }
@@ -155,11 +164,10 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
             tx_type:e.target.value as Tx['tx_type'],category:null,category_id:null,account:null,account_id:null,
             from_account:null,from_account_id:null,to_account:null,to_account_id:null,
           })}>{['expense','income','transfer'].map(k => <option key={k} value={k}>{t(`recurring.${k}`)}</option>)}</select></Field>
-          <Field title={t('recurring.amount')}><Input type="number" required step="any" min="0.00000001" value={tx.amount || ''} onChange={e => {
-            const amount=Number(e.target.value)
-            editTx({amount, ...(tx.native_amount && tx.amount ? {native_amount:tx.native_amount * amount / tx.amount} : {})})
-          }}/></Field>
-          <Field title={t('import.mapping.field.currency')}><Input required pattern="[A-Za-z]{3}" maxLength={3} value={tx.currency ?? currency}
+          <Field title={t('recurring.amount')}><Input type="number" required step="any" min="0.00000001" value={tx.amount || ''}
+            onChange={e => editTx({amount:Number(e.target.value)})}/></Field>
+          <Field title={t('import.mapping.field.currency')}><Input required pattern="[A-Za-z]{3}" maxLength={3}
+            readOnly={tx.tx_type === 'transfer'} value={tx.tx_type === 'transfer' ? effectiveCurrency : tx.currency ?? effectiveCurrency}
             onChange={e => editTx({currency:e.target.value.toUpperCase(),native_amount:null})}/></Field>
           {tx.tx_type === 'transfer' ? <>{resource('from_account')}{resource('to_account')}</> : <>{resource('category')}{resource('account')}</>}
           <Field title={t('recurring.frequency')}><select className={selectClass} value={config.frequency} onChange={e => edit({frequency:e.target.value as RuleConfig['frequency'],day_of_month:null,day_of_week:null,month_of_year:null})}>
@@ -168,12 +176,12 @@ function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerN
           <Field title={t('recurring.start')}><Input required type={config.starts_at.length > 10 ? 'text' : 'date'} value={config.starts_at} onChange={e => edit({starts_at:e.target.value})}/></Field>
           <Field title={t('recurring.end')}><Input type={(config.ends_at?.length ?? 0)>10 ? 'text' : 'date'} value={config.ends_at || ''} onChange={e => edit({ends_at:e.target.value || null})}/></Field>
           {config.frequency === 'weekly' && <Field title={t('recurring.weekDay')}><select className={selectClass}
-            value={config.day_of_week ?? (new Date(config.starts_at.slice(0,10)+'T12:00:00Z').getUTCDay() || 7)}
+            value={config.day_of_week ?? (new Date(startsOn+'T12:00:00Z').getUTCDay() || 7)}
             onChange={e => edit({day_of_week:Number(e.target.value)})}>{[1,2,3,4,5,6,7].map(day =>
               <option key={day} value={day}>{new Intl.DateTimeFormat(undefined,{weekday:'long',timeZone:'UTC'}).format(Date.UTC(2024,0,day))}</option>)}</select></Field>}
           {config.frequency === 'yearly' && <Field title={t('recurring.yearMonth')}><Input type="number" min={1} max={12}
-            value={config.month_of_year ?? Number(config.starts_at.slice(5,7))} onChange={e => edit({month_of_year:Number(e.target.value) || null})}/></Field>}
-          {(config.frequency === 'monthly' || config.frequency === 'yearly') && <Field title={t('recurring.monthDay')}><Input type="number" min={1} max={31} value={config.day_of_month ?? Number(config.starts_at.slice(8,10))} onChange={e => edit({day_of_month:Number(e.target.value) || null})}/></Field>}
+            value={config.month_of_year ?? Number(startsOn.slice(5,7))} onChange={e => edit({month_of_year:Number(e.target.value) || null})}/></Field>}
+          {(config.frequency === 'monthly' || config.frequency === 'yearly') && <Field title={t('recurring.monthDay')}><Input type="number" min={1} max={31} value={config.day_of_month ?? Number(startsOn.slice(8,10))} onChange={e => edit({day_of_month:Number(e.target.value) || null})}/></Field>}
           <Field title={t('recurring.zone')}><Input required value={config.time_zone} onChange={e => edit({time_zone:e.target.value})}/></Field>
           <div className="col-span-2"><Field title={t('recurring.note')}><Input value={tx.note || ''} onChange={e => editTx({note:e.target.value})}/></Field></div>
         </fieldset>

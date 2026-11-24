@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 from test_mcp_attachments import ledger as ledger
 from test_mcp_attachments import run
@@ -151,6 +152,46 @@ def test_list_distinguishes_a_handoff_cursor_from_an_actual_local_posting_date(l
     run(rules.execute_due_rules(now=datetime(2030, 2, 4, 11, tzinfo=timezone.utc)))
     assert current()["data"]["last_due_at"].startswith("2030-02-04")
     assert current()["last_generated_local_date"] == "2030-02-05"
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected_due"),
+    [("imported", "2030-02-15"), ("deleted_local", "2030-02-15"), ("cursor_only", "2030-01-15")],
+)
+def test_rescheduling_respects_posted_periods_but_keeps_the_first_unposted_period(
+    ledger, origin, expected_due
+):
+    draft = sample(
+        migrate=True,
+        consumed_through="2030-01-05",
+    )
+    if origin == "imported":
+        draft["local_transactions"] = [{"date": "2030-01-05", "sync_id": str(uuid4())}]
+    if origin == "deleted_local":
+        draft["last_generated_date"] = "2030-01-05"
+    preview = submit(ledger, {**draft, "confirm": False})
+    row = submit(ledger, {**draft, "reviewed_mapping": preview["reviewed_mapping"]})
+    if origin == "imported":
+        # Earlier handoffs stored the actual dates in their source references only.
+        with ledger.sessions() as db:
+            record = db.get(MCPStateRecord, row["id"])
+            record.data_json = {
+                k: v for k, v in record.data_json.items() if k != "last_local_generated_date"
+            }
+            db.commit()
+    edited = submit(
+        ledger,
+        {
+            "action": "update",
+            "record_id": row["id"],
+            "expected_revision": row["revision"],
+            "data": {**draft["data"], "day_of_month": 15},
+            "confirm": True,
+        },
+    )
+    assert edited["next_occurrences"][0].startswith(expected_due)
+    outcomes = run(rules.execute_due_rules(now=datetime(2030, 1, 31, tzinfo=timezone.utc)))
+    assert len(outcomes) == (1 if origin == "cursor_only" else 0)
 
 
 def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_receipt(ledger):
@@ -505,3 +546,96 @@ def test_restore_cannot_revive_deleted_cloud_occurrence_or_drop_rest_of_batch(le
     assert result["accepted"] == 1 and result["rejected"] == 1
     assert result["conflict_samples"][0]["reason"] == "restore_deleted_transaction"
     assert read_tools.list_transactions(ledger.user)["total"] == 1
+
+
+def test_recurring_execution_adds_the_mcp_tag_only_for_mcp_rules(ledger):
+    def post_occurrence(rule):
+        (outcome,) = run(
+            rules.execute_due_rules(
+                only_record_id=rule["id"], now=datetime(2030, 1, 6, tzinfo=timezone.utc)
+            )
+        )
+        (sync_id,) = outcome["operation"]["sync_ids"]
+        return read_tools.get_transaction(ledger.user, sync_id)
+
+    plain = post_occurrence(submit(ledger, sample()))
+    assert plain["tags"] == "" and plain["tag_ids"] == []
+    assert read_tools.list_tags(ledger.user) == []
+
+    response = ledger.client.post(
+        f"/api/v1/write/ledgers/{ledger.ledger_id}/tags",
+        headers=ledger.headers,
+        json={"base_change_id": 0, "name": "Household"},
+    )
+    assert response.status_code == 200, response.text
+    draft = sample()
+    draft["data"]["transaction"]["tags"] = ["Household"]
+    tagged = post_occurrence(submit(ledger, draft))
+    assert tagged["tags"] == "Household"
+    assert tagged["tag_ids"] == [response.json()["entity_id"]]
+    assert [tag["name"] for tag in read_tools.list_tags(ledger.user)] == ["Household"]
+
+    mcp = run(
+        rules.manage_recurring_rule(
+            ledger.user, "create", ledger.ledger_id, rules.RecurringRule(**draft["data"]), confirm=True
+        )
+    )
+    mcp_tx = post_occurrence(mcp)
+    assert set(mcp_tx["tags"].split(",")) == {"Household", "MCP"}
+    assert set(mcp_tx["tag_ids"]) == {tag["id"] for tag in read_tools.list_tags(ledger.user)}
+
+
+def test_rule_dates_and_pending_occurrence_keep_the_same_instant_in_a_non_utc_db_session(ledger):
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import event
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    from src.models import MCPWriteOperation
+
+    draft = sample()
+    created = submit(ledger, draft)
+    with ledger.sessions() as db:
+        row = db.get(MCPStateRecord, created["id"])
+        db.add(
+            MCPWriteOperation(
+                user_id=row.user_id,
+                ledger_id=row.ledger_id,
+                request_key=f"recurring:{row.id}:20300105T000000Z",
+                request_hash="0" * 64,
+                kind="create_transactions",
+                plan_json=[],
+            )
+        )
+        db.commit()
+
+    def check_dates_and_pending_write():
+        (item,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+        assert item["next_local"] == item["next_due_at"] == "2030-01-05T00:00:00+00:00"
+        assert item["created_at"] == created["created_at"]
+        assert item["updated_at"] == created["updated_at"]
+        conflict = submit(
+            ledger,
+            {
+                "action": "update",
+                "record_id": item["id"],
+                "expected_revision": item["revision"],
+                "data": draft["data"],
+            },
+            status=409,
+        )
+        assert conflict["detail"] == "OCCURRENCE_PENDING"
+
+    check_dates_and_pending_write()  # SQLite returns naive UTC.
+
+    def load_with_offset(row, _context):
+        # A non-UTC PostgreSQL session returns these same timestamptz values with an offset.
+        for name in ("next_due_at", "created_at", "updated_at"):
+            instant = getattr(row, name).replace(tzinfo=timezone.utc)
+            set_committed_value(row, name, instant.astimezone(ZoneInfo("America/New_York")))
+
+    event.listen(MCPStateRecord, "load", load_with_offset)
+    try:
+        check_dates_and_pending_write()
+    finally:
+        event.remove(MCPStateRecord, "load", load_with_offset)

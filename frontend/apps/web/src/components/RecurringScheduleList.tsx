@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeftRight, CircleDollarSign, Ellipsis, ReceiptText } from 'lucide-react'
-import type { RecurringRuleRow, RuleConfig } from '@beecount/api-client'
+import type { RecurringRuleRow } from '@beecount/api-client'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,6 +16,7 @@ import {
   initialRecurringView,
   lastPostingDate,
   recurringSubtitle,
+  recurringStartDate,
   recurringViewFor as viewFor,
   recurringViews as views,
   type RecurringView as View,
@@ -33,8 +34,9 @@ const palette = [
   'bg-sky-500/10 text-sky-700 dark:text-sky-300',
 ]
 const viewKey = (view: View) => (view === 'active' ? 'recurring.inProgress' : 'recurring.' + view)
-function period(rule: RuleConfig, t: ReturnType<typeof useT>, locale: string) {
-  const anchor = utcDay(rule.starts_at.slice(0, 10))
+function period(row: RecurringRuleRow, t: ReturnType<typeof useT>, locale: string) {
+  const rule = row.data.rule
+  const anchor = utcDay(recurringStartDate(rule, row.data))
   const day = rule.day_of_month ?? anchor.getUTCDate()
   const interval = t('recurring.every', { n: rule.interval, unit: t('recurring.' + rule.frequency) })
   if (rule.frequency === 'monthly')
@@ -375,7 +377,7 @@ export function RecurringScheduleList({
                     <dl className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                       <div>
                         <dt className="sr-only">{t('recurring.frequency')}</dt>
-                        <dd className="text-[13px] font-medium">{period(rule, t, locale)}</dd>
+                        <dd className="text-[13px] font-medium">{period(row, t, locale)}</dd>
                       </div>
                       <div className="flex items-baseline gap-1 text-xs text-muted-foreground">
                         <dt className={previous ? undefined : 'sr-only'}>{t('recurring.lastPosting')}</dt>

@@ -1,6 +1,6 @@
 """Ledger-scoped recurring rule management shared by Web and mobile."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -19,6 +19,7 @@ from ..mcp.workflow_tools import record_out
 from ..models import MCPStateRecord, User
 from ..recurring_handoff import last_imported_dates
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
+from ..time_utils import as_utc
 
 router = APIRouter(prefix="/ledgers/{ledger_id}/recurring-rules")
 
@@ -38,18 +39,20 @@ class RuleChange(BaseModel):
     migrate: bool = False
     automatic: bool = False
     consumed_through: date | None = None
+    last_generated_date: date | None = None
     distinct: bool = False
     local_transactions: list[LocalOccurrence] = Field(default_factory=list, max_length=50000)
     reviewed_mapping: str | None = None
 
 
 def last_generated_local_date(row: MCPStateRecord, imported_date: str | None) -> str | None:
+    local_date = row.data_json.get("last_local_generated_date") or imported_date
     due = row.data_json.get("last_due_at")
     if not due:
-        return imported_date
+        return local_date
     zone = ZoneInfo(row.data_json["rule"]["time_zone"])
     cloud_date = datetime.fromisoformat(due).astimezone(zone).date().isoformat()
-    return max(cloud_date, imported_date) if imported_date else cloud_date
+    return max(cloud_date, local_date) if local_date else cloud_date
 
 
 @router.get("", dependencies=[Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ))])
@@ -76,7 +79,7 @@ def list_rules(
                 **record_out(row),
                 "can_edit": role in WRITABLE_ROLES and row.user_id == user.id,
                 "last_generated_local_date": last_generated_local_date(row, imported.get(row.id)),
-                "next_local": row.next_due_at.replace(tzinfo=timezone.utc)
+                "next_local": as_utc(row.next_due_at)
                 .astimezone(ZoneInfo(row.data_json["rule"]["time_zone"]))
                 .isoformat()
                 if row.next_due_at
@@ -115,6 +118,9 @@ async def change_rule(ledger_id: str, change: RuleChange, user: User = Depends(g
             if change.migrate
             else [],
             reviewed_mapping=change.reviewed_mapping,
+            last_generated_date=change.last_generated_date.isoformat()
+            if change.migrate and change.last_generated_date
+            else None,
             consumed_through=change.consumed_through.isoformat()
             if change.migrate and change.consumed_through
             else None,

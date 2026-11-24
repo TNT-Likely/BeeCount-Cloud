@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { RecurringRuleRow, RecurringTransaction } from '@beecount/api-client'
 import {
+  editRecurringTransaction,
   initialRecurringView,
   lastPostingDate,
   perPeriodAmount,
+  recurringFormCurrency,
   recurringRuleTitle,
+  recurringStartDate,
   recurringSubtitle,
   shortPostingDate,
 } from './recurringPresentation'
@@ -31,6 +34,14 @@ const row: RecurringRuleRow = {
 }
 
 describe('posting history', () => {
+  it('uses the scheduler’s local calendar anchor for a timestamp that crosses a month or year boundary', () => {
+    const rule = { ...row.data.rule, starts_at: '2027-01-01T02:00:00Z', time_zone: 'America/Los_Angeles' }
+    const saved = { ...row.data, rule, anchor_local: '2026-12-31T18:00:00-08:00' }
+    expect(recurringStartDate(rule, saved)).toBe('2026-12-31')
+    expect(recurringStartDate(rule)).toBe('2026-12-31')
+    expect(recurringStartDate({ ...rule, time_zone: 'Asia/Shanghai' }, saved)).toBe('2027-01-01')
+    expect(recurringStartDate({ ...rule, starts_at: '2027-01-01' }, saved)).toBe('2027-01-01')
+  })
   it('uses authoritative dates, including history from a local installation', () => {
     expect(lastPostingDate({ ...row, last_generated_local_date: '2026-05-01' })).toBe('2026-05-01')
     expect(lastPostingDate({ ...row, last_generated_local_date: null })).toBeNull()
@@ -47,6 +58,36 @@ describe('posting history', () => {
 })
 
 describe('recurring currency', () => {
+  const accounts = [
+    { sync_id: 'dollar', name: 'Dollar wallet', currency: 'USD' },
+    { sync_id: 'base', name: 'Cash', currency: null },
+  ]
+
+  it('shows the effective currency before saving a new rule with a foreign account', () => {
+    const draft = editRecurringTransaction(tx, { account_id: 'dollar' }, undefined, 'CNY', accounts)
+    expect(recurringFormCurrency(tx, 'CNY', accounts)).toBe('CNY')
+    expect(recurringFormCurrency(draft, 'CNY', accounts)).toBe('USD')
+    expect(draft.currency).toBeUndefined()
+    expect(recurringFormCurrency({ ...draft, currency: 'EUR' }, 'CNY', accounts)).toBe('EUR')
+    expect(recurringFormCurrency({ ...tx, account: 'Dollar wallet' }, 'CNY', accounts)).toBe('USD')
+  })
+
+  it('displays the transfer source currency, including schedules using the older account alias', () => {
+    const transfer: RecurringTransaction = { ...tx, tx_type: 'transfer', account_id: 'dollar', currency: 'EUR' }
+    expect(recurringFormCurrency(transfer, 'CNY', accounts)).toBe('USD')
+    expect(recurringFormCurrency({ ...transfer, from_account_id: 'base' }, 'CNY', accounts)).toBe('CNY')
+  })
+
+  it('preserves the saved conversion after clearing and retyping an amount and releases it on a currency change', () => {
+    const saved = { ...tx, account_id: 'dollar', amount: 10, native_amount: 70 }
+    const cleared = editRecurringTransaction(saved, { amount: 0 }, saved, 'CNY', accounts)
+    const changed = editRecurringTransaction(cleared, { amount: 20 }, saved, 'CNY', accounts)
+    expect(changed.native_amount).toBe(140)
+    const moved = editRecurringTransaction(changed, { account_id: 'base' }, saved, 'CNY', accounts)
+    expect(moved.native_amount).toBeNull()
+    expect(editRecurringTransaction(moved, { amount: 30 }, saved, 'CNY', accounts).native_amount).toBeNull()
+  })
+
   it('uses the configured original amount and a supplied base amount even if numerically identical', () => {
     const value = perPeriodAmount({ ...tx, currency: 'USD', native_amount: 8.99 }, 'CNY', 'en', 'EUR')
     expect(value.original).toMatch(/USD.*8\.99/)

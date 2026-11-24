@@ -38,7 +38,7 @@ export type RecurringRuleRow = {
   next_local?: string | null
   next_due_at: string | null
   can_edit: boolean
-  data: { rule: RuleConfig; executed_count: number; last_due_at?: string }
+  data: { rule: RuleConfig; executed_count: number; last_due_at?: string; anchor_local?: string }
 }
 export type RecurringRuleList = {
   items: RecurringRuleRow[]

@@ -26,6 +26,7 @@ from ..models import (
 )
 from ..recurring_handoff import (
     handoff_upload_state,
+    last_imported_dates,
     local_periods,
     migration_signature,
     receipt,
@@ -33,6 +34,7 @@ from ..recurring_handoff import (
     similar_schedule,
     source_rules,
 )
+from ..time_utils import as_utc
 from .capability_tools import Fields, require_ledger, run_write
 from .query_context import date_boundary
 from .schemas import BatchTransactionItem
@@ -360,6 +362,7 @@ async def change_recurring_rule(
     *,
     client_id=None,
     consumed_through=None,
+    last_generated_date=None,
     migration=False,
     automatic=False,
     distinct=False,
@@ -423,7 +426,7 @@ async def change_recurring_rule(
                     "recurring:"
                     + row.id
                     + ":"
-                    + row.next_due_at.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    + as_utc(row.next_due_at).strftime("%Y%m%dT%H%M%SZ")
                 )
                 pending = db.scalar(
                     select(MCPWriteOperation).where(
@@ -494,10 +497,29 @@ async def change_recurring_rule(
             earliest = max(
                 anchor, date_boundary(consumed_through, end=True, time_zone=data.time_zone)
             )
-        if previous and previous.get("last_due_at") and not same_schedule:
-            last = datetime.fromisoformat(previous["last_due_at"]).astimezone(tz)
+        # A handoff's consumed_through may only position the first occurrence.
+        # Only actual local or Cloud postings can close the rest of a billing period.
+        last = None
+        if migration or (previous and not same_schedule):
+            local_day = payload.get("last_local_generated_date")
+            if record_id and not local_day:
+                with wt.SessionLocal() as db:
+                    local_day = last_imported_dates(db, ledger.id, rule_id=record_id).get(record_id)
+            if migration:
+                incoming_day = last_generated_date or max(
+                    (item["date"] for item in local_transactions), default=None
+                )
+                if incoming_day:
+                    local_day = max(local_day or incoming_day, incoming_day)
+            if local_day:
+                payload["last_local_generated_date"] = local_day
+                last = datetime.fromisoformat(local_day).replace(tzinfo=tz)
+            if payload.get("last_due_at"):
+                cloud_posting = datetime.fromisoformat(payload["last_due_at"]).astimezone(tz)
+                last = max(last or cloud_posting, cloud_posting)
+        if last:
             boundary = last + timedelta(microseconds=1)
-            if previous["rule"]["frequency"] == data.frequency:
+            if not previous or previous["rule"]["frequency"] == data.frequency:
                 midnight = last.replace(hour=0, minute=0, second=0, microsecond=0)
                 if data.frequency == "monthly":
                     boundary = (midnight.replace(day=1) + timedelta(days=32)).replace(day=1)
@@ -728,9 +750,14 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
                             )
                         )
                     if not started:
-                        check_recurring_accounts(ledger, await prepare_transaction(user, ledger, raw))
+                        body = await prepare_transaction(user, ledger, raw, add_mcp_tag=False)
+                        check_recurring_accounts(ledger, body)
                 outcome = await wt.create_transactions(
-                    user, ledger_id=ledger.external_id, transactions=[raw], idempotency_key=key
+                    user,
+                    ledger_id=ledger.external_id,
+                    transactions=[raw],
+                    idempotency_key=key,
+                    add_mcp_tag=not data.get("creation_hash"),
                 )
             except ValueError:
                 # Invalid resource before an operation exists: allow the creator to fix the rule.
