@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -53,14 +54,14 @@ def transaction_row(db, user, sync_id, ledger_id=None):
     return rows[0], next(led for led in ledgers if led.id == rows[0].ledger_id)
 
 
-async def prepare_transaction(user, ledger, raw, *, time_zone=None, existing=None):
+async def prepare_transaction(user, ledger, raw, *, time_zone=None, existing=None, add_mcp_tag=True):
     from .tools import write_tools as wt
 
     partial = existing is not None
     kind = raw.get("tx_type") or (existing.tx_type if partial else "expense")
     if kind not in {"expense", "income", "transfer"}:
         raise ValueError("Invalid tx_type")
-    body = {"base_change_id": 0}
+    body: dict[str, Any] = {"base_change_id": 0}
     if not partial or raw.get("tx_type") is not None:
         body["tx_type"] = kind
     if not partial or raw.get("amount") is not None:
@@ -141,7 +142,9 @@ async def prepare_transaction(user, ledger, raw, *, time_zone=None, existing=Non
                 db, ledger_id=ledger.id, file_ids=raw["attachments"]
             )
         if not partial or raw.get("tags") is not None:
-            tags = wt._merge_default_tag(raw.get("tags")) if not partial else list(raw["tags"])
+            tags = list(raw.get("tags") or [])
+            if not partial and add_mcp_tag:
+                tags = wt._merge_default_tag(tags)
             body["tags"] = tags
             body["tag_ids"] = wt._lookup_tag_sync_ids(
                 db, user_id=ledger.user_id, ledger_id=ledger.id, names=tags
@@ -149,7 +152,7 @@ async def prepare_transaction(user, ledger, raw, *, time_zone=None, existing=Non
     if kind != "transfer" and (
         not partial or any(raw.get(k) is not None for k in ("amount", "currency", "native_amount"))
     ):
-        amount = body.get("amount", existing.amount if partial else None)
+        amount = body["amount"] if "amount" in body else existing.amount
         currency = raw.get("currency") or (existing.currency_code if partial else None)
         if raw.get("native_amount") is not None:
             body.update(
@@ -183,7 +186,14 @@ async def prepare_transaction(user, ledger, raw, *, time_zone=None, existing=Non
 
 
 async def create_many(
-    user, *, transactions, ledger_id=None, time_zone=None, idempotency_key=None, single=False
+    user,
+    *,
+    transactions,
+    ledger_id=None,
+    time_zone=None,
+    idempotency_key=None,
+    single=False,
+    add_mcp_tag=True,
 ):
     from .tools import write_tools as wt
 
@@ -234,16 +244,20 @@ async def create_many(
         for index, raw in enumerate(transactions):
             try:
                 item = BatchTransactionItem.model_validate(raw).model_dump()
-                normalized.append(await prepare_transaction(user, led, item, time_zone=time_zone))
+                normalized.append(
+                    await prepare_transaction(
+                        user, led, item, time_zone=time_zone, add_mcp_tag=add_mcp_tag
+                    )
+                )
             except ValueError as exc:
                 raise ValueError(f"transactions[{index}]: {exc}") from exc
-        with wt.SessionLocal() as db:
-            missing_tag = wt._is_tag_missing_in_ledger(
-                db, user_id=led.user_id, ledger_id=led.id, tag_name=wt._MCP_DEFAULT_TAG
-            )
-        if led.user_id == user.id and missing_tag:
-            await wt._ensure_mcp_tag(user, led.external_id)
-        if led.user_id == user.id:
+        if add_mcp_tag and led.user_id == user.id:
+            with wt.SessionLocal() as db:
+                missing_tag = wt._is_tag_missing_in_ledger(
+                    db, user_id=led.user_id, ledger_id=led.id, tag_name=wt._MCP_DEFAULT_TAG
+                )
+            if missing_tag:
+                await wt._ensure_mcp_tag(user, led.external_id)
             # Resolve tag IDs after creating the default tag, before freezing the operation.
             with wt.SessionLocal() as db:
                 for body in normalized:

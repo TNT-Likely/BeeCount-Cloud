@@ -17,3 +17,5 @@ export * from './shared-ledger'
 export * from './types'
 export * from './write'
 export * from './webConfig'
+
+export * from './recurring'

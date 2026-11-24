@@ -331,12 +331,14 @@ _BULK_MAX_TOTAL = 200
 async def create_transactions(
     user: User, *, transactions: list[dict[str, Any] | BatchTransactionItem],
     ledger_id: str | None = None, time_zone: str | None = None,
-    idempotency_key: str | None = None,
+    idempotency_key: str | None = None, add_mcp_tag: bool = True,
 ) -> dict[str, Any]:
     from ..transaction_service import create_many
     items = [item.model_dump() if isinstance(item, BatchTransactionItem) else item for item in transactions]
-    return await create_many(user, transactions=items, ledger_id=ledger_id,
-                             time_zone=time_zone, idempotency_key=idempotency_key)
+    return await create_many(
+        user, transactions=items, ledger_id=ledger_id, time_zone=time_zone,
+        idempotency_key=idempotency_key, add_mcp_tag=add_mcp_tag,
+    )
 
 
 async def parse_and_create_from_text(

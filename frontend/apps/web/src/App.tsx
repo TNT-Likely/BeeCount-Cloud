@@ -16,6 +16,7 @@ const TransactionsPage = lazy(() =>
   import('./pages/sections/TransactionsPage').then((m) => ({ default: m.TransactionsPage })),
 )
 const AttachmentsPage = lazy(() => import('./pages/sections/AttachmentsPage').then(m => ({ default: m.AttachmentsPage })))
+const RecurringPage = lazy(() => import('./pages/sections/RecurringPage'))
 const AccountsPage = lazy(() =>
   import('./pages/sections/AccountsPage').then((m) => ({ default: m.AccountsPage })),
 )
@@ -205,6 +206,7 @@ function AppRoutes() {
             </Suspense>
           }
         />
+        <Route path="recurring" element={<Suspense fallback={<RouteFallback />}><RecurringPage /></Suspense>} />
         <Route path="attachments" element={<Suspense fallback={<RouteFallback />}><AttachmentsPage /></Suspense>} />
         <Route
           path="calendar"

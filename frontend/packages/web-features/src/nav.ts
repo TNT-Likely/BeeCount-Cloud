@@ -1,6 +1,7 @@
 export type AppSection =
   | 'overview'
   | 'transactions'
+  | 'recurring'
   | 'calendar'
   | 'attachments'
   | 'accounts'

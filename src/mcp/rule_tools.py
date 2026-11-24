@@ -3,23 +3,45 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
-from zoneinfo import ZoneInfo
+from typing import Any, Literal, cast
+from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
+from sqlalchemy.engine import CursorResult
 
 from ..config import get_settings
-from ..models import Ledger, MCPStateRecord, MCPWriteOperation, ReadTxProjection, User
+from ..models import (
+    Ledger,
+    MCPStateRecord,
+    MCPWriteOperation,
+    ReadTxProjection,
+    User,
+    UserAccountProjection,
+)
+from ..recurring_handoff import (
+    handoff_upload_state,
+    last_imported_dates,
+    local_periods,
+    migration_signature,
+    receipt,
+    receipt_id,
+    similar_schedule,
+    source_rules,
+)
+from ..time_utils import as_utc
 from .capability_tools import Fields, require_ledger, run_write
 from .query_context import date_boundary
 from .schemas import BatchTransactionItem
 from .tools import read_tools as rt
 from .tools import write_tools as wt
 from .transaction_service import dictionary_entry, prepare_transaction
-from .workflow_tools import load_record, save_record
+from .workflow_tools import load_record, record_out, save_record
 
 
 class ReviewItem(Fields):
@@ -50,6 +72,9 @@ class RecurringRule(Fields):
     interval: int = Field(default=1, ge=1, le=365)
     starts_at: str
     time_zone: str
+    day_of_month: int | None = Field(default=None, ge=1, le=31)
+    day_of_week: int | None = Field(default=None, ge=1, le=7)
+    month_of_year: int | None = Field(default=None, ge=1, le=12)
     ends_at: str | None = None
     enabled: bool = True
     allow_backfill: bool = False
@@ -247,14 +272,29 @@ def occurrence(data, index):
     rule = data["rule"]
     interval = rule["interval"] * index
     if rule["frequency"] in {"daily", "weekly"}:
-        local = anchor + timedelta(days=interval * (7 if rule["frequency"] == "weekly" else 1))
+        weekly = rule["frequency"] == "weekly"
+        offset = (
+            ((rule.get("day_of_week") or anchor.isoweekday()) - anchor.isoweekday()) % 7
+            if weekly
+            else 0
+        )
+        local = anchor + timedelta(days=interval * (7 if weekly else 1) + offset)
     else:
-        months = interval * (12 if rule["frequency"] == "yearly" else 1)
-        month_index = anchor.year * 12 + anchor.month - 1 + months
+        yearly = rule["frequency"] == "yearly"
+        month = (rule.get("month_of_year") or anchor.month) if yearly else anchor.month
+        day = rule.get("day_of_month") or anchor.day
+        first = anchor.replace(
+            month=month, day=min(day, calendar.monthrange(anchor.year, month)[1])
+        )
+        step = 12 if yearly else 1
+        months = interval * step + (step if first < anchor else 0)
+        month_index = anchor.year * 12 + month - 1 + months
         year, month = divmod(month_index, 12)
+        if year > 9999:
+            raise OverflowError("End of calendar")
         month += 1
         local = anchor.replace(
-            year=year, month=month, day=min(anchor.day, calendar.monthrange(year, month)[1])
+            year=year, month=month, day=min(day, calendar.monthrange(year, month)[1])
         )
     tz = ZoneInfo(rule["time_zone"])
     instants = sorted(
@@ -284,7 +324,10 @@ def next_occurrence(data, index, *, earliest=None):
         else None
     )
     for _ in range(50000):
-        due = occurrence(data, index)
+        try:
+            due = occurrence(data, index)
+        except OverflowError:
+            return index, None
         if due and end and due >= end:
             return index, None
         if due and (earliest is None or due >= earliest):
@@ -303,22 +346,87 @@ async def manage_recurring_rule(
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Preview/create/edit/pause/resume/delete a Cloud-owned recurring rule. Month/year ends clamp to valid dates without drifting the anchor. Historical backfill is opt-in; generated ordinary transactions sync to App. Do not duplicate the same rule in App."""
+    return await change_recurring_rule(
+        user, action, ledger_id, data, record_id, expected_revision, confirm
+    )
+
+
+async def change_recurring_rule(
+    user,
+    action,
+    ledger_id,
+    data=None,
+    record_id=None,
+    expected_revision=None,
+    confirm=False,
+    *,
+    client_id=None,
+    consumed_through=None,
+    last_generated_date=None,
+    migration=False,
+    automatic=False,
+    distinct=False,
+    local_transactions=(),
+    reviewed_mapping=None,
+):
+    """One rule store and scheduler for App, Web and MCP."""
+    if (action == "create") != (record_id is None):
+        raise ValueError("Create requires a new rule; other actions require a record_id")
+    create_id = None
+    fingerprint = None
     with wt.SessionLocal() as db:
         ledger = require_ledger(db, user, ledger_id, write=True)
+        handoff_key = receipt_id(ledger.id, user.id, client_id) if migration and client_id else None
+        committed = receipt(db, handoff_key)
+        if committed:
+            return committed
+        if migration and local_transactions:
+            known = source_rules(db, ledger.id, local_transactions)
+            if known and known != {record_id}:
+                if automatic and not record_id and len(known) == 1:
+                    linked = db.get(MCPStateRecord, next(iter(known)))
+                    if linked and linked.user_id == user.id and linked.status != "deleted":
+                        if linked.status == "executing":
+                            return dict(status="operation_pending")
+                        if confirm:
+                            raise ValueError(
+                                "REVISION_CONFLICT: another device adopted this schedule"
+                            )
+                        return {"matched_rule": {**record_out(linked), "can_edit": True}}
+                raise ValueError(
+                    "HISTORY_CONFLICT: some transactions belong to another recurring rule"
+                )
         previous = None
+        if action == "create" and client_id and data is not None:
+            create_id = str(
+                uuid5(NAMESPACE_URL, f"beecount:recurring:{ledger.id}:{user.id}:{client_id}")
+            )
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    [data.model_dump(mode="json"), consumed_through],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            prior = db.get(MCPStateRecord, create_id)
+            if prior is not None and confirm:
+                return replay_creation(prior, fingerprint)
         if record_id:
             row, _ = load_record(db, user, record_id, kind="recurring_rule", write=True)
             if row.ledger_id != ledger.id or row.user_id != user.id:
                 raise ValueError("Only the schedule creator can manage its execution identity")
             if row.revision != expected_revision:
                 raise ValueError("REVISION_CONFLICT: recurring rule changed")
+            if row.status == "deleted":
+                raise ValueError("Record not found")
+            if row.status == "executing":
+                return dict(status="operation_pending")
             previous = row.data_json
             if action == "update" and row.next_due_at is not None:
                 occurrence_key = (
                     "recurring:"
                     + row.id
                     + ":"
-                    + row.next_due_at.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    + as_utc(row.next_due_at).strftime("%Y%m%dT%H%M%SZ")
                 )
                 pending = db.scalar(
                     select(MCPWriteOperation).where(
@@ -335,38 +443,157 @@ async def manage_recurring_rule(
         elif action != "create":
             raise ValueError("record_id and expected_revision are required")
         db.expunge(ledger)
+    app_schedule = create_id is not None or bool((previous or {}).get("creation_hash"))
     if action in {"create", "update"}:
         if data is None:
             raise ValueError("data is required")
-        tz = ZoneInfo(data.time_zone)
+        try:
+            tz = ZoneInfo(data.time_zone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Invalid IANA time zone") from exc
         anchor = date_boundary(data.starts_at, time_zone=data.time_zone).astimezone(tz)
+        if (
+            data.ends_at
+            and date_boundary(data.ends_at, end=True, time_zone=data.time_zone) <= anchor
+        ):
+            raise ValueError("End must follow start")
         # Validate the full transaction contract now; occurrence timestamps are supplied by Cloud.
-        await prepare_transaction(
+        body = await prepare_transaction(
             user, ledger, {**data.transaction.model_dump(), "happened_at": anchor.isoformat()}
         )
+        if app_schedule:
+            check_recurring_accounts(ledger, body)
         payload = dict(
+            **(previous or {}),
+        )
+        payload.update(
             rule=data.model_dump(mode="json"),
             anchor_local=anchor.isoformat(),
             execution_owner="cloud",
             executed_count=(previous or {}).get("executed_count", 0),
         )
+        if migration and action == "create":
+            payload["migration_origin"] = migration_signature(payload["rule"])
+        if fingerprint:
+            payload["creation_hash"] = fingerprint
         same_schedule = previous and all(
-            previous["rule"][key] == payload["rule"][key]
-            for key in ["frequency", "interval", "starts_at", "time_zone", "dst_policy"]
+            previous["rule"].get(key) == payload["rule"].get(key)
+            for key in [
+                "frequency",
+                "interval",
+                "starts_at",
+                "time_zone",
+                "dst_policy",
+                "day_of_month",
+                "month_of_year",
+                "day_of_week",
+            ]
         )
-        start_index = previous.get("next_index", 0) if same_schedule else 0
+        start_index = previous.get("next_index", 0) if previous and same_schedule else 0
         earliest = None if data.allow_backfill or same_schedule else datetime.now(timezone.utc)
+        if app_schedule and earliest is not None and len(data.starts_at) == 10:
+            earliest = earliest.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        if consumed_through:
+            earliest = max(
+                anchor, date_boundary(consumed_through, end=True, time_zone=data.time_zone)
+            )
+        # A handoff's consumed_through may only position the first occurrence.
+        # Only actual local or Cloud postings can close the rest of a billing period.
+        last = None
+        if migration or (previous and not same_schedule):
+            local_day = payload.get("last_local_generated_date")
+            if record_id and not local_day:
+                with wt.SessionLocal() as db:
+                    local_day = last_imported_dates(db, ledger.id, rule_id=record_id).get(record_id)
+            if migration:
+                incoming_day = last_generated_date or max(
+                    (item["date"] for item in local_transactions), default=None
+                )
+                if incoming_day:
+                    local_day = max(local_day or incoming_day, incoming_day)
+            if local_day:
+                payload["last_local_generated_date"] = local_day
+                last = datetime.fromisoformat(local_day).replace(tzinfo=tz)
+            if payload.get("last_due_at"):
+                cloud_posting = datetime.fromisoformat(payload["last_due_at"]).astimezone(tz)
+                last = max(last or cloud_posting, cloud_posting)
+        if last:
+            boundary = last + timedelta(microseconds=1)
+            if not previous or previous["rule"]["frequency"] == data.frequency:
+                midnight = last.replace(hour=0, minute=0, second=0, microsecond=0)
+                if data.frequency == "monthly":
+                    boundary = (midnight.replace(day=1) + timedelta(days=32)).replace(day=1)
+                elif data.frequency == "yearly":
+                    boundary = midnight.replace(year=last.year + 1, month=1, day=1)
+                elif data.frequency == "weekly":
+                    boundary = midnight + timedelta(days=8 - last.isoweekday())
+                else:
+                    boundary = midnight + timedelta(days=1)
+            earliest = max(earliest or boundary, boundary)
         index, due = next_occurrence(payload, start_index, earliest=earliest)
         payload["next_index"] = index
         state = "active" if data.enabled and due else ("completed" if due is None else "paused")
     else:
+        assert previous is not None
         payload = dict(previous)
-        index, due = next_occurrence(payload, payload["next_index"])
+        earliest = (
+            datetime.now(timezone.utc)
+            if app_schedule and action == "resume" and row.status == "paused"
+            else None
+        )
+        index, due = next_occurrence(payload, payload["next_index"], earliest=earliest)
+        payload["next_index"] = index
+        payload["rule"] = {**payload["rule"], "enabled": action == "resume"}
         state = {
             "pause": "paused",
             "resume": "active" if due else "completed",
             "delete": "deleted",
         }[action]
+    mapping = {}
+    deleted = []
+
+    def mapping_hash(values):
+        return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+
+    if handoff_key:
+        with wt.SessionLocal() as db:
+            mapping = local_periods(
+                db, ledger, user, record_id or create_id, payload["rule"], local_transactions
+            )
+            deleted = handoff_upload_state(db, ledger.id, mapping)["deleted_transactions"]
+        if confirm and local_transactions and reviewed_mapping != mapping_hash(mapping):
+            raise ValueError("REVISION_CONFLICT: review local transactions again")
+
+    def finish_handoff(db, row):
+        existing = receipt(db, handoff_key)
+        if existing:
+            return existing
+        accepted = local_periods(
+            db, ledger, user, row.id, payload["rule"], local_transactions, commit=True
+        )
+        admission = handoff_upload_state(db, ledger.id, accepted)
+        if accepted != mapping:
+            raise ValueError("REVISION_CONFLICT: another device handed off this period")
+        db.add(
+            MCPStateRecord(
+                id=handoff_key,
+                ledger_id=ledger.id,
+                user_id=user.id,
+                kind="recurring_handoff",
+                status="completed",
+                data_json={
+                    "rule_id": row.id,
+                    "transactions": accepted,
+                    **admission,
+                },
+            )
+        )
+        return {
+            "handoff_confirmed": True,
+            "local_transactions": accepted,
+            **admission,
+        }
+
     preview = []
     next_index = index
     for _ in range(5):
@@ -379,14 +606,47 @@ async def manage_recurring_rule(
         return dict(
             status="confirmation_required",
             next_occurrences=preview,
+            local_transactions=mapping,
+            deleted_transactions=deleted,
+            reviewed_mapping=mapping_hash(mapping) if handoff_key else None,
             execution_owner="cloud",
             backfill=payload["rule"]["allow_backfill"],
             dst_policy=payload["rule"]["dst_policy"],
         )
+
+    def check_create(db):
+        # Serialize concurrent creates across devices on SQLite and PostgreSQL.
+        prior = db.get(MCPStateRecord, create_id)
+        if prior is not None:
+            replay_creation(prior, fingerprint)
+            return prior
+        if migration and source_rules(db, ledger.id, local_transactions):
+            raise ValueError("REVISION_CONFLICT: another device adopted this schedule")
+        if migration and not distinct:
+            candidates = db.scalars(
+                select(MCPStateRecord).where(
+                    MCPStateRecord.ledger_id == ledger.id,
+                    MCPStateRecord.kind == "recurring_rule",
+                    MCPStateRecord.status != "deleted",
+                )
+            )
+            for candidate in candidates:
+                other = migration_signature(candidate.data_json["rule"])
+                origin = candidate.data_json.get("migration_origin") or other
+                if any(
+                    similar_schedule(payload["migration_origin"], signature)
+                    for signature in (other, origin)
+                ):
+                    raise ValueError("SIMILAR_RULE: review existing rules before creating another")
+        return None
+
     result = save_record(
         user,
         ledger,
         kind="recurring_rule",
+        create_id=create_id,
+        check_create=check_create if create_id else None,
+        after_save=finish_handoff if handoff_key else None,
         data=payload,
         record_id=record_id,
         expected_revision=expected_revision,
@@ -396,15 +656,42 @@ async def manage_recurring_rule(
     return {**result, "next_occurrences": preview}
 
 
+def replay_creation(row, fingerprint):
+    if row.data_json.get("creation_hash") != fingerprint:
+        raise ValueError("REVISION_CONFLICT: creation key already used")
+    return record_out(row)
+
+
+def check_recurring_accounts(ledger, transaction):
+    ids = [transaction.get(k) for k in ("account_id", "from_account_id", "to_account_id")]
+    ids = [v for v in ids if v]
+    if ids:
+        with wt.SessionLocal() as db:
+            hidden = db.scalar(
+                select(UserAccountProjection.sync_id).where(
+                    UserAccountProjection.user_id == ledger.user_id,
+                    UserAccountProjection.sync_id.in_(ids),
+                    UserAccountProjection.hidden.is_(True),
+                )
+            )
+            if hidden:
+                raise ValueError("A recurring account is hidden")
+
+
 async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
     """Scheduler entry. Every occurrence revalidates user/ledger role and uses a stable write key."""
     now = now or datetime.now(timezone.utc)
+    lease_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    claimable = or_(
+        MCPStateRecord.status == "active",
+        and_(MCPStateRecord.status == "executing", MCPStateRecord.updated_at < lease_cutoff),
+    )
     with wt.SessionLocal() as db:
         query = (
             select(MCPStateRecord)
             .where(
                 MCPStateRecord.kind == "recurring_rule",
-                MCPStateRecord.status == "active",
+                claimable,
                 MCPStateRecord.next_due_at <= now,
             )
             .order_by(MCPStateRecord.next_due_at)
@@ -415,7 +702,7 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
         rules = db.scalars(query).all()
         for row in rules:
             db.expunge(row)
-    results = []
+    results: list[dict[str, Any]] = []
     for row in rules:
         try:
             with wt.SessionLocal() as db:
@@ -434,13 +721,76 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
             index, due = next_occurrence(data, data["next_index"])
             if due is None or due > now:
                 continue
+            # A committed claim excludes edits while the ordinary transaction is written.
+            # After a worker crash the next holder resumes the same immutable operation key.
+            claim_time = datetime.now(timezone.utc)
+            with wt.SessionLocal() as db:
+                claim = db.execute(
+                    update(MCPStateRecord)
+                    .where(
+                        MCPStateRecord.id == row.id,
+                        MCPStateRecord.revision == row.revision,
+                        MCPStateRecord.next_due_at == due,
+                        claimable,
+                    )
+                    .values(status="executing", updated_at=claim_time)
+                )
+                db.commit()
+                if not cast("CursorResult[Any]", claim).rowcount:
+                    continue
             raw = {**data["rule"]["transaction"], "happened_at": due.isoformat()}
             key = "recurring:" + row.id + ":" + due.strftime("%Y%m%dT%H%M%SZ")
-            outcome = await wt.create_transactions(
-                user, ledger_id=ledger.external_id, transactions=[raw], idempotency_key=key
-            )
+            try:
+                if data.get("creation_hash"):
+                    with wt.SessionLocal() as db:
+                        started = db.scalar(
+                            select(MCPWriteOperation.id).where(
+                                MCPWriteOperation.user_id == user.id,
+                                MCPWriteOperation.request_key == key,
+                            )
+                        )
+                    if not started:
+                        body = await prepare_transaction(user, ledger, raw, add_mcp_tag=False)
+                        check_recurring_accounts(ledger, body)
+                outcome = await wt.create_transactions(
+                    user,
+                    ledger_id=ledger.external_id,
+                    transactions=[raw],
+                    idempotency_key=key,
+                    add_mcp_tag=not data.get("creation_hash"),
+                )
+            except ValueError:
+                # Invalid resource before an operation exists: allow the creator to fix the rule.
+                with wt.SessionLocal() as db:
+                    if not db.scalar(
+                        select(MCPWriteOperation.id).where(
+                            MCPWriteOperation.user_id == user.id,
+                            MCPWriteOperation.request_key == key,
+                        )
+                    ):
+                        db.execute(
+                            update(MCPStateRecord)
+                            .where(
+                                MCPStateRecord.id == row.id,
+                                MCPStateRecord.updated_at == claim_time,
+                            )
+                            .values(status="active", updated_at=datetime.now(timezone.utc))
+                        )
+                        db.commit()
+                raise
             results.append(dict(rule_id=row.id, due=due.isoformat(), operation=outcome))
             if outcome.get("status") != "created":
+                with wt.SessionLocal() as db:
+                    db.execute(
+                        update(MCPStateRecord)
+                        .where(
+                            MCPStateRecord.id == row.id,
+                            MCPStateRecord.status == "executing",
+                            MCPStateRecord.updated_at == claim_time,
+                        )
+                        .values(status="active", updated_at=datetime.now(timezone.utc))
+                    )
+                    db.commit()
                 continue
             next_index, next_due = next_occurrence(data, index + 1)
             data.update(
@@ -455,7 +805,8 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
                     .where(
                         MCPStateRecord.id == row.id,
                         MCPStateRecord.revision == row.revision,
-                        MCPStateRecord.status == "active",
+                        MCPStateRecord.updated_at == claim_time,
+                        MCPStateRecord.status == "executing",
                         MCPStateRecord.next_due_at == due,
                     )
                     .values(
@@ -471,9 +822,7 @@ async def execute_due_rules(*, now=None, only_record_id=None, limit=20):
             # A stale account/category must not starve unrelated users' schedules.
             # Report a safe code; transaction/provider exception text may contain source data.
             code = type(exc).__name__
-            logging.getLogger(__name__).warning(
-                "MCP recurring rule %s failed (%s)", row.id, code
-            )
+            logging.getLogger(__name__).warning("MCP recurring rule %s failed (%s)", row.id, code)
             results.append(dict(rule_id=row.id, status="failed", error_code=code))
     return results
 
@@ -488,8 +837,10 @@ async def run_due_recurring_rules(user: User, ledger_id: str) -> dict[str, Any]:
                 MCPStateRecord.ledger_id == ledger.id,
                 MCPStateRecord.user_id == user.id,
                 MCPStateRecord.kind == "recurring_rule",
-                MCPStateRecord.status == "active",
+                MCPStateRecord.status.in_(["active", "executing"]),
+                MCPStateRecord.next_due_at <= datetime.now(timezone.utc),
             )
+            .order_by(MCPStateRecord.next_due_at)
             .limit(100)
         ).all()
     outcomes = []

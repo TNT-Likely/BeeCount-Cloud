@@ -10,6 +10,7 @@ from pydantic import Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from ..concurrency import lock_ledger_for_materialize, lock_sqlite_writer
 from ..config import get_settings
 from ..models import (
     AuditLog,
@@ -20,6 +21,7 @@ from ..models import (
     SyncChange,
     User,
 )
+from ..time_utils import as_utc
 from .capability_tools import Fields, get_account_balances, require_ledger, run_write
 from .query_context import date_boundary, revision
 from .schemas import BatchTransactionItem
@@ -52,11 +54,9 @@ def record_out(row, *, include_data=True):
         revision=row.revision,
         status=row.status,
         data=row.data_json if include_data else None,
-        next_due_at=row.next_due_at.replace(tzinfo=timezone.utc).isoformat()
-        if row.next_due_at
-        else None,
-        created_at=row.created_at.replace(tzinfo=timezone.utc).isoformat(),
-        updated_at=row.updated_at.replace(tzinfo=timezone.utc).isoformat(),
+        next_due_at=as_utc(row.next_due_at).isoformat() if row.next_due_at else None,
+        created_at=as_utc(row.created_at).isoformat(),
+        updated_at=as_utc(row.updated_at).isoformat(),
     )
 
 
@@ -81,8 +81,14 @@ def save_record(
     expected_revision=None,
     status="open",
     next_due_at=None,
+    create_id=None,
+    check_create=None,
+    after_save=None,
 ):
     with wt.SessionLocal() as db:
+        if kind == "recurring_rule":
+            lock_sqlite_writer(db)
+            lock_ledger_for_materialize(db, ledger.id)
         require_ledger(db, user, ledger.external_id, write=True)
         before = None
         if record_id:
@@ -96,9 +102,12 @@ def save_record(
                 raise ValueError(
                     "An executing/completed import plan cannot be edited; create a new preview"
                 )
+            predicates = [MCPStateRecord.id == record_id, MCPStateRecord.revision == expected_revision]
+            if kind == "recurring_rule":
+                predicates.append(MCPStateRecord.status != "executing")
             changed = db.execute(
                 update(MCPStateRecord)
-                .where(MCPStateRecord.id == record_id, MCPStateRecord.revision == expected_revision)
+                .where(*predicates)
                 .values(
                     data_json=data,
                     status=status,
@@ -112,8 +121,16 @@ def save_record(
             db.expire_all()
             row = db.get(MCPStateRecord, record_id)
         else:
+            if check_create is not None:
+                existing = check_create(db)
+                if existing is not None:
+                    replay = record_out(existing)
+                    if after_save:
+                        replay.update(after_save(db, existing))
+                        db.commit()
+                    return replay
             row = MCPStateRecord(
-                id=str(uuid4()),
+                id=create_id or str(uuid4()),
                 user_id=user.id,
                 ledger_id=ledger.id,
                 kind=kind,
@@ -125,6 +142,8 @@ def save_record(
             db.add(row)
             db.flush()
         out = record_out(row)
+        if after_save:
+            out.update(after_save(db, row))
         db.add(
             AuditLog(
                 user_id=user.id,
