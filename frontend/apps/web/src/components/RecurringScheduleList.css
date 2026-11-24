@@ -1,0 +1,37 @@
+.recurring-month {
+  container: recurring-month / inline-size;
+}
+
+.recurring-entries {
+  padding-inline: 0.5rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+}
+
+.recurring-entries > li + li {
+  border-top: 1px solid hsl(var(--border));
+}
+
+/* Preserve the same column widths in months with only one or two bills. */
+@container recurring-month (min-width: 65rem) {
+  .recurring-entries {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(32rem, 1fr));
+    gap: 0.75rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .recurring-entries > li {
+    padding-inline: 0.75rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+  }
+
+  .recurring-amount-label {
+    display: none;
+  }
+}

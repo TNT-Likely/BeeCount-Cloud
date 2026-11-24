@@ -127,7 +127,7 @@ function LedgerRules({ ledger, currency }: { ledger: string; currency: string })
     </select></Field>
   }
   const errorText = error && <p role="alert" className="text-sm text-destructive">{error}</p>
-  return <section className="mx-auto max-w-5xl py-6">
+  return <section className="w-full py-6">
     <header className="mb-5 flex items-center justify-between gap-3">
       <div><h1 className="text-3xl font-semibold tracking-tight">{t('nav.recurring')}</h1>
         {list && <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground" role="status">

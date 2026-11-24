@@ -12,6 +12,7 @@ import {
 import { CategoryIcon } from '@beecount/web-features'
 import { useSharedLedgerResources } from '../context/SharedLedgerResourcesContext'
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
+import './RecurringScheduleList.css'
 
 type View = 'active' | 'paused' | 'completed'
 const palette = [
@@ -143,19 +144,23 @@ export function RecurringScheduleList({
         </p>
       )}
       {Array.from(groups, ([month, entries]) => (
-        <section key={month || view} className="mt-5">
+        <section key={month || view} className="recurring-month mt-5">
           <div className="mb-2 flex items-baseline gap-2">
             <h2 className="font-semibold">
-              {month
-                ? new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(
-                    utcDay(month + '-01'),
-                  )
-                : t(viewKey(view))}
+              {!month
+                ? t(viewKey(view))
+                : locale.startsWith('zh')
+                  ? Number(month.slice(-2)) + ' ' + t('recurring.monthly')
+                  : new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(
+                      utcDay(month + '-01'),
+                    )}
             </h2>
             {month && <span className="text-xs text-muted-foreground">{month.slice(0, 4)}</span>}
-            <span className="ml-auto mr-10 text-xs text-muted-foreground">{t('recurring.perBill')}</span>
+            <span className="recurring-amount-label ml-auto mr-10 text-xs text-muted-foreground">
+              {t('recurring.perBill')}
+            </span>
           </div>
-          <ul className="divide-y divide-border rounded-xl border border-border bg-card px-2 text-card-foreground sm:px-3">
+          <ul className="recurring-entries text-card-foreground">
             {entries.map(({ row, date }) => {
               const rule = row.data.rule,
                 tx = rule.transaction,
