@@ -32,12 +32,13 @@ function formatDue(value: string | null, zone: string) {
 
 export default function RecurringPage() {
   const t = useT()
-  const { activeLedgerId, currency } = useLedgers()
+  const { activeLedgerId, currentLedger } = useLedgers()
   if (!activeLedgerId) return <p>{t('shell.selectLedgerFirst')}</p>
-  return <LedgerRules key={activeLedgerId} ledger={activeLedgerId} currency={currency} />
+  if (!currentLedger) return <p role="status">{t('common.loading')}</p>
+  return <LedgerRules key={activeLedgerId} ledger={activeLedgerId} ledgerName={currentLedger.ledger_name} currency={currentLedger.currency} />
 }
 
-function LedgerRules({ ledger, currency }: { ledger: string; currency: string }) {
+function LedgerRules({ ledger, ledgerName, currency }: { ledger: string; ledgerName: string; currency: string }) {
   const t = useT()
   const { token } = useAuth()
   const [list, setList] = useState<RecurringRuleList>()
@@ -138,7 +139,7 @@ function LedgerRules({ ledger, currency }: { ledger: string; currency: string })
       <Button disabled={!list?.can_create || busy} onClick={() => void open()}><Plus size={16} />{t('recurring.new')}</Button>
     </header>
     {!draft && !deleting && errorText}
-    {list ? <RecurringScheduleList ledger={ledger} currency={currency} items={list.items} busy={busy}
+    {list ? <RecurringScheduleList ledger={ledger} ledgerName={ledgerName} currency={currency} items={list.items} busy={busy}
       onEdit={row => void open(row)} onToggle={row => void change(row,row.status === 'paused' ? 'resume' : 'pause')}
       onDelete={row => {setError('');setDeleting(row)}} /> : !error && <p role="status">{t('common.loading')}</p>}
     <Dialog open={!!draft} onOpenChange={v => { if (!v && !busy) {setDraft(undefined);setError('')} }}>

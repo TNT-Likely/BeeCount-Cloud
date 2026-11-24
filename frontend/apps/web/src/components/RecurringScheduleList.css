@@ -30,8 +30,4 @@
     border-radius: var(--radius);
     background: hsl(var(--card));
   }
-
-  .recurring-amount-label {
-    display: none;
-  }
 }

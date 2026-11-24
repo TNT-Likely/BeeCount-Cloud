@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeftRight, Check, CircleDollarSign, Ellipsis, Pause, ReceiptText } from 'lucide-react'
+import {
+  ArrowLeftRight,
+  BookOpen,
+  Check,
+  CircleDollarSign,
+  Ellipsis,
+  Pause,
+  ReceiptText,
+  Wallet,
+} from 'lucide-react'
 import type { RecurringRuleRow, RuleConfig } from '@beecount/api-client'
 import {
   DropdownMenu,
@@ -12,6 +21,13 @@ import {
 import { CategoryIcon } from '@beecount/web-features'
 import { useSharedLedgerResources } from '../context/SharedLedgerResourcesContext'
 import { useAttachmentCache } from '../context/AttachmentCacheContext'
+import {
+  lastPostingDate,
+  perPeriodAmount,
+  recurringCivilDate as civilDate,
+  recurringUtcDay as utcDay,
+  shortPostingDate,
+} from '../lib/recurringPresentation'
 import './RecurringScheduleList.css'
 
 type View = 'active' | 'paused' | 'completed'
@@ -24,15 +40,6 @@ const palette = [
 const views: View[] = ['active', 'paused', 'completed']
 const viewKey = (view: View) => (view === 'active' ? 'recurring.inProgress' : 'recurring.' + view)
 const viewFor = (row: RecurringRuleRow): View => (row.status === 'executing' ? 'active' : row.status)
-const civilDate = (instant: Date, zone: string) =>
-  new Intl.DateTimeFormat('sv-SE', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    timeZone: zone,
-  }).format(instant)
-const utcDay = (date: string) => new Date(date + 'T12:00:00Z')
-
 function period(rule: RuleConfig, t: ReturnType<typeof useT>, locale: string) {
   const anchor = utcDay(rule.starts_at.slice(0, 10))
   const day = rule.day_of_month ?? anchor.getUTCDate()
@@ -63,6 +70,7 @@ function period(rule: RuleConfig, t: ReturnType<typeof useT>, locale: string) {
 export function RecurringScheduleList({
   items,
   ledger,
+  ledgerName,
   currency,
   busy,
   onEdit,
@@ -71,6 +79,7 @@ export function RecurringScheduleList({
 }: {
   items: RecurringRuleRow[]
   ledger: string
+  ledgerName: string
   currency: string
   busy: boolean
   onEdit: (row: RecurringRuleRow) => void
@@ -87,7 +96,7 @@ export function RecurringScheduleList({
     )
   }, [bundle, ensureLoadedMany])
   const categories = useMemo(() => new Map(bundle?.categories.map((c) => [c.sync_id, c])), [bundle])
-  const accounts = useMemo(() => new Map(bundle?.accounts.map((a) => [a.sync_id, a.name])), [bundle])
+  const accounts = useMemo(() => new Map(bundle?.accounts.map((a) => [a.sync_id, a])), [bundle])
   const groups = useMemo(() => {
     const filtered = items
       .filter((row) => viewFor(row) === view)
@@ -129,9 +138,7 @@ export function RecurringScheduleList({
           >
             {t(viewKey(key))}
             <span
-              className={
-                'rounded px-1.5 text-xs tabular-nums ' + (view === key ? 'bg-primary/15' : 'bg-muted')
-              }
+              className={'rounded px-1.5 text-xs tabular-nums ' + (view === key ? 'bg-primary/15' : 'bg-muted')}
             >
               {items.filter((r) => viewFor(r) === key).length}
             </span>
@@ -156,9 +163,6 @@ export function RecurringScheduleList({
                     )}
             </h2>
             {month && <span className="text-xs text-muted-foreground">{month.slice(0, 4)}</span>}
-            <span className="recurring-amount-label ml-auto mr-10 text-xs text-muted-foreground">
-              {t('recurring.perBill')}
-            </span>
           </div>
           <ul className="recurring-entries text-card-foreground">
             {entries.map(({ row, date }) => {
@@ -166,33 +170,64 @@ export function RecurringScheduleList({
                 tx = rule.transaction,
                 editing = row.can_edit && row.status !== 'executing'
               const cat = categories.get(tx.category_id || '')
-              const category = cat?.name ?? tx.category ?? t('recurring.' + tx.tx_type)
+              const category =
+                cat?.name ||
+                tx.category ||
+                (tx.tx_type === 'transfer' ? t('recurring.transfer') : t('overview.recent.uncategorized'))
+              function accountDetails(id?: string | null, name?: string | null) {
+                const named =
+                  !id && name ? bundle?.accounts.filter((account) => account.name === name) : undefined
+                const entry = id ? accounts.get(id) : named?.length === 1 ? named[0] : undefined
+                const referenced = Boolean(id || name)
+                return {
+                  name:
+                    entry?.name ||
+                    name ||
+                    (referenced
+                      ? bundle
+                        ? t('recurring.accountUnavailable')
+                        : '…'
+                      : t('recurring.noAccount')),
+                  currency: entry ? entry.currency : referenced ? undefined : null,
+                }
+              }
+              const source =
+                tx.tx_type === 'transfer'
+                  ? accountDetails(tx.from_account_id || tx.account_id, tx.from_account || tx.account)
+                  : accountDetails(tx.account_id, tx.account)
               const account =
                 tx.tx_type === 'transfer'
-                  ? [
-                      accounts.get(tx.from_account_id || '') || tx.from_account,
-                      accounts.get(tx.to_account_id || '') || tx.to_account,
-                    ]
-                      .filter(Boolean)
-                      .join(' → ')
-                  : accounts.get(tx.account_id || '') || tx.account
-              const delta = date
-                ? Math.round((+utcDay(date) - +utcDay(civilDate(new Date(), rule.time_zone))) / 86400000)
-                : 0
-              const shortDate =
+                  ? source.name + ' → ' + accountDetails(tx.to_account_id, tx.to_account).name
+                  : source.name
+              const note = tx.note?.trim()
+              const today = civilDate(new Date(), rule.time_zone)
+              const delta = date ? Math.round((+utcDay(date) - +utcDay(today)) / 86400000) : null
+              const relative =
+                delta === null
+                  ? ''
+                  : new Intl.RelativeTimeFormat(locale, {
+                      numeric: Math.abs(delta) < 2 ? 'auto' : 'always',
+                    }).format(delta, 'day')
+              const weekday =
                 date &&
-                (delta === 0 || delta === 1
-                  ? new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(delta, 'day')
-                  : new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(
-                      utcDay(date),
-                    ))
-              const amount = new Intl.NumberFormat(locale, {
-                style: 'currency',
-                currency: tx.currency || currency,
-                currencyDisplay: tx.currency && tx.currency !== currency ? 'code' : 'narrowSymbol',
-                signDisplay: tx.tx_type === 'income' ? 'always' : 'auto',
-                maximumFractionDigits: 8,
-              }).format(tx.tx_type === 'expense' ? -tx.amount : tx.amount)
+                new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(utcDay(date))
+              const time =
+                row.next_due_at &&
+                rule.starts_at.length > 10 &&
+                new Intl.DateTimeFormat(locale, {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: rule.time_zone,
+                }).format(new Date(row.next_due_at))
+              const previous = lastPostingDate(row)
+              const amount = perPeriodAmount(tx, currency, locale, source.currency)
+              const amountLabel = t(
+                {
+                  expense: 'recurring.perExpense',
+                  income: 'recurring.perIncome',
+                  transfer: 'recurring.perTransfer',
+                }[tx.tx_type],
+              )
               const tone =
                 tx.tx_type === 'income'
                   ? 'bg-income/10 text-income'
@@ -203,104 +238,161 @@ export function RecurringScheduleList({
                   : tx.tx_type === 'income'
                     ? CircleDollarSign
                     : ReceiptText
-              const caption =
-                row.status === 'executing'
-                  ? t('recurring.executing')
-                  : [category, account].filter(Boolean).join(' · ')
+              const caption = [category, period(rule, t, locale)].join(' · ')
               return (
-                <li
-                  key={row.id}
-                  className="grid min-h-[68px] grid-cols-[36px_minmax(0,1fr)_auto_26px] items-center gap-1.5 py-2 sm:grid-cols-[58px_minmax(0,1fr)_auto_32px] sm:gap-3"
-                >
-                  <div
-                    className={
-                      'flex min-h-10 flex-col items-center justify-center border-r border-border leading-none ' +
-                      (view === 'active' && (delta === 0 || delta === 1)
-                        ? 'text-amber-700 dark:text-amber-300'
-                        : 'text-muted-foreground')
-                    }
-                    title={view === 'active' ? date + ' · ' + rule.time_zone : t(viewKey(view))}
-                  >
-                    {view === 'active' && date ? (
-                      <>
-                        <span className="text-xl font-semibold tabular-nums">{date.slice(-2)}</span>
-                        <span className="mt-1 text-[10px]">{shortDate}</span>
-                      </>
-                    ) : view === 'paused' ? (
-                      <Pause size={16} />
-                    ) : view === 'completed' ? (
-                      <Check size={16} />
-                    ) : (
-                      <span>—</span>
+                <li key={row.id} className="flex min-w-0 flex-col py-3">
+                  <div className="recurring-entry-summary grid grid-cols-[34px_minmax(0,1fr)_auto_28px] items-center gap-1.5 sm:grid-cols-[50px_minmax(0,1fr)_auto_32px] sm:gap-3">
+                    <div
+                      className={
+                        'flex min-h-10 flex-col items-center justify-center border-r border-border leading-none ' +
+                        (view === 'active' && (delta === 0 || delta === 1)
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-muted-foreground')
+                      }
+                      title={view === 'active' ? date + ' · ' + rule.time_zone : t(viewKey(view))}
+                    >
+                      {view === 'active' && date ? (
+                        <>
+                          <span className="text-xl font-semibold tabular-nums">{date.slice(-2)}</span>
+                          <span className="mt-1 text-[10px]">{weekday}</span>
+                        </>
+                      ) : view === 'paused' ? (
+                        <Pause size={16} />
+                      ) : view === 'completed' ? (
+                        <Check size={16} />
+                      ) : (
+                        <span>—</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!editing || busy}
+                      onClick={() => onEdit(row)}
+                      className="flex min-w-0 items-center gap-2 text-left disabled:cursor-default sm:gap-3"
+                    >
+                      <span
+                        className={
+                          'hidden size-9 shrink-0 items-center justify-center rounded-xl sm:flex ' + tone
+                        }
+                      >
+                        {cat?.icon || cat?.icon_cloud_file_id ? (
+                          <CategoryIcon
+                            icon={cat.icon}
+                            iconType={cat.icon_type}
+                            iconCloudFileId={cat.icon_cloud_file_id}
+                            iconPreviewUrlByFileId={previewMap}
+                            size={18}
+                          />
+                        ) : (
+                          <Icon size={17} />
+                        )}
+                      </span>
+                      <span className="min-w-0">
+                        <strong className="block truncate text-sm font-semibold sm:text-base" title={rule.name}>
+                          {rule.name}
+                        </strong>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground" title={caption}>
+                          {caption}
+                        </span>
+                      </span>
+                    </button>
+                    <div className="text-right">
+                      <span className="block text-[11px] leading-tight text-muted-foreground">
+                        {amountLabel}
+                      </span>
+                      <strong
+                        className={
+                          'block whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base ' +
+                          (tx.tx_type === 'income' ? 'text-income' : '')
+                        }
+                      >
+                        {amount.original}
+                      </strong>
+                      {amount.converted && (
+                        <span className="block text-[11px] text-muted-foreground">≈ {amount.converted}</span>
+                      )}
+                    </div>
+                    {editing && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted"
+                            aria-label={t('recurring.actions', { name: rule.name })}
+                            disabled={busy}
+                          >
+                            <Ellipsis size={17} />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => onEdit(row)}>{t('common.edit')}</DropdownMenuItem>
+                          {row.status !== 'completed' && (
+                            <DropdownMenuItem onSelect={() => onToggle(row)}>
+                              {t(row.status === 'paused' ? 'recurring.resume' : 'recurring.pause')}
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem onSelect={() => onDelete(row)} className="text-destructive">
+                            {t('common.delete')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    disabled={!editing || busy}
-                    onClick={() => onEdit(row)}
-                    className="flex min-w-0 items-center gap-2 text-left disabled:cursor-default sm:gap-3"
-                  >
-                    <span
-                      className={
-                        'hidden size-9 shrink-0 items-center justify-center rounded-xl sm:flex ' + tone
-                      }
-                    >
-                      {cat?.icon || cat?.icon_cloud_file_id ? (
-                        <CategoryIcon
-                          icon={cat.icon}
-                          iconType={cat.icon_type}
-                          iconCloudFileId={cat.icon_cloud_file_id}
-                          iconPreviewUrlByFileId={previewMap}
-                          size={18}
-                        />
-                      ) : (
-                        <Icon size={17} />
-                      )}
-                    </span>
-                    <span className="min-w-0">
-                      <strong className="block truncate text-sm font-semibold sm:text-base" title={rule.name}>
-                        {rule.name}
-                      </strong>
-                      <span className="mt-0.5 block truncate text-xs text-muted-foreground" title={caption}>
-                        {caption}
-                      </span>
-                    </span>
-                  </button>
-                  <div className="text-right">
-                    <strong
-                      className={
-                        'block whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base ' +
-                        (tx.tx_type === 'income' ? 'text-income' : '')
-                      }
-                    >
-                      {amount}
-                    </strong>
-                    <span className="text-xs text-muted-foreground">{period(rule, t, locale)}</span>
-                  </div>
-                  {editing && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted"
-                          aria-label={t('recurring.actions', { name: rule.name })}
-                          disabled={busy}
-                        >
-                          <Ellipsis size={17} />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => onEdit(row)}>{t('common.edit')}</DropdownMenuItem>
-                        {row.status !== 'completed' && (
-                          <DropdownMenuItem onSelect={() => onToggle(row)}>
-                            {t(row.status === 'paused' ? 'recurring.resume' : 'recurring.pause')}
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem onSelect={() => onDelete(row)} className="text-destructive">
-                          {t('common.delete')}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                  {note && note !== rule.name.trim() && (
+                    <p className="mt-2 line-clamp-2 break-words text-xs text-muted-foreground" title={note}>
+                      {note}
+                    </p>
                   )}
+                  <div className="mt-auto pt-2.5">
+                    <dl className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-t border-border pt-2 text-xs">
+                      <div className="flex flex-wrap items-baseline gap-x-1.5">
+                        <dt className="text-muted-foreground">{t('recurring.nextPosting')}</dt>
+                        <dd title={view === 'active' && date ? date + ' · ' + rule.time_zone : undefined}>
+                          {view !== 'active' ? (
+                            t(viewKey(view))
+                          ) : date ? (
+                            <>
+                              <time dateTime={row.next_local || row.next_due_at || date}>
+                                {shortPostingDate(date, today, locale)}
+                                {time && ' ' + time}
+                              </time>
+                              {' · '}
+                              {row.status === 'executing' ? t('recurring.executing') : relative}
+                            </>
+                          ) : row.status === 'executing' ? (
+                            t('recurring.executing')
+                          ) : (
+                            '—'
+                          )}
+                        </dd>
+                      </div>
+                      <div className="flex flex-wrap items-baseline gap-x-1.5">
+                        <dt className="text-muted-foreground">{t('recurring.lastPosting')}</dt>
+                        <dd>
+                          {previous ? (
+                            <time dateTime={previous}>{shortPostingDate(previous, today, locale)}</time>
+                          ) : (
+                            t(previous === null ? 'recurring.noHistory' : 'recurring.historyUnavailable')
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                      <span className="inline-flex min-w-0 items-center gap-1">
+                        <BookOpen size={12} className="shrink-0" aria-hidden="true" />
+                        <span className="break-words">
+                          <span className="sr-only">{t('nav.ledgers')} </span>
+                          {ledgerName} · {currency}
+                        </span>
+                      </span>
+                      <span className="inline-flex min-w-0 items-center gap-1">
+                        <Wallet size={12} className="shrink-0" aria-hidden="true" />
+                        <span className="break-words">
+                          <span className="sr-only">{t('recurring.account')} </span>
+                          {account}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
                 </li>
               )
             })}
