@@ -137,6 +137,22 @@ def test_cloud_occurrence_retries_emit_one_sync_transaction_and_move_the_next_mo
         assert len(changes) == 1 and tx.sync_id == result["sync_ids"][0]
 
 
+def test_list_distinguishes_a_handoff_cursor_from_an_actual_local_posting_date(ledger):
+    draft = sample()
+    draft["data"]["time_zone"] = "Pacific/Kiritimati"
+    submit(ledger, {**draft, "migrate": True, "consumed_through": "2030-01-05"})
+
+    def current():
+        (item,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+        return item
+
+    assert current()["last_generated_local_date"] is None
+    assert current()["next_local"].startswith("2030-02-05")
+    run(rules.execute_due_rules(now=datetime(2030, 2, 4, 11, tzinfo=timezone.utc)))
+    assert current()["data"]["last_due_at"].startswith("2030-02-04")
+    assert current()["last_generated_local_date"] == "2030-02-05"
+
+
 def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_receipt(ledger):
     draft = sample()
     first_id, second_id = str(uuid4()), str(uuid4())
@@ -150,6 +166,8 @@ def test_two_phone_handoffs_reconcile_the_same_period_and_resume_after_lost_rece
     first = submit(ledger, {**handoff, "reviewed_mapping": preview["reviewed_mapping"]})
     assert first["next_occurrences"][0].startswith("2030-02-05")
     assert first["required_uploads"] == [first_id]
+    (listed,) = ledger.client.get(route(ledger), headers=ledger.headers).json()["items"]
+    assert listed["last_generated_local_date"] == "2030-01-05"
     assert submit(ledger, handoff)["local_transactions"] == {first_id: first_id}
     other = {
         **handoff,

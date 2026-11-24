@@ -1,6 +1,6 @@
 """Ledger-scoped recurring rule management shared by Web and mobile."""
 
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -17,6 +17,7 @@ from ..ledger_access import WRITABLE_ROLES, require_accessible_ledger_by_externa
 from ..mcp.rule_tools import RecurringRule, change_recurring_rule
 from ..mcp.workflow_tools import record_out
 from ..models import MCPStateRecord, User
+from ..recurring_handoff import last_imported_dates
 from ..security import SCOPE_APP_WRITE, SCOPE_WEB_READ, SCOPE_WEB_WRITE
 
 router = APIRouter(prefix="/ledgers/{ledger_id}/recurring-rules")
@@ -42,6 +43,15 @@ class RuleChange(BaseModel):
     reviewed_mapping: str | None = None
 
 
+def last_generated_local_date(row: MCPStateRecord, imported_date: str | None) -> str | None:
+    due = row.data_json.get("last_due_at")
+    if not due:
+        return imported_date
+    zone = ZoneInfo(row.data_json["rule"]["time_zone"])
+    cloud_date = datetime.fromisoformat(due).astimezone(zone).date().isoformat()
+    return max(cloud_date, imported_date) if imported_date else cloud_date
+
+
 @router.get("", dependencies=[Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ))])
 def list_rules(
     ledger_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
@@ -59,11 +69,13 @@ def list_rules(
         .order_by(MCPStateRecord.created_at, MCPStateRecord.id)
     )
     settings = get_settings()
+    imported = last_imported_dates(db, ledger.id)
     return dict(
         items=[
             {
                 **record_out(row),
                 "can_edit": role in WRITABLE_ROLES and row.user_id == user.id,
+                "last_generated_local_date": last_generated_local_date(row, imported.get(row.id)),
                 "next_local": row.next_due_at.replace(tzinfo=timezone.utc)
                 .astimezone(ZoneInfo(row.data_json["rule"]["time_zone"]))
                 .isoformat()

@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .models import (
     MCPSourceReference,
@@ -13,6 +13,24 @@ from .models import (
     ReadTxProjection,
     SyncChange,
 )
+
+RECURRING_SOURCE_PREFIX = "beecount.recurring."
+
+
+def last_imported_dates(db, ledger_id):
+    """Original local posting days survive transaction edits and deletion."""
+    rows = db.execute(
+        select(
+            MCPSourceReference.source_system,
+            func.max(MCPSourceReference.metadata_json["date"].as_string()),
+        )
+        .where(
+            MCPSourceReference.ledger_id == ledger_id,
+            MCPSourceReference.source_system.startswith(RECURRING_SOURCE_PREFIX),
+        )
+        .group_by(MCPSourceReference.source_system)
+    )
+    return {source.removeprefix(RECURRING_SOURCE_PREFIX): day for source, day in rows if day}
 
 
 def receipt_id(ledger_id, user_id, client_id):
@@ -32,7 +50,6 @@ def period_key(day, frequency):
 
 def source_rules(db, ledger_id, occurrences):
     """Only a shared transaction identity can prove two device copies have the same source."""
-    prefix = "beecount.recurring."
     ids = list({item["sync_id"] for item in occurrences})
     matches = set()
     for start in range(0, len(ids), 400):
@@ -41,11 +58,11 @@ def source_rules(db, ledger_id, occurrences):
             .where(
                 MCPSourceReference.ledger_id == ledger_id,
                 MCPSourceReference.tx_sync_id.in_(ids[start : start + 400]),
-                MCPSourceReference.source_system.startswith(prefix),
+                MCPSourceReference.source_system.startswith(RECURRING_SOURCE_PREFIX),
             )
             .distinct()
         )
-        matches.update(source[len(prefix) :] for source in sources)
+        matches.update(source.removeprefix(RECURRING_SOURCE_PREFIX) for source in sources)
     return matches
 
 
@@ -75,7 +92,7 @@ def local_periods(db, ledger, user, rule_id, config, items, *, commit=False):
     """Two installations can hold different sync IDs for the same pre-Cloud period."""
     if not items:
         return {}
-    source = "beecount.recurring." + rule_id
+    source = RECURRING_SOURCE_PREFIX + rule_id
 
     def period(day):
         return period_key(day, config["frequency"])
@@ -249,7 +266,7 @@ def check_mobile_push(db, ledger_ids, changes, protocol):
                     select(MCPSourceReference.id).where(
                         MCPSourceReference.ledger_id == ledger_id,
                         MCPSourceReference.tx_sync_id == sid,
-                        MCPSourceReference.source_system.startswith("beecount.recurring."),
+                        MCPSourceReference.source_system.startswith(RECURRING_SOURCE_PREFIX),
                     )
                 )
             if not known:
