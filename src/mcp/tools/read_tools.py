@@ -317,6 +317,7 @@ def list_accounts(user: User, *, account_type: str | None = None, ledger_id: str
                 "currency": r.currency,
                 "initial_balance": float(r.initial_balance or 0),
                 "hidden": bool(r.hidden),
+                "exclude_from_total": bool(r.exclude_from_total),
                 "bank_name": r.bank_name,
                 "card_last_four": r.card_last_four,
                 "credit_limit": float(r.credit_limit) if r.credit_limit is not None else None,

@@ -43,6 +43,11 @@ export function accountBalance(row: ReadAccount): number {
     : row.initial_balance ?? 0
 }
 
+/** 账户是否计入净资产/资产/负债/资产构成(BeeCount #651:exclude_from_total 的账户不计入)。 */
+export function isCountedInTotal(row: ReadAccount): boolean {
+  return !row.exclude_from_total
+}
+
 /**
  * 按币种切分账户 —— 所有跨币种聚合的第一步。币种缺省按 CNY,统一大写归一
  * (`usd` / `USD` 视作同一种)。返回的 Map 保持插入顺序。
@@ -72,6 +77,7 @@ export function computeCurrencySummary(rows: ReadAccount[]): AssetSummary {
   let assetTotal = 0
   let liabilityTotal = 0
   for (const row of rows) {
+    if (!isCountedInTotal(row)) continue
     const raw = accountBalance(row)
     if (LIABILITY_TYPES.has(row.account_type || '') && !(row.account_type === 'credit_card' && raw > 0)) liabilityTotal += raw
     else assetTotal += raw
@@ -205,6 +211,7 @@ export function convertTypeTotalsToBase(
     // 「subtotal 求和后折算」同构,避免逐行乘法的浮点噪声。
     const perType = new Map<string, number>()
     for (const row of curRows) {
+      if (!isCountedInTotal(row)) continue
       const type = row.account_type || 'other'
       perType.set(type, (perType.get(type) ?? 0) + accountBalance(row))
     }

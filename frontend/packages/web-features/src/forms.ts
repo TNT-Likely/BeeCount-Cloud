@@ -49,6 +49,8 @@ export type AccountForm = {
   /** 账户隐藏(issue #240)。只在编辑已有账户时通过「隐藏/恢复」切换修改;
    *  新建默认 false。 */
   hidden: boolean
+  /** 不计入总资产(BeeCount #651)。 */
+  exclude_from_total: boolean
 }
 
 export type CategoryForm = {
@@ -129,6 +131,7 @@ export const accountDefaults = (): AccountForm => ({
   bank_name: '',
   card_last_four: '',
   hidden: false,
+  exclude_from_total: false,
 })
 
 export const categoryDefaults = (): CategoryForm => ({

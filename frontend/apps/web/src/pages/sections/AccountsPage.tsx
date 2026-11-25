@@ -46,6 +46,7 @@ import {
   computeCurrencySummary,
   computeTypeGroups,
   effectiveRateToBase,
+  isCountedInTotal,
   mergeGroupsToBase,
   resolveCurrencyFields,
   splitByCurrency,
@@ -285,6 +286,7 @@ export function AccountsPage() {
         card_last_four: isBankOrCredit ? form.card_last_four.trim() || null : null,
         // 账户隐藏(issue #240):新建默认 false;编辑时带当前切换状态。
         hidden: form.hidden,
+        exclude_from_total: form.exclude_from_total,
       }
       await retryOnConflict(activeLedgerId, (base) =>
         form.editingId
@@ -500,7 +502,7 @@ export function AccountsPage() {
     for (const [cur, curRows] of byCur) {
       const summary = computeCurrencySummary(curRows)
       // 详情 dialog 复用 CurrencyAssetCard,需要全部币种(含缺失汇率的)原样展示。
-      buckets.push({ currency: cur, summary, groups: computeTypeGroups(curRows, t) })
+      buckets.push({ currency: cur, summary, groups: computeTypeGroups(curRows.filter(isCountedInTotal), t) })
       const eff = effectiveRateToBase(cur, effectiveBase, rates, rateOverrides)
       if (!eff) {
         missing.add(cur)
@@ -715,6 +717,7 @@ export function AccountsPage() {
             bank_name: row.bank_name ?? '',
             card_last_four: row.card_last_four ?? '',
             hidden: row.hidden ?? false,
+            exclude_from_total: row.exclude_from_total ?? false,
           })
         }}
         onRestore={(row) => void onRestore(row)}

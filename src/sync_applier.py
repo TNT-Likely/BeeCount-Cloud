@@ -135,6 +135,8 @@ _USER_MERGE_SPECS: dict[str, _MergeSpec] = {
         # 不被 partial-update 冲成 False(merge 契约测试见
         # tests/test_account_hidden_sync.py::test_mobile_push_account_partial_update_keeps_hidden)。
         ("hidden", "hidden"),
+        # 不计入总资产(BeeCount #651),缺键保留语义同 hidden。
+        ("excludeFromTotal", "exclude_from_total"),
     ]),
     "exchange_rate_override": _MergeSpec(UserExchangeRateProjection, [
         ("syncId", "sync_id"),

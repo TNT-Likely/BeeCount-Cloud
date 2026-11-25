@@ -690,6 +690,10 @@ class UserAccountProjection(Base):
     hidden: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # 不计入总资产(BeeCount #651):净资产/资产构成/净值历史等统计跳过该账户。
+    exclude_from_total: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
 
 class UserExchangeRateProjection(Base):
