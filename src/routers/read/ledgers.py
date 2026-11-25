@@ -394,6 +394,7 @@ def list_accounts(
             bank_name=row.bank_name,
             card_last_four=row.card_last_four,
             hidden=row.hidden,
+            exclude_from_total=row.exclude_from_total,
         )
         for row in rows
     ]

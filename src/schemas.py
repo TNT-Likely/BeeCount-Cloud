@@ -565,6 +565,8 @@ class ReadAccountOut(BaseModel):
     # 账户隐藏(issue #240):只影响前端选择器/列表呈现,服务端不做任何统计
     # 过滤(D1)。WorkspaceAccountOut 继承本字段,不单独重复声明。
     hidden: bool = False
+    # 不计入总资产(BeeCount #651):净资产/资产构成等统计跳过该账户。
+    exclude_from_total: bool = False
 
 
 class ReadCategoryOut(BaseModel):
@@ -867,6 +869,7 @@ class WriteAccountCreateRequest(WriteBaseRequest):
     # 账户隐藏(issue #240):新建一般为 false,留字段以备批量导入。写路径接线
     # (mutator / write handler)是 Task 4,本字段暂不生效。
     hidden: bool = False
+    exclude_from_total: bool = False
 
 
 class WriteAccountUpdateRequest(WriteBaseRequest):
@@ -882,6 +885,7 @@ class WriteAccountUpdateRequest(WriteBaseRequest):
     card_last_four: str | None = Field(default=None, max_length=8)
     # None = 不改(PATCH exclude_unset)。写路径接线是 Task 4,本字段暂不生效。
     hidden: bool | None = None
+    exclude_from_total: bool | None = None
 
 
 class WriteBudgetCreateRequest(WriteBaseRequest):

@@ -342,6 +342,7 @@ def upsert_account(
         # 从旧行补齐,这里直接取 merged payload 的值;全新 insert 首次缺失时给
         # False(未隐藏)。
         "hidden": _as_bool(payload.get("hidden"), default=False),
+        "exclude_from_total": _as_bool(payload.get("excludeFromTotal"), default=False),
         "source_change_id": source_change_id,
     }
     _upsert(db, UserAccountProjection, ("user_id", "sync_id"), values)

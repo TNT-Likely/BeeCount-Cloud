@@ -41,6 +41,7 @@ class AccountFields(Fields):
     bank_name: str | None = None
     card_last_four: str | None = Field(default=None, max_length=8)
     hidden: bool | None = None
+    exclude_from_total: bool | None = None
 
 
 class CategoryFields(Fields):
@@ -409,6 +410,7 @@ def get_account_balances(
                 transfer_in=0.0,
                 transfer_out=0.0,
                 hidden=account.hidden,
+                exclude_from_total=account.exclude_from_total,
             )
             for account in accounts
         }
@@ -440,6 +442,9 @@ def get_account_balances(
                 + slot["transfer_in"]
                 - slot["transfer_out"]
             )
+            # 不计入总资产(BeeCount #651):仍给出单账户余额,但不进 totals。
+            if slot["exclude_from_total"]:
+                continue
             total = totals.setdefault(
                 slot["currency"], dict(assets=0.0, liabilities=0.0, net_worth=0.0)
             )

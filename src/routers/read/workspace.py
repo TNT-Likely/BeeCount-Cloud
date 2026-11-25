@@ -676,6 +676,7 @@ def list_workspace_accounts(
                 bank_name=acct.bank_name,
                 card_last_four=acct.card_last_four,
                 hidden=acct.hidden,
+                exclude_from_total=acct.exclude_from_total,
                 tx_count=tx_count,
                 income_total=income_total,
                 expense_total=expense_total,
@@ -1251,7 +1252,11 @@ def workspace_net_worth_history(
             UserAccountProjection.account_type,
             UserAccountProjection.currency,
             UserAccountProjection.initial_balance,
-        ).where(UserAccountProjection.user_id == current_user.id)
+        ).where(
+            UserAccountProjection.user_id == current_user.id,
+            # 不计入总资产(BeeCount #651)的账户整条排除,其流水也因不在 bal 中被跳过。
+            UserAccountProjection.exclude_from_total.is_(False),
+        )
     ).all()
     init_by_acc = {a.sync_id: float(a.initial_balance or 0.0) for a in accts}
     is_credit = {a.sync_id: a.account_type == "credit_card" for a in accts}

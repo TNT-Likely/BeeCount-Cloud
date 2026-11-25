@@ -35,7 +35,11 @@ def history(user, *, ledger_id=None, time_zone=None, tz_offset_minutes=0, base_c
         )
         owners = {led.user_id for led in ledgers} or {user.id}
         accounts = db.scalars(
-            select(UserAccountProjection).where(UserAccountProjection.user_id.in_(owners))
+            select(UserAccountProjection).where(
+                UserAccountProjection.user_id.in_(owners),
+                # 不计入总资产(BeeCount #651)的账户不进净值历史。
+                UserAccountProjection.exclude_from_total.is_(False),
+            )
         ).all()
         account_map = {(acct.user_id, acct.sync_id): acct for acct in accounts}
         balances = {key: float(acct.initial_balance or 0) for key, acct in account_map.items()}

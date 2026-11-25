@@ -30,6 +30,7 @@ import {
   type AssetGroup,
   type AssetSummary,
   computeCurrencySummary,
+  isCountedInTotal,
   LIABILITY_TYPES,
   splitByCurrency
 } from '../lib/assetAggregation'
@@ -316,6 +317,11 @@ function HiddenAccountsSection({
                 <span className="shrink-0 rounded bg-muted px-1 py-[1px] text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                   {t('accounts.hidden.badge')}
                 </span>
+                {!isCountedInTotal(row) ? (
+                  <span className="shrink-0 rounded bg-muted px-1 py-[1px] text-[9px] font-medium text-muted-foreground">
+                    {t('accounts.excludeFromTotal.badge')}
+                  </span>
+                ) : null}
               </button>
               <div className="flex shrink-0 items-center gap-2">
                 <Amount
@@ -683,6 +689,11 @@ function BankCardTile({
               {row.name}
             </div>
           </div>
+          {!isCountedInTotal(row) ? (
+            <span className="shrink-0 rounded bg-white/25 px-1 py-[1px] text-[9px] font-semibold">
+              {t('accounts.excludeFromTotal.badge')}
+            </span>
+          ) : null}
           <span className="shrink-0 rounded bg-white/25 px-1 py-[1px] text-[9px] font-semibold tracking-wider">
             {currency}
           </span>
@@ -1093,7 +1104,7 @@ export function AccountsPanel({
       .map(([currency, curRows]) => ({
         currency,
         summary: computeCurrencySummary(curRows),
-        groups: computeTypeGroups(curRows, t)
+        groups: computeTypeGroups(curRows.filter(isCountedInTotal), t)
       }))
       // 体量大的币种排前面(资产 + |负债|)
       .sort(
@@ -1353,6 +1364,32 @@ export function AccountsPanel({
                 value={form.note}
                 onChange={(e) => onFormChange({ ...form, note: e.target.value })}
               />
+            </div>
+
+            {/* 不计入总资产(BeeCount #651):新建/编辑均可设置。 */}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+              <div className="min-w-0 pr-3">
+                <p className="text-sm font-medium">{t('accounts.excludeFromTotal.toggleLabel')}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t('accounts.excludeFromTotal.toggleHint')}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.exclude_from_total}
+                aria-label={t('accounts.excludeFromTotal.toggleLabel') as string}
+                onClick={() => onFormChange({ ...form, exclude_from_total: !form.exclude_from_total })}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  form.exclude_from_total ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    form.exclude_from_total ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
             </div>
 
             {/* 账户隐藏(issue #240):只在编辑已有账户时提供切换 —— 新建账户

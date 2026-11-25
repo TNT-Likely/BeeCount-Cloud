@@ -239,6 +239,8 @@ export type ReadAccount = {
    *  退场收进「已隐藏」分区;但仍计入净资产/资产/收支(D1,服务端不做统计过滤)。
    *  缺省 false(旧接口未提供该字段时视为未隐藏)。 */
   hidden?: boolean
+  /** 不计入总资产(BeeCount #651):净资产/资产/负债/资产构成跳过该账户。缺省 false。 */
+  exclude_from_total?: boolean
 }
 
 export type ReadCategory = {
@@ -627,6 +629,8 @@ export type AccountPayload = {
   /** 账户隐藏(issue #240)。create 缺省 false;update 不传 = 不改(服务端
    *  merge 缺键保留,见 snapshot_mutator._apply_account_optional_fields)。 */
   hidden?: boolean | null
+  /** 不计入总资产(BeeCount #651)。update 不传 = 不改。 */
+  exclude_from_total?: boolean | null
 }
 
 export type CategoryPayload = {

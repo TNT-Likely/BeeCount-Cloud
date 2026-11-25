@@ -1,7 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ReadAccount, ReadLedger } from '@beecount/api-client'
 import { useT } from '@beecount/ui'
-import { accountBalance } from '@beecount/web-features'
+import { accountBalance, isCountedInTotal } from '@beecount/web-features'
 
 interface Props {
   ledgers: ReadLedger[]
@@ -37,7 +37,9 @@ export function OverviewHero({
   const t = useT()
   const scopeLabel = periodLabel ?? t('home.scope.year')
   const currency = currencyLabel(ledgers)
-  const totalBalance = (accounts || []).reduce((sum, a) => sum + accountBalance(a), 0)
+  const totalBalance = (accounts || [])
+    .filter(isCountedInTotal)
+    .reduce((sum, a) => sum + accountBalance(a), 0)
   // 优先吃后端给的 summary（无论 series 空不空都是权威值）；fallback 到 series 聚合。
   const periodIncome =
     periodSummary?.income_total ??

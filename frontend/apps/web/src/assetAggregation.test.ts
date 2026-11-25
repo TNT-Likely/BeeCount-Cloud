@@ -334,3 +334,16 @@ describe('credit-card state and positive asset composition', () => {
     expect(result.negativeAssets).toBe(-200)
   })
 })
+
+describe('exclude_from_total — 账户不计入总资产(BeeCount #651)', () => {
+  it('净资产/资产/负债与 donut 折算都跳过不计入账户', () => {
+    const rows = [
+      acc({ account_type: 'cash', currency: 'CNY', balance: 1000 }),
+      acc({ account_type: 'bank_card', currency: 'CNY', balance: 5000, exclude_from_total: true }),
+      acc({ account_type: 'loan', currency: 'CNY', balance: -3000, exclude_from_total: true })
+    ]
+    expect(computeCurrencySummary(rows)).toEqual({ assetTotal: 1000, liabilityTotal: 0, netWorth: 1000 })
+    const { totals } = convertTypeTotalsToBase(rows, 'CNY', null, [])
+    expect([...totals.keys()]).toEqual(['cash'])
+  })
+})
