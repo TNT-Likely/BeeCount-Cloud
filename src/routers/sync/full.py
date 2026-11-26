@@ -21,7 +21,10 @@ def full_snapshot(
     """
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
-    latest_cursor = _max_cursor_for_ledgers(db, ledger_ids)
+    # The next incremental pull also includes the caller's user-scoped changes.
+    # A shared owner's private dictionary stream does not belong to this cursor.
+    user_cursor = snapshot_builder.latest_user_change_id(db, current_user.id)
+    latest_cursor = max(_max_cursor_for_ledgers(db, ledger_ids), user_cursor)
 
     row = get_accessible_ledger_by_external_id(
         db,
@@ -53,10 +56,10 @@ def full_snapshot(
 
     # 分类等 user-global 更新不会推进 ledger change_id。缓存必须同时跟踪
     # owner 的全局版本;change_id 在全表单调递增,取 max 可覆盖任一侧的变更。
-    # 返回给 mobile 的 ledger cursor 仍使用原账本版本,不改变同步协议。
-    cache_change_id = max(
-        ledger_change_id, snapshot_builder.latest_user_change_id(db, ledger.user_id)
-    )
+    owner_cursor = user_cursor
+    if ledger.user_id != current_user.id:
+        owner_cursor = snapshot_builder.latest_user_change_id(db, ledger.user_id)
+    cache_change_id = max(ledger_change_id, owner_cursor)
     cached = snapshot_cache.get(ledger.id, cache_change_id)
     if cached is None:
         cached = snapshot_builder.build(db, ledger)

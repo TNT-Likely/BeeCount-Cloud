@@ -326,19 +326,32 @@ async def _push_for_device(
                 latest_entity_change.updated_by_device_id or "",
             )
 
-        restored_deleted_transaction = (
-            change.entity_type == "transaction"
-            and change.action != "delete"
-            and change.payload.get("restoredSnapshot") is True
-            and latest_entity_change is not None
-            and latest_entity_change.action == "delete"
-        )
-        if restored_deleted_transaction or (existing_tuple is not None and existing_tuple > incoming_tuple):
+        conflict_reason = None
+        if change.restore_after_change_id is not None and (
+            latest_entity_change is None or latest_entity_change.action != "delete"
+            or latest_entity_change.change_id != change.restore_after_change_id or change.action != "upsert"
+        ):
+            receipt.reason = "restore_version_mismatch"
+            if latest_entity_change is not None:
+                receipt.change_id = latest_entity_change.change_id
+                if req.return_results:
+                    receipt.winner = _winner(db, latest_entity_change, ledger)
+            rejected += 1
+            continue
+        if (latest_entity_change is not None and latest_entity_change.action == "delete"
+                and change.action == "upsert" and change.entity_type in {"transaction", "category", "tag", "account", "budget"}):
+            if change.entity_type == "transaction" and change.payload.get("restoredSnapshot") is True:
+                conflict_reason = "restore_deleted_transaction"
+            elif change.restore_after_change_id is None:
+                conflict_reason = "entity_deleted"
+        if existing_tuple is not None and existing_tuple > incoming_tuple and conflict_reason is None:
+            conflict_reason = "lww_rejected_older_change"
+        if conflict_reason is not None:
             assert latest_entity_change is not None and existing_tuple is not None
             rejected += 1
             conflict_count += 1
             sample = {
-                "reason": "restore_deleted_transaction" if restored_deleted_transaction else "lww_rejected_older_change",
+                "reason": conflict_reason,
                 "ledgerId": change.ledger_id,
                 "entityType": change.entity_type,
                 "entitySyncId": change.entity_sync_id,

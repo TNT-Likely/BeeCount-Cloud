@@ -340,7 +340,12 @@ def test_operation_receipts_distinguish_same_second_writes_replay_and_batch_reje
         assert late_replay["status"] == "accepted" and late_replay["change_id"] == a["change_id"]
         assert late_replay["winner"]["change_id"] == deleted
         assert late_replay["winner"]["action"] == "delete"
-        restored = {**event("newer-edit", 27), "changed_fields": ["amount"]}
+        stale_after_delete = send(event("offline-edit", 27))["results"][0]
+        assert stale_after_delete["status"] == "conflict"
+        assert stale_after_delete["winner"]["change_id"] == deleted
+        wrong_version = {**event("stale-restore", 27), "restore_after_change_id": a["change_id"]}
+        assert send(wrong_version)["results"][0]["reason"] == "restore_version_mismatch"
+        restored = {**event("newer-edit", 27), "changed_fields": ["amount"], "restore_after_change_id": deleted}
         result = send(restored)["results"][0]["winner"]
         assert result["payload"]["type"] == "expense"
         assert result["payload"]["amount"] == 27 and result["payload"]["happenedAt"]

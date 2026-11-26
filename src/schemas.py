@@ -225,6 +225,8 @@ class DeviceOut(BaseModel):
 
 class SyncChangeIn(BaseModel):
     operation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    # An explicit restore must identify the tombstone the user actually saw.
+    restore_after_change_id: int | None = Field(default=None, gt=0)
     changed_fields: list[str] | None = None
     # user-global change(category/account/tag)在新协议下不依附 ledger,这里
     # 允许 None。老 mobile 会发当前 ledger_id —— server 按 entity_type 强制
