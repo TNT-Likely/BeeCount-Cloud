@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from src import snapshot_builder
 from src.database import Base, get_db
 from src.main import app
 from src.models import (
@@ -25,6 +27,24 @@ from src.models import (
     UserCategoryProjection,
     UserTagProjection,
 )
+from src.snapshot_mutator import create_transaction
+
+
+@pytest.mark.parametrize("projected_time", [
+    "2026-11-23T22:30:00.123456",        # SQLite UTC without tzinfo
+    "2026-11-24T06:30:00.123456+08:00",  # PostgreSQL Asia/Shanghai
+    "2026-11-23T17:30:00.123456-05:00",  # PostgreSQL America/New_York
+])
+def test_web_batch_preserves_existing_projection_timestamp(projected_time):
+    old = {"syncId": "existing", "type": "expense", "amount": 1.0,
+           "happenedAt": snapshot_builder._to_iso_utc(datetime.fromisoformat(projected_time))}
+    snapshot, _ = create_transaction({"items": [old]}, {
+        "tx_type": "expense", "amount": 2, "happened_at": "2026-11-24T00:00:00Z",
+    })
+
+    # The batch diff compares these dictionaries to decide which rows to emit.
+    assert snapshot["items"][0] == old
+    assert old["happenedAt"] == "2026-11-23T22:30:00.123456+00:00"
 
 
 def _make_client():
@@ -512,7 +532,6 @@ def test_projection_count_matches_snapshot_after_mixed_writes():
         lid = _get_ledger_internal_id(sf, "lg_mix")
         # 方案 B 后 snapshot 从 projection 懒构建,跟 projection 必然一致
         with sf() as db:
-            from src import snapshot_builder
             ledger = db.scalar(select(Ledger).where(Ledger.id == lid))
             snap = snapshot_builder.build(db, ledger)
             proj_count = db.scalar(select(
