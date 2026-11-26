@@ -608,6 +608,9 @@ class ReadTxProjection(Base):
     tags_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
     tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Files temporarily absent while a device is still uploading the rest of this transaction.
+    pending_attachment_gc_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachment_gc_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     tx_index: Mapped[int] = mapped_column(Integer, default=0)
     created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_edited_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

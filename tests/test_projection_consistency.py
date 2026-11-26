@@ -405,6 +405,78 @@ def test_mobile_tag_rename_cascades_when_transaction_only_has_tag_name():
 # web /write/* 驱动 projection 写入                                             #
 # --------------------------------------------------------------------------- #
 
+
+def test_mobile_partial_push_receipt_keeps_transaction_instant():
+    client, _, _ = _make_client()
+    try:
+        token = _register_and_login(client, "receipt-time@qa.example.com",
+                                    device_id="clock", client_type="app")
+        headers = {"Authorization": f"Bearer {token}"}
+        instant = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+        tx = {"ledger_id": "clock-ledger", "entity_type": "transaction",
+              "entity_sync_id": "breakfast", "action": "upsert", "updated_at": _iso(),
+              "payload": {"type": "expense", "amount": 28.5, "happenedAt": instant.isoformat()}}
+        _push(client, headers, "clock", "clock-ledger", [tx])
+        patch = {**tx, "updated_at": _iso(), "changed_fields": ["note"],
+                 "operation_id": "receipt-note", "payload": {"note": "revised"}}
+        response = client.post("/api/v1/sync/push", headers=headers, json={
+            "device_id": "clock", "changes": [patch], "return_results": True})
+        assert response.status_code == 200, response.text
+        receipt = response.json()["results"][0]
+        assert receipt["status"] == "accepted"
+        assert datetime.fromisoformat(receipt["winner"]["payload"]["happenedAt"]) == instant
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_tag_delete_removes_only_its_references_across_owner_ledgers():
+    client, _, _ = _make_client()
+    try:
+        token = _register_and_login(client, "delete-tag@qa.example.com",
+                                    device_id="tags", client_type="app")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        def event(ledger, kind, key, payload, action="upsert"):
+            return {"ledger_id": ledger, "entity_type": kind, "entity_sync_id": key,
+                    "action": action, "updated_at": _iso(), "payload": payload}
+
+        def tx(ledger, key, names, ids):
+            payload = {"type": "expense", "amount": 28.5, "happenedAt": _iso(), "tags": names}
+            if ids is not None:
+                payload["tagIds"] = ids
+            return event(ledger, "transaction", key, payload)
+
+        _push(client, headers, "tags", "first", [
+            event(None, "tag", "retire", {"name": "Travel"}),
+            event(None, "tag", "keep", {"name": "TravelPlus"}),
+            tx("first", "multiple", "Travel,TravelPlus", ["retire", "keep"]),
+            tx("second", "last", "Travel", ["retire"]),
+            tx("second", "legacy", "Travel,TravelPlus", None),
+            tx("second", "unrelated", "TravelPlus", ["keep"]),
+        ])
+        other = {"Authorization": "Bearer " + _register_and_login(
+            client, "other-tag-owner@qa.example.com", device_id="other", client_type="app")}
+        _push(client, other, "other", "private", [
+            event(None, "tag", "retire", {"name": "Travel"}),
+            tx("private", "other-transaction", "Travel", ["retire"]),
+        ])
+        _push(client, headers, "tags", "first", [event(None, "tag", "retire", {}, "delete")])
+        seen = {}
+        for book in ("first", "second"):
+            full = client.get("/api/v1/sync/full", headers=headers, params={"ledger_id": book}).json()
+            content = json.loads(full["snapshot"]["payload"]["content"])
+            assert {row["syncId"] for row in content["tags"]} == {"keep"}
+            for row in content["items"]:
+                seen[row["syncId"]] = (row.get("tags"), row.get("tagIds", []))
+        assert seen == {"multiple": ("TravelPlus", ["keep"]), "last": (None, []),
+                        "legacy": ("TravelPlus", []), "unrelated": ("TravelPlus", ["keep"])}
+        full = client.get("/api/v1/sync/full", headers=other, params={"ledger_id": "private"}).json()
+        foreign = json.loads(full["snapshot"]["payload"]["content"])
+        assert foreign["items"][0]["tagIds"] == ["retire"] and foreign["tags"][0]["name"] == "Travel"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_web_create_tx_creates_projection_row():
     client, engine, sf = _make_client()
     try:

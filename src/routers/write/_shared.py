@@ -340,7 +340,7 @@ def _diff_entity_list(
                 if fn is not None:
                     fn(db, ledger_id=ledger.id, sync_id=sync_id)
             if gc_file_ids:
-                projection.gc_orphan_attachments(
+                projection.schedule_attachment_gc(
                     db, user_id=current_user.id, file_ids=gc_file_ids,
                 )
 
@@ -737,7 +737,7 @@ async def _commit_write_fast_tx(
             db.add(change_row)
             db.flush()
             projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
-            projection.gc_orphan_attachments(
+            projection.schedule_attachment_gc(
                 db, user_id=ledger.user_id, file_ids=tx_file_ids,
             )
         else:

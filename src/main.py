@@ -378,6 +378,42 @@ _MCP_LOG_RETENTION_DAYS = 30
 
 
 @app.on_event("startup")
+async def _start_pending_attachment_gc() -> None:
+    import asyncio
+
+    from .projection import expire_pending_attachment_gc
+
+    def prune() -> int:
+        with SessionLocal() as db:
+            processed = expire_pending_attachment_gc(db)
+            db.commit()
+            return processed
+
+    async def loop() -> None:
+        while True:
+            processed = 0
+            try:
+                processed = await asyncio.to_thread(prune)
+            except Exception:
+                logging.getLogger(__name__).exception("Pending attachment cleanup failed")
+            await asyncio.sleep(1 if processed == 128 else 300)
+
+    app.state.pending_attachment_gc_task = asyncio.create_task(loop())
+
+
+@app.on_event("shutdown")
+async def _stop_pending_attachment_gc() -> None:
+    import asyncio
+    from contextlib import suppress
+
+    task = getattr(app.state, "pending_attachment_gc_task", None)
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@app.on_event("startup")
 async def _start_mcp_log_retention() -> None:  # noqa: B008
     import asyncio
 
