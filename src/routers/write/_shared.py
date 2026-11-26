@@ -67,6 +67,7 @@ from ...schemas import (
     WriteTransactionUpdateRequest,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
+from ...transaction_normalization import full_transaction_change
 from ... import projection, snapshot_builder, snapshot_cache
 from ...sync_applier import USER_GLOBAL_ENTITY_TYPES
 from ...snapshot_mutator import (
@@ -276,14 +277,17 @@ def _diff_entity_list(
                     "entity_type": entity_type,
                     "entity_sync_id": sync_id,
                     "action": "upsert",
-                    "payload_json": entity,
+                    "payload_json": full_transaction_change(entity),
                     "updated_at": now,
                     "updated_by_device_id": device_id,
                     "updated_by_user_id": current_user.id,
                 })
                 continue
             # 普通路径:insert + flush 取 change_id,再走 projection upsert
-            change_row = _make_change_row("upsert", sync_id, entity)
+            change_row = _make_change_row(
+                "upsert", sync_id,
+                full_transaction_change(entity) if entity_type == "transaction" else entity,
+            )
             db.add(change_row)
             db.flush()
             emitted_ids.append(change_row.change_id)
@@ -569,7 +573,7 @@ async def _commit_create_tx_fast(
             entity_type="transaction",
             entity_sync_id=tx_id,
             action="upsert",
-            payload_json=new_item,
+            payload_json=full_transaction_change(new_item),
             updated_at=now,
             updated_by_device_id=device_id,
             updated_by_user_id=current_user.id,
@@ -748,7 +752,7 @@ async def _commit_write_fast_tx(
                 entity_type="transaction",
                 entity_sync_id=tx_id,
                 action="upsert",
-                payload_json=new_item,
+                payload_json=full_transaction_change(new_item),
                 updated_at=now,
                 updated_by_device_id=device_id,
                 updated_by_user_id=current_user.id,

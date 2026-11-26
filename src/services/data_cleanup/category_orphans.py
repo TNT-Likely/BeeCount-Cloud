@@ -7,6 +7,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session, aliased
 
+from ...concurrency import lock_sync_writer
 from ...models import ReadBudgetProjection, ReadTxProjection, SyncChange, UserCategoryProjection
 from ...sync_applier import _compact_entity_upsert_events
 from .models import OrphanRecord, OrphanType
@@ -150,6 +151,7 @@ def delete_orphan_category(db: Session, record: OrphanRecord, *, actor_user_id: 
     if not record.user_id or not record.sync_id or not isinstance(source_change_id, int):
         raise ValueError("分类清理缺少扫描版本，请重新扫描")
 
+    lock_sync_writer(db)
     key = (record.user_id, record.sync_id)
     candidate = _orphan_categories(user_id=key[0], sync_id=key[1]).subquery()
     category = UserCategoryProjection

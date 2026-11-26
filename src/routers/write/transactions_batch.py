@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from ... import snapshot_builder
-from ...concurrency import lock_ledger_for_materialize
+from ...concurrency import lock_ledger_for_materialize, lock_sync_writer
 from ...config import get_settings
 from ...database import get_db
 from ...deps import get_current_user
@@ -155,6 +155,7 @@ async def create_tx_batch(
                 req.attach_image_id,
             )
         else:
+            await run_in_threadpool(lock_sync_writer, db)
             af = _create_attachment_from_bytes(
                 db=db,
                 ledger=ledger,

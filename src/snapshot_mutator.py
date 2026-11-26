@@ -421,7 +421,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
                 item.pop(snapshot_key, None)
             else:
                 item[snapshot_key] = str(value)
-    if "tags" in payload:
+    if "tags" in payload or "tag_ids" in payload:
         raw_tags = payload.get("tags")
         normalized = _normalize_tx_tags(raw_tags)
         logger.info(
@@ -434,7 +434,7 @@ def update_transaction(snapshot: dict, tx_id: str, payload: dict) -> dict:
             item["tags"] = normalized
     else:
         logger.info("update_transaction.tags tx_id=%s 'tags' key NOT in payload", tx_id)
-    if "tag_ids" in payload:
+    if "tag_ids" in payload or "tags" in payload:
         raw = payload.get("tag_ids")
         if isinstance(raw, list):
             tag_ids: list[str] = []

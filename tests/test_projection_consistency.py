@@ -132,6 +132,60 @@ def test_mobile_push_tx_creates_projection_row():
         app.dependency_overrides.clear()
 
 
+def test_optional_transaction_fields_preserve_omissions_and_propagate_explicit_clears():
+    client, _, sf = _make_client()
+    try:
+        email = "optional-tx-fields@qa.example.com"
+        app_token = _register_and_login(client, email, device_id="phone", client_type="app")
+        app_headers = {"Authorization": f"Bearer {app_token}"}
+        web_login = client.post("/api/v1/auth/login", json={
+            "email": email, "password": "Pa$$word1!", "device_id": "browser",
+            "client_type": "web", "device_name": "web", "platform": "test",
+        })
+        web_headers = {"Authorization": f"Bearer {web_login.json()['access_token']}"}
+        start = datetime.now(timezone.utc)
+
+        def edit(step, **fields):
+            _push(client, app_headers, "phone", "fields", [{
+                "ledger_id": "fields", "entity_type": "transaction", "entity_sync_id": "bill",
+                "action": "upsert", "updated_at": _iso(start + timedelta(seconds=step)),
+                "payload": {"syncId": "bill", **fields},
+            }])
+
+        def values():
+            with sf() as db:
+                row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == "bill"))
+                return row.note, row.tags_csv, json.loads(row.tag_sync_ids_json or "[]")
+
+        edit(0, type="expense", amount=2, happenedAt=_iso(), note="original",
+             tags="Original", tagIds=["tag-1"])
+        edit(1, amount=3)
+        assert values() == ("original", "Original", ["tag-1"])
+        edit(2, tags="Only name")
+        assert values() == ("original", "Only name", [])
+        edit(3, tagIds=["tag-2"])
+        assert values() == ("original", None, ["tag-2"])
+        edit(4, note=None, tags=None)
+        assert values() == (None, None, [])
+        edit(5, note="replaced", tags="Replacement", tagIds=["tag-3"])
+        edit(6, tagIds=[])
+        assert values() == ("replaced", None, [])
+        edit(7, tags="Restored", tagIds=["tag-4"])
+
+        # Web PATCH produces a complete item. Its event must tell mobile that
+        # both nullable fields were cleared, even if the snapshot omits them.
+        response = client.patch("/api/v1/write/ledgers/fields/transactions/bill",
+                                headers=web_headers,
+                                json={"note": None, "tags": [], "base_change_id": 0})
+        assert response.status_code == 200, response.text
+        assert values() == (None, None, [])
+        events = client.get("/api/v1/sync/pull?since=0", headers=app_headers).json()["changes"]
+        payload = [event["payload"] for event in events if event["entity_sync_id"] == "bill"][-1]
+        assert payload["note"] is None and payload["tags"] == "" and payload["tagIds"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_mobile_push_transaction_type_change_clears_stale_transfer_accounts():
     """切换交易类型时，partial sync 不能恢复旧的转出/转入账户关联。"""
     client, engine, sf = _make_client()

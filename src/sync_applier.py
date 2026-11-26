@@ -494,6 +494,13 @@ def merge_with_existing(
         return payload
     merged = _merge_from_spec(spec, existing, payload)
     if entity_type == "transaction":
+        # The note is nullable. Tags and their optional legacy names describe
+        # one relationship: a names-only client must not retain obsolete IDs.
+        if "note" in payload:
+            merged["note"] = payload["note"]
+        if "tags" in payload or "tagIds" in payload:
+            merged["tags"] = payload.get("tags")
+            merged["tagIds"] = payload.get("tagIds")
         merged = _sync_native_amount_after_merge(existing, payload, merged)
         from .transaction_normalization import normalize_transaction_accounts
         merged = normalize_transaction_accounts(merged)

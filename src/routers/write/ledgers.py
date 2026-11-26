@@ -10,6 +10,9 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from starlette.concurrency import run_in_threadpool
+
+from ...concurrency import lock_sync_writer
 from ._shared import *  # noqa: F401,F403 — 集中从 _shared 取所有 symbol
 from ...models import AttachmentFile, SyncPushIdempotency
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +33,7 @@ async def create_ledger(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WriteCommitMeta:
+    await run_in_threadpool(lock_sync_writer, db)
     request_hash = _hash_request(request.method, request.url.path, req.model_dump(mode="json"))
     if idempotency_key:
         replay = _load_idempotent_response(db, user_id=current_user.id, device_id=device_id,

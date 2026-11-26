@@ -6,8 +6,12 @@
 """
 from __future__ import annotations
 
-from ...concurrency import lock_sqlite_writer
+from starlette.concurrency import run_in_threadpool
+
+from ...concurrency import lock_sync_writer
 from ...models import TransactionMoveRetirement
+from ...sync_applier import merge_with_existing, merge_with_existing_user
+from ...schemas import SyncChangeOut, SyncPushItemResult
 from ...recurring_handoff import check_mobile_push
 from ...services.sync_health import observe_server_errors, record_failure, record_recovery
 from ._shared import (
@@ -49,6 +53,24 @@ from ._shared import (
 )
 
 
+def _winner(db: Session, row: SyncChange, ledger: Ledger | None) -> SyncChangeOut:
+    """Include the materialized row even when its last event was a partial edit."""
+    payload = dict(row.payload_json or {})
+    if row.action != "delete":
+        if row.scope == "user":
+            payload.update(merge_with_existing_user(db, row.entity_type, row.user_id, row.entity_sync_id, {}))
+        elif ledger is not None and row.entity_type == "ledger":
+            payload.update(ledgerName=ledger.name, currency=ledger.currency, monthStartDay=ledger.month_start_day)
+        elif ledger is not None:
+            payload.update(merge_with_existing(db, row.entity_type, ledger.id, row.entity_sync_id, {}))
+    return SyncChangeOut(
+        change_id=row.change_id, ledger_id=ledger.external_id if ledger else "__user_global__",
+        entity_type=row.entity_type, entity_sync_id=row.entity_sync_id, action=row.action,
+        payload=payload, updated_at=_to_utc(row.updated_at),
+        updated_by_device_id=row.updated_by_device_id, scope=row.scope,
+    )
+
+
 @router.post("/push", response_model=SyncPushResponse)
 async def push_changes(
     req: SyncPushRequest,
@@ -83,6 +105,7 @@ async def _push_for_device(
     rejected = 0
     conflict_count = 0
     conflict_samples: list[dict[str, Any]] = []
+    results: list[SyncPushItemResult] = []
     max_cursor = 0
     touched_ledgers: dict[str, str] = {}
     # 共享账本 Phase 1:user-global category/account/tag 变更要 fan-out 给
@@ -100,8 +123,9 @@ async def _push_for_device(
     locked_ids: set[str] = set()
     preloaded_ids: set[str] = set()
     retired_transactions: set[tuple[str, str]] = set()
+    if req.changes:
+        await run_in_threadpool(lock_sync_writer, db)
     if requested_ledgers:
-        lock_sqlite_writer(db)
         ledger_ids = sorted(
             ledger.id for ledger in list_accessible_ledgers(db, user_id=current_user.id)
             if ledger.external_id in requested_ledgers
@@ -128,6 +152,9 @@ async def _push_for_device(
 
     for change in req.changes:
         is_user_global = change.entity_type in USER_GLOBAL_ENTITY_TYPES
+        receipt = SyncPushItemResult(status="rejected")
+        if req.return_results:
+            results.append(receipt)
 
         # ============================================================
         # 路径分流:user-global vs ledger-scoped
@@ -155,6 +182,7 @@ async def _push_for_device(
                     change.entity_type,
                     change.entity_sync_id,
                 )
+                receipt.reason = "missing_ledger"
                 rejected += 1
                 continue
             row = get_accessible_ledger_by_external_id(
@@ -189,34 +217,13 @@ async def _push_for_device(
                         "user=%s ledger=%s role=%s entity=%s",
                         current_user.id, change.ledger_id, caller_role, change.entity_type,
                     )
+                    receipt.reason = "ledger_owner_required"
                     rejected += 1
                     continue
 
         if ledger is not None and ledger.id not in locked_ids:
             lock_ledger_for_materialize(db, ledger.id)
             locked_ids.add(ledger.id)
-
-        if (
-            ledger is not None
-            and change.entity_type == "transaction"
-            and (
-                (ledger.id, change.entity_sync_id) in retired_transactions
-                or (
-                    ledger.id not in preloaded_ids
-                    and db.get(TransactionMoveRetirement, (ledger.id, change.entity_sync_id)) is not None
-                )
-            )
-        ):
-            rejected += 1
-            conflict_count += 1
-            if len(conflict_samples) < 20:
-                conflict_samples.append({
-                    "reason": "transaction_moved",
-                    "ledgerId": change.ledger_id,
-                    "entityType": "transaction",
-                    "entitySyncId": change.entity_sync_id,
-                })
-            continue
 
         # Clamp incoming updated_at to the server clock to neutralize client
         # clock skew. Without this, a mobile device whose local clock is ahead
@@ -256,6 +263,52 @@ async def _push_for_device(
                 .limit(1)
             )
 
+        if change.operation_id:
+            previous = db.scalar(select(SyncChange).where(
+                SyncChange.updated_by_device_id == req.device_id,
+                SyncChange.operation_id == change.operation_id,
+            ))
+            if previous is not None:
+                if (previous.entity_type != change.entity_type or previous.entity_sync_id != change.entity_sync_id
+                        or previous.ledger_id != (ledger.id if ledger else None) or previous.action != change.action):
+                    rejected += 1
+                    receipt.reason = "operation_identity_mismatch"
+                    continue
+                accepted += 1
+                receipt.status = "accepted"
+                receipt.change_id = previous.change_id
+                if (req.return_results and latest_entity_change is not None
+                        and (previous.change_id != latest_entity_change.change_id or change.changed_fields is not None)):
+                    receipt.winner = _winner(db, latest_entity_change, ledger)
+                continue
+
+        if (
+            ledger is not None
+            and change.entity_type == "transaction"
+            and (
+                (ledger.id, change.entity_sync_id) in retired_transactions
+                or (
+                    ledger.id not in preloaded_ids
+                    and db.get(TransactionMoveRetirement, (ledger.id, change.entity_sync_id)) is not None
+                )
+            )
+        ):
+            receipt.status = "conflict"
+            receipt.reason = "transaction_moved"
+            if req.return_results and latest_entity_change is not None and latest_entity_change.action == "delete":
+                receipt.winner = _winner(db, latest_entity_change, ledger)
+                receipt.change_id = latest_entity_change.change_id
+            rejected += 1
+            conflict_count += 1
+            if len(conflict_samples) < 20:
+                conflict_samples.append({
+                    "reason": "transaction_moved",
+                    "ledgerId": change.ledger_id,
+                    "entityType": "transaction",
+                    "entitySyncId": change.entity_sync_id,
+                })
+            continue
+
         # Deterministic LWW with device_id tie-break:
         # compare (updated_at, device_id) tuples lexicographically so two servers
         # or retried calls produce the same winner regardless of arrival order.
@@ -286,6 +339,11 @@ async def _push_for_device(
                 "entitySyncId": change.entity_sync_id,
                 "existingChangeId": latest_entity_change.change_id,
             }
+            receipt.status = "conflict"
+            receipt.reason = sample["reason"]
+            receipt.change_id = latest_entity_change.change_id
+            if req.return_results:
+                receipt.winner = _winner(db, latest_entity_change, ledger)
             if len(conflict_samples) < 20:
                 conflict_samples.append(sample)
             logger.warning(
@@ -316,8 +374,10 @@ async def _push_for_device(
             )
             continue
 
-        if existing_tuple is not None and existing_tuple == incoming_tuple:
-            # Idempotent replay (same device, same timestamp) — don't duplicate.
+        if not change.operation_id and existing_tuple is not None and existing_tuple == incoming_tuple:
+            # Legacy clients identify retries by device and modification time.
+            receipt.status = "accepted"
+            receipt.change_id = latest_entity_change.change_id
             accepted += 1
             logger.debug(
                 "sync.push.replay entity=%s action=%s ledger=%s sync_id=%s device=%s",
@@ -332,8 +392,20 @@ async def _push_for_device(
         # ============================================================
         # SyncChange row + apply 路径
         # ============================================================
+        if (change.changed_fields is not None and latest_entity_change is not None
+                and change.action != "delete" and change.entity_type in ("transaction", "ledger")
+                and ledger is not None):
+            # New clients also send the full row for older servers. Persist a complete
+            # event so existing incremental readers receive the same state as a full read.
+            patch = {key: change.payload[key] for key in change.changed_fields if key in change.payload}
+            if change.entity_type == "transaction":
+                change.payload = merge_with_existing(db, "transaction", ledger.id, change.entity_sync_id, patch)
+            else:
+                change.payload = {**_winner(db, latest_entity_change, ledger).payload, **patch}
+
         if is_user_global:
             row_change = SyncChange(
+                operation_id=change.operation_id,
                 user_id=current_user.id,       # 真请求方
                 ledger_id=None,
                 scope="user",
@@ -401,6 +473,7 @@ async def _push_for_device(
                         existing_creator or current_user.id
                     )
             row_change = SyncChange(
+                operation_id=change.operation_id,
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
                 scope="ledger",
@@ -440,6 +513,10 @@ async def _push_for_device(
             touched_ledgers[ledger.external_id] = ledger.id
 
         accepted += 1
+        receipt.status = "accepted"
+        receipt.change_id = row_change.change_id
+        if req.return_results and change.changed_fields is not None:
+            receipt.winner = _winner(db, row_change, ledger)
         max_cursor = max(max_cursor, row_change.change_id)
         logger.info(
             "sync.push.accept entity=%s action=%s ledger=%s sync_id=%s change_id=%d device=%s user=%s scope=%s",
@@ -538,6 +615,7 @@ async def _push_for_device(
         rejected=rejected,
         conflict_count=conflict_count,
         conflict_samples=conflict_samples,
+        results=results if req.return_results else None,
         server_cursor=max_cursor,
         server_timestamp=now,
     )

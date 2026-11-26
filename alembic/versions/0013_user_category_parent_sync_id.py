@@ -22,6 +22,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # This already published revision is 33 characters; PostgreSQL enforces
+    # Alembic's original VARCHAR(32) length when stamping it after upgrade.
+    if op.get_bind().dialect.name == "postgresql":
+        op.alter_column("alembic_version", "version_num", type_=sa.String(64))
     op.add_column(
         "user_category_projection",
         sa.Column("parent_sync_id", sa.String(255), nullable=True),

@@ -13,10 +13,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .concurrency import lock_pg_sync_stream
 from .database import Base
 
 
@@ -382,6 +384,7 @@ class SyncChange(Base):
     scope: Mapped[str] = mapped_column(
         String(8), default="ledger", server_default="ledger", index=True
     )
+    operation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entity_type: Mapped[str] = mapped_column(String(64), index=True)
     entity_sync_id: Mapped[str] = mapped_column(String(255), index=True)
     action: Mapped[str] = mapped_column(String(16), index=True)
@@ -393,6 +396,16 @@ class SyncChange(Base):
     ledger: Mapped[Ledger | None] = relationship(back_populates="changes")
 
 
+@event.listens_for(SyncChange, "before_insert")
+def _lock_before_allocating_sync_cursor(mapper, connection, target) -> None:
+    # Applies to background jobs as well as App/Web writes. No later cursor
+    # becomes visible while this transaction still owns an uncommitted number.
+    lock_pg_sync_stream(connection)
+
+
+Index("uq_sync_change_device_operation", SyncChange.updated_by_device_id,
+      SyncChange.operation_id, unique=True, sqlite_where=SyncChange.operation_id.is_not(None),
+      postgresql_where=SyncChange.operation_id.is_not(None))
 Index("idx_sync_changes_user_cursor", SyncChange.user_id, SyncChange.change_id)
 Index("idx_sync_changes_ledger_cursor", SyncChange.ledger_id, SyncChange.change_id)
 Index(
@@ -892,3 +905,13 @@ class BackupRunTarget(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bytes_transferred: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WebSocketFrame(Base):
+    __tablename__ = "ws_relay_frames"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36))
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

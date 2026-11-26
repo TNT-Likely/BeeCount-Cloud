@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import text
 
 from .config import get_settings
-from .database import SessionLocal
+from .database import SessionLocal, engine
 from .error_handling import register_exception_handlers
 from .logging_ring import install_ring_buffer
 from .metrics import metrics
@@ -86,6 +86,16 @@ def public_web_config() -> dict:
     return {"project_partnerships_enabled": get_settings().project_partnerships_enabled}
 
 app.state.ws_manager = WSConnectionManager()
+
+@app.on_event("startup")
+async def start_ws_relay() -> None:
+    app.state.ws_manager.start(engine.url)
+
+
+@app.on_event("shutdown")
+async def stop_ws_relay() -> None:
+    await app.state.ws_manager.stop()
+
 
 
 @app.on_event("startup")

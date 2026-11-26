@@ -224,6 +224,8 @@ class DeviceOut(BaseModel):
 
 
 class SyncChangeIn(BaseModel):
+    operation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    changed_fields: list[str] | None = None
     # user-global change(category/account/tag)在新协议下不依附 ledger,这里
     # 允许 None。老 mobile 会发当前 ledger_id —— server 按 entity_type 强制
     # 路由(参考 .docs/user-global-refactor/plan.md §3.2),不依赖 client 一定
@@ -241,17 +243,9 @@ class SyncChangeIn(BaseModel):
 
 
 class SyncPushRequest(BaseModel):
+    return_results: bool = False
     device_id: str
     changes: list[SyncChangeIn]
-
-
-class SyncPushResponse(BaseModel):
-    accepted: int
-    rejected: int
-    conflict_count: int = 0
-    conflict_samples: list[dict[str, Any]] = Field(default_factory=list)
-    server_cursor: int
-    server_timestamp: datetime
 
 
 class SyncChangeOut(BaseModel):
@@ -268,6 +262,23 @@ class SyncChangeOut(BaseModel):
     updated_by_device_id: str | None
     # 'user' / 'ledger'。SyncChange.scope 直接 round-trip。
     scope: str = "ledger"
+
+
+class SyncPushItemResult(BaseModel):
+    status: Literal["accepted", "conflict", "rejected"]
+    change_id: int | None = None
+    reason: str | None = None
+    winner: SyncChangeOut | None = None
+
+
+class SyncPushResponse(BaseModel):
+    results: list[SyncPushItemResult] | None = None
+    accepted: int
+    rejected: int
+    conflict_count: int = 0
+    conflict_samples: list[dict[str, Any]] = Field(default_factory=list)
+    server_cursor: int
+    server_timestamp: datetime
 
 
 class SyncPullResponse(BaseModel):
