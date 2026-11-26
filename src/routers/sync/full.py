@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from ... import snapshot_builder
 from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / router / constants
 
 @router.get("/full", response_model=SyncFullResponse)

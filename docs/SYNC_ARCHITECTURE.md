@@ -327,6 +327,8 @@ web 的 `SyncSocketProvider` 里的 poller)每 30s 主动拉一次补漏。
 
 ### "/sync/push 批量 500"
 
+交易、分类、账户、标签和预算收到删除回执后，后续普通 upsert 遇到同一同步 ID 的删除记录会返回 `entity_deleted` 冲突及当前胜出版本。离线操作到达顺序和设备时钟均不改变删除结果。用户重新新建对象时分配新的同步 ID。需要恢复原身份的客户端应在 upsert 中传 `restore_after_change_id`，值为用户确认恢复的删除事件 ID。版本不符返回 `restore_version_mismatch`。重复发送已确认的 `operation_id` 继续复用原回执。
+
 近期加了 try/except 包 apply_change_to_projection,炸哪条会打
 `sync.push.apply_failed entity=... sync_id=... payload=...` 加完整 traceback。
 直接看终端或管理员日志面板搜 request_id 即可定位。

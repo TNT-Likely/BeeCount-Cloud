@@ -51,11 +51,20 @@ def pull_changes(
     since: int = Query(default=0, ge=0),
     device_id: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    restore_device_id: str | None = Query(default=None, description=(
+        "Device rebuilding its local database. Send instead of device_id on "
+        "every restore page, including when resuming from a saved cursor."
+    )),
     _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SyncPullResponse:
     metrics.inc("beecount_sync_pull_requests_total")
+    if restore_device_id is not None and device_id is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Supply only one device identifier")
+    restoring = since == 0 or restore_device_id is not None
+    device_id = restore_device_id if restore_device_id is not None else device_id
     if device_id:
         device = db.scalar(
             select(Device).where(
@@ -70,11 +79,11 @@ def pull_changes(
         device.last_seen_at = datetime.now(timezone.utc)
 
     with observe_server_errors(db, device_id, "pull"):
-        return _pull_for_device(since, limit, device_id, current_user, db)
+        return _pull_for_device(since, limit, device_id, current_user, db, restoring=restoring)
 
 
 def _pull_for_device(
-    since: int, limit: int, device_id: str | None, current_user: User, db: Session,
+    since: int, limit: int, device_id: str | None, current_user: User, db: Session, *, restoring: bool,
 ) -> SyncPullResponse:
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
@@ -108,8 +117,10 @@ def _pull_for_device(
         .order_by(SyncChange.change_id.asc())
         .limit(limit + 1)
     )
-    if device_id:
-        query = query.where(SyncChange.updated_by_device_id != device_id)
+    if device_id and not restoring:
+        # Server-originated restores may have no device. They still belong
+        # in the usual incremental stream for every authorized client.
+        query = query.where(SyncChange.updated_by_device_id.is_distinct_from(device_id))
 
     rows = db.execute(query).all()
     has_more = len(rows) > limit
