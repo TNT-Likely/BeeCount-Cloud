@@ -10,10 +10,10 @@ from starlette.concurrency import run_in_threadpool
 
 from ...concurrency import lock_sync_writer
 from ...models import SyncOperationReceipt, TransactionMoveRetirement
-from ...sync_applier import merge_with_existing, merge_with_existing_user
-from ...schemas import SyncChangeOut, SyncPushItemResult
 from ...recurring_handoff import check_mobile_push
+from ...schemas import SyncChangeOut, SyncPushItemResult
 from ...services.sync_health import observe_server_errors, record_failure, record_recovery
+from ...sync_applier import merge_with_existing, merge_with_existing_user
 from ._shared import (
     INDIVIDUAL_ENTITY_TYPES,
     SCOPE_APP_WRITE,

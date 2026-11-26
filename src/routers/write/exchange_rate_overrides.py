@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from starlette.concurrency import run_in_threadpool
 
 from ...concurrency import lock_sync_writer
