@@ -64,17 +64,25 @@ class WSConnectionManager:
             self._listener = None
         metrics.set_gauge("beecount_online_ws_users", float(len(self._connections)))
 
-    async def broadcast_to_user(self, user_id: str, payload: dict) -> None:
+    async def broadcast_to_user(
+        self, user_id: str, payload: dict, *, shared_owner_id: str | None = None
+    ) -> None:
         message = json.dumps(payload, ensure_ascii=False, default=str)
         if self._relay is not None and self._wake is not None:
             try:
-                await asyncio.to_thread(self._relay.publish, user_id, message)
+                await asyncio.to_thread(self._relay.publish, user_id, message, shared_owner_id)
                 self._wake.set()
                 return
             except Exception:
                 # The business transaction has already committed. A relay outage
                 # should not turn it into an apparent failed write for the caller.
                 logger.exception("ws.relay.publish_failed")
+        if shared_owner_id is not None:
+            # A delayed incremental body can be stale. Existing clients reconcile
+            # their shared-resource snapshot when the connection is re-established.
+            sockets = list(self._connections.get(user_id, {}))
+            await asyncio.gather(*(self._reconnect(user_id, ws) for ws in sockets))
+            return
         await self._send_local(user_id, message)
 
     async def _listen(self, cursor: int) -> None:

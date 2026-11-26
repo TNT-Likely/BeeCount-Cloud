@@ -384,7 +384,6 @@ class SyncChange(Base):
     scope: Mapped[str] = mapped_column(
         String(8), default="ledger", server_default="ledger", index=True
     )
-    operation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entity_type: Mapped[str] = mapped_column(String(64), index=True)
     entity_sync_id: Mapped[str] = mapped_column(String(255), index=True)
     action: Mapped[str] = mapped_column(String(16), index=True)
@@ -403,9 +402,6 @@ def _lock_before_allocating_sync_cursor(mapper, connection, target) -> None:
     lock_pg_sync_stream(connection)
 
 
-Index("uq_sync_change_device_operation", SyncChange.updated_by_device_id,
-      SyncChange.operation_id, unique=True, sqlite_where=SyncChange.operation_id.is_not(None),
-      postgresql_where=SyncChange.operation_id.is_not(None))
 Index("idx_sync_changes_user_cursor", SyncChange.user_id, SyncChange.change_id)
 Index("idx_sync_changes_ledger_cursor", SyncChange.ledger_id, SyncChange.change_id)
 Index(
@@ -422,6 +418,21 @@ Index(
     SyncChange.scope,
     SyncChange.change_id,
 )
+
+
+class SyncOperationReceipt(Base):
+    """Durable acknowledgement. Entity deletion may compact the original event body."""
+
+    __tablename__ = "sync_operation_receipts"
+
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Preserve the original identifiers even after a ledger or event has gone away.
+    change_id: Mapped[int] = mapped_column(BigInteger)
+    ledger_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_sync_id: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(16))
 
 
 class SyncCursor(Base):

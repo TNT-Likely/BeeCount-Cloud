@@ -432,8 +432,15 @@ async def _log_sync_changes_size() -> None:  # noqa: B008
 
     try:
         with SessionLocal() as db:
+            # PostgreSQL length() accepts text/bytea, not JSON. Count UTF-8
+            # storage bytes on both databases, including non-ASCII payloads.
+            bytes_per_payload = (
+                "octet_length(CAST(payload_json AS TEXT))"
+                if db.get_bind().dialect.name == "postgresql"
+                else "length(CAST(payload_json AS BLOB))"
+            )
             row = db.execute(text(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes "
+                f"SELECT COUNT(*) AS n, COALESCE(SUM({bytes_per_payload}), 0) AS bytes "
                 "FROM sync_changes"
             )).first()
             if row is None:

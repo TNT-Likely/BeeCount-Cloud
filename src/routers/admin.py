@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
+from starlette.concurrency import run_in_threadpool
 
+from ..concurrency import lock_ledger_for_materialize
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user, require_admin_user, require_any_scopes, require_scopes
@@ -995,6 +997,7 @@ async def restore_backup(
     if ledger.user_id != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Ledger not found")
 
+    await run_in_threadpool(lock_ledger_for_materialize, db, ledger.id)
     payload = json.loads(backup.snapshot_json)
     sync_row = SyncChange(
         user_id=current_user.id,

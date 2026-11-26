@@ -323,7 +323,7 @@ async def delete_ledger(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ledger not found")
     ledger, _ = row
 
-    lock_ledger_for_materialize(db, ledger.id)
+    await run_in_threadpool(lock_ledger_for_materialize, db, ledger.id)
     now = _utcnow()
     # 共享账本 Phase 1:删账本前,先把所有非 owner member 的 user_id 记下来,
     # commit 后给他们发 member_change.removed,client 端走 _purgeLocalLedger

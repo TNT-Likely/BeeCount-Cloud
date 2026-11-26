@@ -9,7 +9,7 @@ from __future__ import annotations
 from starlette.concurrency import run_in_threadpool
 
 from ...concurrency import lock_sync_writer
-from ...models import TransactionMoveRetirement
+from ...models import SyncOperationReceipt, TransactionMoveRetirement
 from ...sync_applier import merge_with_existing, merge_with_existing_user
 from ...schemas import SyncChangeOut, SyncPushItemResult
 from ...recurring_handoff import check_mobile_push
@@ -131,7 +131,7 @@ async def _push_for_device(
             if ledger.external_id in requested_ledgers
         )
         for ledger_id in ledger_ids:
-            lock_ledger_for_materialize(db, ledger_id)
+            await run_in_threadpool(lock_ledger_for_materialize, db, ledger_id)
             locked_ids.add(ledger_id)
         preloaded_ids.update(ledger_ids)
 
@@ -155,6 +155,10 @@ async def _push_for_device(
         receipt = SyncPushItemResult(status="rejected")
         if req.return_results:
             results.append(receipt)
+        previous = (
+            db.get(SyncOperationReceipt, (req.device_id, change.operation_id))
+            if change.operation_id else None
+        )
 
         # ============================================================
         # 路径分流:user-global vs ledger-scoped
@@ -191,6 +195,12 @@ async def _push_for_device(
                 ledger_external_id=change.ledger_id,
             )
             if row is None:
+                # A replay cannot recreate a ledger that was subsequently removed
+                # or made inaccessible to this device.
+                if previous is not None:
+                    receipt.reason = "ledger_unavailable"
+                    rejected += 1
+                    continue
                 # Caller doesn't own a ledger with this external_id — auto-create.
                 # The (user_id, external_id) unique constraint keeps per-user ids
                 # isolated, so two users can independently own "default".
@@ -222,7 +232,7 @@ async def _push_for_device(
                     continue
 
         if ledger is not None and ledger.id not in locked_ids:
-            lock_ledger_for_materialize(db, ledger.id)
+            await run_in_threadpool(lock_ledger_for_materialize, db, ledger.id)
             locked_ids.add(ledger.id)
 
         # Clamp incoming updated_at to the server clock to neutralize client
@@ -263,24 +273,19 @@ async def _push_for_device(
                 .limit(1)
             )
 
-        if change.operation_id:
-            previous = db.scalar(select(SyncChange).where(
-                SyncChange.updated_by_device_id == req.device_id,
-                SyncChange.operation_id == change.operation_id,
-            ))
-            if previous is not None:
-                if (previous.entity_type != change.entity_type or previous.entity_sync_id != change.entity_sync_id
-                        or previous.ledger_id != (ledger.id if ledger else None) or previous.action != change.action):
-                    rejected += 1
-                    receipt.reason = "operation_identity_mismatch"
-                    continue
-                accepted += 1
-                receipt.status = "accepted"
-                receipt.change_id = previous.change_id
-                if (req.return_results and latest_entity_change is not None
-                        and (previous.change_id != latest_entity_change.change_id or change.changed_fields is not None)):
-                    receipt.winner = _winner(db, latest_entity_change, ledger)
+        if previous is not None:
+            if (previous.entity_type != change.entity_type or previous.entity_sync_id != change.entity_sync_id
+                    or previous.ledger_id != (ledger.id if ledger else None) or previous.action != change.action):
+                rejected += 1
+                receipt.reason = "operation_identity_mismatch"
                 continue
+            accepted += 1
+            receipt.status = "accepted"
+            receipt.change_id = previous.change_id
+            if (req.return_results and latest_entity_change is not None
+                    and (previous.change_id != latest_entity_change.change_id or change.changed_fields is not None)):
+                receipt.winner = _winner(db, latest_entity_change, ledger)
+            continue
 
         if (
             ledger is not None
@@ -393,7 +398,7 @@ async def _push_for_device(
         # SyncChange row + apply 路径
         # ============================================================
         if (change.changed_fields is not None and latest_entity_change is not None
-                and change.action != "delete" and change.entity_type in ("transaction", "ledger")
+                and latest_entity_change.action != "delete" and change.action != "delete" and change.entity_type in ("transaction", "ledger")
                 and ledger is not None):
             # New clients also send the full row for older servers. Persist a complete
             # event so existing incremental readers receive the same state as a full read.
@@ -405,7 +410,6 @@ async def _push_for_device(
 
         if is_user_global:
             row_change = SyncChange(
-                operation_id=change.operation_id,
                 user_id=current_user.id,       # 真请求方
                 ledger_id=None,
                 scope="user",
@@ -473,7 +477,6 @@ async def _push_for_device(
                         existing_creator or current_user.id
                     )
             row_change = SyncChange(
-                operation_id=change.operation_id,
                 user_id=ledger.user_id,
                 ledger_id=ledger.id,
                 scope="ledger",
@@ -512,6 +515,14 @@ async def _push_for_device(
                     raise
             touched_ledgers[ledger.external_id] = ledger.id
 
+        if change.operation_id:
+            db.add(SyncOperationReceipt(
+                device_id=req.device_id, operation_id=change.operation_id,
+                change_id=row_change.change_id, ledger_id=ledger.id if ledger else None,
+                entity_type=change.entity_type, entity_sync_id=change.entity_sync_id,
+                action=change.action,
+            ))
+            db.flush()
         accepted += 1
         receipt.status = "accepted"
         receipt.change_id = row_change.change_id
@@ -597,8 +608,8 @@ async def _push_for_device(
                         "ledgerId": ledger_external_id,
                         "resourceType": ev["resource_type"],
                         "action": ev["action"],
-                        "payload": ev["payload"],
-                    })
+                        "payload": {**ev["payload"], "syncId": ev["sync_id"]},
+                    }, shared_owner_id=current_user.id)
 
     logger.info(
         "sync.push user=%s device=%s accepted=%d rejected=%d conflict=%d ledgers=%d user_global=%s",

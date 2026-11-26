@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ... import snapshot_builder
 from ...concurrency import lock_ledger_for_materialize
@@ -121,7 +122,7 @@ async def delete_tx_batch(
             unique_ids.append(tx_id)
             seen.add(tx_id)
 
-    lock_ledger_for_materialize(db, ledger.id)
+    await run_in_threadpool(lock_ledger_for_materialize, db, ledger.id)
     snapshot = snapshot_builder.build(db, ledger)
     # 深拷贝快照用于 diff(跟 batch_create 同模式)
     prev_snapshot = {**snapshot}

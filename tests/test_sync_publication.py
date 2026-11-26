@@ -157,3 +157,165 @@ def test_relay_retention_gap_reconnects_a_slow_subscriber(tmp_path, monkeypatch)
         asyncio.run(run())
     finally:
         engine.dispose()
+
+
+def test_mobile_push_and_web_delete_do_not_block_one_worker_event_loop(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from uuid import uuid4
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    from src.database import Base, get_db
+    from src.routers import auth, sync, write
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'writer.db'}", connect_args={"timeout": 1})
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, autoflush=False)
+    app = FastAPI()
+    app.state.ws_manager = WSConnectionManager()
+    app.include_router(auth.router, prefix="/auth")
+    app.include_router(sync.router, prefix="/sync")
+    app.include_router(write.router, prefix="/write")
+
+    def request_session():
+        with sessions() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = request_session
+    armed, first_acquired, second_waiting, release = Event(), Event(), Event(), Event()
+    waited_in_event_loop = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def observe_second(conn, cursor, statement, params, context, many):
+        if statement == "BEGIN IMMEDIATE" and first_acquired.is_set() and not release.is_set():
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                waited_in_event_loop.append(True)
+            second_waiting.set()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def pause_first(conn, cursor, statement, params, context, many):
+        if statement == "BEGIN IMMEDIATE" and armed.is_set() and not first_acquired.is_set():
+            first_acquired.set()
+            assert release.wait(5)
+
+    user = {"email": "one-worker@example.com", "password": str(uuid4())}
+    try:
+        with (
+            TestClient(app, raise_server_exceptions=False) as client,
+            ThreadPoolExecutor(2) as peers,
+        ):
+
+            def login(path, kind):
+                response = client.post(
+                    path, json={**user, "device_name": kind, "client_type": kind, "platform": kind}
+                )
+                response.raise_for_status()
+                return response.json()
+
+            phone, browser = login("/auth/register", "app"), login("/auth/login", "web")
+            phone_headers = {"Authorization": "Bearer " + phone["access_token"]}
+            web_headers = {"Authorization": "Bearer " + browser["access_token"]}
+
+            def rename(ledger, title):
+                now = datetime.now(timezone.utc).isoformat()
+                return client.post(
+                    "/sync/push",
+                    headers=phone_headers,
+                    json={
+                        "device_id": phone["device_id"],
+                        "changes": [
+                            {
+                                "entity_type": "ledger",
+                                "action": "upsert",
+                                "entity_sync_id": ledger,
+                                "ledger_id": ledger,
+                                "updated_at": now,
+                                "payload": {"syncId": ledger, "ledgerName": title},
+                            }
+                        ],
+                    },
+                )
+
+            assert (
+                rename("phone", "first").status_code
+                == rename("temporary", "second").status_code
+                == 200
+            )
+            armed.set()
+            added = peers.submit(rename, "phone", "changed")
+            try:
+                assert first_acquired.wait(5)
+                removed = peers.submit(
+                    client.delete, "/write/ledgers/temporary", headers=web_headers
+                )
+                assert second_waiting.wait(5)
+            finally:
+                release.set()
+            assert [added.result().status_code, removed.result().status_code] == [200, 200]
+            assert not waited_in_event_loop
+    finally:
+        engine.dispose()
+
+
+def test_delayed_shared_resource_frames_use_current_projection_and_membership(tmp_path):
+    from sqlalchemy.orm import Session
+
+    from src.database import Base
+    from src.models import Ledger, LedgerMember, User
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'shared.db'}")
+    Base.metadata.create_all(engine)
+    relay = ws_relay.WebSocketRelay(engine.url)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                User(id=name, email=name + "@example.com", password_hash="unused")
+                for name in ("owner", "editor")
+            ]
+        )
+        db.flush()
+        ledger = Ledger(user_id="owner", external_id="shared")
+        db.add(ledger)
+        db.flush()
+        ledger_id = ledger.id
+        db.add(LedgerMember(ledger_id=ledger_id, user_id="editor", role="editor"))
+        db.add(UserTagProjection(user_id="owner", sync_id="tag", name="latest", source_change_id=4))
+        db.commit()
+    delayed = json.dumps(
+        {
+            "type": "shared_resource_change",
+            "resourceType": "tag",
+            "ledgerId": "shared",
+            "action": "upsert",
+            "payload": {"syncId": "tag", "name": "earlier"},
+        }
+    )
+    try:
+        relay.publish("editor", delayed, "owner")
+        frame = json.loads(relay.read_after(0)[0].payload)
+        assert (frame["action"], frame["payload"]["name"]) == ("upsert", "latest")
+        with Session(engine) as db:
+            db.delete(db.get(UserTagProjection, ("owner", "tag")))
+            db.commit()
+        cursor = relay.latest()
+        relay.publish("editor", delayed, "owner")
+        frame = json.loads(relay.read_after(cursor)[0].payload)
+        assert (frame["action"], frame["payload"]) == ("delete", {"syncId": "tag"})
+        with Session(engine) as db:
+            member = db.scalar(select(LedgerMember).where(LedgerMember.ledger_id == ledger_id))
+            db.delete(member)
+            db.commit()
+        cursor = relay.latest()
+        relay.publish("editor", delayed, "owner")
+        assert relay.read_after(cursor) == []
+    finally:
+        relay.engine.dispose()
+        engine.dispose()

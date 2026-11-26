@@ -10,13 +10,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("sync_changes", sa.Column("operation_id", sa.String(64)))
-    present = sa.text("operation_id IS NOT NULL")
-    op.create_index("uq_sync_change_device_operation", "sync_changes",
-                    ["updated_by_device_id", "operation_id"], unique=True,
-                    postgresql_where=present, sqlite_where=present)
+    op.create_table(
+        "sync_operation_receipts",
+        sa.Column("device_id", sa.String(36), sa.ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("operation_id", sa.String(64), primary_key=True),
+        sa.Column("change_id", sa.BigInteger(), nullable=False),
+        sa.Column("ledger_id", sa.String(36), nullable=True),
+        sa.Column("entity_type", sa.String(64), nullable=False),
+        sa.Column("entity_sync_id", sa.String(255), nullable=False),
+        sa.Column("action", sa.String(16), nullable=False),
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("uq_sync_change_device_operation", table_name="sync_changes")
-    op.drop_column("sync_changes", "operation_id")
+    op.drop_table("sync_operation_receipts")

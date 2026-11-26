@@ -32,7 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ...concurrency import lock_ledger_for_materialize
+from ...concurrency import lock_ledger_for_materialize, lock_pg_sync_stream
 from ...config import get_settings
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
@@ -347,6 +347,8 @@ def _diff_entity_list(
     # Bulk flush cascade-only rows
     if bulk_upsert_rows:
         from sqlalchemy import insert as sa_insert
+        # ORM bulk DML bypasses the mapper's before_insert hook.
+        lock_pg_sync_stream(db.connection())
         db.execute(sa_insert(SyncChange), bulk_upsert_rows)
         # 取新插入的最大 change_id 作 emitted_ids(给 response.new_change_id)
         new_max = db.scalar(
@@ -1151,8 +1153,8 @@ async def _broadcast_shared_resource_events(
                     "ledgerId": ledger_external_id,
                     "resourceType": ev["resource_type"],
                     "action": ev["action"],
-                    "payload": ev["payload"],
-                })
+                    "payload": {**ev["payload"], "syncId": ev["sync_id"]},
+                }, shared_owner_id=owner_user_id)
 
 
 def _prepare_write(
