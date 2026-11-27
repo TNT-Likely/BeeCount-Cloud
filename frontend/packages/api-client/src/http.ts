@@ -89,6 +89,8 @@ export async function publicGet<T>(path: string): Promise<T> {
 export type BeeCountCloudVersion = {
   name: string
   version: string
+  min_app_version?: string | null
+  recommended_app_version?: string | null
 }
 
 export async function fetchCloudVersion(): Promise<BeeCountCloudVersion> {

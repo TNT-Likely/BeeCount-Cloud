@@ -1601,6 +1601,7 @@ const zhCN = {
   'ops.devices.button.refresh': '刷新设备列表',
   'ops.devices.online': '在线',
   'ops.devices.offline': '离线',
+  'ops.device.outdatedApp': '旧版 App',
   'ops.devices.user': '用户',
   'ops.devices.table.device': '设备',
   'ops.devices.table.platform': '平台 / 版本',

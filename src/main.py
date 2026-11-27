@@ -59,7 +59,8 @@ if settings.app_env != "development":
     if settings.has_wildcard_cors:
         raise RuntimeError("CORS_ORIGINS cannot contain wildcard '*' in non-development environments")
 
-from .version import __version__ as _beecount_cloud_version, APP_NAME as _beecount_cloud_name
+from . import version as _beecount_cloud_version_mod
+from .version import __version__ as _beecount_cloud_version
 
 app = FastAPI(
     title=settings.app_name,
@@ -74,8 +75,10 @@ app = FastAPI(
 @app.get(f"{settings.api_prefix}/version")
 def public_version() -> dict:
     return {
-        "name": _beecount_cloud_name,
-        "version": _beecount_cloud_version,
+        "name": _beecount_cloud_version_mod.APP_NAME,
+        "version": _beecount_cloud_version_mod.__version__,
+        "min_app_version": _beecount_cloud_version_mod.MIN_APP_VERSION,
+        "recommended_app_version": _beecount_cloud_version_mod.RECOMMENDED_APP_VERSION,
         "capabilities": ["transaction_move_v1", "recurring_rules_v1"],
     }
 

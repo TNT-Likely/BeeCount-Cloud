@@ -1559,6 +1559,7 @@ const en = {
   'ops.devices.button.refresh': 'Refresh Devices',
   'ops.devices.online': 'Online',
   'ops.devices.offline': 'Offline',
+  'ops.device.outdatedApp': 'Outdated app',
   'ops.devices.user': 'User',
   'ops.devices.table.device': 'Device',
   'ops.devices.table.platform': 'Platform / App',
