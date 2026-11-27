@@ -21,6 +21,7 @@ from ._shared import (
     Ledger,
     Query,
     ReadTxProjection,
+    Request,
     Session,
     SyncChange,
     SyncChangeOut,
@@ -38,6 +39,7 @@ from ._shared import (
     router,
     select,
     status,
+    sync_client_version_check,
     timezone,
 )
 
@@ -48,6 +50,7 @@ USER_GLOBAL_LEDGER_SENTINEL = "__user_global__"
 
 @router.get("/pull", response_model=SyncPullResponse)
 def pull_changes(
+    request: Request,
     since: int = Query(default=0, ge=0),
     device_id: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
@@ -65,6 +68,7 @@ def pull_changes(
                             detail="Supply only one device identifier")
     restoring = since == 0 or restore_device_id is not None
     device_id = restore_device_id if restore_device_id is not None else device_id
+    device: Device | None = None
     if device_id:
         device = db.scalar(
             select(Device).where(
@@ -77,6 +81,8 @@ def pull_changes(
             metrics.inc("beecount_sync_pull_failed_total")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device")
         device.last_seen_at = datetime.now(timezone.utc)
+
+    sync_client_version_check(request, device, db)
 
     with observe_server_errors(db, device_id, "pull"):
         return _pull_for_device(since, limit, device_id, current_user, db, restoring=restoring)

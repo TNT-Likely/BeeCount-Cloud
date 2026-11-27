@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import {
   fetchAdminDevices,
   fetchAdminUsers,
+  fetchCloudVersion,
   type AdminDevice,
   type UserAdmin,
 } from '@beecount/api-client'
@@ -51,6 +52,7 @@ function DevicesList() {
   const [listUserFilter, setListUserFilter] = useState('__all__')
   const [windowDays, setWindowDays] = useState<WindowDays>('30')
   const [adminUsers, setAdminUsers] = useState<UserAdmin[]>([])
+  const [recommendedAppVersion, setRecommendedAppVersion] = useState<string | null>(null)
 
   const notifyError = useCallback(
     (err: unknown) => toast.error(localizeError(err, t), t('notice.error')),
@@ -88,6 +90,22 @@ function DevicesList() {
       cancelled = true
     }
   }, [token, isAdmin, isAdminResolved, notifyError])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchCloudVersion()
+      .then((info) => {
+        if (!cancelled) {
+          setRecommendedAppVersion(info.recommended_app_version ?? null)
+        }
+      })
+      .catch(() => {
+        // Ignore version lookup failures on the devices list.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!isAdminResolved) return
@@ -128,7 +146,11 @@ function DevicesList() {
           </SelectContent>
         </Select>
       </div>
-      <OpsDevicesPanel rows={rows} onReload={() => void refresh()} />
+      <OpsDevicesPanel
+        rows={rows}
+        onReload={() => void refresh()}
+        recommendedAppVersion={recommendedAppVersion}
+      />
     </div>
   )
 }

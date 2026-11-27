@@ -10,6 +10,7 @@ from ._shared import *  # noqa: F401,F403 — 拉取所有 imports / helpers / r
 
 @router.get("/full", response_model=SyncFullResponse)
 def full_snapshot(
+    request: Request,
     ledger_id: str,
     _scopes: set[str] = Depends(require_any_scopes(SCOPE_APP_WRITE, SCOPE_WEB_READ)),
     current_user: User = Depends(get_current_user),
@@ -20,6 +21,7 @@ def full_snapshot(
     mobile 协议兼容:返回 payload_json 还是 `{content: json_str, metadata: {...}}`,
     content 是序列化 snapshot —— mobile 零改动。
     """
+    sync_client_version_check(request, None, db)
     accessible = list_accessible_ledgers(db, user_id=current_user.id)
     ledger_ids = [lg.id for lg in accessible]
     # The next incremental pull also includes the caller's user-scoped changes.

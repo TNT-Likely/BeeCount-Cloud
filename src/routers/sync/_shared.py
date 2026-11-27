@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ... import snapshot_builder, snapshot_cache
+from ... import version as version_mod
 from ...concurrency import lock_ledger_for_materialize
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
@@ -67,6 +68,41 @@ def _max_cursor_for_ledgers(db: Session, ledger_ids: list[str]) -> int:
         return 0
     max_cursor = db.scalar(select(func.max(SyncChange.change_id)).where(SyncChange.ledger_id.in_(ledger_ids)))
     return int(max_cursor or 0)
+
+
+def sync_client_version_check(
+    request: Request,
+    device: Device | None,
+    db: Session,
+) -> None:
+    """Refresh Device.app_version from request header and enforce min_app_version."""
+    header_version = version_mod.extract_client_app_version(request.headers)
+    version_updated = False
+    if device is not None and header_version and device.app_version != header_version:
+        device.app_version = header_version
+        version_updated = True
+
+    effective_version = header_version
+    if effective_version is None and device is not None:
+        if (device.platform or "").strip().lower() != "web":
+            effective_version = device.app_version
+
+    if version_mod.is_version_below(effective_version, version_mod.MIN_APP_VERSION):
+        if version_updated:
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED,
+            detail={
+                "code": "app_upgrade_required",
+                "message": (
+                    f"BeeCount App {version_mod.MIN_APP_VERSION} or newer is required"
+                ),
+                "server_version": version_mod.__version__,
+                "min_app_version": version_mod.MIN_APP_VERSION,
+                "recommended_app_version": version_mod.RECOMMENDED_APP_VERSION,
+                "client_app_version": effective_version,
+            },
+        )
 
 
 __all__ = [
@@ -120,4 +156,5 @@ __all__ = [
     'router',
     '_to_utc',
     '_max_cursor_for_ledgers',
+    'sync_client_version_check',
 ]

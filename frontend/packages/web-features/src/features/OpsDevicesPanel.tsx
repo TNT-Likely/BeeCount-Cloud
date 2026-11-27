@@ -40,6 +40,28 @@ function makeTimeAgo(t: TFn) {
 type OpsDevicesPanelProps = {
   rows: AdminDevice[]
   onReload: () => void
+  recommendedAppVersion?: string | null
+}
+
+function _parseSemver(raw: string | null | undefined): [number, number, number] | null {
+  if (!raw) return null
+  const match = raw.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:$|[+\-\s(])/i)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function _isOutdatedMobileApp(
+  row: AdminDevice,
+  recommendedAppVersion?: string | null
+): boolean {
+  if ((row.platform || '').trim().toLowerCase() === 'web') return false
+  const cur = _parseSemver(row.app_version)
+  const rec = _parseSemver(recommendedAppVersion)
+  if (!cur || !rec) return false
+  for (let i = 0; i < 3; i += 1) {
+    if (cur[i] !== rec[i]) return cur[i] < rec[i]
+  }
+  return false
 }
 
 type DeviceRow = AdminDevice & {
@@ -66,7 +88,11 @@ function _safeTimestamp(value: string): number {
   return Number.isFinite(ts) ? ts : 0
 }
 
-export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
+export function OpsDevicesPanel({
+  rows,
+  onReload,
+  recommendedAppVersion,
+}: OpsDevicesPanelProps) {
   const t = useT()
   const timeAgo = useMemo(() => makeTimeAgo(t), [t])
   const [showAllSessions, setShowAllSessions] = useState(false)
@@ -174,7 +200,17 @@ export function OpsDevicesPanel({ rows, onReload }: OpsDevicesPanelProps) {
                         </div>
                         <div className="rounded-md bg-muted/30 px-2 py-1">
                           <div className="text-muted-foreground">{t('ops.device.header.version')}</div>
-                          <div className="font-medium">{row.app_version || '-'}</div>
+                          <div className="flex flex-wrap items-center gap-1 font-medium">
+                            <span>{row.app_version || '-'}</span>
+                            {_isOutdatedMobileApp(row, recommendedAppVersion) ? (
+                              <Badge
+                                variant="secondary"
+                                className="bg-amber-500/15 px-1.5 py-0 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                              >
+                                {t('ops.device.outdatedApp')}
+                              </Badge>
+                            ) : null}
+                          </div>
                         </div>
                         <div className="rounded-md bg-muted/30 px-2 py-1">
                           <div className="text-muted-foreground">{t('ops.device.header.device')}</div>

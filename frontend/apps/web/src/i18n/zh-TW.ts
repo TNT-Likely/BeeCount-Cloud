@@ -1506,6 +1506,7 @@ const zhTW = {
   'ops.devices.button.refresh': '重新整理裝置列表',
   'ops.devices.online': '在線',
   'ops.devices.offline': '離線',
+  'ops.device.outdatedApp': '舊版 App',
   'ops.devices.user': '使用者',
   'ops.devices.table.device': '裝置',
   'ops.devices.table.platform': '平台 / 版本',

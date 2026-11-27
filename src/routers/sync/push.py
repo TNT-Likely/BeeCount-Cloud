@@ -48,6 +48,7 @@ from ._shared import (
     router,
     select,
     status,
+    sync_client_version_check,
     timedelta,
     timezone,
 )
@@ -90,6 +91,8 @@ async def push_changes(
     if not device:
         metrics.inc("beecount_sync_push_failed_total")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device")
+
+    sync_client_version_check(request, device, db)
 
     with observe_server_errors(db, device.id, "push"):
         return await _push_for_device(req, request, current_user, device, db)
