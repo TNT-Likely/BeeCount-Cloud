@@ -124,6 +124,22 @@ def test_user_global_category_push_writes_to_user_projection():
         app.dependency_overrides.clear()
 
 
+def test_full_cursor_includes_latest_user_dictionary_change():
+    client, _ = _make_client()
+    try:
+        headers = {"Authorization": "Bearer " + _login(client, "full-cursor@example.com")}
+        for ledger in ("first", "second"):
+            _push(client, headers, ledger, "ledger", ledger, {"name": ledger, "currency": "CNY"})
+        changed = _push(client, headers, None, "category", "breakfast",
+                        {"syncId": "breakfast", "name": "Breakfast", "kind": "expense"})
+        for ledger in ("first", "second"):
+            full = client.get("/api/v1/sync/full", params={"ledger_id": ledger}, headers=headers)
+            assert full.status_code == 200, full.text
+            assert full.json()["latest_cursor"] == changed["server_cursor"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_user_global_push_account_and_tag_too():
     """account / tag 跟 category 一样,落各自 user_*_projection。"""
     client, TS = _make_client()

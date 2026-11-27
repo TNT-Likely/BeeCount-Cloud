@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
+from ...concurrency import lock_sync_writer
 from ...database import get_db
 from ...deps import get_current_user
 from ...models import SyncChange, User, UserExchangeRateProjection
@@ -121,6 +123,7 @@ async def put_exchange_rate_override(
     if not (0.000001 < rate_val < 1e9):
         raise HTTPException(status_code=422, detail="rate out of range")
 
+    await run_in_threadpool(lock_sync_writer, db)
     existing = _find_pair(db, current_user.id, base, quote)
     sync_id = existing.sync_id if existing is not None else f"rate-{uuid4()}"
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -168,6 +171,7 @@ async def delete_exchange_rate_override(
 ) -> ExchangeRateOverrideWriteOut:
     base = base_currency.upper()
     quote = quote_currency.upper()
+    await run_in_threadpool(lock_sync_writer, db)
     existing = _find_pair(db, current_user.id, base, quote)
     if existing is None:
         raise HTTPException(status_code=404, detail="override not found")

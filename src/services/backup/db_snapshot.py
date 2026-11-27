@@ -39,6 +39,7 @@ DEFAULT_EXCLUDED_TABLES = (
     "backup_runs",
     "backup_run_targets",
     "sync_push_idempotency",
+    "ws_relay_frames",
     "audit_logs",
     "refresh_tokens",
     "mcp_call_logs",

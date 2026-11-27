@@ -32,7 +32,7 @@ def upgrade() -> None:
         ),
         sa.Column("name", sa.String(64), nullable=False),
         sa.Column("backend_type", sa.String(32), nullable=False),
-        sa.Column("encrypted", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("encrypted", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("config_summary", sa.JSON(), nullable=True),
         sa.Column("last_test_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_test_ok", sa.Boolean(), nullable=True),
@@ -53,11 +53,11 @@ def upgrade() -> None:
             index=True,
         ),
         sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("cron_expr", sa.String(64), nullable=False),
         sa.Column("retention_days", sa.Integer(), nullable=False, server_default=sa.text("30")),
         sa.Column(
-            "include_attachments", sa.Boolean(), nullable=False, server_default=sa.text("1")
+            "include_attachments", sa.Boolean(), nullable=False, server_default=sa.true()
         ),
         sa.Column("next_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_run_at", sa.DateTime(timezone=True), nullable=True),

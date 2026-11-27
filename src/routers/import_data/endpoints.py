@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ... import snapshot_builder
 from ...concurrency import lock_ledger_for_materialize
@@ -414,7 +415,7 @@ async def _do_execute(
     dedup_strategy: str,
 ):
     """单事务 + SSE 进度。任一失败 → db.rollback() + raise _ImportFailed。"""
-    lock_ledger_for_materialize(db, ledger.id)
+    await run_in_threadpool(lock_ledger_for_materialize, db, ledger.id)
     snapshot = snapshot_builder.build(db, ledger)
     prev = _deep_copy_snapshot(snapshot)
 

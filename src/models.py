@@ -13,10 +13,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .concurrency import lock_pg_sync_stream
 from .database import Base
 
 
@@ -393,6 +395,13 @@ class SyncChange(Base):
     ledger: Mapped[Ledger | None] = relationship(back_populates="changes")
 
 
+@event.listens_for(SyncChange, "before_insert")
+def _lock_before_allocating_sync_cursor(mapper, connection, target) -> None:
+    # Applies to background jobs as well as App/Web writes. No later cursor
+    # becomes visible while this transaction still owns an uncommitted number.
+    lock_pg_sync_stream(connection)
+
+
 Index("idx_sync_changes_user_cursor", SyncChange.user_id, SyncChange.change_id)
 Index("idx_sync_changes_ledger_cursor", SyncChange.ledger_id, SyncChange.change_id)
 Index(
@@ -409,6 +418,21 @@ Index(
     SyncChange.scope,
     SyncChange.change_id,
 )
+
+
+class SyncOperationReceipt(Base):
+    """Durable acknowledgement. Entity deletion may compact the original event body."""
+
+    __tablename__ = "sync_operation_receipts"
+
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Preserve the original identifiers even after a ledger or event has gone away.
+    change_id: Mapped[int] = mapped_column(BigInteger)
+    ledger_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_sync_id: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(16))
 
 
 class SyncCursor(Base):
@@ -584,6 +608,9 @@ class ReadTxProjection(Base):
     tags_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
     tag_sync_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Files temporarily absent while a device is still uploading the rest of this transaction.
+    pending_attachment_gc_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachment_gc_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     tx_index: Mapped[int] = mapped_column(Integer, default=0)
     created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_edited_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -892,3 +919,13 @@ class BackupRunTarget(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bytes_transferred: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WebSocketFrame(Base):
+    __tablename__ = "ws_relay_frames"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36))
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

@@ -1,50 +1,134 @@
+import asyncio
 import json
 import logging
 from collections import defaultdict
 from collections.abc import Iterable
 
 from fastapi import WebSocket
+from sqlalchemy.engine import URL
 
 from .metrics import metrics
+from .ws_relay import PAGE_SIZE, WebSocketRelay
 
 logger = logging.getLogger(__name__)
 
 
 class WSConnectionManager:
     def __init__(self) -> None:
-        self._connections: dict[str, set[WebSocket]] = defaultdict(set)
+        self._connections: dict[str, dict[WebSocket, int]] = defaultdict(dict)
+        self._relay: WebSocketRelay | None = None
+        self._listener: asyncio.Task | None = None
+        self._wake: asyncio.Event | None = None
+        self._subscribe = asyncio.Lock()
+
+    def start(self, url: URL) -> None:
+        # An in-memory SQLite database belongs to a single process.
+        if url.get_backend_name() == "sqlite" and (
+            url.database in (None, "", ":memory:") or url.query.get("mode") == "memory"
+        ):
+            return
+        self._relay = WebSocketRelay(url)
+        self._wake = asyncio.Event()
+
+    async def stop(self) -> None:
+        task, self._listener = self._listener, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._relay is not None:
+            await asyncio.to_thread(self._relay.engine.dispose)
+            self._relay = None
+        self._wake = None
 
     async def connect(self, user_id: str, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self._connections[user_id].add(websocket)
+        # Subscribe before accepting the socket so a write during the handshake
+        # will be included. A new socket should never receive older queued frames.
+        async with self._subscribe:
+            cursor = await asyncio.to_thread(self._relay.latest) if self._relay else 0
+            await websocket.accept()
+            self._connections[user_id][websocket] = cursor
+            if self._relay and self._listener is None:
+                self._listener = asyncio.create_task(self._listen(cursor))
         metrics.set_gauge("beecount_online_ws_users", float(len(self._connections)))
 
     def disconnect(self, user_id: str, websocket: WebSocket) -> None:
         if user_id in self._connections:
-            self._connections[user_id].discard(websocket)
+            self._connections[user_id].pop(websocket, None)
             if not self._connections[user_id]:
                 del self._connections[user_id]
+        if not self._connections and self._listener is not None:
+            self._listener.cancel()
+            self._listener = None
         metrics.set_gauge("beecount_online_ws_users", float(len(self._connections)))
 
-    async def broadcast_to_user(self, user_id: str, payload: dict) -> None:
-        stale: list[WebSocket] = []
-        conns = self._connections.get(user_id, set())
-        for ws in conns:
+    async def broadcast_to_user(
+        self, user_id: str, payload: dict, *, shared_owner_id: str | None = None
+    ) -> None:
+        message = json.dumps(payload, ensure_ascii=False, default=str)
+        if self._relay is not None and self._wake is not None:
             try:
-                await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+                await asyncio.to_thread(self._relay.publish, user_id, message, shared_owner_id)
+                self._wake.set()
+                return
             except Exception:
-                stale.append(ws)
+                # The business transaction has already committed. A relay outage
+                # should not turn it into an apparent failed write for the caller.
+                logger.exception("ws.relay.publish_failed")
+        if shared_owner_id is not None:
+            # A delayed incremental body can be stale. Existing clients reconcile
+            # their shared-resource snapshot when the connection is re-established.
+            sockets = list(self._connections.get(user_id, {}))
+            await asyncio.gather(*(self._reconnect(user_id, ws) for ws in sockets))
+            return
+        await self._send_local(user_id, message)
 
-        if conns:
-            logger.info(
-                "ws.broadcast user=%s type=%s sockets=%d stale=%d",
-                user_id,
-                payload.get("type"),
-                len(conns),
-                len(stale),
-            )
+    async def _listen(self, cursor: int) -> None:
+        assert self._relay is not None and self._wake is not None
+        while True:
+            self._wake.clear()
+            try:
+                rows = await asyncio.to_thread(self._relay.read_after, cursor)
+                if rows and rows[0].id > cursor + 1:
+                    # A slow worker fell behind retention (or a sequence rolled
+                    # back). Reconnect so clients run their normal initial pull.
+                    async with self._subscribe:
+                        lagging = [(user, ws) for user, group in self._connections.items()
+                                   for ws, since in group.items() if since < rows[0].id - 1]
+                    await asyncio.gather(*(self._reconnect(user, ws) for user, ws in lagging))
+                for frame in rows:
+                    await self._send_local(frame.user_id, frame.payload, frame.id)
+                    cursor = frame.id
+                if len(rows) == PAGE_SIZE:
+                    continue
+            except Exception:
+                logger.exception("ws.relay.read_failed")
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
 
-        for ws in stale:
+    async def _send_local(self, user_id: str, message: str, frame_id: int | None = None) -> None:
+        async with self._subscribe:
+            recipients = [ws for ws, since in self._connections.get(user_id, {}).items()
+                          if frame_id is None or frame_id > since]
+
+        async def send(ws: WebSocket) -> None:
+            try:
+                await asyncio.wait_for(ws.send_text(message), timeout=3)
+            except Exception:
+                await self._reconnect(user_id, ws)
+
+        await asyncio.gather(*(send(ws) for ws in recipients))
+
+    async def _reconnect(self, user_id: str, ws: WebSocket) -> None:
+        try:
+            await asyncio.wait_for(ws.close(code=1012), timeout=1)
+        except Exception:
+            pass
+        finally:
             self.disconnect(user_id, ws)
 
     def online_user_ids(self) -> Iterable[str]:
@@ -106,7 +190,8 @@ async def broadcast_to_user_ledgers(
     去重,但跨设备(用户在 mobile 推,自己 web 同步)需要推。所以推所有 member
     包含 actor 自己,由 client 用 device_id 去重。设置 False 关闭去重。
     """
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
+
     from .models import Ledger, LedgerMember
 
     # 该用户作为 owner 的 ledger,且 member_count > 1(共享账本)

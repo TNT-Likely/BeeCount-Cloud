@@ -27,13 +27,13 @@ from .models import (
 
 
 def _to_iso_utc(dt) -> str | None:
-    """Match snapshot_mutator._to_iso8601 output format ——带 +00:00 后缀。
-    SQLite 存 DateTime 可能返回 naive datetime,这里补 UTC 再 isoformat。"""
+    """按 UTC 序列化交易时间，和 Web 写入时的快照规范化保持一致。"""
     if dt is None:
         return None
     if dt.tzinfo is None:
+        # SQLite 返回无时区的 UTC 时间；PostgreSQL 返回会话时区的时间。
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.isoformat()
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def build(db: Session, ledger: Ledger) -> dict[str, Any]:

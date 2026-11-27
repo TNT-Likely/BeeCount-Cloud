@@ -4,6 +4,11 @@ from __future__ import annotations
 from typing import Any
 
 
+def full_transaction_change(item: dict[str, Any]) -> dict[str, Any]:
+    """Explicit empty values distinguish a complete web record from a mobile patch."""
+    return {"note": None, "tags": "", "tagIds": [], **item}
+
+
 def normalize_transaction_accounts(payload: dict[str, Any]) -> dict[str, Any]:
     result = dict(payload)
     kind = result.get("txType") or result.get("tx_type") or result.get("type") or "expense"

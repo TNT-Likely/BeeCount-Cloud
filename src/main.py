@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import text
 
 from .config import get_settings
-from .database import SessionLocal
+from .database import SessionLocal, engine
 from .error_handling import register_exception_handlers
 from .logging_ring import install_ring_buffer
 from .metrics import metrics
@@ -86,6 +86,16 @@ def public_web_config() -> dict:
     return {"project_partnerships_enabled": get_settings().project_partnerships_enabled}
 
 app.state.ws_manager = WSConnectionManager()
+
+@app.on_event("startup")
+async def start_ws_relay() -> None:
+    app.state.ws_manager.start(engine.url)
+
+
+@app.on_event("shutdown")
+async def stop_ws_relay() -> None:
+    await app.state.ws_manager.stop()
+
 
 
 @app.on_event("startup")
@@ -368,6 +378,42 @@ _MCP_LOG_RETENTION_DAYS = 30
 
 
 @app.on_event("startup")
+async def _start_pending_attachment_gc() -> None:
+    import asyncio
+
+    from .projection import expire_pending_attachment_gc
+
+    def prune() -> int:
+        with SessionLocal() as db:
+            processed = expire_pending_attachment_gc(db)
+            db.commit()
+            return processed
+
+    async def loop() -> None:
+        while True:
+            processed = 0
+            try:
+                processed = await asyncio.to_thread(prune)
+            except Exception:
+                logging.getLogger(__name__).exception("Pending attachment cleanup failed")
+            await asyncio.sleep(1 if processed == 128 else 300)
+
+    app.state.pending_attachment_gc_task = asyncio.create_task(loop())
+
+
+@app.on_event("shutdown")
+async def _stop_pending_attachment_gc() -> None:
+    import asyncio
+    from contextlib import suppress
+
+    task = getattr(app.state, "pending_attachment_gc_task", None)
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@app.on_event("startup")
 async def _start_mcp_log_retention() -> None:  # noqa: B008
     import asyncio
 
@@ -422,8 +468,15 @@ async def _log_sync_changes_size() -> None:  # noqa: B008
 
     try:
         with SessionLocal() as db:
+            # PostgreSQL length() accepts text/bytea, not JSON. Count UTF-8
+            # storage bytes on both databases, including non-ASCII payloads.
+            bytes_per_payload = (
+                "octet_length(CAST(payload_json AS TEXT))"
+                if db.get_bind().dialect.name == "postgresql"
+                else "length(CAST(payload_json AS BLOB))"
+            )
             row = db.execute(text(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes "
+                f"SELECT COUNT(*) AS n, COALESCE(SUM({bytes_per_payload}), 0) AS bytes "
                 "FROM sync_changes"
             )).first()
             if row is None:

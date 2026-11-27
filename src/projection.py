@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, event, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from .models import (
     AttachmentFile,
@@ -113,25 +116,12 @@ def _parse_happened_at(raw: Any):
 # --------------------------------------------------------------------------- #
 # Dialect 中立的 upsert                                                         #
 # --------------------------------------------------------------------------- #
-# SQLite / PostgreSQL 都用 INSERT ... ON CONFLICT DO UPDATE。SQLAlchemy 的
-# `dialects.sqlite.insert` 在两种库上语法基本一致;`dialects.postgresql.insert`
-# 同理。我们按 bind 方言走对应 insert,fallback 到先 SELECT 再 UPDATE/INSERT。
-
-def _is_sqlite(bind) -> bool:
-    try:
-        name = bind.dialect.name if hasattr(bind, "dialect") else bind.bind.dialect.name
-    except AttributeError:
-        return True
-    return name == "sqlite"
-
-
 def _upsert(db: Session, model, pk_fields: tuple[str, ...], values: dict) -> None:
     """通用 upsert:主键撞了就 UPDATE 其他所有列。"""
-    bind = db.get_bind()
-    if _is_sqlite(bind) or getattr(bind.dialect, "name", "") == "postgresql":
-        # SQLite / PG 都支持 ON CONFLICT。这里用 sqlite 方言 insert 生成语句,
-        # 实际执行时由 SQLAlchemy 翻译;PG 下走一样的语义。
-        stmt = sqlite_insert(model).values(**values)
+    dialect = db.get_bind().dialect.name
+    if dialect in ("sqlite", "postgresql"):
+        insert = pg_insert if dialect == "postgresql" else sqlite_insert
+        stmt = insert(model).values(**values)
         update_cols = {k: stmt.excluded[k] for k in values.keys() if k not in pk_fields}
         if update_cols:
             stmt = stmt.on_conflict_do_update(
@@ -199,7 +189,7 @@ def upsert_tx(
         tags_csv = _as_str(tags_raw)
 
     tag_sync_ids = payload.get("tagIds")
-    tag_sync_ids_json = json.dumps(tag_sync_ids) if isinstance(tag_sync_ids, list) else None
+    tag_sync_ids_json = json.dumps(tag_sync_ids) if isinstance(tag_sync_ids, list) and tag_sync_ids else None
 
     attachments = payload.get("attachments")
     attachments_json = (
@@ -212,23 +202,30 @@ def upsert_tx(
         or _as_str(payload.get("type"))
         or "expense"
     )
-    # Upsert 前抓 prev 附件 fileIds,跟 new 做 diff 找到被移除的那些。
-    # 覆盖"一张交易有 N 个附件,只删掉其中一个"的场景 —— 老逻辑只管写新的
-    # attachments_json,没清理从列表里被剔除的 AttachmentFile 行 + 物理文件。
-    prev_file_ids = collect_tx_attachment_fileids(
-        db, ledger_id=ledger_id, sync_id=sync_id
-    )
-
-    # 共享账本:created_by_user_id 一旦写入就不能被后续 upsert 覆盖
-    # (B 编辑 A 创建的 tx 时,payload 不带 createdByUserId,如果 _upsert
-    # 把列设成 NULL,server 端 created_by 信息就丢了)。先查 existing row,
-    # payload 没带 created → 保留 existing.created_by_user_id。
-    existing_creator = db.scalar(
-        select(ReadTxProjection.created_by_user_id).where(
+    existing = db.execute(
+        select(
+            ReadTxProjection.created_by_user_id, ReadTxProjection.attachments_json,
+            ReadTxProjection.pending_attachment_gc_json, ReadTxProjection.attachment_gc_after,
+        ).where(
             ReadTxProjection.ledger_id == ledger_id,
             ReadTxProjection.sync_id == sync_id,
         )
-    )
+    ).first()
+    existing_creator = existing.created_by_user_id if existing else None
+    known = json.loads(existing.pending_attachment_gc_json or "{}") if existing else {}
+    if existing:
+        for file_id, names in _attachment_local_names(existing.attachments_json).items():
+            known[file_id] = sorted(set(known.get(file_id, [])) | names)
+    removed = known.keys() - _attachment_local_names(attachments_json).keys()
+    # Upload and outbox entries can land in different HTTP batches. A draft
+    # manifest may omit already-uploaded files needed by the following batch.
+    incomplete = any(isinstance(a, dict) and not a.get("cloudFileId") for a in (attachments or []))
+    hold = {key: known[key] for key in sorted(removed)} if incomplete else {}
+    deadline = None
+    if hold:
+        deadline = existing.attachment_gc_after if existing else None
+        if deadline is None:
+            deadline = datetime.now(timezone.utc) + timedelta(days=1)
     payload_creator = _as_str(payload.get("createdByUserId"))
 
     values = {
@@ -253,6 +250,8 @@ def upsert_tx(
         "tags_csv": tags_csv,
         "tag_sync_ids_json": tag_sync_ids_json,
         "attachments_json": attachments_json,
+        "pending_attachment_gc_json": json.dumps(hold) if hold else None,
+        "attachment_gc_after": deadline,
         "tx_index": _as_int(payload.get("txIndex") or payload.get("tx_index"), default=0),
         # 创建人 first-write-wins:有 existing 就保留;首次插入用 payload 或回退
         # 到当前 actor(updatedByUserId)。
@@ -287,12 +286,8 @@ def upsert_tx(
 
     _upsert(db, ReadTxProjection, ("ledger_id", "sync_id"), values)
 
-    # 新行已落地,对 prev - new 的 fileId 查还有无引用 → GC。
-    # gc_orphan_attachments 契约要求新行就位后再调,这里顺序正确。
-    new_file_ids = _extract_tx_cloud_file_ids(attachments_json)
-    removed = prev_file_ids - new_file_ids
-    if removed:
-        gc_orphan_attachments(db, user_id=user_id, file_ids=removed)
+    if removed and not incomplete:
+        schedule_attachment_gc(db, user_id=user_id, file_ids=removed)
 
 
 def upsert_account(
@@ -422,7 +417,7 @@ def upsert_category(
     # 物理文件,被共用的会留着。
     new_icon_file_id = _as_str(payload.get("iconCloudFileId")) or None
     if prev_icon_file_id and prev_icon_file_id != new_icon_file_id:
-        gc_orphan_attachments(db, user_id=user_id, file_ids=[prev_icon_file_id])
+        schedule_attachment_gc(db, user_id=user_id, file_ids=[prev_icon_file_id])
 
 
 def upsert_tag(
@@ -510,7 +505,35 @@ def delete_category(db: Session, *, user_id: str, sync_id: str) -> None:
 
 
 def delete_tag(db: Session, *, user_id: str, sync_id: str) -> None:
-    """user-global tag delete。PK=(user_id, sync_id)。"""
+    """Detach the owner's references before removing their tag dictionary entry."""
+    old_name = db.scalar(select(UserTagProjection.name).where(
+        UserTagProjection.user_id == user_id, UserTagProjection.sync_id == sync_id,
+    ))
+    by_id = ReadTxProjection.tag_sync_ids_json.contains(json.dumps(sync_id), autoescape=True)
+    candidates = by_id
+    if old_name:
+        # Pre-ID transactions recorded a comma-separated list of names. An
+        # explicit list of IDs always takes precedence over a matching name.
+        candidates = or_(by_id, and_(
+            ReadTxProjection.tag_sync_ids_json.is_(None),
+            ReadTxProjection.tags_csv.contains(old_name, autoescape=True),
+        ))
+    rows = db.scalars(select(ReadTxProjection).where(
+        ReadTxProjection.user_id == user_id, candidates,
+    )).yield_per(500)
+    for row in rows:
+        if row.tag_sync_ids_json:
+            try:
+                ids = json.loads(row.tag_sync_ids_json)
+            except ValueError:
+                continue
+            if not isinstance(ids, list) or sync_id not in ids:
+                continue
+            remaining = [item for item in ids if item != sync_id]
+            row.tag_sync_ids_json = json.dumps(remaining) if remaining else None
+        if old_name and row.tags_csv:
+            names = [part.strip() for part in row.tags_csv.split(",")]
+            row.tags_csv = ",".join(name for name in names if name and name != old_name) or None
     db.execute(
         delete(UserTagProjection).where(
             UserTagProjection.user_id == user_id,
@@ -739,7 +762,7 @@ def rebuild_all(db: Session) -> int:
     """
     from sqlalchemy import func
 
-    from .models import Ledger, SyncChange
+    from .models import SyncChange
 
     count = 0
     ledger_rows = db.execute(
@@ -796,26 +819,25 @@ def rebuild_all(db: Session) -> int:
 # 0 引用就 DELETE 行 + unlink 物理文件(best-effort,磁盘 IO 失败只 warn)。
 
 
-def _extract_tx_cloud_file_ids(attachments_json: str | None) -> set[str]:
-    """从 tx projection 的 attachments_json 里抽出所有 cloudFileId。
-
-    mobile 序列化(`lib/cloud/sync/sync_engine.dart:802-812`) + web 写路径都用
-    `cloudFileId` 这个 camelCase key。JSON 缺失 / 解析失败 / 非 list → 空 set。
-    """
+def _attachment_local_names(attachments_json: str | None) -> dict[str, set[str]]:
+    """Map the uploaded ID to cache filenames that actually accompanied that ID."""
     if not attachments_json:
-        return set()
+        return {}
     try:
         arr = json.loads(attachments_json)
     except json.JSONDecodeError:
-        return set()
+        return {}
     if not isinstance(arr, list):
-        return set()
-    out: set[str] = set()
+        return {}
+    out: dict[str, set[str]] = {}
     for item in arr:
         if isinstance(item, dict):
             fid = item.get("cloudFileId")
             if isinstance(fid, str) and fid.strip():
-                out.add(fid.strip())
+                names = out.setdefault(fid.strip(), set())
+                name = item.get("fileName")
+                if isinstance(name, str) and name:
+                    names.add(name)
     return out
 
 
@@ -838,6 +860,7 @@ def _fileid_still_referenced(db: Session, *, user_id: str, file_id: str) -> bool
             or_(
                 ReadTxProjection.attachments_json.like(pat_no_space),
                 ReadTxProjection.attachments_json.like(pat_with_space),
+                ReadTxProjection.pending_attachment_gc_json.like(f'%"{file_id}":%'),
             ),
         )
     )
@@ -879,10 +902,116 @@ def _fileid_still_referenced_in_ledger(
             or_(
                 ReadTxProjection.attachments_json.like(pat_no_space),
                 ReadTxProjection.attachments_json.like(pat_with_space),
+                ReadTxProjection.pending_attachment_gc_json.like(f'%"{file_id}":%'),
             ),
         )
     )
     return bool(tx_hit)
+
+
+@dataclass
+class _AttachmentCleanup:
+    candidates: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    paths: set[str] = field(default_factory=set)
+
+
+def expire_pending_attachment_gc(db: Session, *, limit: int = 128) -> int:
+    """Release stale candidates in bounded batches, keeping originals still named by content."""
+    from .concurrency import lock_sync_writer
+
+    now = datetime.now(timezone.utc)
+    due = ReadTxProjection.attachment_gc_after <= now
+    if db.scalar(select(ReadTxProjection.attachment_gc_after).where(due).limit(1)) is None:
+        return 0
+    lock_sync_writer(db)
+    rows = db.scalars(select(ReadTxProjection).where(due)
+                      .order_by(ReadTxProjection.attachment_gc_after).limit(limit)).all()
+    for row in rows:
+        held = json.loads(row.pending_attachment_gc_json or "{}")
+        pending_hashes = set()
+        pending_local_names = set()
+        for entry in json.loads(row.attachments_json or "[]"):
+            if not isinstance(entry, dict) or entry.get("cloudFileId"):
+                continue
+            filename = str(entry.get("fileName") or "")
+            if entry.get("cloudSha256"):
+                pending_hashes.add(entry["cloudSha256"])
+            elif filename.startswith("sha_") and len(filename[4:].partition(".")[0]) == 64:
+                pending_hashes.add(filename[4:].partition(".")[0])
+            elif filename:
+                pending_local_names.add(filename)
+        # Legacy caches used opaque names. Match only names previously bound to
+        # this ID on this transaction; originalName is just a display label.
+        retained = set(db.scalars(select(AttachmentFile.id).where(
+            AttachmentFile.id.in_(list(held)), AttachmentFile.sha256.in_(pending_hashes),
+        ))) if held and pending_hashes else set()
+        retained.update(fid for fid, names in held.items() if pending_local_names.intersection(names))
+        row.pending_attachment_gc_json = json.dumps({fid: held[fid] for fid in sorted(retained)}) if retained else None
+        row.attachment_gc_after = None
+        schedule_attachment_gc(db, user_id=row.user_id, file_ids=held.keys() - retained)
+    return len(rows)
+
+
+def _attachment_cleanup(db: Session) -> _AttachmentCleanup:
+    tx = db.get_nested_transaction() or db.get_transaction() or db.begin()
+    return db.info.setdefault("attachment_cleanup", {}).setdefault(tx, _AttachmentCleanup())
+
+
+def schedule_attachment_gc(
+    db: Session, *, file_ids: Iterable[str | None],
+    user_id: str | None = None, ledger_id: str | None = None,
+) -> None:
+    """A later edit in the same batch may restore a reference to the same blob."""
+    ids = {fid for fid in file_ids if fid}
+    if not ids:
+        return
+    if (user_id is None) == (ledger_id is None):
+        raise ValueError("Attachment cleanup requires exactly one scope")
+    scope = ("ledger", ledger_id) if ledger_id is not None else ("user", str(user_id))
+    _attachment_cleanup(db).candidates.setdefault(scope, set()).update(ids)
+
+
+@event.listens_for(Session, "before_commit")
+def _collect_final_attachment_orphans(db: Session) -> None:
+    cleanup = db.info.get("attachment_cleanup", {}).get(db.get_transaction())
+    if db.in_nested_transaction() or not cleanup or not cleanup.candidates:
+        return
+    db.flush()
+    for (scope, owner), ids in cleanup.candidates.items():
+        if scope == "ledger":
+            gc_orphan_attachments_for_ledger(db, ledger_id=owner, file_ids=ids)
+        else:
+            gc_orphan_attachments(db, user_id=owner, file_ids=ids)
+
+
+@event.listens_for(Session, "after_commit")
+def _commit_attachment_cleanup(db: Session) -> None:
+    tx = db.get_nested_transaction() or db.get_transaction()
+    states = db.info.get("attachment_cleanup", {})
+    cleanup = states.get(tx)
+    if not cleanup:
+        return
+    if tx is not None and tx.nested:
+        # Released savepoint: propagate its work; outer rollback must still keep the originals.
+        parent = states.setdefault(tx.parent, _AttachmentCleanup())
+        for scope, ids in cleanup.candidates.items():
+            parent.candidates.setdefault(scope, set()).update(ids)
+        parent.paths.update(cleanup.paths)
+        return
+    for storage_path in cleanup.paths:
+        try:
+            Path(storage_path).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("attachment gc unlink failed: %s", exc)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _discard_attachment_cleanup(db: Session, tx: SessionTransaction) -> None:
+    states = db.info.get("attachment_cleanup")
+    if states:
+        states.pop(tx, None)
+        if not states:
+            db.info.pop("attachment_cleanup")
 
 
 def gc_orphan_attachments_for_ledger(
@@ -929,18 +1058,8 @@ def gc_orphan_attachments_for_ledger(
         if att is None:
             continue
 
-        storage_path = att.storage_path
+        _attachment_cleanup(db).paths.add(att.storage_path)
         db.delete(att)
-
-        try:
-            p = Path(storage_path)
-            if p.exists():
-                p.unlink()
-        except OSError as exc:
-            logger.warning(
-                "attachment gc unlink failed ledger=%s file=%s path=%s err=%s",
-                ledger_id, file_id, storage_path, exc,
-            )
 
         cleaned += 1
 
@@ -994,20 +1113,8 @@ def gc_orphan_attachments(
             # AttachmentFile 已经不存在(手动清过 / 历史脏数据)—— 不算失败
             continue
 
-        storage_path = att.storage_path
+        _attachment_cleanup(db).paths.add(att.storage_path)
         db.delete(att)
-
-        # Best-effort unlink。DB 提交失败时这里改不回来,但事务 rollback 后
-        # AttachmentFile 行还在,下次 GC 再来。
-        try:
-            p = Path(storage_path)
-            if p.exists():
-                p.unlink()
-        except OSError as exc:
-            logger.warning(
-                "attachment gc unlink failed user=%s file=%s path=%s err=%s",
-                user_id, file_id, storage_path, exc,
-            )
 
         cleaned += 1
 
@@ -1023,13 +1130,15 @@ def collect_tx_attachment_fileids(
 ) -> set[str]:
     """在 tx projection 删之前取 attachments_json 里的 fileId 列表,供删后 GC 用。
     行不存在(已删 / 从未有过)→ 空 set。"""
-    row = db.scalar(
-        select(ReadTxProjection.attachments_json).where(
+    row = db.execute(
+        select(ReadTxProjection.attachments_json, ReadTxProjection.pending_attachment_gc_json).where(
             ReadTxProjection.ledger_id == ledger_id,
             ReadTxProjection.sync_id == sync_id,
         )
-    )
-    return _extract_tx_cloud_file_ids(row)
+    ).first()
+    if row is None:
+        return set()
+    return _attachment_local_names(row.attachments_json).keys() | json.loads(row.pending_attachment_gc_json or "{}").keys()
 
 
 def collect_category_icon_fileids(

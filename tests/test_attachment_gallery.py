@@ -1,7 +1,9 @@
 """附件墙在真实读/写路由上的分页、引用、权限和缩略图回归。"""
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
+import pytest
 from PIL import Image
 from sqlalchemy import select
 from test_mcp_attachments import create, upload
@@ -105,3 +107,39 @@ def test_unsupported_and_missing_original_thumbnail(ledger):
         from pathlib import Path
         Path(row.storage_path).unlink()
     assert ledger.client.get(path, headers=ledger.headers).status_code == 404
+
+
+@pytest.mark.parametrize("split_after_pending", [False, True])
+def test_sync_batch_keeps_bytes_when_a_pending_attachment_gets_its_cloud_id(ledger, split_after_pending):
+    """An App saves the image locally, uploads it, then sends its queued row edits."""
+    original = b"one synthetic receipt"
+    uploaded = ledger.client.post(
+        "/api/v1/attachments/upload", headers=ledger.headers,
+        data={"ledger_id": ledger.ledger_id}, files={"file": ("receipt.png", original, "image/png")},
+    )
+    assert uploaded.status_code == 200
+    fid = uploaded.json()["file_id"]
+    local = {"fileName": "receipt.png", "sortOrder": 0}
+    ready = {**local, "cloudFileId": fid, "cloudSha256": uploaded.json()["sha256"]}
+    auth = ledger.client.post("/api/v1/auth/login", json={
+        "email": ledger.user.email, "password": "private-unit-test", "client_type": "app",
+    }).json()
+    now = datetime.now(timezone.utc)
+    tx = "pending-attachment"
+    changes = []
+    for i, attachment in enumerate([ready, local, ready]):
+        changes.append({"ledger_id": ledger.ledger_id, "entity_type": "transaction", "action": "upsert",
+                        "entity_sync_id": tx, "updated_at": (now + timedelta(seconds=i)).isoformat(),
+                        "payload": {"syncId": tx, "type": "expense", "amount": 28.5,
+                                    "happenedAt": now.isoformat(), "attachments": [attachment]}})
+    batches = [changes[:2], changes[2:]] if split_after_pending else [changes]
+    for batch in batches:
+        receipt = ledger.client.post("/api/v1/sync/push", headers={"Authorization": "Bearer "+auth["access_token"]},
+                                     json={"device_id": auth["device_id"], "changes": batch})
+        assert receipt.status_code == 200 and receipt.json()["accepted"] == len(batch)
+    full = ledger.client.get("/api/v1/sync/full", headers=ledger.headers, params={"ledger_id": ledger.ledger_id})
+    snapshot = json.loads(full.json()["snapshot"]["payload"]["content"])
+    assert snapshot["items"][0]["attachments"][0]["cloudFileId"] == fid
+    download = ledger.client.get(f"/api/v1/attachments/{fid}", headers=ledger.headers)
+    assert download.status_code == 200
+    assert download.content == original

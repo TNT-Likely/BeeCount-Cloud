@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from src import snapshot_builder
 from src.database import Base, get_db
 from src.main import app
 from src.models import (
@@ -25,6 +27,24 @@ from src.models import (
     UserCategoryProjection,
     UserTagProjection,
 )
+from src.snapshot_mutator import create_transaction
+
+
+@pytest.mark.parametrize("projected_time", [
+    "2026-11-23T22:30:00.123456",        # SQLite UTC without tzinfo
+    "2026-11-24T06:30:00.123456+08:00",  # PostgreSQL Asia/Shanghai
+    "2026-11-23T17:30:00.123456-05:00",  # PostgreSQL America/New_York
+])
+def test_web_batch_preserves_existing_projection_timestamp(projected_time):
+    old = {"syncId": "existing", "type": "expense", "amount": 1.0,
+           "happenedAt": snapshot_builder._to_iso_utc(datetime.fromisoformat(projected_time))}
+    snapshot, _ = create_transaction({"items": [old]}, {
+        "tx_type": "expense", "amount": 2, "happened_at": "2026-11-24T00:00:00Z",
+    })
+
+    # The batch diff compares these dictionaries to decide which rows to emit.
+    assert snapshot["items"][0] == old
+    assert old["happenedAt"] == "2026-11-23T22:30:00.123456+00:00"
 
 
 def _make_client():
@@ -128,6 +148,60 @@ def test_mobile_push_tx_creates_projection_row():
             acc = db.scalar(select(UserAccountProjection).where(
                 UserAccountProjection.user_id == uid, UserAccountProjection.sync_id == "acc1"))
             assert acc is not None and acc.name == "Cash"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_optional_transaction_fields_preserve_omissions_and_propagate_explicit_clears():
+    client, _, sf = _make_client()
+    try:
+        email = "optional-tx-fields@qa.example.com"
+        app_token = _register_and_login(client, email, device_id="phone", client_type="app")
+        app_headers = {"Authorization": f"Bearer {app_token}"}
+        web_login = client.post("/api/v1/auth/login", json={
+            "email": email, "password": "Pa$$word1!", "device_id": "browser",
+            "client_type": "web", "device_name": "web", "platform": "test",
+        })
+        web_headers = {"Authorization": f"Bearer {web_login.json()['access_token']}"}
+        start = datetime.now(timezone.utc)
+
+        def edit(step, **fields):
+            _push(client, app_headers, "phone", "fields", [{
+                "ledger_id": "fields", "entity_type": "transaction", "entity_sync_id": "bill",
+                "action": "upsert", "updated_at": _iso(start + timedelta(seconds=step)),
+                "payload": {"syncId": "bill", **fields},
+            }])
+
+        def values():
+            with sf() as db:
+                row = db.scalar(select(ReadTxProjection).where(ReadTxProjection.sync_id == "bill"))
+                return row.note, row.tags_csv, json.loads(row.tag_sync_ids_json or "[]")
+
+        edit(0, type="expense", amount=2, happenedAt=_iso(), note="original",
+             tags="Original", tagIds=["tag-1"])
+        edit(1, amount=3)
+        assert values() == ("original", "Original", ["tag-1"])
+        edit(2, tags="Only name")
+        assert values() == ("original", "Only name", [])
+        edit(3, tagIds=["tag-2"])
+        assert values() == ("original", None, ["tag-2"])
+        edit(4, note=None, tags=None)
+        assert values() == (None, None, [])
+        edit(5, note="replaced", tags="Replacement", tagIds=["tag-3"])
+        edit(6, tagIds=[])
+        assert values() == ("replaced", None, [])
+        edit(7, tags="Restored", tagIds=["tag-4"])
+
+        # Web PATCH produces a complete item. Its event must tell mobile that
+        # both nullable fields were cleared, even if the snapshot omits them.
+        response = client.patch("/api/v1/write/ledgers/fields/transactions/bill",
+                                headers=web_headers,
+                                json={"note": None, "tags": [], "base_change_id": 0})
+        assert response.status_code == 200, response.text
+        assert values() == (None, None, [])
+        events = client.get("/api/v1/sync/pull?since=0", headers=app_headers).json()["changes"]
+        payload = [event["payload"] for event in events if event["entity_sync_id"] == "bill"][-1]
+        assert payload["note"] is None and payload["tags"] == "" and payload["tagIds"] == []
     finally:
         app.dependency_overrides.clear()
 
@@ -331,6 +405,78 @@ def test_mobile_tag_rename_cascades_when_transaction_only_has_tag_name():
 # web /write/* 驱动 projection 写入                                             #
 # --------------------------------------------------------------------------- #
 
+
+def test_mobile_partial_push_receipt_keeps_transaction_instant():
+    client, _, _ = _make_client()
+    try:
+        token = _register_and_login(client, "receipt-time@qa.example.com",
+                                    device_id="clock", client_type="app")
+        headers = {"Authorization": f"Bearer {token}"}
+        instant = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+        tx = {"ledger_id": "clock-ledger", "entity_type": "transaction",
+              "entity_sync_id": "breakfast", "action": "upsert", "updated_at": _iso(),
+              "payload": {"type": "expense", "amount": 28.5, "happenedAt": instant.isoformat()}}
+        _push(client, headers, "clock", "clock-ledger", [tx])
+        patch = {**tx, "updated_at": _iso(), "changed_fields": ["note"],
+                 "operation_id": "receipt-note", "payload": {"note": "revised"}}
+        response = client.post("/api/v1/sync/push", headers=headers, json={
+            "device_id": "clock", "changes": [patch], "return_results": True})
+        assert response.status_code == 200, response.text
+        receipt = response.json()["results"][0]
+        assert receipt["status"] == "accepted"
+        assert datetime.fromisoformat(receipt["winner"]["payload"]["happenedAt"]) == instant
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_mobile_tag_delete_removes_only_its_references_across_owner_ledgers():
+    client, _, _ = _make_client()
+    try:
+        token = _register_and_login(client, "delete-tag@qa.example.com",
+                                    device_id="tags", client_type="app")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        def event(ledger, kind, key, payload, action="upsert"):
+            return {"ledger_id": ledger, "entity_type": kind, "entity_sync_id": key,
+                    "action": action, "updated_at": _iso(), "payload": payload}
+
+        def tx(ledger, key, names, ids):
+            payload = {"type": "expense", "amount": 28.5, "happenedAt": _iso(), "tags": names}
+            if ids is not None:
+                payload["tagIds"] = ids
+            return event(ledger, "transaction", key, payload)
+
+        _push(client, headers, "tags", "first", [
+            event(None, "tag", "retire", {"name": "Travel"}),
+            event(None, "tag", "keep", {"name": "TravelPlus"}),
+            tx("first", "multiple", "Travel,TravelPlus", ["retire", "keep"]),
+            tx("second", "last", "Travel", ["retire"]),
+            tx("second", "legacy", "Travel,TravelPlus", None),
+            tx("second", "unrelated", "TravelPlus", ["keep"]),
+        ])
+        other = {"Authorization": "Bearer " + _register_and_login(
+            client, "other-tag-owner@qa.example.com", device_id="other", client_type="app")}
+        _push(client, other, "other", "private", [
+            event(None, "tag", "retire", {"name": "Travel"}),
+            tx("private", "other-transaction", "Travel", ["retire"]),
+        ])
+        _push(client, headers, "tags", "first", [event(None, "tag", "retire", {}, "delete")])
+        seen = {}
+        for book in ("first", "second"):
+            full = client.get("/api/v1/sync/full", headers=headers, params={"ledger_id": book}).json()
+            content = json.loads(full["snapshot"]["payload"]["content"])
+            assert {row["syncId"] for row in content["tags"]} == {"keep"}
+            for row in content["items"]:
+                seen[row["syncId"]] = (row.get("tags"), row.get("tagIds", []))
+        assert seen == {"multiple": ("TravelPlus", ["keep"]), "last": (None, []),
+                        "legacy": ("TravelPlus", []), "unrelated": ("TravelPlus", ["keep"])}
+        full = client.get("/api/v1/sync/full", headers=other, params={"ledger_id": "private"}).json()
+        foreign = json.loads(full["snapshot"]["payload"]["content"])
+        assert foreign["items"][0]["tagIds"] == ["retire"] and foreign["tags"][0]["name"] == "Travel"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_web_create_tx_creates_projection_row():
     client, engine, sf = _make_client()
     try:
@@ -458,7 +604,6 @@ def test_projection_count_matches_snapshot_after_mixed_writes():
         lid = _get_ledger_internal_id(sf, "lg_mix")
         # 方案 B 后 snapshot 从 projection 懒构建,跟 projection 必然一致
         with sf() as db:
-            from src import snapshot_builder
             ledger = db.scalar(select(Ledger).where(Ledger.id == lid))
             snap = snapshot_builder.build(db, ledger)
             proj_count = db.scalar(select(

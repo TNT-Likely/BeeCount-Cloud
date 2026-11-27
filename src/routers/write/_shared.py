@@ -32,7 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ...concurrency import lock_ledger_for_materialize
+from ...concurrency import lock_ledger_for_materialize, lock_pg_sync_stream
 from ...config import get_settings
 from ...database import get_db
 from ...deps import get_current_user, require_any_scopes, require_scopes
@@ -67,6 +67,7 @@ from ...schemas import (
     WriteTransactionUpdateRequest,
 )
 from ...security import SCOPE_APP_WRITE, SCOPE_WEB_WRITE
+from ...transaction_normalization import full_transaction_change
 from ... import projection, snapshot_builder, snapshot_cache
 from ...sync_applier import USER_GLOBAL_ENTITY_TYPES
 from ...snapshot_mutator import (
@@ -276,14 +277,17 @@ def _diff_entity_list(
                     "entity_type": entity_type,
                     "entity_sync_id": sync_id,
                     "action": "upsert",
-                    "payload_json": entity,
+                    "payload_json": full_transaction_change(entity),
                     "updated_at": now,
                     "updated_by_device_id": device_id,
                     "updated_by_user_id": current_user.id,
                 })
                 continue
             # 普通路径:insert + flush 取 change_id,再走 projection upsert
-            change_row = _make_change_row("upsert", sync_id, entity)
+            change_row = _make_change_row(
+                "upsert", sync_id,
+                full_transaction_change(entity) if entity_type == "transaction" else entity,
+            )
             db.add(change_row)
             db.flush()
             emitted_ids.append(change_row.change_id)
@@ -336,13 +340,15 @@ def _diff_entity_list(
                 if fn is not None:
                     fn(db, ledger_id=ledger.id, sync_id=sync_id)
             if gc_file_ids:
-                projection.gc_orphan_attachments(
+                projection.schedule_attachment_gc(
                     db, user_id=current_user.id, file_ids=gc_file_ids,
                 )
 
     # Bulk flush cascade-only rows
     if bulk_upsert_rows:
         from sqlalchemy import insert as sa_insert
+        # ORM bulk DML bypasses the mapper's before_insert hook.
+        lock_pg_sync_stream(db.connection())
         db.execute(sa_insert(SyncChange), bulk_upsert_rows)
         # 取新插入的最大 change_id 作 emitted_ids(给 response.new_change_id)
         new_max = db.scalar(
@@ -569,7 +575,7 @@ async def _commit_create_tx_fast(
             entity_type="transaction",
             entity_sync_id=tx_id,
             action="upsert",
-            payload_json=new_item,
+            payload_json=full_transaction_change(new_item),
             updated_at=now,
             updated_by_device_id=device_id,
             updated_by_user_id=current_user.id,
@@ -731,7 +737,7 @@ async def _commit_write_fast_tx(
             db.add(change_row)
             db.flush()
             projection.delete_tx(db, ledger_id=ledger.id, sync_id=tx_id)
-            projection.gc_orphan_attachments(
+            projection.schedule_attachment_gc(
                 db, user_id=ledger.user_id, file_ids=tx_file_ids,
             )
         else:
@@ -748,7 +754,7 @@ async def _commit_write_fast_tx(
                 entity_type="transaction",
                 entity_sync_id=tx_id,
                 action="upsert",
-                payload_json=new_item,
+                payload_json=full_transaction_change(new_item),
                 updated_at=now,
                 updated_by_device_id=device_id,
                 updated_by_user_id=current_user.id,
@@ -1147,8 +1153,8 @@ async def _broadcast_shared_resource_events(
                     "ledgerId": ledger_external_id,
                     "resourceType": ev["resource_type"],
                     "action": ev["action"],
-                    "payload": ev["payload"],
-                })
+                    "payload": {**ev["payload"], "syncId": ev["sync_id"]},
+                }, shared_owner_id=owner_user_id)
 
 
 def _prepare_write(

@@ -288,3 +288,66 @@ def test_sequential_individual_changes_all_land_in_snapshot() -> None:
         assert sync_ids == ["a", "b", "c"], txs
     finally:
         app.dependency_overrides.clear()
+
+
+def test_operation_receipts_distinguish_same_second_writes_replay_and_batch_rejection() -> None:
+    client = _make_client()
+    try:
+        owner = _register(client, "receipts@example.com")
+        token, device = owner["access_token"], owner["device_id"]
+        _seed_snapshot(client, token, device, "L")
+        now = datetime.now(timezone.utc)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        def event(op, amount, instant=now, **fields):
+            return {
+                "operation_id": op, "ledger_id": "L", "entity_type": "transaction",
+                "entity_sync_id": "T", "action": "upsert", "updated_at": instant.isoformat(),
+                "payload": {"type": "expense", "amount": amount, "happenedAt": now.isoformat(), **fields},
+            }
+
+        def send(*events):
+            response = client.post("/api/v1/sync/push", headers=headers, json={
+                "device_id": device, "changes": events, "return_results": True,
+            })
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        first = event("first", 12, note="keep remote note")
+        second = {**event("second", 18, note="stale local note"), "changed_fields": ["amount"]}
+        batch = send(first, second)
+        assert (batch["accepted"], batch["rejected"]) == (2, 0)
+        a, b = batch["results"]
+        assert b["change_id"] > a["change_id"]
+        assert b["winner"]["payload"]["amount"] == 18
+        assert b["winner"]["payload"]["note"] == "keep remote note"
+
+        mixed = send(first, event("stale", 7, now - timedelta(seconds=1)), {
+            **event("another", 42), "entity_sync_id": "U",
+        }, {**event("mismatched-reuse", 5), "ledger_id": None})
+        replay, stale, independent, missing = mixed["results"]
+        assert (mixed["accepted"], mixed["rejected"], mixed["conflict_count"]) == (2, 2, 1)
+        assert (replay["status"], replay["change_id"]) == ("accepted", a["change_id"])
+        assert replay["winner"]["change_id"] == stale["winner"]["change_id"] == b["change_id"]
+        assert stale["status"] == "conflict" and stale["winner"]["payload"]["amount"] == 18
+        assert independent["status"] == "accepted"
+        assert missing["status"] == "rejected" and missing["winner"] is None
+        assert send(first)["results"][0]["winner"]["payload"]["note"] == "keep remote note"
+
+        tombstone = {**event("delete", 0), "action": "delete", "payload": {}}
+        deleted = send(tombstone)["results"][0]["change_id"]
+        late_replay = send(first)["results"][0]
+        assert late_replay["status"] == "accepted" and late_replay["change_id"] == a["change_id"]
+        assert late_replay["winner"]["change_id"] == deleted
+        assert late_replay["winner"]["action"] == "delete"
+        stale_after_delete = send(event("offline-edit", 27))["results"][0]
+        assert stale_after_delete["status"] == "conflict"
+        assert stale_after_delete["winner"]["change_id"] == deleted
+        wrong_version = {**event("stale-restore", 27), "restore_after_change_id": a["change_id"]}
+        assert send(wrong_version)["results"][0]["reason"] == "restore_version_mismatch"
+        restored = {**event("newer-edit", 27), "changed_fields": ["amount"], "restore_after_change_id": deleted}
+        result = send(restored)["results"][0]["winner"]
+        assert result["payload"]["type"] == "expense"
+        assert result["payload"]["amount"] == 27 and result["payload"]["happenedAt"]
+    finally:
+        app.dependency_overrides.clear()

@@ -288,17 +288,16 @@ existing 补回的旧 `nativeAmount` 会与新 amount 失配 → 后处理按该
 
 ### 4.7 lock_ledger_for_materialize
 
-`/sync/push` 和 `/write/*` 应用 projection 之前都调这个 SQLite advisory lock
+`/sync/push` 和 `/write/*` 应用 projection 之前都调账本锁
 按账本加锁,避免两个并发 push 同账本的 rename cascade 交错。
 
-锁粒度是 ledger,不阻塞跨账本并发写。
+PostgreSQL 在领取第一个 change_id 前取得全局事务锁，持有到 commit / rollback，使编号与可见顺序一致。需要同时获取锁的路径先取同步发布锁，再按顺序获取账本锁。SQLite 的非空 push 在 LWW 读取前使用 BEGIN IMMEDIATE，包含只改用户级标签的批次。
 
 ---
 
 ## 5. WebSocket 实时推送
 
-`src/routers/ws.py` 很薄,就是把 WS 连接丢到 `websocket_manager` 的 per-user
-注册表里。server 这边不主动检测变化;每次 `_commit_write` 或 /sync/push
+WS 端点按用户登记连接。多个进程共用短时的 ws_relay_frames 消息表，每个有在线连接的进程按主键分批读取，同一用户的本地及跨进程消息按相同顺序送达。写入时清除 5 分钟前的消息，最多保留 8192 条。客户端落后超过保留窗口时重新连接并补拉。每次 `_commit_write` 或 /sync/push
 commit 完事之后,在 HTTP handler 里 explicitly 调 `websocket_manager.broadcast`
 推 `{"type": "sync_change", ...}` 或 `{"type": "profile_change", ...}` 到该 user
 的所有活跃连接。
@@ -327,6 +326,8 @@ web 的 `SyncSocketProvider` 里的 poller)每 30s 主动拉一次补漏。
    时要注意这个陷阱。
 
 ### "/sync/push 批量 500"
+
+交易、分类、账户、标签和预算收到删除回执后，后续普通 upsert 遇到同一同步 ID 的删除记录会返回 `entity_deleted` 冲突及当前胜出版本。离线操作到达顺序和设备时钟均不改变删除结果。用户重新新建对象时分配新的同步 ID。需要恢复原身份的客户端应在 upsert 中传 `restore_after_change_id`，值为用户确认恢复的删除事件 ID。版本不符返回 `restore_version_mismatch`。重复发送已确认的 `operation_id` 继续复用原回执。
 
 近期加了 try/except 包 apply_change_to_projection,炸哪条会打
 `sync.push.apply_failed entity=... sync_id=... payload=...` 加完整 traceback。

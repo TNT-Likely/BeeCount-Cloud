@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -27,7 +29,7 @@ from src.models import (
     User,
     UserCategoryProjection,
 )
-from src.projection import gc_orphan_attachments, upsert_tx
+from src.projection import expire_pending_attachment_gc, gc_orphan_attachments, upsert_tx
 
 
 def _make_db():
@@ -82,6 +84,73 @@ def test_gc_removes_orphan_file(tmp_path):
         assert n == 1
         assert not path.exists(), "物理文件应已 unlink"
         assert db.get(AttachmentFile, "f-orphan") is None
+
+
+def test_gc_rollback_keeps_original_bytes_including_rolled_back_savepoint(tmp_path):
+    session_factory = _make_db()
+    with session_factory() as db:
+        _seed_ledger(db)
+        attachment, path = _make_attachment(tmp_path, "f-retry")
+        db.add(attachment)
+        db.commit()
+
+        for use_savepoint in [False, True]:
+            transaction = db.begin_nested() if use_savepoint else db.begin()
+            assert gc_orphan_attachments(db, user_id="U1", file_ids=["f-retry"]) == 1
+            db.flush()
+            transaction.rollback()
+            if use_savepoint:
+                db.commit()
+            assert path.read_bytes() == b"dummy"
+            assert db.get(AttachmentFile, "f-retry") is not None
+            db.commit()
+
+
+@pytest.mark.parametrize("legacy_name", [False, True])
+def test_incomplete_manifest_expires_unrelated_files_and_clears_last_real_reference(tmp_path, legacy_name):
+    sessions = _make_db()
+    with sessions() as db:
+        _seed_ledger(db)
+        a, path_a = _make_attachment(tmp_path, "held-a")
+        b, path_b = _make_attachment(tmp_path, "held-b")
+        content_a, content_b = b"first receipt", b"different receipt"
+        for record, path, content in [(a, path_a, content_a), (b, path_b, content_b)]:
+            path.write_bytes(content)
+            record.sha256 = hashlib.sha256(content).hexdigest()
+            record.size_bytes = len(content)
+        db.add_all([a, b])
+        db.commit()
+        id_a, id_b = a.id, b.id
+
+        def edit(refs, version):
+            upsert_tx(db, ledger_id="L1", user_id="U1", source_change_id=version,
+                      payload={"syncId": "bill", "type": "expense", "amount": 1,
+                               "happenedAt": "2026-01-01T00:00:00Z", "attachments": refs})
+            db.commit()
+
+        name = "local-copy-17.png" if legacy_name else f"sha_{a.sha256}.png"
+        edit([{"fileName": name, "cloudFileId": id_a, "originalName": "receipt.png"},
+              {"fileName": "other-local.png", "cloudFileId": id_b, "originalName": "receipt.png"}], 1)
+        pending = [{"fileName": name, "originalName": "receipt.png"}]
+        edit(pending, 2)
+        row = db.get(ReadTxProjection, ("L1", "bill"))
+        deadline = row.attachment_gc_after
+        assert deadline is not None
+        edit(pending, 3)
+        assert row.attachment_gc_after == deadline  # persistent upload failures never extend the grace
+        assert path_a.is_file() and path_b.is_file()
+        row.attachment_gc_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+        assert expire_pending_attachment_gc(db) == 1
+        db.commit()
+        assert path_a.read_bytes() == content_a
+        assert not path_b.exists()
+        assert row.attachment_gc_after is None
+        assert set(json.loads(row.pending_attachment_gc_json)) == {id_a}
+        edit([], 4)
+        assert not path_a.exists()
+        assert db.get(AttachmentFile, id_a) is None
+        assert db.get(AttachmentFile, id_b) is None
 
 
 def test_gc_preserves_tx_referenced_file(tmp_path):

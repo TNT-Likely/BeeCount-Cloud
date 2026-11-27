@@ -56,6 +56,7 @@ from .models import (
     UserTagProjection,
 )
 from .services.category_icon import resolve_icon_by_name
+from .time_utils import as_utc
 
 
 # 哪些 entity_type 可以走单条 change 的 projection 应用(其它 entity
@@ -94,8 +95,8 @@ def _json_loads_safe(value: Any) -> Any:
 
 
 def _isoformat_or_none(value: Any) -> Optional[str]:
-    """datetime → ISO8601 字符串。None 直接返回。"""
-    return value.isoformat() if value else None
+    """Projection timestamps must identify the same instant on every device."""
+    return as_utc(value).isoformat() if value is not None else None
 
 
 # _FieldSpec 的形态二选一:
@@ -284,7 +285,7 @@ def _delete_tx(db: Session, ledger_id: str, sync_id: str, user_id: str) -> None:
     # ledger owner,GC 必须按 ledger_id scope 而不是 user_id —— 否则 Editor 上传
     # 的附件永远被静默跳过留作孤儿。详见 projection.gc_orphan_attachments_for_ledger
     # 的 doc。
-    projection.gc_orphan_attachments_for_ledger(
+    projection.schedule_attachment_gc(
         db, ledger_id=ledger_id, file_ids=tx_file_ids,
     )
     # 实体彻底下线,清 upsert 历史(详见 _compact_entity_upsert_events)
@@ -301,7 +302,7 @@ def _delete_user_category(db: Session, user_id: str, sync_id: str) -> None:
     )
     projection.delete_category(db, user_id=user_id, sync_id=sync_id)
     # category icon 是 user-scope,继续走 gc_orphan_attachments(user_id)
-    projection.gc_orphan_attachments(
+    projection.schedule_attachment_gc(
         db, user_id=user_id, file_ids=cat_file_ids,
     )
     _compact_entity_upsert_events(
@@ -494,6 +495,13 @@ def merge_with_existing(
         return payload
     merged = _merge_from_spec(spec, existing, payload)
     if entity_type == "transaction":
+        # The note is nullable. Tags and their optional legacy names describe
+        # one relationship: a names-only client must not retain obsolete IDs.
+        if "note" in payload:
+            merged["note"] = payload["note"]
+        if "tags" in payload or "tagIds" in payload:
+            merged["tags"] = payload.get("tags")
+            merged["tagIds"] = payload.get("tagIds")
         merged = _sync_native_amount_after_merge(existing, payload, merged)
         from .transaction_normalization import normalize_transaction_accounts
         merged = normalize_transaction_accounts(merged)

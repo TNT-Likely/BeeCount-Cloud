@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 import hashlib
 import json
@@ -640,9 +641,8 @@ async def change_recurring_rule(
                     raise ValueError("SIMILAR_RULE: review existing rules before creating another")
         return None
 
-    result = save_record(
-        user,
-        ledger,
+    result = await asyncio.to_thread(
+        save_record, user, ledger,
         kind="recurring_rule",
         create_id=create_id,
         check_create=check_create if create_id else None,
