@@ -63,6 +63,7 @@ def test_parse_semver_and_comparison() -> None:
     assert version_mod.parse_semver(None) is None
 
     assert version_mod.is_version_below("3.9.9", "4.0.0") is True
+    assert version_mod.is_version_below("0.0.1", "4.0.0") is False
     assert version_mod.is_version_below("4.0.0+1", "4.0.0") is False
     assert version_mod.is_version_below("4.1.0", "4.0.0") is False
     assert version_mod.is_version_below("web-1.0.0", "4.0.0") is False

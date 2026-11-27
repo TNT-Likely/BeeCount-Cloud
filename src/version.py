@@ -43,10 +43,11 @@ def parse_semver(raw: str | None) -> tuple[int, int, int] | None:
 
 
 def is_version_below(current: str | None, required: str | None) -> bool:
-    """Return True only when both versions parse cleanly and current < required."""
+    """Return True only when both versions parse cleanly, current is a release
+    version (major > 0, skipping local 0.0.1 dev builds), and current < required."""
     cur = parse_semver(current)
     req = parse_semver(required)
-    if cur is None or req is None:
+    if cur is None or req is None or cur[0] == 0:
         return False
     return cur < req
 
